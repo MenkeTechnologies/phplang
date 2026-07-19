@@ -673,6 +673,14 @@ pub fn call_library(name: &str, args: Vec<Value>) -> Result<Value, String> {
             let b = h.to_str(&arg(&args, 1)).to_lowercase();
             Value::int(sign(a.cmp(&b)))
         }),
+        "strncmp" => with_host(|h| {
+            let a = h.to_str(&arg(&args, 0));
+            let b = h.to_str(&arg(&args, 1));
+            let n = arg(&args, 2).to_int().max(0) as usize;
+            let (ab, bb) = (a.as_bytes(), b.as_bytes());
+            Value::int(sign(ab[..n.min(ab.len())].cmp(&bb[..n.min(bb.len())])))
+        }),
+        "substr_compare" => with_host(|h| php_substr_compare(h, &args)),
         "str_word_count" => {
             with_host(|h| Value::int(h.to_str(&arg(&args, 0)).split_whitespace().count() as i64))
         }
@@ -1261,6 +1269,31 @@ fn sign(o: std::cmp::Ordering) -> i64 {
         std::cmp::Ordering::Equal => 0,
         std::cmp::Ordering::Greater => 1,
     }
+}
+
+/// `substr_compare($main, $str, $offset, $length = null)` — compares `$str` with
+/// the substring of `$main` beginning at `$offset` (negatives count from the
+/// end), over at most `$length` bytes. Byte-accurate, case-sensitive.
+fn php_substr_compare(h: &host::PhpHost, args: &[Value]) -> Value {
+    let main = h.to_str(&arg(args, 0));
+    let needle = h.to_str(&arg(args, 1));
+    let mb = main.as_bytes();
+    let len = mb.len() as i64;
+    let mut off = arg(args, 2).to_int();
+    if off < 0 {
+        off += len;
+    }
+    let off = off.clamp(0, len) as usize;
+    let hay = &mb[off..];
+    let nb = needle.as_bytes();
+    let (a, b): (&[u8], &[u8]) = match args.get(3) {
+        Some(v) if !matches!(v, Value::Undef) => {
+            let l = v.to_int().max(0) as usize;
+            (&hay[..l.min(hay.len())], &nb[..l.min(nb.len())])
+        }
+        _ => (hay, nb),
+    };
+    Value::int(sign(a.cmp(b)))
 }
 
 fn php_str_split(h: &mut host::PhpHost, args: &[Value]) -> Value {

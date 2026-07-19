@@ -52,6 +52,14 @@ path = "src/bin/parity_fuzz.rs"
 name = "parity-drupal"
 path = "src/bin/parity_drupal.rs"
 
+# Byte-parity harness over real PHP standard-library code: lifts pure-PHP function
+# bodies from the Symfony polyfills (a gitignored checkout,
+# scripts/fetch-php-polyfill.sh) and asserts phplang's stdout matches reference
+# `php` byte for byte. Development tool — needs `php` on PATH and the checkout.
+[[bin]]
+name = "parity-stdlib"
+path = "src/bin/parity_stdlib.rs"
+
 # Offline documentation generator: renders docs/reference.html from the language
 # corpus in src/lsp.rs (keywords, constructs, casts, and library functions).
 # Links the lib only; needs no reference PHP.
