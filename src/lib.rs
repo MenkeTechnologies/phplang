@@ -14,6 +14,7 @@ pub mod compiler;
 pub mod host;
 pub mod intercepts;
 pub mod lexer;
+pub mod lsp;
 pub mod parser;
 pub mod repl;
 

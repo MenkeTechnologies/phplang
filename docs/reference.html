@@ -1,0 +1,746 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="description" content="phplang — Language reference. Keywords, language constructs, casts, and library functions available in the current phplang build. MIT licensed.">
+  <title>phplang &mdash; Language Reference</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="hud-static.css">
+  <link rel="stylesheet" href="tutorial.css">
+  <style>
+    .tutorial-main { max-width: 76rem; }
+    .file-table { width:100%;border-collapse:collapse;margin:0.6rem 0;font-size:12px; }
+    .file-table th { background:var(--bg-secondary);color:var(--cyan);font-family:'Orbitron',sans-serif;font-size:10px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;text-align:left;padding:7px 10px;border:1px solid var(--border); }
+    .file-table td { padding:6px 10px;border:1px solid var(--border);color:var(--text-dim);vertical-align:middle; }
+    .file-table tr:hover td { background:var(--bg-hover); }
+    .file-table td:first-child { font-family:'Share Tech Mono',monospace;color:var(--accent-light);font-weight:600;white-space:nowrap; }
+    .file-table code { font-size:11px;color:var(--accent-light);background:var(--bg-primary);padding:1px 4px;border-radius:2px; }
+    .section-rule { border:none;border-top:1px dashed var(--border);margin:2rem 0; }
+    .hub-scheme-strip { border-bottom:1px dashed var(--border);background:color-mix(in srgb, var(--bg-secondary) 85%, transparent);padding:0.55rem 1.5rem 0.65rem;position:relative; }
+    .hub-scheme-strip-inner { max-width:76rem;margin:0 auto;display:flex;align-items:center;gap:0.85rem; }
+    .hub-scheme-strip .hud-scheme-label { flex:0 0 auto;font-family:'Orbitron',sans-serif;font-size:9px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:var(--accent);text-align:left; }
+    .hub-scheme-strip .scheme-grid { flex:1 1 auto;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:6px; }
+    @media (max-width:720px){ .hub-scheme-strip-inner{flex-direction:column;align-items:stretch}.hub-scheme-strip .scheme-grid{grid-template-columns:repeat(2,minmax(0,1fr))} }
+    .docs-build-line { margin:0.35rem 0 0;font-family:'Share Tech Mono',ui-monospace,monospace;font-size:11px;color:var(--text-dim);letter-spacing:0.03em;max-width:52rem;opacity:0.75; }
+  </style>
+</head>
+<body>
+  <div class="app tutorial-app" id="docsApp">
+    <div class="crt-scanline" id="crtH" aria-hidden="true"></div>
+    <div class="crt-scanline-v" id="crtV" aria-hidden="true"></div>
+
+    <header class="tutorial-header">
+      <div class="tutorial-header-inner">
+        <div>
+          <h1 class="tutorial-brand">// PHPLANG — LANGUAGE REFERENCE</h1>
+          <nav class="tutorial-crumbs" aria-label="Breadcrumb">
+            <a href="index.html">Docs</a>
+            <span class="sep">/</span>
+            <span class="current">Language Reference</span>
+            <span class="sep">/</span>
+            <a href="https://github.com/MenkeTechnologies/phplang" target="_blank" rel="noopener noreferrer">GitHub</a>
+          </nav>
+          <p class="docs-build-line">phplang v0.1.0 · PHP on fusevm · lex/parse → AST → fusevm bytecode → Cranelift JIT · no bespoke VM · the first compiled standalone PHP runtime · MIT · in active development</p>
+        </div>
+        <div class="tutorial-toolbar">
+          <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
+          <button type="button" class="btn btn-secondary active" id="btnCrt" title="CRT scanline overlay">CRT</button>
+          <button type="button" class="btn btn-secondary active" id="btnNeon" title="Neon border pulse">Neon</button>
+          <a class="btn btn-secondary" href="index.html">Docs</a>
+          <a class="btn btn-secondary" href="https://github.com/MenkeTechnologies/phplang" target="_blank" rel="noopener noreferrer">GitHub</a>
+        </div>
+      </div>
+    </header>
+
+    <div class="hub-scheme-strip">
+      <div class="hub-scheme-strip-inner">
+        <span class="hud-scheme-label">// Color scheme</span>
+        <div class="scheme-grid" id="hudSchemeGrid"></div>
+      </div>
+    </div>
+
+    <main class="tutorial-main">
+      <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>LANGUAGE REFERENCE</h2>
+      <p class="tutorial-subtitle">Every reserved keyword, language construct, type cast, and library function the current phplang build recognizes, grouped by keyword then construct then cast then library area. This page is generated from the language corpus (<code>src/lsp.rs</code>) by the <code>gen-docs</code> binary, so it stays in sync with what the runtime actually implements. Keywords/constructs mirror <code>lexer.rs</code> and <code>parser.rs</code>; each library function mirrors a real dispatch arm in <code>src/builtins.rs</code>.</p>
+
+      <section class="tutorial-section" id="ch-keyword">
+        <h2>Keyword</h2>
+        <article class="doc-entry" id="doc-keyword-1">
+          <h3><a class="doc-anchor" href="#doc-keyword-1">#</a> <code>if</code></h3>
+          <p>conditional branch; runs its block when the condition is truthy</p>
+          <pre><code class="lang-php">if (1 &lt; 2) echo "y";   // =&gt; y</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-keyword-2">
+          <h3><a class="doc-anchor" href="#doc-keyword-2">#</a> <code>elseif</code></h3>
+          <p>additional condition branch tested when the preceding ones fail</p>
+          <pre><code class="lang-php">if (0) echo "a"; elseif (1) echo "b";   // =&gt; b</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-keyword-3">
+          <h3><a class="doc-anchor" href="#doc-keyword-3">#</a> <code>else</code></h3>
+          <p>fallback branch taken when every preceding condition is falsey</p>
+          <pre><code class="lang-php">if (0) echo "a"; else echo "b";   // =&gt; b</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-keyword-4">
+          <h3><a class="doc-anchor" href="#doc-keyword-4">#</a> <code>while</code></h3>
+          <p>loop while the condition stays truthy (tested before each pass)</p>
+          <pre><code class="lang-php">$i = 0; while ($i &lt; 3) $i++; echo $i;   // =&gt; 3</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-keyword-5">
+          <h3><a class="doc-anchor" href="#doc-keyword-5">#</a> <code>do</code></h3>
+          <p>do/while loop; the body always runs at least once</p>
+          <pre><code class="lang-php">$i = 5; do $i++; while ($i &lt; 3); echo $i;   // =&gt; 6</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-keyword-6">
+          <h3><a class="doc-anchor" href="#doc-keyword-6">#</a> <code>for</code></h3>
+          <p>C-style loop with init, condition, and step clauses</p>
+          <pre><code class="lang-php">$s = 0; for ($i = 1; $i &lt;= 3; $i++) $s += $i; echo $s;   // =&gt; 6</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-keyword-7">
+          <h3><a class="doc-anchor" href="#doc-keyword-7">#</a> <code>foreach</code></h3>
+          <p>iterate an array as `$value` or `$key =&gt; $value`</p>
+          <pre><code class="lang-php">foreach ([1, 2] as $v) echo $v;   // =&gt; 12</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-keyword-8">
+          <h3><a class="doc-anchor" href="#doc-keyword-8">#</a> <code>as</code></h3>
+          <p>binds the current element inside a `foreach` header</p>
+          <pre><code class="lang-php">foreach ([9] as $k =&gt; $v) echo $k;   // =&gt; 0</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-keyword-9">
+          <h3><a class="doc-anchor" href="#doc-keyword-9">#</a> <code>switch</code></h3>
+          <p>multi-way branch; cases compare with loose (`==`) equality</p>
+          <pre><code class="lang-php">switch (2) { case 2: echo "two"; }   // =&gt; two</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-keyword-10">
+          <h3><a class="doc-anchor" href="#doc-keyword-10">#</a> <code>case</code></h3>
+          <p>a labelled `switch` branch; falls through until a `break`</p>
+          <pre><code class="lang-php">switch (1) { case 1: echo "a"; case 2: echo "b"; }   // =&gt; ab</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-keyword-11">
+          <h3><a class="doc-anchor" href="#doc-keyword-11">#</a> <code>default</code></h3>
+          <p>the `switch`/`match` branch taken when no case matches</p>
+          <pre><code class="lang-php">switch (9) { default: echo "d"; }   // =&gt; d</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-keyword-12">
+          <h3><a class="doc-anchor" href="#doc-keyword-12">#</a> <code>break</code></h3>
+          <p>exit the nearest enclosing loop or `switch` immediately</p>
+          <pre><code class="lang-php">foreach ([1, 2, 3] as $v) { if ($v == 2) break; echo $v; }   // =&gt; 1</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-keyword-13">
+          <h3><a class="doc-anchor" href="#doc-keyword-13">#</a> <code>continue</code></h3>
+          <p>skip to the next iteration of the nearest loop</p>
+          <pre><code class="lang-php">foreach ([1, 2, 3] as $v) { if ($v == 2) continue; echo $v; }   // =&gt; 13</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-keyword-14">
+          <h3><a class="doc-anchor" href="#doc-keyword-14">#</a> <code>function</code></h3>
+          <p>define a named function; `return` yields its value (else null)</p>
+          <pre><code class="lang-php">function sq($x) { return $x * $x; } echo sq(4);   // =&gt; 16</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-keyword-15">
+          <h3><a class="doc-anchor" href="#doc-keyword-15">#</a> <code>return</code></h3>
+          <p>return a value from the current function</p>
+          <pre><code class="lang-php">function one() { return 1; } echo one();   // =&gt; 1</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-keyword-16">
+          <h3><a class="doc-anchor" href="#doc-keyword-16">#</a> <code>match</code></h3>
+          <p>PHP 8 expression; strict (`===`) compare of the subject to each arm</p>
+          <pre><code class="lang-php">echo match (2) { 1 =&gt; "a", 2 =&gt; "b" };   // =&gt; b</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-keyword-17">
+          <h3><a class="doc-anchor" href="#doc-keyword-17">#</a> <code>array</code></h3>
+          <p>array literal constructor; `array(...)` is the same as `[...]`</p>
+          <pre><code class="lang-php">echo count(array(1, 2, 3));   // =&gt; 3</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-keyword-18">
+          <h3><a class="doc-anchor" href="#doc-keyword-18">#</a> <code>and</code></h3>
+          <p>low-precedence logical AND (short-circuits)</p>
+          <pre><code class="lang-php">echo (true and false) ? "y" : "n";   // =&gt; n</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-keyword-19">
+          <h3><a class="doc-anchor" href="#doc-keyword-19">#</a> <code>or</code></h3>
+          <p>low-precedence logical OR (short-circuits)</p>
+          <pre><code class="lang-php">echo (false or true) ? "y" : "n";   // =&gt; y</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-keyword-20">
+          <h3><a class="doc-anchor" href="#doc-keyword-20">#</a> <code>true</code></h3>
+          <p>the boolean true literal</p>
+          <pre><code class="lang-php">echo true ? "y" : "n";   // =&gt; y</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-keyword-21">
+          <h3><a class="doc-anchor" href="#doc-keyword-21">#</a> <code>false</code></h3>
+          <p>the boolean false literal</p>
+          <pre><code class="lang-php">echo false ? "y" : "n";   // =&gt; n</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-keyword-22">
+          <h3><a class="doc-anchor" href="#doc-keyword-22">#</a> <code>null</code></h3>
+          <p>the null literal; the absent / unset value</p>
+          <pre><code class="lang-php">echo null ?? "fallback";   // =&gt; fallback</code></pre>
+        </article>
+      </section>
+
+      <section class="tutorial-section" id="ch-construct">
+        <h2>Construct</h2>
+        <article class="doc-entry" id="doc-construct-1">
+          <h3><a class="doc-anchor" href="#doc-construct-1">#</a> <code>echo</code></h3>
+          <p>write one or more values to stdout (no return value)</p>
+          <pre><code class="lang-php">echo "hi", "!";   // =&gt; hi!</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-construct-2">
+          <h3><a class="doc-anchor" href="#doc-construct-2">#</a> <code>print</code></h3>
+          <p>write a single value to stdout; evaluates to 1</p>
+          <pre><code class="lang-php">print "hi";   // =&gt; hi</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-construct-3">
+          <h3><a class="doc-anchor" href="#doc-construct-3">#</a> <code>isset</code></h3>
+          <p>true if every argument is set and not null (quiet on unset)</p>
+          <pre><code class="lang-php">$a = 1; echo isset($a) ? "y" : "n";   // =&gt; y</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-construct-4">
+          <h3><a class="doc-anchor" href="#doc-construct-4">#</a> <code>empty</code></h3>
+          <p>true if the argument is falsey or unset (quiet on unset)</p>
+          <pre><code class="lang-php">echo empty(0) ? "y" : "n";   // =&gt; y</code></pre>
+        </article>
+      </section>
+
+      <section class="tutorial-section" id="ch-cast">
+        <h2>Cast</h2>
+        <article class="doc-entry" id="doc-cast-1">
+          <h3><a class="doc-anchor" href="#doc-cast-1">#</a> <code>(int)</code></h3>
+          <p>cast to integer (desugars to intval)</p>
+          <pre><code class="lang-php">echo (int) "42px";   // =&gt; 42</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-cast-2">
+          <h3><a class="doc-anchor" href="#doc-cast-2">#</a> <code>(float)</code></h3>
+          <p>cast to float (desugars to floatval); also (double)/(real)</p>
+          <pre><code class="lang-php">echo (float) "3.5";   // =&gt; 3.5</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-cast-3">
+          <h3><a class="doc-anchor" href="#doc-cast-3">#</a> <code>(string)</code></h3>
+          <p>cast to string (desugars to strval)</p>
+          <pre><code class="lang-php">echo (string) 123;   // =&gt; 123</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-cast-4">
+          <h3><a class="doc-anchor" href="#doc-cast-4">#</a> <code>(bool)</code></h3>
+          <p>cast to boolean (desugars to boolval); also (boolean)</p>
+          <pre><code class="lang-php">echo (bool) 0 ? "y" : "n";   // =&gt; n</code></pre>
+        </article>
+      </section>
+
+      <section class="tutorial-section" id="ch-string">
+        <h2>String</h2>
+        <article class="doc-entry" id="doc-string-1">
+          <h3><a class="doc-anchor" href="#doc-string-1">#</a> <code>strlen</code></h3>
+          <p>byte length of a string</p>
+          <pre><code class="lang-php">echo strlen("abc");   // =&gt; 3</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-string-2">
+          <h3><a class="doc-anchor" href="#doc-string-2">#</a> <code>strtoupper</code></h3>
+          <p>copy with all letters uppercased</p>
+          <pre><code class="lang-php">echo strtoupper("abc");   // =&gt; ABC</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-string-3">
+          <h3><a class="doc-anchor" href="#doc-string-3">#</a> <code>strtolower</code></h3>
+          <p>copy with all letters lowercased</p>
+          <pre><code class="lang-php">echo strtolower("ABC");   // =&gt; abc</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-string-4">
+          <h3><a class="doc-anchor" href="#doc-string-4">#</a> <code>ucfirst</code></h3>
+          <p>copy with the first character uppercased</p>
+          <pre><code class="lang-php">echo ucfirst("hello");   // =&gt; Hello</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-string-5">
+          <h3><a class="doc-anchor" href="#doc-string-5">#</a> <code>lcfirst</code></h3>
+          <p>copy with the first character lowercased</p>
+          <pre><code class="lang-php">echo lcfirst("Hello");   // =&gt; hello</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-string-6">
+          <h3><a class="doc-anchor" href="#doc-string-6">#</a> <code>ucwords</code></h3>
+          <p>copy with the first letter of each word uppercased</p>
+          <pre><code class="lang-php">echo ucwords("a b");   // =&gt; A B</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-string-7">
+          <h3><a class="doc-anchor" href="#doc-string-7">#</a> <code>trim</code></h3>
+          <p>copy with leading and trailing whitespace removed</p>
+          <pre><code class="lang-php">echo trim("  hi  ");   // =&gt; hi</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-string-8">
+          <h3><a class="doc-anchor" href="#doc-string-8">#</a> <code>ltrim</code></h3>
+          <p>copy with leading whitespace removed</p>
+          <pre><code class="lang-php">echo ltrim("  hi");   // =&gt; hi</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-string-9">
+          <h3><a class="doc-anchor" href="#doc-string-9">#</a> <code>rtrim</code></h3>
+          <p>copy with trailing whitespace removed (alias `chop`)</p>
+          <pre><code class="lang-php">echo rtrim("hi  ") . "!";   // =&gt; hi!</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-string-10">
+          <h3><a class="doc-anchor" href="#doc-string-10">#</a> <code>str_repeat</code></h3>
+          <p>the string repeated n times</p>
+          <pre><code class="lang-php">echo str_repeat("ab", 3);   // =&gt; ababab</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-string-11">
+          <h3><a class="doc-anchor" href="#doc-string-11">#</a> <code>strrev</code></h3>
+          <p>the string with its characters reversed</p>
+          <pre><code class="lang-php">echo strrev("abc");   // =&gt; cba</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-string-12">
+          <h3><a class="doc-anchor" href="#doc-string-12">#</a> <code>wordwrap</code></h3>
+          <p>wrap a string to a column width at word boundaries</p>
+          <pre><code class="lang-php">echo wordwrap("a b c", 3, "|", true);   // =&gt; a b|c</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-string-13">
+          <h3><a class="doc-anchor" href="#doc-string-13">#</a> <code>substr</code></h3>
+          <p>a substring from an offset (negative counts from the end)</p>
+          <pre><code class="lang-php">echo substr("hello", 1, 3);   // =&gt; ell</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-string-14">
+          <h3><a class="doc-anchor" href="#doc-string-14">#</a> <code>strpos</code></h3>
+          <p>first index of a substring, or false if absent</p>
+          <pre><code class="lang-php">echo strpos("hello", "l");   // =&gt; 2</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-string-15">
+          <h3><a class="doc-anchor" href="#doc-string-15">#</a> <code>str_replace</code></h3>
+          <p>copy with every occurrence of the search replaced</p>
+          <pre><code class="lang-php">echo str_replace("a", "b", "aaa");   // =&gt; bbb</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-string-16">
+          <h3><a class="doc-anchor" href="#doc-string-16">#</a> <code>implode</code></h3>
+          <p>join array elements with a separator (alias `join`)</p>
+          <pre><code class="lang-php">echo implode(",", [1, 2, 3]);   // =&gt; 1,2,3</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-string-17">
+          <h3><a class="doc-anchor" href="#doc-string-17">#</a> <code>explode</code></h3>
+          <p>split a string on a separator into an array</p>
+          <pre><code class="lang-php">echo explode(",", "a,b")[1];   // =&gt; b</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-string-18">
+          <h3><a class="doc-anchor" href="#doc-string-18">#</a> <code>str_split</code></h3>
+          <p>split a string into an array of chunks (default length 1)</p>
+          <pre><code class="lang-php">echo str_split("ab")[0];   // =&gt; a</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-string-19">
+          <h3><a class="doc-anchor" href="#doc-string-19">#</a> <code>str_pad</code></h3>
+          <p>pad a string to a length (right pad by default)</p>
+          <pre><code class="lang-php">echo str_pad("5", 3, "0");   // =&gt; 500</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-string-20">
+          <h3><a class="doc-anchor" href="#doc-string-20">#</a> <code>str_contains</code></h3>
+          <p>true if the haystack contains the needle</p>
+          <pre><code class="lang-php">echo str_contains("hello", "ell") ? "y" : "n";   // =&gt; y</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-string-21">
+          <h3><a class="doc-anchor" href="#doc-string-21">#</a> <code>str_starts_with</code></h3>
+          <p>true if the string starts with the prefix</p>
+          <pre><code class="lang-php">echo str_starts_with("hello", "he") ? "y" : "n";   // =&gt; y</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-string-22">
+          <h3><a class="doc-anchor" href="#doc-string-22">#</a> <code>str_ends_with</code></h3>
+          <p>true if the string ends with the suffix</p>
+          <pre><code class="lang-php">echo str_ends_with("hello", "lo") ? "y" : "n";   // =&gt; y</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-string-23">
+          <h3><a class="doc-anchor" href="#doc-string-23">#</a> <code>str_word_count</code></h3>
+          <p>number of whitespace-separated words in the string</p>
+          <pre><code class="lang-php">echo str_word_count("a b c");   // =&gt; 3</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-string-24">
+          <h3><a class="doc-anchor" href="#doc-string-24">#</a> <code>number_format</code></h3>
+          <p>format a number with grouped thousands and fixed decimals</p>
+          <pre><code class="lang-php">echo number_format(1234.567, 2);   // =&gt; 1,234.57</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-string-25">
+          <h3><a class="doc-anchor" href="#doc-string-25">#</a> <code>htmlspecialchars</code></h3>
+          <p>escape &amp;, &lt;, &gt;, and quotes for HTML (alias `htmlentities`)</p>
+          <pre><code class="lang-php">echo htmlspecialchars("a&lt;b");   // =&gt; a&amp;lt;b</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-string-26">
+          <h3><a class="doc-anchor" href="#doc-string-26">#</a> <code>strcmp</code></h3>
+          <p>byte comparison of two strings: &lt;0, 0, or &gt;0</p>
+          <pre><code class="lang-php">echo strcmp("a", "b");   // =&gt; -1</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-string-27">
+          <h3><a class="doc-anchor" href="#doc-string-27">#</a> <code>strcasecmp</code></h3>
+          <p>case-insensitive comparison of two strings</p>
+          <pre><code class="lang-php">echo strcasecmp("A", "a");   // =&gt; 0</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-string-28">
+          <h3><a class="doc-anchor" href="#doc-string-28">#</a> <code>chr</code></h3>
+          <p>one-character string for a byte value (mod 256)</p>
+          <pre><code class="lang-php">echo chr(65);   // =&gt; A</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-string-29">
+          <h3><a class="doc-anchor" href="#doc-string-29">#</a> <code>ord</code></h3>
+          <p>byte value of the first character of a string</p>
+          <pre><code class="lang-php">echo ord("A");   // =&gt; 65</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-string-30">
+          <h3><a class="doc-anchor" href="#doc-string-30">#</a> <code>dechex</code></h3>
+          <p>lowercase hexadecimal string of an integer</p>
+          <pre><code class="lang-php">echo dechex(255);   // =&gt; ff</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-string-31">
+          <h3><a class="doc-anchor" href="#doc-string-31">#</a> <code>hexdec</code></h3>
+          <p>integer value of a hexadecimal string</p>
+          <pre><code class="lang-php">echo hexdec("ff");   // =&gt; 255</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-string-32">
+          <h3><a class="doc-anchor" href="#doc-string-32">#</a> <code>bin2hex</code></h3>
+          <p>hex representation of each byte in a string</p>
+          <pre><code class="lang-php">echo bin2hex("AB");   // =&gt; 4142</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-string-33">
+          <h3><a class="doc-anchor" href="#doc-string-33">#</a> <code>sprintf</code></h3>
+          <p>format arguments into a string using a printf format</p>
+          <pre><code class="lang-php">echo sprintf("%d-%s", 1, "x");   // =&gt; 1-x</code></pre>
+        </article>
+      </section>
+
+      <section class="tutorial-section" id="ch-array">
+        <h2>Array</h2>
+        <article class="doc-entry" id="doc-array-1">
+          <h3><a class="doc-anchor" href="#doc-array-1">#</a> <code>count</code></h3>
+          <p>number of elements in an array (alias `sizeof`)</p>
+          <pre><code class="lang-php">echo count([1, 2, 3]);   // =&gt; 3</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-array-2">
+          <h3><a class="doc-anchor" href="#doc-array-2">#</a> <code>array_keys</code></h3>
+          <p>a new array of the array's keys</p>
+          <pre><code class="lang-php">echo implode(",", array_keys(["a" =&gt; 1, "b" =&gt; 2]));   // =&gt; a,b</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-array-3">
+          <h3><a class="doc-anchor" href="#doc-array-3">#</a> <code>array_values</code></h3>
+          <p>a new array of the array's values, reindexed from 0</p>
+          <pre><code class="lang-php">echo implode(",", array_values([5 =&gt; "a", 9 =&gt; "b"]));   // =&gt; a,b</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-array-4">
+          <h3><a class="doc-anchor" href="#doc-array-4">#</a> <code>array_push</code></h3>
+          <p>append one or more elements to the end of an array</p>
+          <pre><code class="lang-php">$a = [1]; array_push($a, 2); echo implode(",", $a);   // =&gt; 1,2</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-array-5">
+          <h3><a class="doc-anchor" href="#doc-array-5">#</a> <code>in_array</code></h3>
+          <p>true if a value is present in the array</p>
+          <pre><code class="lang-php">echo in_array(2, [1, 2, 3]) ? "y" : "n";   // =&gt; y</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-array-6">
+          <h3><a class="doc-anchor" href="#doc-array-6">#</a> <code>range</code></h3>
+          <p>array of a numeric or character sequence</p>
+          <pre><code class="lang-php">echo implode(",", range(1, 4));   // =&gt; 1,2,3,4</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-array-7">
+          <h3><a class="doc-anchor" href="#doc-array-7">#</a> <code>array_merge</code></h3>
+          <p>concatenate arrays, reindexing integer keys</p>
+          <pre><code class="lang-php">echo implode(",", array_merge([1], [2, 3]));   // =&gt; 1,2,3</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-array-8">
+          <h3><a class="doc-anchor" href="#doc-array-8">#</a> <code>array_map</code></h3>
+          <p>apply a callback to each element, returning a new array</p>
+          <pre><code class="lang-php">echo implode(",", array_map("strtoupper", ["a", "b"]));   // =&gt; A,B</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-array-9">
+          <h3><a class="doc-anchor" href="#doc-array-9">#</a> <code>array_filter</code></h3>
+          <p>keep elements for which the callback is truthy</p>
+          <pre><code class="lang-php">echo implode(",", array_filter([0, 1, 2]));   // =&gt; 1,2</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-array-10">
+          <h3><a class="doc-anchor" href="#doc-array-10">#</a> <code>array_reduce</code></h3>
+          <p>fold an array to a single value with a callback</p>
+          <pre><code class="lang-php">echo array_reduce([1, 2, 3], fn($c, $x) =&gt; $c + $x, 0);   // =&gt; 6</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-array-11">
+          <h3><a class="doc-anchor" href="#doc-array-11">#</a> <code>array_slice</code></h3>
+          <p>a slice of an array from an offset for a length</p>
+          <pre><code class="lang-php">echo implode(",", array_slice([1, 2, 3, 4], 1, 2));   // =&gt; 2,3</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-array-12">
+          <h3><a class="doc-anchor" href="#doc-array-12">#</a> <code>array_reverse</code></h3>
+          <p>a new array with the elements in reverse order</p>
+          <pre><code class="lang-php">echo implode(",", array_reverse([1, 2, 3]));   // =&gt; 3,2,1</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-array-13">
+          <h3><a class="doc-anchor" href="#doc-array-13">#</a> <code>array_sum</code></h3>
+          <p>sum of the array's numeric values</p>
+          <pre><code class="lang-php">echo array_sum([1, 2, 3]);   // =&gt; 6</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-array-14">
+          <h3><a class="doc-anchor" href="#doc-array-14">#</a> <code>array_product</code></h3>
+          <p>product of the array's numeric values</p>
+          <pre><code class="lang-php">echo array_product([2, 3, 4]);   // =&gt; 24</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-array-15">
+          <h3><a class="doc-anchor" href="#doc-array-15">#</a> <code>array_flip</code></h3>
+          <p>a new array with keys and values swapped</p>
+          <pre><code class="lang-php">echo array_flip(["a", "b"])["a"];   // =&gt; 0</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-array-16">
+          <h3><a class="doc-anchor" href="#doc-array-16">#</a> <code>array_unique</code></h3>
+          <p>a new array with duplicate values removed</p>
+          <pre><code class="lang-php">echo implode(",", array_unique([1, 1, 2]));   // =&gt; 1,2</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-array-17">
+          <h3><a class="doc-anchor" href="#doc-array-17">#</a> <code>array_key_exists</code></h3>
+          <p>true if the key exists (alias `key_exists`)</p>
+          <pre><code class="lang-php">echo array_key_exists("a", ["a" =&gt; 1]) ? "y" : "n";   // =&gt; y</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-array-18">
+          <h3><a class="doc-anchor" href="#doc-array-18">#</a> <code>array_search</code></h3>
+          <p>the key of the first matching value, or false</p>
+          <pre><code class="lang-php">echo array_search(2, [1, 2, 3]);   // =&gt; 1</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-array-19">
+          <h3><a class="doc-anchor" href="#doc-array-19">#</a> <code>sort</code></h3>
+          <p>sort an array in ascending order, reindexing keys</p>
+          <pre><code class="lang-php">$a = [3, 1, 2]; sort($a); echo implode(",", $a);   // =&gt; 1,2,3</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-array-20">
+          <h3><a class="doc-anchor" href="#doc-array-20">#</a> <code>rsort</code></h3>
+          <p>sort an array in descending order, reindexing keys</p>
+          <pre><code class="lang-php">$a = [1, 3, 2]; rsort($a); echo implode(",", $a);   // =&gt; 3,2,1</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-array-21">
+          <h3><a class="doc-anchor" href="#doc-array-21">#</a> <code>asort</code></h3>
+          <p>sort by value ascending, preserving key association</p>
+          <pre><code class="lang-php">$a = ["b" =&gt; 2, "a" =&gt; 1]; asort($a); echo implode(",", array_keys($a));   // =&gt; a,b</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-array-22">
+          <h3><a class="doc-anchor" href="#doc-array-22">#</a> <code>arsort</code></h3>
+          <p>sort by value descending, preserving key association</p>
+          <pre><code class="lang-php">$a = ["a" =&gt; 1, "b" =&gt; 2]; arsort($a); echo implode(",", array_keys($a));   // =&gt; b,a</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-array-23">
+          <h3><a class="doc-anchor" href="#doc-array-23">#</a> <code>ksort</code></h3>
+          <p>sort by key ascending</p>
+          <pre><code class="lang-php">$a = ["b" =&gt; 1, "a" =&gt; 2]; ksort($a); echo implode(",", array_keys($a));   // =&gt; a,b</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-array-24">
+          <h3><a class="doc-anchor" href="#doc-array-24">#</a> <code>krsort</code></h3>
+          <p>sort by key descending</p>
+          <pre><code class="lang-php">$a = ["a" =&gt; 1, "b" =&gt; 2]; krsort($a); echo implode(",", array_keys($a));   // =&gt; b,a</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-array-25">
+          <h3><a class="doc-anchor" href="#doc-array-25">#</a> <code>array_fill</code></h3>
+          <p>an array of count copies of a value from a start index</p>
+          <pre><code class="lang-php">echo implode(",", array_fill(0, 3, "x"));   // =&gt; x,x,x</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-array-26">
+          <h3><a class="doc-anchor" href="#doc-array-26">#</a> <code>array_combine</code></h3>
+          <p>an array pairing one array's values as keys with another's</p>
+          <pre><code class="lang-php">echo array_combine(["a"], [1])["a"];   // =&gt; 1</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-array-27">
+          <h3><a class="doc-anchor" href="#doc-array-27">#</a> <code>array_diff</code></h3>
+          <p>values in the first array absent from the others</p>
+          <pre><code class="lang-php">echo implode(",", array_diff([1, 2, 3], [2]));   // =&gt; 1,3</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-array-28">
+          <h3><a class="doc-anchor" href="#doc-array-28">#</a> <code>array_intersect</code></h3>
+          <p>values present in every array</p>
+          <pre><code class="lang-php">echo implode(",", array_intersect([1, 2, 3], [2, 3, 4]));   // =&gt; 2,3</code></pre>
+        </article>
+      </section>
+
+      <section class="tutorial-section" id="ch-math">
+        <h2>Math</h2>
+        <article class="doc-entry" id="doc-math-1">
+          <h3><a class="doc-anchor" href="#doc-math-1">#</a> <code>abs</code></h3>
+          <p>absolute value of a number</p>
+          <pre><code class="lang-php">echo abs(-5);   // =&gt; 5</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-math-2">
+          <h3><a class="doc-anchor" href="#doc-math-2">#</a> <code>floor</code></h3>
+          <p>largest integer value not greater than x, as a float</p>
+          <pre><code class="lang-php">echo floor(3.7);   // =&gt; 3</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-math-3">
+          <h3><a class="doc-anchor" href="#doc-math-3">#</a> <code>ceil</code></h3>
+          <p>smallest integer value not less than x, as a float</p>
+          <pre><code class="lang-php">echo ceil(3.2);   // =&gt; 4</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-math-4">
+          <h3><a class="doc-anchor" href="#doc-math-4">#</a> <code>round</code></h3>
+          <p>round to an optional number of decimal places</p>
+          <pre><code class="lang-php">echo round(3.14159, 2);   // =&gt; 3.14</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-math-5">
+          <h3><a class="doc-anchor" href="#doc-math-5">#</a> <code>sqrt</code></h3>
+          <p>non-negative square root, as a float</p>
+          <pre><code class="lang-php">echo sqrt(16);   // =&gt; 4</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-math-6">
+          <h3><a class="doc-anchor" href="#doc-math-6">#</a> <code>pow</code></h3>
+          <p>base raised to an exponent</p>
+          <pre><code class="lang-php">echo pow(2, 10);   // =&gt; 1024</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-math-7">
+          <h3><a class="doc-anchor" href="#doc-math-7">#</a> <code>intdiv</code></h3>
+          <p>integer division of two integers (truncated)</p>
+          <pre><code class="lang-php">echo intdiv(7, 2);   // =&gt; 3</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-math-8">
+          <h3><a class="doc-anchor" href="#doc-math-8">#</a> <code>fmod</code></h3>
+          <p>floating-point remainder of x / y</p>
+          <pre><code class="lang-php">echo fmod(7.5, 2);   // =&gt; 1.5</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-math-9">
+          <h3><a class="doc-anchor" href="#doc-math-9">#</a> <code>sin</code></h3>
+          <p>sine of x (radians)</p>
+          <pre><code class="lang-php">echo sin(0);   // =&gt; 0</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-math-10">
+          <h3><a class="doc-anchor" href="#doc-math-10">#</a> <code>cos</code></h3>
+          <p>cosine of x (radians)</p>
+          <pre><code class="lang-php">echo cos(0);   // =&gt; 1</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-math-11">
+          <h3><a class="doc-anchor" href="#doc-math-11">#</a> <code>tan</code></h3>
+          <p>tangent of x (radians)</p>
+          <pre><code class="lang-php">echo tan(0);   // =&gt; 0</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-math-12">
+          <h3><a class="doc-anchor" href="#doc-math-12">#</a> <code>exp</code></h3>
+          <p>e raised to the power x</p>
+          <pre><code class="lang-php">echo exp(0);   // =&gt; 1</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-math-13">
+          <h3><a class="doc-anchor" href="#doc-math-13">#</a> <code>log</code></h3>
+          <p>natural log, or log base b when a second arg is given</p>
+          <pre><code class="lang-php">echo log(8, 2);   // =&gt; 3</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-math-14">
+          <h3><a class="doc-anchor" href="#doc-math-14">#</a> <code>log10</code></h3>
+          <p>base-10 logarithm of x</p>
+          <pre><code class="lang-php">echo log10(1000);   // =&gt; 3</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-math-15">
+          <h3><a class="doc-anchor" href="#doc-math-15">#</a> <code>pi</code></h3>
+          <p>the constant pi as a float</p>
+          <pre><code class="lang-php">echo round(pi(), 2);   // =&gt; 3.14</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-math-16">
+          <h3><a class="doc-anchor" href="#doc-math-16">#</a> <code>max</code></h3>
+          <p>largest of the arguments or of an array</p>
+          <pre><code class="lang-php">echo max(3, 1, 2);   // =&gt; 3</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-math-17">
+          <h3><a class="doc-anchor" href="#doc-math-17">#</a> <code>min</code></h3>
+          <p>smallest of the arguments or of an array</p>
+          <pre><code class="lang-php">echo min(3, 1, 2);   // =&gt; 1</code></pre>
+        </article>
+      </section>
+
+      <section class="tutorial-section" id="ch-type">
+        <h2>Type</h2>
+        <article class="doc-entry" id="doc-type-1">
+          <h3><a class="doc-anchor" href="#doc-type-1">#</a> <code>gettype</code></h3>
+          <p>the type name of a value</p>
+          <pre><code class="lang-php">echo gettype(1);   // =&gt; integer</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-type-2">
+          <h3><a class="doc-anchor" href="#doc-type-2">#</a> <code>is_array</code></h3>
+          <p>true if the value is an array</p>
+          <pre><code class="lang-php">echo is_array([1]) ? "y" : "n";   // =&gt; y</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-type-3">
+          <h3><a class="doc-anchor" href="#doc-type-3">#</a> <code>is_int</code></h3>
+          <p>true if the value is an integer (aliases is_integer/is_long)</p>
+          <pre><code class="lang-php">echo is_int(5) ? "y" : "n";   // =&gt; y</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-type-4">
+          <h3><a class="doc-anchor" href="#doc-type-4">#</a> <code>is_float</code></h3>
+          <p>true if the value is a float (alias is_double)</p>
+          <pre><code class="lang-php">echo is_float(1.5) ? "y" : "n";   // =&gt; y</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-type-5">
+          <h3><a class="doc-anchor" href="#doc-type-5">#</a> <code>is_string</code></h3>
+          <p>true if the value is a string</p>
+          <pre><code class="lang-php">echo is_string("x") ? "y" : "n";   // =&gt; y</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-type-6">
+          <h3><a class="doc-anchor" href="#doc-type-6">#</a> <code>is_bool</code></h3>
+          <p>true if the value is a boolean</p>
+          <pre><code class="lang-php">echo is_bool(true) ? "y" : "n";   // =&gt; y</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-type-7">
+          <h3><a class="doc-anchor" href="#doc-type-7">#</a> <code>is_null</code></h3>
+          <p>true if the value is null</p>
+          <pre><code class="lang-php">echo is_null(null) ? "y" : "n";   // =&gt; y</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-type-8">
+          <h3><a class="doc-anchor" href="#doc-type-8">#</a> <code>is_numeric</code></h3>
+          <p>true for a number or a numeric string</p>
+          <pre><code class="lang-php">echo is_numeric("3.5") ? "y" : "n";   // =&gt; y</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-type-9">
+          <h3><a class="doc-anchor" href="#doc-type-9">#</a> <code>is_callable</code></h3>
+          <p>true if the value names something callable</p>
+          <pre><code class="lang-php">echo is_callable("strlen") ? "y" : "n";   // =&gt; y</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-type-10">
+          <h3><a class="doc-anchor" href="#doc-type-10">#</a> <code>intval</code></h3>
+          <p>the integer value of a variable</p>
+          <pre><code class="lang-php">echo intval("42px");   // =&gt; 42</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-type-11">
+          <h3><a class="doc-anchor" href="#doc-type-11">#</a> <code>floatval</code></h3>
+          <p>the float value of a variable (alias doubleval)</p>
+          <pre><code class="lang-php">echo floatval("3.5kg");   // =&gt; 3.5</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-type-12">
+          <h3><a class="doc-anchor" href="#doc-type-12">#</a> <code>strval</code></h3>
+          <p>the string value of a variable</p>
+          <pre><code class="lang-php">echo strval(42);   // =&gt; 42</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-type-13">
+          <h3><a class="doc-anchor" href="#doc-type-13">#</a> <code>boolval</code></h3>
+          <p>the boolean value of a variable</p>
+          <pre><code class="lang-php">echo boolval("") ? "y" : "n";   // =&gt; n</code></pre>
+        </article>
+      </section>
+
+      <section class="tutorial-section" id="ch-output">
+        <h2>Output</h2>
+        <article class="doc-entry" id="doc-output-1">
+          <h3><a class="doc-anchor" href="#doc-output-1">#</a> <code>print_r</code></h3>
+          <p>human-readable dump of a value; returns it when the 2nd arg is true</p>
+          <pre><code class="lang-php">echo print_r([1, 2], true);   // =&gt; Array ( [0] =&gt; 1 [1] =&gt; 2 )</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-output-2">
+          <h3><a class="doc-anchor" href="#doc-output-2">#</a> <code>printf</code></h3>
+          <p>write a printf-formatted string; returns its byte length</p>
+          <pre><code class="lang-php">printf("%d", 7);   // =&gt; 7</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-output-3">
+          <h3><a class="doc-anchor" href="#doc-output-3">#</a> <code>var_dump</code></h3>
+          <p>dump a value with its type and structure</p>
+          <pre><code class="lang-php">var_dump(true);   // =&gt; bool(true)</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-output-4">
+          <h3><a class="doc-anchor" href="#doc-output-4">#</a> <code>var_export</code></h3>
+          <p>output (or return) a parsable PHP representation of a value</p>
+          <pre><code class="lang-php">var_export(1);   // =&gt; 1</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-output-5">
+          <h3><a class="doc-anchor" href="#doc-output-5">#</a> <code>json_encode</code></h3>
+          <p>encode a value as a JSON string</p>
+          <pre><code class="lang-php">echo json_encode([1, 2, 3]);   // =&gt; [1,2,3]</code></pre>
+        </article>
+      </section>
+
+      <section class="tutorial-section">
+        <h2>More</h2>
+        <ul>
+          <li><strong>Docs</strong> — <a href="index.html">index.html</a> (overview, architecture, examples)</li>
+          <li><strong>Engineering report</strong> — <a href="report.html">report.html</a> (value model, status, dependencies)</li>
+          <li><strong>Source</strong> — <a href="https://github.com/MenkeTechnologies/phplang">github.com/MenkeTechnologies/phplang</a></li>
+        </ul>
+      </section>
+    </main>
+
+  </div>
+
+  <script src="hud-theme.js"></script>
+</body>
+</html>

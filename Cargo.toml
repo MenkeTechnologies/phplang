@@ -52,6 +52,13 @@ path = "src/bin/parity_fuzz.rs"
 name = "parity-drupal"
 path = "src/bin/parity_drupal.rs"
 
+# Offline documentation generator: renders docs/reference.html from the language
+# corpus in src/lsp.rs (keywords, constructs, casts, and library functions).
+# Links the lib only; needs no reference PHP.
+[[bin]]
+name = "gen-docs"
+path = "src/bin/gen_docs.rs"
+
 [dependencies]
 # PHP executes on fusevm. phplang is a pure frontend: it lowers PHP to fusevm
 # bytecode (src/compiler.rs) and hosts the PHP object heap (src/host.rs, reached
