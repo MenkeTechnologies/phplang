@@ -35,6 +35,15 @@ path = "src/lib.rs"
 name = "php"
 path = "src/main.rs"
 
+# Differential parity FUZZER: generates thousands of seed-deterministic PHP
+# snippets and diffs stdout+success of the reference `php` against phplang.
+# Development tool (spawns subprocesses only, never links the lib); needs a
+# reference `php` on PATH, so CI never runs it. Replay a divergence with
+# `parity-fuzz --once --seed <N>`.
+[[bin]]
+name = "parity-fuzz"
+path = "src/bin/parity_fuzz.rs"
+
 [dependencies]
 # PHP executes on fusevm. phplang is a pure frontend: it lowers PHP to fusevm
 # bytecode (src/compiler.rs) and hosts the PHP object heap (src/host.rs, reached

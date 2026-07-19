@@ -384,15 +384,36 @@ fn php_compare(h: &host::PhpHost, a: &Value, b: &Value) -> i32 {
             if host::is_numeric_string(x) && host::is_numeric_string(y) {
                 cmp_f64(a.to_float(), b.to_float())
             } else {
-                match x.cmp(y) {
-                    std::cmp::Ordering::Less => -1,
-                    std::cmp::Ordering::Equal => 0,
-                    std::cmp::Ordering::Greater => 1,
-                }
+                strcmp_i32(x, y)
+            }
+        }
+        // PHP 8: number vs string compares numerically only when the string is
+        // numeric; otherwise the number is cast to a string and compared as text
+        // (`"abc" <= 10` is false because "abc" > "10" lexically).
+        (Str(x), Int(_) | Float(_)) => {
+            if host::is_numeric_string(x) {
+                cmp_f64(a.to_float(), b.to_float())
+            } else {
+                strcmp_i32(x, &h.to_str(b))
+            }
+        }
+        (Int(_) | Float(_), Str(y)) => {
+            if host::is_numeric_string(y) {
+                cmp_f64(a.to_float(), b.to_float())
+            } else {
+                strcmp_i32(&h.to_str(a), y)
             }
         }
         (Obj(_), Obj(_)) => cmp_f64(h.array_len(a) as f64, h.array_len(b) as f64),
         _ => cmp_f64(h.to_number(a).to_float(), h.to_number(b).to_float()),
+    }
+}
+
+fn strcmp_i32(x: &str, y: &str) -> i32 {
+    match x.cmp(y) {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => 1,
     }
 }
 
@@ -503,6 +524,7 @@ pub fn call_library(name: &str, args: Vec<Value>) -> Result<Value, String> {
         "floatval" | "doubleval" => {
             with_host(|h| Value::float(h.to_number(&arg(&args, 0)).to_float()))
         }
+        "strval" => with_host(|h| Value::str(h.to_str(&arg(&args, 0)))),
         "max" => with_host(|h| fold_cmp(h, &args, true)),
         "min" => with_host(|h| fold_cmp(h, &args, false)),
         "gettype" => with_host(|h| Value::str(h.type_name(&arg(&args, 0)).to_string())),
@@ -992,7 +1014,11 @@ fn php_number_format(h: &host::PhpHost, args: &[Value]) -> String {
     let dp = args.get(2).map(|v| h.to_str(v)).unwrap_or_else(|| ".".to_string());
     let ts = args.get(3).map(|v| h.to_str(v)).unwrap_or_else(|| ",".to_string());
     let neg = num < 0.0;
-    let formatted = format!("{:.*}", dec, num.abs());
+    // PHP rounds half away from zero; pre-round so Rust's round-half-to-even
+    // formatting can't turn 100.25 into "100.2" where PHP gives "100.3".
+    let m = 10f64.powi(dec as i32);
+    let rounded = (num.abs() * m).round() / m;
+    let formatted = format!("{:.*}", dec, rounded);
     let (int_part, frac_part) = match formatted.split_once('.') {
         Some((i, f)) => (i.to_string(), f.to_string()),
         None => (formatted.clone(), String::new()),
@@ -1262,9 +1288,9 @@ fn php_array_search(h: &host::PhpHost, args: &[Value]) -> Value {
     Value::bool(false)
 }
 
-/// `sort`/`rsort` — scaffold DEVIATION: returns a NEW sorted (re-indexed) array
-/// rather than sorting `$arr` in place, because the host exposes no
-/// entry-replacement API on an array handle.
+/// `sort`/`rsort` — sorts by value in place and re-indexes (keys 0..n), returning
+/// `true`, like PHP. Arrays are reference handles here, so mutating the handle's
+/// target is visible through the caller's `$var`.
 fn php_sort(h: &mut host::PhpHost, arr: &Value, reverse: bool) -> Value {
     let mut vals: Vec<Value> = h
         .array_pairs(arr)
@@ -1276,41 +1302,30 @@ fn php_sort(h: &mut host::PhpHost, arr: &Value, reverse: bool) -> Value {
     if reverse {
         vals.reverse();
     }
-    let out = h.new_array();
-    for v in vals {
-        h.arr_push_auto(&out, v);
-    }
-    out
+    h.arr_set_reindexed(arr, vals);
+    Value::bool(true)
 }
 
-/// `asort`/`arsort` — scaffold DEVIATION: returns a NEW value-sorted array with
-/// keys preserved (not in place).
+/// `asort`/`arsort` — sorts by value in place, preserving keys; returns `true`.
 fn php_asort(h: &mut host::PhpHost, arr: &Value, reverse: bool) -> Value {
     let mut pairs = h.array_pairs(arr).unwrap_or_default();
     pairs.sort_by(|(_, a), (_, b)| php_compare(h, a, b).cmp(&0));
     if reverse {
         pairs.reverse();
     }
-    let out = h.new_array();
-    for (k, v) in pairs {
-        h.arr_set_key(&out, &k, v);
-    }
-    out
+    h.arr_set_pairs(arr, pairs);
+    Value::bool(true)
 }
 
-/// `ksort`/`krsort` — scaffold DEVIATION: returns a NEW key-sorted array (not in
-/// place).
+/// `ksort`/`krsort` — sorts by key in place, preserving keys; returns `true`.
 fn php_ksort(h: &mut host::PhpHost, arr: &Value, reverse: bool) -> Value {
     let mut pairs = h.array_pairs(arr).unwrap_or_default();
     pairs.sort_by(|(a, _), (b, _)| php_compare(h, a, b).cmp(&0));
     if reverse {
         pairs.reverse();
     }
-    let out = h.new_array();
-    for (k, v) in pairs {
-        h.arr_set_key(&out, &k, v);
-    }
-    out
+    h.arr_set_pairs(arr, pairs);
+    Value::bool(true)
 }
 
 fn php_array_fill(h: &mut host::PhpHost, args: &[Value]) -> Value {

@@ -3,6 +3,18 @@
 use crate::ast::*;
 use crate::lexer::{self, Spanned, Tok};
 
+/// Map a `(type)` cast keyword to the conversion function it desugars to.
+/// `(array)`/`(object)`/`(unset)` are not supported in the scaffold → `None`.
+fn cast_fn(t: &str) -> Option<&'static str> {
+    match t.to_ascii_lowercase().as_str() {
+        "int" | "integer" => Some("intval"),
+        "float" | "double" | "real" => Some("floatval"),
+        "string" => Some("strval"),
+        "bool" | "boolean" => Some("boolval"),
+        _ => None,
+    }
+}
+
 /// Parse a PHP source string into a statement list.
 pub fn parse(src: &str) -> Result<Vec<Stmt>, String> {
     let toks = lexer::lex(src)?;
@@ -491,7 +503,8 @@ impl Parser {
             Some(Tok::Punct("*")) => BinOp::Mul,
             Some(Tok::Punct("/")) => BinOp::Div,
             Some(Tok::Punct("%")) => BinOp::Mod,
-            Some(Tok::Punct("**")) => BinOp::Pow,
+            // `**` is NOT handled here — it binds tighter than unary minus, so it
+            // is parsed in `power()` below the unary level, not as an infix op.
             _ => return None,
         };
         // (left bp, right bp). Right bp < left bp ⇒ right-associative (`**`).
@@ -508,6 +521,20 @@ impl Parser {
     }
 
     fn unary(&mut self) -> Result<Expr, String> {
+        // Type cast: `(int)`, `(float)`, `(string)`, `(bool)`, … — three tokens
+        // `( ident )` where the identifier names a cast target. Desugars to the
+        // matching conversion call so no new opcode is needed.
+        if self.at_punct("(") {
+            if let Some(Tok::Ident(t)) = self.toks.get(self.pos + 1).map(|s| &s.tok) {
+                if matches!(self.toks.get(self.pos + 2).map(|s| &s.tok), Some(Tok::Punct(")"))) {
+                    if let Some(fname) = cast_fn(t) {
+                        self.pos += 3; // consume `( ident )`
+                        let operand = self.unary()?;
+                        return Ok(Expr::Call(fname.to_string(), vec![operand]));
+                    }
+                }
+            }
+        }
         if self.eat_punct("!") {
             return Ok(Expr::Unary(UnOp::Not, Box::new(self.unary()?)));
         }
@@ -533,7 +560,19 @@ impl Parser {
                 prefix: true,
             });
         }
-        self.postfix()
+        self.power()
+    }
+
+    /// The exponent level, sitting *below* unary so `-2 ** 2` parses as
+    /// `-(2 ** 2)` (PHP binds `**` tighter than unary minus). Right-associative,
+    /// and its right operand is a full unary expression so `2 ** -1` works.
+    fn power(&mut self) -> Result<Expr, String> {
+        let base = self.postfix()?;
+        if self.eat_punct("**") {
+            let exp = self.unary()?;
+            return Ok(Expr::Binary(BinOp::Pow, Box::new(base), Box::new(exp)));
+        }
+        Ok(base)
     }
 
     fn postfix(&mut self) -> Result<Expr, String> {

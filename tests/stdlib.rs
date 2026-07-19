@@ -117,18 +117,19 @@ fn array_unique_and_flip() {
 }
 
 #[test]
-fn sort_returns_sorted_copy() {
-    // Scaffold deviation: sort returns a new sorted array (not in place).
-    assert_eq!(run(r#"<?php echo implode(",", sort([3, 1, 2]));"#), "1,2,3");
-    assert_eq!(run(r#"<?php echo implode(",", rsort([1, 3, 2]));"#), "3,2,1");
+fn sort_mutates_in_place() {
+    // PHP sort/rsort sort the array in place and return true.
+    assert_eq!(run(r#"<?php $a = [3, 1, 2]; sort($a); echo implode(",", $a);"#), "1,2,3");
+    assert_eq!(run(r#"<?php $a = [1, 3, 2]; rsort($a); echo implode(",", $a);"#), "3,2,1");
+    assert_eq!(run(r#"<?php $a = [3, 1, 2]; echo sort($a) ? "y" : "n";"#), "y");
 }
 
 #[test]
-fn ksort_and_asort_copies() {
-    let src = r#"<?php $a = asort(["c" => 3, "a" => 1, "b" => 2]);
-        echo implode(",", array_keys($a));"#;
+fn ksort_and_asort_in_place_preserve_keys() {
+    let src = r#"<?php $a = ["c" => 3, "a" => 1, "b" => 2]; asort($a);
+        echo implode(",", array_keys($a));"#; // value-sorted: 1,2,3 -> keys a,b,c
     assert_eq!(run(src), "a,b,c");
-    let src2 = r#"<?php $k = ksort(["b" => 2, "a" => 1, "c" => 3]);
+    let src2 = r#"<?php $k = ["b" => 2, "a" => 1, "c" => 3]; ksort($k);
         echo implode(",", array_keys($k));"#;
     assert_eq!(run(src2), "a,b,c");
 }

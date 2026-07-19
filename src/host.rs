@@ -300,6 +300,41 @@ impl PhpHost {
         }
     }
 
+    /// Replace an array handle's entries with a re-indexed (`0..n`) value list,
+    /// in place — the mutation is visible through every variable holding the same
+    /// handle (`sort`/`rsort`). No-op if `arr` is not an array.
+    pub fn arr_set_reindexed(&mut self, arr: &Value, vals: Vec<Value>) {
+        if let Some(PhpObj::Array { entries, next_index }) = self.as_array_mut(arr) {
+            entries.clear();
+            *next_index = 0;
+            for v in vals {
+                let k = ArrayKey::Int(*next_index);
+                *next_index += 1;
+                entries.insert(k, v);
+            }
+        }
+    }
+
+    /// Replace an array handle's entries with an explicit ordered `(key, value)`
+    /// list, preserving keys, in place (`asort`/`ksort`).
+    pub fn arr_set_pairs(&mut self, arr: &Value, pairs: Vec<(Value, Value)>) {
+        // Normalize keys under `&self` first, then take the `&mut self` borrow.
+        let normed: Vec<(ArrayKey, Value)> =
+            pairs.into_iter().map(|(k, v)| (self.norm_key(&k), v)).collect();
+        if let Some(PhpObj::Array { entries, next_index }) = self.as_array_mut(arr) {
+            entries.clear();
+            *next_index = 0;
+            for (k, v) in normed {
+                if let ArrayKey::Int(n) = k {
+                    if n >= *next_index {
+                        *next_index = n + 1;
+                    }
+                }
+                entries.insert(k, v);
+            }
+        }
+    }
+
     /// Remove and return the last element of `$var` (for `array_pop`).
     pub fn arr_pop_var(&mut self, name: &str) -> Value {
         let arr = self.get_var(name);
@@ -487,7 +522,8 @@ fn float_to_php_string(f: f64) -> String {
         return if f < 0.0 { "-INF" } else { "INF" }.into();
     }
     if f == 0.0 {
-        return "0".into();
+        // PHP prints negative zero as "-0".
+        return if f.is_sign_negative() { "-0" } else { "0" }.into();
     }
     let mag = f.abs().log10().floor() as i32;
     // 14 significant digits: place the last digit at 10^(mag-13).

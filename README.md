@@ -47,8 +47,9 @@ tested end-to-end (see `tests/basic.rs`):
 - Scalars, single- and double-quoted strings with `$var` interpolation, escapes.
 - Variables, arithmetic (`+ - * / % **`), string concat (`.`), compound
   assignment (`+= .=` …), pre/post `++`/`--`.
-- Loose/strict comparison (`== != === !== < > <= >=`), short-circuit `&& || and
-  or`, ternary `?:` (incl. the elvis short form), null-coalesce `??`, `!`.
+- Loose/strict comparison (`== != === !== < > <= >=`, PHP-8 string↔number
+  ordering), short-circuit `&& || and or`, ternary `?:` (incl. the elvis short
+  form), null-coalesce `??`, `!`, and `(int)`/`(float)`/`(string)`/`(bool)` casts.
 - Indexed, associative, and appended (`$a[] =`) arrays; index read/write.
 - `if` / `elseif` / `else`, `while`, `do … while`, `for`,
   `foreach ($a as [$k =>] $v)`, `switch` (with fall-through), `break`,
@@ -66,12 +67,31 @@ tested end-to-end (see `tests/basic.rs`):
 Classes, interfaces, traits, namespaces, closures/arrow functions, references,
 `try`/`catch`, generators, superglobals, default/variadic/typed parameters, and
 deep (`$a[b][c]`) lvalues. A few current deviations, documented in-code: array
-semantics are reference-based rather than PHP's copy-on-write, so the `sort`
-family returns a sorted copy instead of sorting in place; `array_pop`/`shift` are
-omitted pending a host by-reference delete; `match` with no arm and no `default`
-yields null instead of throwing `\UnhandledMatchError`; loose comparison follows
-a simplified model. Persistent bytecode caching, AOT (`--build`), LSP, and DAP —
-present in the sibling frontends — are not wired yet.
+semantics are reference-based rather than PHP's copy-on-write; `array_pop`/`shift`
+are omitted pending a host by-reference delete; `match` with no arm and no
+`default` yields null instead of throwing `\UnhandledMatchError`; loose comparison
+follows a simplified model. Persistent bytecode caching, AOT (`--build`), LSP, and
+DAP — present in the sibling frontends — are not wired yet.
+
+## Parity
+
+`parity-fuzz` is a differential fuzzer: it generates seed-deterministic PHP
+snippets, runs each through both the reference `php` and phplang, and reports
+every case where stdout or success/failure diverges. It is a development tool —
+it needs a reference `php` on PATH, so CI never runs it.
+
+```sh
+cargo build --bin parity-fuzz
+./target/debug/parity-fuzz --count 5000        # fuzz 5000 cases
+./target/debug/parity-fuzz --once --seed 1234  # replay one case, show both sides
+```
+
+Generators are biased toward where a PHP frontend is likely to disagree with the
+reference: float formatting, integer division/modulo signs, `**` precedence,
+loose-vs-strict comparison, `sort` ordering, `sprintf`/`number_format`, and
+string↔number coercion. Divergences are delta-debugged to a minimal reproducer
+and grouped by signature; a full report lands in
+`target/parity-fuzz/divergences.txt`.
 
 ## Build
 
