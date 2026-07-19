@@ -1,0 +1,62 @@
+[package]
+name = "phplang"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+description = "PHP as a fusevm frontend: a lexer/parser and compiler to fusevm::Chunk on a PhpHost object heap, with no bespoke VM or JIT — the first compiled standalone PHP runtime"
+license = "MIT"
+repository = "https://github.com/MenkeTechnologies/phplang"
+homepage = "https://menketechnologies.github.io/phplang/"
+documentation = "https://docs.rs/phplang"
+readme = "README.md"
+keywords = ["php", "interpreter", "compiler", "jit", "fusevm"]
+categories = ["command-line-utilities", "compilers"]
+publish = true
+# Dev-only artifacts kept out of the published crate. Consumers get src + the
+# `php` bin — not the CI config, integration-test corpus, or self-test .php
+# examples. None are referenced at compile time (no include_str! into them), so
+# the packaged crate still builds and its bin runs.
+exclude = [
+    "/docs/",
+    "/.github/",
+    "/tests/",
+    "/examples/",
+]
+
+# phplang is a standalone crate, not a workspace member. An explicit empty
+# `[workspace]` stops cargo walking up to the MenkeTechnologiesMeta parent.
+[workspace]
+
+[lib]
+name = "phplang"
+path = "src/lib.rs"
+
+[[bin]]
+name = "php"
+path = "src/main.rs"
+
+[dependencies]
+# PHP executes on fusevm. phplang is a pure frontend: it lowers PHP to fusevm
+# bytecode (src/compiler.rs) and hosts the PHP object heap (src/host.rs, reached
+# from fusevm's registered builtins). Array cells ride through the VM as
+# `Value::Obj(u32)` handles into that heap; scalars (int/float/bool/string) are
+# native fusevm `Value`s. `jit` turns on fusevm's tracing Cranelift JIT so hot
+# PHP arithmetic loops trace-compile; the strict numeric hook (src/builtins.rs)
+# supplies PHP coercion semantics for non-numeric operands.
+fusevm = { version = "0.14.10", features = ["jit"] }
+
+clap = { version = "4.5", features = ["derive", "cargo"] }
+thiserror = "2.0"
+rustc-hash = "2.1"
+# PHP arrays are ordered maps (insertion order is observable in foreach/print_r).
+indexmap = "2"
+once_cell = "1"
+libc = "0.2"
+
+# Interactive REPL (`php -a` / TTY fallthrough): reedline line editor,
+# nu-ansi-term for the banner/status colors. Pins match the sibling frontends.
+reedline = "0.47.0"
+nu-ansi-term = "0.50"
+
+[dev-dependencies]
+tempfile = "3"
