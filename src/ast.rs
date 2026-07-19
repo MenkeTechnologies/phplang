@@ -23,6 +23,13 @@ pub enum BinOp {
     Gt,
     Le,
     Ge,
+    Spaceship, // <=>
+    // Bitwise
+    BitAnd, // &
+    BitOr,  // |
+    BitXor, // ^
+    Shl,    // <<
+    Shr,    // >>
     // Logical (short-circuit handled in the compiler)
     And, // && / and
     Or,  // || / or
@@ -31,9 +38,10 @@ pub enum BinOp {
 /// A unary prefix operator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnOp {
-    Neg, // -x
-    Pos, // +x
-    Not, // !x
+    Neg,    // -x
+    Pos,    // +x
+    Not,    // !x
+    BitNot, // ~x
 }
 
 /// One segment of a double-quoted / interpolated string.

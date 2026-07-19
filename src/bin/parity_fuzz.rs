@@ -700,6 +700,91 @@ fn gen_multi(seed: u64) -> Vec<String> {
     }
 }
 
+/// Bitwise operators (`& | ^ << >> ~`) and their compound assignments, mixed
+/// unparenthesized with arithmetic to stress the precedence ladder.
+fn gen_bitwise(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    match r.below(9) {
+        0 => vec![format!("echo {} & {};", ii(r), ii(r))],
+        1 => vec![format!("echo {} | {};", ii(r), ii(r))],
+        2 => vec![format!("echo {} ^ {};", ii(r), ii(r))],
+        3 => vec![format!("echo {} << {};", ii(r), r.below(40))],
+        4 => vec![format!("echo {} >> {};", ii(r), r.below(40))],
+        5 => vec![format!("echo ~{};", ii(r))],
+        6 => vec![format!(
+            "echo {} & {} + {} | {};",
+            ii(r),
+            ii(r),
+            ii(r),
+            ii(r)
+        )],
+        7 => vec![format!(
+            "echo {} << {} + {} ^ {};",
+            ii(r),
+            r.below(4),
+            ii(r),
+            ii(r)
+        )],
+        _ => vec![format!(
+            "$n = {}; $n &= {}; $n |= {}; $n ^= {}; $n <<= {}; echo $n;",
+            ii(r),
+            ii(r),
+            ii(r),
+            ii(r),
+            r.below(4)
+        )],
+    }
+}
+
+/// Spaceship `<=>` across numeric and string operands.
+fn gen_spaceship(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    match r.below(3) {
+        0 => vec![format!("echo {} <=> {};", ii(r), ii(r))],
+        1 => vec![format!("echo {} <=> {};", ff(r), ff(r))],
+        _ => vec![format!("echo \"{}\" <=> \"{}\";", ww(r), ww(r))],
+    }
+}
+
+/// String offset access, including PHP 7.1 negative offsets and `isset` on both
+/// in- and out-of-range offsets.
+fn gen_stroffset(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let w = ww(r);
+    match r.below(4) {
+        0 => vec![format!("echo \"{w}\"[{}];", r.below(5))],
+        1 => vec![format!("$s = \"{w}\"; echo $s[-{}];", 1 + r.below(3))],
+        2 => vec![format!(
+            "$s = \"{w}\"; var_dump(isset($s[{}]));",
+            r.below(8)
+        )],
+        _ => vec![format!("$s = \"{w}\"; echo $s[0], $s[strlen($s) - 1];")],
+    }
+}
+
+/// Null-coalesce `??`, coalesce-assign `??=`, and elvis `?:` on the values PHP
+/// treats specially (null, "", "0", 0).
+fn gen_coalesce(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    match r.below(4) {
+        0 => vec![format!(
+            "$x = {}; echo $x ?? \"def\";",
+            r.pick(&["null", "5", "\"\"", "0", "\"hi\""])
+        )],
+        1 => vec![format!(
+            "$x = {}; $x ??= 7; echo $x;",
+            r.pick(&["null", "3", "0"])
+        )],
+        2 => {
+            vec!["$a = ['k' => 1]; echo $a['missing'] ?? 'miss', '|', $a['k'] ?? 'no';".to_string()]
+        }
+        _ => vec![format!(
+            "echo {} ?: \"z\";",
+            r.pick(&["0", "5", "\"\"", "\"hi\"", "null"])
+        )],
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Mode registry.
 // ---------------------------------------------------------------------------
@@ -806,6 +891,22 @@ const MODES: &[Mode] = &[
     Mode {
         name: "multi",
         gen: gen_multi,
+    },
+    Mode {
+        name: "bitwise",
+        gen: gen_bitwise,
+    },
+    Mode {
+        name: "spaceship",
+        gen: gen_spaceship,
+    },
+    Mode {
+        name: "stroffset",
+        gen: gen_stroffset,
+    },
+    Mode {
+        name: "coalesce",
+        gen: gen_coalesce,
     },
 ];
 

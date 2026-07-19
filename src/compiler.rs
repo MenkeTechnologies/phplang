@@ -476,6 +476,9 @@ impl Compiler {
                         b.emit(Op::CallBuiltin(ops::TRUTHY, 1), 0);
                         b.emit(Op::LogNot, 0);
                     }
+                    UnOp::BitNot => {
+                        b.emit(Op::CallBuiltin(ops::BITNOT, 1), 0);
+                    }
                 }
             }
             Expr::Binary(op, l, r) => self.compile_binary(b, *op, l, r)?,
@@ -701,6 +704,24 @@ impl Compiler {
             BinOp::Ge => {
                 b.emit(Op::CallBuiltin(ops::GE, 2), 0);
             }
+            BinOp::Spaceship => {
+                b.emit(Op::CallBuiltin(ops::SPACESHIP, 2), 0);
+            }
+            BinOp::BitAnd => {
+                b.emit(Op::CallBuiltin(ops::BITAND, 2), 0);
+            }
+            BinOp::BitOr => {
+                b.emit(Op::CallBuiltin(ops::BITOR, 2), 0);
+            }
+            BinOp::BitXor => {
+                b.emit(Op::CallBuiltin(ops::BITXOR, 2), 0);
+            }
+            BinOp::Shl => {
+                b.emit(Op::CallBuiltin(ops::SHL, 2), 0);
+            }
+            BinOp::Shr => {
+                b.emit(Op::CallBuiltin(ops::SHR, 2), 0);
+            }
             BinOp::And | BinOp::Or => unreachable!("handled above"),
         }
         Ok(())
@@ -802,7 +823,22 @@ impl Compiler {
             BinOp::Concat => {
                 b.emit(Op::CallBuiltin(ops::CONCAT, 2), 0);
             }
-            _ => unreachable!("compound assignment only uses arithmetic/concat ops"),
+            BinOp::BitAnd => {
+                b.emit(Op::CallBuiltin(ops::BITAND, 2), 0);
+            }
+            BinOp::BitOr => {
+                b.emit(Op::CallBuiltin(ops::BITOR, 2), 0);
+            }
+            BinOp::BitXor => {
+                b.emit(Op::CallBuiltin(ops::BITXOR, 2), 0);
+            }
+            BinOp::Shl => {
+                b.emit(Op::CallBuiltin(ops::SHL, 2), 0);
+            }
+            BinOp::Shr => {
+                b.emit(Op::CallBuiltin(ops::SHR, 2), 0);
+            }
+            _ => unreachable!("compound assignment only uses arithmetic/bitwise/concat ops"),
         }
     }
 

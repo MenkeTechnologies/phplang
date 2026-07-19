@@ -59,7 +59,12 @@ impl Parser {
     /// Whether the token *after* the cursor is the punctuation `p` (used to spot
     /// `??`, which the lexer emits as two `?` tokens).
     fn peek2_is_punct(&self, p: &str) -> bool {
-        matches!(self.toks.get(self.pos + 1).map(|s| &s.tok), Some(Tok::Punct(x)) if *x == p)
+        self.nth_is_punct(1, p)
+    }
+
+    /// Whether the token `n` positions ahead of the cursor is the punctuation `p`.
+    fn nth_is_punct(&self, n: usize, p: &str) -> bool {
+        matches!(self.toks.get(self.pos + n).map(|s| &s.tok), Some(Tok::Punct(x)) if *x == p)
     }
 
     fn eat_punct(&mut self, p: &str) -> bool {
@@ -419,6 +424,15 @@ impl Parser {
 
     fn assignment(&mut self) -> Result<Expr, String> {
         let lhs = self.ternary()?;
+        // `??=` — the lexer emits `? ? =`; ternary() leaves the `??` unconsumed
+        // when a `=` follows (see its lookahead). Desugar `$x ??= v` to
+        // `$x = ($x ?? v)`.
+        if self.at_punct("?") && self.nth_is_punct(1, "?") && self.nth_is_punct(2, "=") {
+            self.pos += 3;
+            let rhs = self.assignment()?;
+            let coalesce = Expr::Coalesce(Box::new(lhs.clone()), Box::new(rhs));
+            return Ok(Expr::Assign(Box::new(lhs), None, Box::new(coalesce)));
+        }
         let op = match self.peek() {
             Some(Tok::Punct("=")) => Some(None),
             Some(Tok::Punct("+=")) => Some(Some(BinOp::Add)),
@@ -428,6 +442,11 @@ impl Parser {
             Some(Tok::Punct("%=")) => Some(Some(BinOp::Mod)),
             Some(Tok::Punct(".=")) => Some(Some(BinOp::Concat)),
             Some(Tok::Punct("**=")) => Some(Some(BinOp::Pow)),
+            Some(Tok::Punct("&=")) => Some(Some(BinOp::BitAnd)),
+            Some(Tok::Punct("|=")) => Some(Some(BinOp::BitOr)),
+            Some(Tok::Punct("^=")) => Some(Some(BinOp::BitXor)),
+            Some(Tok::Punct("<<=")) => Some(Some(BinOp::Shl)),
+            Some(Tok::Punct(">>=")) => Some(Some(BinOp::Shr)),
             _ => None,
         };
         if let Some(compound) = op {
@@ -442,12 +461,16 @@ impl Parser {
         let cond = self.binary(0)?;
         // Null coalesce `a ?? b` (right-associative). The lexer has no `??`
         // token, so it surfaces as two consecutive `?` tokens.
-        if self.at_punct("?") && self.peek2_is_punct("?") {
+        // A trailing `=` means this is `??=`, handled by `assignment()`; leave it.
+        if self.at_punct("?") && self.peek2_is_punct("?") && !self.nth_is_punct(2, "=") {
             self.pos += 2;
             let rhs = self.ternary()?;
             return Ok(Expr::Coalesce(Box::new(cond), Box::new(rhs)));
         }
-        if self.eat_punct("?") {
+        // A `?` NOT followed by another `?` is the real ternary; `? ? …` here is
+        // a `??=` left for `assignment()` (the coalesce case was handled above).
+        if self.at_punct("?") && !self.peek2_is_punct("?") {
+            self.pos += 1;
             // Short ternary / elvis `a ?: b`.
             if self.eat_punct(":") {
                 let els = self.assignment()?;
@@ -486,10 +509,16 @@ impl Parser {
             Some(Tok::Punct("!=")) | Some(Tok::Punct("<>")) => BinOp::LooseNe,
             Some(Tok::Punct("===")) => BinOp::StrictEq,
             Some(Tok::Punct("!==")) => BinOp::StrictNe,
+            Some(Tok::Punct("<=>")) => BinOp::Spaceship,
             Some(Tok::Punct("<")) => BinOp::Lt,
             Some(Tok::Punct(">")) => BinOp::Gt,
             Some(Tok::Punct("<=")) => BinOp::Le,
             Some(Tok::Punct(">=")) => BinOp::Ge,
+            Some(Tok::Punct("<<")) => BinOp::Shl,
+            Some(Tok::Punct(">>")) => BinOp::Shr,
+            Some(Tok::Punct("&")) => BinOp::BitAnd,
+            Some(Tok::Punct("|")) => BinOp::BitOr,
+            Some(Tok::Punct("^")) => BinOp::BitXor,
             Some(Tok::Punct("+")) => BinOp::Add,
             Some(Tok::Punct("-")) => BinOp::Sub,
             Some(Tok::Punct(".")) => BinOp::Concat,
@@ -500,15 +529,25 @@ impl Parser {
             // is parsed in `power()` below the unary level, not as an infix op.
             _ => return None,
         };
-        // (left bp, right bp). Right bp < left bp ⇒ right-associative (`**`).
+        // (left bp, right bp), following PHP operator precedence (loosest first):
+        // || < && < | < ^ < & < equality < relational < shift < additive <
+        // multiplicative. Right bp < left bp ⇒ right-associative.
         let (l, r) = match op {
             BinOp::Or => (1, 2),
             BinOp::And => (3, 4),
-            BinOp::LooseEq | BinOp::LooseNe | BinOp::StrictEq | BinOp::StrictNe => (5, 6),
-            BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => (7, 8),
-            BinOp::Add | BinOp::Sub | BinOp::Concat => (9, 10),
-            BinOp::Mul | BinOp::Div | BinOp::Mod => (11, 12),
-            BinOp::Pow => (14, 13),
+            BinOp::BitOr => (5, 6),
+            BinOp::BitXor => (7, 8),
+            BinOp::BitAnd => (9, 10),
+            BinOp::LooseEq
+            | BinOp::LooseNe
+            | BinOp::StrictEq
+            | BinOp::StrictNe
+            | BinOp::Spaceship => (11, 12),
+            BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => (13, 14),
+            BinOp::Shl | BinOp::Shr => (15, 16),
+            BinOp::Add | BinOp::Sub | BinOp::Concat => (17, 18),
+            BinOp::Mul | BinOp::Div | BinOp::Mod => (19, 20),
+            BinOp::Pow => (22, 21),
         };
         Some((op, l, r))
     }
@@ -533,6 +572,9 @@ impl Parser {
         }
         if self.eat_punct("!") {
             return Ok(Expr::Unary(UnOp::Not, Box::new(self.unary()?)));
+        }
+        if self.eat_punct("~") {
+            return Ok(Expr::Unary(UnOp::BitNot, Box::new(self.unary()?)));
         }
         if self.eat_punct("-") {
             return Ok(Expr::Unary(UnOp::Neg, Box::new(self.unary()?)));

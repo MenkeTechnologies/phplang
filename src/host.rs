@@ -40,6 +40,13 @@ pub mod ops {
     pub const INCDEC: u16 = 23; // [name, code] -> value (++/--)
     pub const ARRAYKEYS: u16 = 24; // [arr] -> array of keys
     pub const ARRAYLEN: u16 = 25; // [arr] -> Int element count
+    pub const BITAND: u16 = 26; // [a, b] -> a & b
+    pub const BITOR: u16 = 27; // [a, b] -> a | b
+    pub const BITXOR: u16 = 28; // [a, b] -> a ^ b
+    pub const SHL: u16 = 29; // [a, b] -> a << b
+    pub const SHR: u16 = 30; // [a, b] -> a >> b
+    pub const BITNOT: u16 = 31; // [a] -> ~a
+    pub const SPACESHIP: u16 = 32; // [a, b] -> -1 | 0 | 1
 }
 
 /// A compiled user function: its parameter names plus the lowered body chunk.
@@ -232,11 +239,18 @@ impl PhpHost {
             return entries.get(&k).cloned().unwrap_or(Value::Undef);
         }
         if let Value::Str(s) = recv {
-            let i = key.to_int();
-            if i >= 0 {
-                if let Some(ch) = s.chars().nth(i as usize) {
-                    return Value::str(ch.to_string());
-                }
+            // PHP string offsets are byte-indexed and accept negatives (`$s[-1]`
+            // is the last byte). An out-of-range offset yields `Undef`, so
+            // `isset($s[i])` is false there (a plain read still echoes as "").
+            let bytes = s.as_bytes();
+            let len = bytes.len() as i64;
+            let mut i = key.to_int();
+            if i < 0 {
+                i += len;
+            }
+            if i >= 0 && i < len {
+                let b = i as usize;
+                return Value::str(String::from_utf8_lossy(&bytes[b..b + 1]).into_owned());
             }
         }
         Value::Undef

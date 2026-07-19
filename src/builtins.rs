@@ -38,6 +38,70 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::INCDEC, b_incdec);
     vm.register_builtin(ops::ARRAYKEYS, b_arraykeys);
     vm.register_builtin(ops::ARRAYLEN, b_arraylen);
+    vm.register_builtin(ops::BITAND, b_bitand);
+    vm.register_builtin(ops::BITOR, b_bitor);
+    vm.register_builtin(ops::BITXOR, b_bitxor);
+    vm.register_builtin(ops::SHL, b_shl);
+    vm.register_builtin(ops::SHR, b_shr);
+    vm.register_builtin(ops::BITNOT, b_bitnot);
+    vm.register_builtin(ops::SPACESHIP, b_spaceship);
+}
+
+/// Pop two operands as PHP integers (bitwise ops cast their operands to int).
+fn pop_two_ints(vm: &mut VM) -> (i64, i64) {
+    let b = vm.pop();
+    let a = vm.pop();
+    with_host(|h| (h.to_number(&a).to_int(), h.to_number(&b).to_int()))
+}
+
+fn b_bitand(vm: &mut VM, _: u8) -> Value {
+    let (a, b) = pop_two_ints(vm);
+    Value::int(a & b)
+}
+fn b_bitor(vm: &mut VM, _: u8) -> Value {
+    let (a, b) = pop_two_ints(vm);
+    Value::int(a | b)
+}
+fn b_bitxor(vm: &mut VM, _: u8) -> Value {
+    let (a, b) = pop_two_ints(vm);
+    Value::int(a ^ b)
+}
+
+fn b_shl(vm: &mut VM, _: u8) -> Value {
+    let (a, b) = pop_two_ints(vm);
+    // PHP throws ArithmeticError on a negative shift.
+    if b < 0 {
+        return fail(vm, "Bit shift by negative number");
+    }
+    // A left shift by >= 64 bits yields 0. Within range PHP wraps on overflow
+    // (`1 << 63` = INT_MIN) — `wrapping_shl` matches that where a plain `<<`
+    // would panic in a debug build.
+    if b >= 64 {
+        return Value::int(0);
+    }
+    Value::int(a.wrapping_shl(b as u32))
+}
+
+fn b_shr(vm: &mut VM, _: u8) -> Value {
+    let (a, b) = pop_two_ints(vm);
+    if b < 0 {
+        return fail(vm, "Bit shift by negative number");
+    }
+    // A right shift by >= 63 is a full arithmetic sign-fill in PHP (0 for
+    // non-negative, -1 for negative); Rust's `>>` on i64 is arithmetic, so
+    // clamp the shift amount to 63.
+    Value::int(a >> b.min(63))
+}
+
+fn b_bitnot(vm: &mut VM, _: u8) -> Value {
+    let v = vm.pop();
+    Value::int(!with_host(|h| h.to_number(&v).to_int()))
+}
+
+fn b_spaceship(vm: &mut VM, _: u8) -> Value {
+    let b = vm.pop();
+    let a = vm.pop();
+    Value::int(with_host(|h| php_compare(h, &a, &b)) as i64)
 }
 
 // ── stack helpers ──────────────────────────────────────────────────────────
