@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="description" content="phplang — Engineering report. A compiled PHP runtime in Rust, hosted on the fusevm bytecode VM with a tracing Cranelift JIT over a PhpHost object heap. Architecture, value model, standard library, differential parity fuzzer, roadmap, and dependency posture. The first compiled standalone PHP runtime. MIT licensed.">
+  <title>phplang &mdash; Engineering Report</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="hud-static.css">
+  <link rel="stylesheet" href="tutorial.css">
+  <style>
+    .tutorial-main { max-width: 76rem; }
+    .file-table { width:100%;border-collapse:collapse;margin:0.6rem 0;font-size:12px; }
+    .file-table th { background:var(--bg-secondary);color:var(--cyan);font-family:'Orbitron',sans-serif;font-size:10px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;text-align:left;padding:7px 10px;border:1px solid var(--border); }
+    .file-table td { padding:6px 10px;border:1px solid var(--border);color:var(--text-dim);vertical-align:middle; }
+    .file-table tr:hover td { background:var(--bg-hover); }
+    .file-table td:first-child { font-family:'Share Tech Mono',monospace;color:var(--accent-light);font-weight:600;white-space:nowrap; }
+    .file-table code { font-size:11px;color:var(--accent-light);background:var(--bg-primary);padding:1px 4px;border-radius:2px; }
+    .stat-grid { display:grid;grid-template-columns:repeat(auto-fill,minmax(14rem,1fr));gap:0.75rem;margin:1.2rem 0; }
+    .stat-card { border:1px solid var(--border);border-top:3px solid var(--cyan);background:var(--bg-card);padding:1rem 1.2rem;border-radius:2px;text-align:center; }
+    .stat-card .stat-val { font-family:'Orbitron',sans-serif;font-size:28px;font-weight:900;color:var(--cyan);line-height:1.1;text-shadow:0 0 20px var(--cyan-glow); }
+    .stat-card .stat-val.accent { color:var(--accent);text-shadow:0 0 20px var(--accent-glow); }
+    .stat-card .stat-label { font-family:'Orbitron',sans-serif;font-size:9px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:var(--text-muted);margin-top:0.5rem; }
+    .feature-grid { display:grid;grid-template-columns:repeat(auto-fill,minmax(22rem,1fr));gap:0.65rem;margin:0.8rem 0; }
+    .feature-card { border:1px solid var(--border);border-left:3px solid var(--cyan);background:var(--bg-card);padding:0.7rem 1rem;border-radius:2px; }
+    .feature-card h4 { font-family:'Orbitron',sans-serif;font-size:10px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:var(--cyan);margin:0 0 0.3rem; }
+    .feature-card p { margin:0;font-size:11px;color:var(--text-dim);line-height:1.55; }
+    .feature-card code { font-size:10.5px;color:var(--accent-light);background:var(--bg-primary);padding:1px 4px;border-radius:2px; }
+    .section-rule { border:none;border-top:1px dashed var(--border);margin:2rem 0; }
+    .hub-scheme-strip { border-bottom:1px dashed var(--border);background:color-mix(in srgb, var(--bg-secondary) 85%, transparent);padding:0.55rem 1.5rem 0.65rem;position:relative; }
+    .hub-scheme-strip-inner { max-width:76rem;margin:0 auto;display:flex;align-items:center;gap:0.85rem; }
+    .hub-scheme-strip .hud-scheme-label { flex:0 0 auto;font-family:'Orbitron',sans-serif;font-size:9px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:var(--accent);text-align:left; }
+    .hub-scheme-strip .scheme-grid { flex:1 1 auto;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:6px; }
+    @media (max-width:720px){ .hub-scheme-strip-inner{flex-direction:column;align-items:stretch}.hub-scheme-strip .scheme-grid{grid-template-columns:repeat(2,minmax(0,1fr))} }
+    .docs-build-line { margin:0.35rem 0 0;font-family:'Share Tech Mono',ui-monospace,monospace;font-size:11px;color:var(--text-dim);letter-spacing:0.03em;max-width:48rem;opacity:0.75; }
+  </style>
+</head>
+<body>
+  <div class="app tutorial-app" id="docsApp">
+    <div class="crt-scanline" id="crtH" aria-hidden="true"></div>
+    <div class="crt-scanline-v" id="crtV" aria-hidden="true"></div>
+
+    <header class="tutorial-header">
+      <div class="tutorial-header-inner">
+        <div>
+          <h1 class="tutorial-brand">// PHPLANG — ENGINEERING REPORT</h1>
+          <nav class="tutorial-crumbs" aria-label="Breadcrumb">
+            <a href="index.html">Docs</a>
+            <span class="sep">/</span>
+            <span class="current">Engineering Report</span>
+            <span class="sep">/</span>
+            <a href="https://github.com/MenkeTechnologies/phplang" target="_blank" rel="noopener noreferrer">GitHub</a>
+          </nav>
+          <p class="docs-build-line">phplang v0.1.0 · PHP on fusevm · lex/parse → AST → bytecode → tracing Cranelift JIT · PhpHost object heap · first compiled standalone PHP runtime · MIT · in active development</p>
+        </div>
+        <div class="tutorial-toolbar">
+          <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
+          <button type="button" class="btn btn-secondary active" id="btnCrt" title="CRT scanline overlay">CRT</button>
+          <button type="button" class="btn btn-secondary active" id="btnNeon" title="Neon border pulse">Neon</button>
+          <a class="btn btn-secondary" href="index.html">Docs</a>
+          <a class="btn btn-secondary" href="https://github.com/MenkeTechnologies/phplang" target="_blank" rel="noopener noreferrer">GitHub</a>
+        </div>
+      </div>
+    </header>
+
+    <div class="hub-scheme-strip">
+      <div class="hub-scheme-strip-inner">
+        <span class="hud-scheme-label">// Color scheme</span>
+        <div class="scheme-grid" id="hudSchemeGrid"></div>
+      </div>
+    </div>
+
+    <main class="tutorial-main">
+      <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>ENGINEERING REPORT</h2>
+      <p class="tutorial-subtitle">phplang is a compiled PHP runtime in Rust, hosted on the <code>fusevm</code> bytecode VM and its tracing Cranelift JIT over a <code>PhpHost</code> object heap. This report describes the architecture, the value model, the standard library, the parity fuzzer, the current state of the tree, and the dependency posture. The statements below are facts about the design and the manifest, not aspirational metrics.</p>
+
+      <div class="stat-grid">
+        <div class="stat-card"><div class="stat-val accent">PHP</div><div class="stat-label">fusevm language host</div></div>
+        <div class="stat-card"><div class="stat-val">~90</div><div class="stat-label">stdlib functions</div></div>
+        <div class="stat-card"><div class="stat-val">v0.1.0</div><div class="stat-label">version</div></div>
+        <div class="stat-card"><div class="stat-val">MIT</div><div class="stat-label">license · free / OSS</div></div>
+      </div>
+
+      <section class="tutorial-section">
+        <h2>Summary</h2>
+        <p>Zend compiles PHP to its own opcodes and walks them in C. phplang takes a different path: it lexes and parses PHP to an AST, lowers that to <code>fusevm</code> bytecode, and runs it on a compiled VM with a tracing Cranelift JIT. Arithmetic lowers to native VM ops so the JIT can trace hot loops; PHP-specific behaviour is served by a <code>PhpHost</code> object heap through a numbered builtin-call protocol and a strict numeric hook. It joins <a href="https://github.com/MenkeTechnologies/fusevm">fusevm</a> alongside <code>zshrs</code>, <code>stryke</code>, <code>awkrs</code>, <code>pythonrs</code>, and <code>rubylang</code>, and reuses that shared bytecode VM and JIT rather than shipping its own.</p>
+        <p>To our knowledge it is the first compiled standalone PHP runtime. The binary is <code>php</code>. The current tree implements the two-mode lexer/parser, AST-to-bytecode lowering, scalars and casts, the full operator and comparison surface, ordered heap arrays, the control-flow constructs (including <code>match</code>), user functions with recursion, and a ~90-function standard library across strings, arrays, math, and type/util. Behaviour is checked against the reference <code>php</code> by a differential parity fuzzer. Classes, closures, references, exceptions, generators, bytecode caching, AOT, LSP, and DAP are planned — see the README for the honest ledger.</p>
+      </section>
+
+      <hr class="section-rule">
+
+      <section class="tutorial-section">
+        <h2>Hosting on fusevm</h2>
+        <p>phplang contains no virtual machine or JIT of its own. The execution path is:</p>
+<pre>PHP source  →  lexer (two-mode)  →  parser → AST  →  lower to fusevm bytecode  →  fusevm VM + Cranelift JIT
+                                                        │
+                                       PhpHost heap (arrays, builtins, CallBuiltin, numeric hook)</pre>
+        <div class="feature-grid">
+          <div class="feature-card"><h4>Shared engine</h4><p>fusevm is pulled from crates.io with the <code>jit</code> feature. JIT and VM improvements land once and benefit zshrs, stryke, awkrs, pythonrs, rubylang, and phplang together.</p></div>
+          <div class="feature-card"><h4>Native arithmetic</h4><p><code>+ - *</code> lower to native fusevm ops; a strict numeric hook (<code>src/builtins.rs</code>) supplies PHP coercion only for the non-numeric operand cases and <code>i64</code> overflow. <code>/ % **</code>, concatenation, and comparison lower to <code>CallBuiltin</code>.</p></div>
+          <div class="feature-card"><h4>Two-mode lexer</h4><p>Inline HTML passes through verbatim; <code>&lt;?php … ?&gt;</code> and <code>&lt;?=</code> switch to code mode. Comment forms <code>#</code>, <code>//</code>, <code>/* */</code> and <code>$var</code> interpolation are handled at the lexer (<code>src/lexer.rs</code>).</p></div>
+          <div class="feature-card"><h4>Ordered arrays</h4><p>PHP arrays are heap objects in <code>PhpHost</code> (<code>src/host.rs</code>) behind <code>Value::Obj(u32)</code> handles, backed by an <code>IndexMap</code> so insertion order is observable in <code>foreach</code>/<code>print_r</code>.</p></div>
+        </div>
+      </section>
+
+      <hr class="section-rule">
+
+      <section class="tutorial-section">
+        <h2>Value model</h2>
+        <p>Scalar values — <code>int</code>, <code>float</code>, <code>bool</code>, <code>null</code>, and <code>string</code> — ride through the VM directly as <code>fusevm::Value</code>. Arrays live on the <code>PhpHost</code> object heap behind <code>Value::Obj(u32)</code> handles. PHP arrays are ordered maps: numeric and string keys coexist, and insertion order is preserved via an <code>IndexMap</code>, matching what <code>foreach</code> and <code>print_r</code> observe. Truthiness, loose/strict comparison, and string↔number coercion follow PHP semantics through the host rather than the VM's default numeric rules.</p>
+        <p>One documented deviation: array cells are currently reference-based on the heap rather than PHP's copy-on-write, so an array assigned to a second variable is aliased, not copied. <code>array_pop</code>/<code>array_shift</code> are omitted pending a host by-reference delete, and a <code>match</code> with no matching arm and no <code>default</code> yields <code>null</code> rather than throwing <code>\UnhandledMatchError</code>. These are tracked in-code and in the README.</p>
+      </section>
+
+      <hr class="section-rule">
+
+      <section class="tutorial-section">
+        <h2>Standard library</h2>
+        <p>Around 90 functions are registered as fusevm builtins (<code>src/builtins.rs</code>), reachable by name through the compiler's <code>CallBuiltin</code> lowering:</p>
+        <div class="feature-grid">
+          <div class="feature-card"><h4>Strings</h4><p><code>str_*</code> family, <code>substr</code>, <code>trim</code>, <code>sprintf</code>, <code>number_format</code>, <code>htmlspecialchars</code>, <code>chr</code>/<code>ord</code>, and more.</p></div>
+          <div class="feature-card"><h4>Arrays</h4><p><code>array_map</code>/<code>filter</code>/<code>reduce</code>/<code>merge</code>/<code>slice</code>/<code>keys</code>/<code>values</code>, the <code>sort</code> family, <code>in_array</code>, <code>array_sum</code>, <code>range</code>.</p></div>
+          <div class="feature-card"><h4>Math</h4><p><code>abs</code>/<code>floor</code>/<code>ceil</code>/<code>round</code>/<code>sqrt</code>, trigonometry, <code>intdiv</code>, <code>fmod</code>.</p></div>
+          <div class="feature-card"><h4>Type &amp; util</h4><p><code>is_*</code>, <code>gettype</code>, <code>json_encode</code>, <code>var_dump</code>, <code>print_r</code>, <code>var_export</code>.</p></div>
+        </div>
+      </section>
+
+      <hr class="section-rule">
+
+      <section class="tutorial-section">
+        <h2>Differential parity fuzzer</h2>
+        <p>Correctness is measured, not asserted. <code>parity-fuzz</code> (<code>src/bin/parity_fuzz.rs</code>) generates seed-deterministic PHP snippets, runs each through both the reference <code>php</code> and phplang, and reports every case where stdout or success/failure diverges. It is a development tool — it needs a reference <code>php</code> on <code>PATH</code>, so CI never runs it; it spawns subprocesses only and never links the library.</p>
+        <p>Generators are biased toward where a PHP frontend is likely to disagree with the reference: float formatting, integer division/modulo signs, <code>**</code> precedence, loose-vs-strict comparison, <code>sort</code> ordering, <code>sprintf</code>/<code>number_format</code>, and string↔number coercion. Divergences are delta-debugged to a minimal reproducer and grouped by signature; a full report lands in <code>target/parity-fuzz/divergences.txt</code>.</p>
+<pre>cargo build --bin parity-fuzz
+./target/debug/parity-fuzz --count 5000        # fuzz 5000 cases
+./target/debug/parity-fuzz --once --seed 1234  # replay one case, show both sides</pre>
+      </section>
+
+      <hr class="section-rule">
+
+      <section class="tutorial-section">
+        <h2>Component status</h2>
+        <table class="file-table">
+          <thead><tr><th>Component</th><th>State</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr><td>two-mode lexer / parser → AST</td><td>Implemented</td><td>Inline-HTML + <code>&lt;?php&gt;</code>/<code>&lt;?=</code>, comments, <code>$var</code> interpolation (<code>src/lexer.rs</code>, <code>src/parser.rs</code>).</td></tr>
+            <tr><td>AST → fusevm bytecode</td><td>Implemented</td><td>Native arithmetic + <code>CallBuiltin</code> host dispatch; no local VM (<code>src/compiler.rs</code>).</td></tr>
+            <tr><td>scalars / strings / casts</td><td>Implemented</td><td><code>int</code>/<code>float</code>/<code>bool</code>/<code>string</code>/<code>null</code>; interpolation, escapes, all four casts.</td></tr>
+            <tr><td>operators &amp; comparison</td><td>Implemented</td><td><code>+ - * / % **</code>, <code>.</code>, compound assign, <code>++</code>/<code>--</code>, loose/strict, logical, ternary/elvis, <code>??</code>.</td></tr>
+            <tr><td>arrays (indexed / assoc / append)</td><td>Implemented</td><td>Ordered <code>PhpHost</code> heap; index read/write, <code>$a[] =</code> (<code>src/host.rs</code>).</td></tr>
+            <tr><td>control flow</td><td>Implemented</td><td><code>if</code>/<code>elseif</code>/<code>else</code>, <code>while</code>, <code>do…while</code>, <code>for</code>, <code>foreach</code>, <code>switch</code>, <code>break</code>/<code>continue</code>/<code>return</code>, <code>match</code>.</td></tr>
+            <tr><td>user functions</td><td>Implemented</td><td>Positional parameters, recursion.</td></tr>
+            <tr><td>standard library (~90 fns)</td><td>Implemented</td><td>String / array / math / type-util families (<code>src/builtins.rs</code>).</td></tr>
+            <tr><td>REPL (<code>php -a</code>) &amp; bytecode dump</td><td>Implemented</td><td>Persistent-state REPL (<code>src/repl.rs</code>); <code>--dump-bytecode</code> prints lowered chunks.</td></tr>
+            <tr><td>parity fuzzer</td><td>Implemented</td><td>Differential vs reference <code>php</code>, delta-debugged (<code>src/bin/parity_fuzz.rs</code>). Dev tool, never in CI.</td></tr>
+            <tr><td>classes / traits / closures / exceptions</td><td>Planned</td><td>OO, closures/arrows, references, <code>try</code>/<code>catch</code>, generators, superglobals, default/variadic/typed params, deep lvalues.</td></tr>
+            <tr><td>bytecode cache / AOT / LSP / DAP</td><td>Planned</td><td>Present in sibling frontends; not wired in phplang yet.</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <hr class="section-rule">
+
+      <section class="tutorial-section">
+        <h2>Dependency posture</h2>
+        <p>Dependencies are kept foundational and durable. Direct dependencies from <code>Cargo.toml</code>:</p>
+        <table class="file-table">
+          <thead><tr><th>Crate</th><th>Role</th></tr></thead>
+          <tbody>
+            <tr><td>fusevm</td><td>Language-agnostic bytecode VM + tracing Cranelift JIT (<code>jit</code> feature)</td></tr>
+            <tr><td>clap</td><td>CLI argument parsing (<code>derive</code>, <code>cargo</code>)</td></tr>
+            <tr><td>thiserror</td><td>Error type derivation</td></tr>
+            <tr><td>rustc-hash</td><td>Fast hashing in the frontend</td></tr>
+            <tr><td>indexmap</td><td>Insertion-ordered PHP array storage (observable in <code>foreach</code>/<code>print_r</code>)</td></tr>
+            <tr><td>once_cell / libc</td><td>Lazy statics; low-level OS glue</td></tr>
+            <tr><td>reedline / nu-ansi-term</td><td>Interactive REPL line editor and banner/status colors (<code>php -a</code>)</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <hr class="section-rule">
+
+      <section class="tutorial-section">
+        <h2>Compatibility &amp; longevity</h2>
+        <div class="feature-grid">
+          <div class="feature-card"><h4>Reference semantics</h4><p>Behaviour tracks the reference <code>php</code> as the compatibility target, measured byte-for-byte by the parity fuzzer; documented deviations are tracked in-code.</p></div>
+          <div class="feature-card"><h4>Ordered arrays</h4><p>Insertion order is preserved for both numeric and string keys, matching what PHP programs observe in iteration and printing.</p></div>
+          <div class="feature-card"><h4>Cross-architecture</h4><p>macOS aarch64 and Linux x86_64 / aarch64 via the Cranelift JIT; portable bytecode underneath.</p></div>
+          <div class="feature-card"><h4>Standalone crate</h4><p>An explicit empty <code>[workspace]</code> keeps phplang buildable on its own, independent of the meta repo.</p></div>
+        </div>
+      </section>
+
+      <hr class="section-rule">
+
+      <section class="tutorial-section">
+        <h2>Links</h2>
+        <ul>
+          <li><strong>Docs</strong> — <a href="index.html">index.html</a></li>
+          <li><strong>Source</strong> — <a href="https://github.com/MenkeTechnologies/phplang">github.com/MenkeTechnologies/phplang</a></li>
+          <li><strong>Issues</strong> — <a href="https://github.com/MenkeTechnologies/phplang/issues">github.com/MenkeTechnologies/phplang/issues</a></li>
+          <li><strong>fusevm</strong> — <a href="https://github.com/MenkeTechnologies/fusevm">github.com/MenkeTechnologies/fusevm</a> (the shared VM)</li>
+          <li><strong>License</strong> — MIT (<a href="https://github.com/MenkeTechnologies/phplang/blob/main/LICENSE">LICENSE</a>)</li>
+        </ul>
+      </section>
+    </main>
+  </div>
+
+  <script src="hud-theme.js"></script>
+</body>
+</html>

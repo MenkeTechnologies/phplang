@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="description" content="phplang — PHP in Rust. A compiled PHP runtime: source lexed and parsed to an AST, lowered to fusevm bytecode, and run on the shared bytecode VM with a tracing Cranelift JIT over a PhpHost object heap. The first compiled standalone PHP runtime. The binary is php. MIT licensed.">
+  <title>phplang — Documentation</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&amp;family=Share+Tech+Mono&amp;display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="hud-static.css">
+  <link rel="stylesheet" href="tutorial.css">
+  <style>
+    .tutorial-main { max-width: 68rem; }
+    .docs-build-line { margin: 0.35rem 0 0; font-family: 'Share Tech Mono', ui-monospace, monospace; font-size: 11px; color: var(--text-dim); letter-spacing: 0.03em; max-width: 48rem; opacity: 0.75; }
+    .hub-scheme-strip { border-bottom: 1px dashed var(--border); background: color-mix(in srgb, var(--bg-secondary) 85%, transparent); padding: 0.55rem 1.5rem 0.65rem; position: relative; }
+    .hub-scheme-strip-inner { max-width: 68rem; margin: 0 auto; display: flex; align-items: center; gap: 0.85rem; }
+    .hub-scheme-strip .hud-scheme-label { flex: 0 0 auto; font-family: 'Orbitron', sans-serif; font-size: 9px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; color: var(--accent); text-align: left; }
+    .hub-scheme-strip .scheme-grid { flex: 1 1 auto; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; }
+    @media (max-width: 720px) { .hub-scheme-strip-inner { flex-direction: column; align-items: stretch; } .hub-scheme-strip .scheme-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    .cat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr)); gap: 0.6rem; margin: 0.7rem 0; }
+    .cat-card { border: 1px solid var(--border); border-left: 2px solid var(--cyan); padding: 0.6rem 0.8rem; background: color-mix(in srgb, var(--bg-card) 92%, transparent); border-radius: 2px; }
+    .cat-card h4 { font-family: 'Orbitron', sans-serif; font-size: 11px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase; color: var(--cyan); margin: 0 0 0.35rem; }
+    .cat-card p { margin: 0; font-size: 11.5px; color: var(--text-dim); line-height: 1.5; }
+    .cat-card code { font-size: 11px; color: var(--accent-light); }
+    .reflection-table { width: 100%; border-collapse: collapse; margin: 0.6rem 0 0.2rem; font-size: 12px; }
+    .reflection-table th { background: var(--bg-secondary); color: var(--cyan); font-family: 'Orbitron', sans-serif; font-size: 10px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; text-align: left; padding: 6px 10px; border: 1px solid var(--border); }
+    .reflection-table td { padding: 6px 10px; border: 1px solid var(--border); color: var(--text-dim); vertical-align: top; }
+    .reflection-table td code { color: var(--accent-light); background: var(--bg); }
+    .status-pill { display: inline-block; font-family: 'Orbitron', sans-serif; font-size: 9px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; padding: 2px 7px; border-radius: 2px; border: 1px solid var(--border); }
+    .status-implemented { color: var(--green); border-color: var(--green); }
+    .status-progress { color: var(--accent-light); }
+    .status-planned { color: var(--text-muted); }
+  </style>
+</head>
+<body>
+  <div class="app tutorial-app" id="docsApp">
+    <div class="crt-scanline" id="crtH" aria-hidden="true"></div>
+    <div class="crt-scanline-v" id="crtV" aria-hidden="true"></div>
+
+    <header class="tutorial-header">
+      <div class="tutorial-header-inner">
+        <div>
+          <h1 class="tutorial-brand">// PHPLANG — PHP IN RUST</h1>
+          <nav class="tutorial-crumbs" aria-label="Breadcrumb">
+            <span class="current">Docs</span>
+            <span class="sep">/</span>
+            <a href="report.html">Engineering Report</a>
+            <span class="sep">/</span>
+            <a href="https://github.com/MenkeTechnologies/phplang" target="_blank" rel="noopener noreferrer">GitHub</a>
+          </nav>
+          <p class="docs-build-line">phplang v0.1.0 · PHP on fusevm · lex/parse → AST → bytecode → tracing Cranelift JIT · PhpHost object heap · the first compiled standalone PHP runtime · binary <code>php</code> · a fusevm language host (with zshrs, stryke, awkrs, pythonrs, rubylang) · MIT · in active development</p>
+        </div>
+        <div class="tutorial-toolbar">
+          <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
+          <button type="button" class="btn btn-secondary active" id="btnCrt" title="CRT scanline overlay">CRT</button>
+          <button type="button" class="btn btn-secondary active" id="btnNeon" title="Neon border pulse">Neon</button>
+          <a class="btn btn-secondary" href="report.html">Report</a>
+          <a class="btn btn-secondary" href="https://github.com/MenkeTechnologies/phplang" target="_blank" rel="noopener noreferrer">GitHub</a>
+          <a class="btn btn-secondary" href="https://github.com/MenkeTechnologies/phplang/issues" target="_blank" rel="noopener noreferrer">Issues</a>
+        </div>
+      </div>
+    </header>
+
+    <div class="hub-scheme-strip">
+      <div class="hub-scheme-strip-inner">
+        <span class="hud-scheme-label">// Color scheme</span>
+        <div class="scheme-grid" id="hudSchemeGrid"></div>
+      </div>
+    </div>
+
+    <main class="tutorial-main">
+      <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>PHPLANG REFERENCE</h2>
+      <p class="tutorial-subtitle">A compiled PHP runtime written in Rust. Source is lexed and parsed to an AST, lowered to <code>fusevm</code> bytecode, and executed on the same language-agnostic VM + tracing Cranelift JIT that hosts <code>zshrs</code>, <code>stryke</code>, <code>awkrs</code>, <code>pythonrs</code>, and <code>rubylang</code>, over a <code>PhpHost</code> object heap. To our knowledge the first compiled standalone PHP runtime. The binary is <code>php</code>. <strong>In active development.</strong></p>
+
+      <section class="tutorial-section">
+        <h2>What it is</h2>
+        <p><code>phplang</code> runs PHP programs as ordinary compiled bytecode: it lexes and parses the source in two modes (inline-HTML passthrough plus <code>&lt;?php … ?&gt;</code> code), lowers it to <code>fusevm</code> instructions, and lets the shared engine execute and JIT-compile them. There is no bespoke interpreter loop — arithmetic lowers to native fusevm ops so the tracing Cranelift JIT can compile hot loops, while PHP-specific behaviour (loose comparison, string↔number coercion, array semantics, the standard library) is served by the <code>PhpHost</code> object heap.</p>
+        <p>It is another language hosted on <a href="https://github.com/MenkeTechnologies/fusevm">fusevm</a>, the shared bytecode VM and Cranelift JIT behind <code>zshrs</code>, <code>stryke</code>, <code>awkrs</code>, <code>pythonrs</code>, and <code>rubylang</code>. phplang carries no VM or JIT of its own.</p>
+      </section>
+
+      <section class="tutorial-section">
+        <h2>Architecture</h2>
+        <p>The pipeline mirrors how the sibling frontends host their languages:</p>
+        <pre>PHP source  →  lexer (two-mode)  →  parser (AST)  →  lower to fusevm bytecode  →  fusevm VM + Cranelift JIT
+                                                        │
+                                        PhpHost object heap (arrays, builtins, numeric hook)</pre>
+        <div class="cat-grid">
+          <div class="cat-card"><h4>fusevm-hosted</h4><p>No local <code>vm.rs</code> / <code>jit.rs</code>. PHP is lowered to fusevm bytecode and executed on the shared tracing Cranelift JIT (<code>fusevm</code> with the <code>jit</code> feature).</p></div>
+          <div class="cat-card"><h4>Native arithmetic + numeric hook</h4><p><code>+ - *</code> lower to native fusevm ops so the JIT can trace hot loops; a strict numeric hook supplies PHP coercion when an operand is a string/array/null or an <code>i64</code> op overflows.</p></div>
+          <div class="cat-card"><h4>Two-mode lexer</h4><p>Inline HTML passes straight through; <code>&lt;?php … ?&gt;</code> and <code>&lt;?=</code> switch to code mode. <code>#</code>, <code>//</code>, and <code>/* */</code> comments are recognised.</p></div>
+          <div class="cat-card"><h4>Arrays on the heap</h4><p>PHP arrays are heap objects in <code>PhpHost</code>, travelling as <code>Value::Obj(u32)</code> handles; insertion order is preserved (an <code>IndexMap</code>), observable in <code>foreach</code>/<code>print_r</code>.</p></div>
+        </div>
+      </section>
+
+      <section class="tutorial-section">
+        <h2>Example</h2>
+<pre>&lt;?php
+function fib($n) { return $n &lt; 2 ? $n : fib($n - 1) + fib($n - 2); }
+
+echo implode(", ", array_map("fib", range(0, 10))), "\n";
+// =&gt; 0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55
+
+$a = ["b" =&gt; 2, "a" =&gt; 1];
+ksort($a);
+echo json_encode($a), "\n";        // =&gt; {"a":1,"b":2}
+
+$total = 0;
+foreach ([1, 2, 3, 4] as $x) { $total += $x; }
+echo $total, "\n";                 // =&gt; 10
+
+echo match (2) { 1 =&gt; "one", 2 =&gt; "two", default =&gt; "?" }, "\n";  // =&gt; two</pre>
+      </section>
+
+      <section class="tutorial-section">
+        <h2>Usage</h2>
+<pre>php script.php              # run a file
+php -r 'echo 1 + 1;'        # run a one-liner (no &lt;?php tag needed)
+php -a                      # interactive REPL (persistent state per line)
+php --dump-bytecode f.php   # print the lowered fusevm bytecode</pre>
+        <p>A <code>man/php.1</code> man page and runnable <code>examples/*.php</code> ship with the crate.</p>
+      </section>
+
+      <section class="tutorial-section">
+        <h2>Status &amp; roadmap</h2>
+        <p>A working core, grown outward from the sibling frontends. The table reflects the current state of the tree; a few documented deviations from reference PHP are noted below.</p>
+        <table class="reflection-table">
+          <thead><tr><th>Component</th><th>State</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr><td>Two-mode lexer / parser → AST</td><td><span class="status-pill status-implemented">Implemented</span></td><td>Inline-HTML passthrough, <code>&lt;?php&gt;</code>/<code>&lt;?=</code>, all comment forms, <code>$var</code> interpolation (<code>src/lexer.rs</code>, <code>src/parser.rs</code>).</td></tr>
+            <tr><td>AST → fusevm bytecode lowering</td><td><span class="status-pill status-implemented">Implemented</span></td><td>Native arithmetic + <code>CallBuiltin</code> dispatch; no local VM (<code>src/compiler.rs</code>).</td></tr>
+            <tr><td>Scalars, strings, casts</td><td><span class="status-pill status-implemented">Implemented</span></td><td><code>int</code>/<code>float</code>/<code>bool</code>/<code>string</code>/<code>null</code>; <code>(int)</code>/<code>(float)</code>/<code>(string)</code>/<code>(bool)</code> casts.</td></tr>
+            <tr><td>Operators &amp; comparison</td><td><span class="status-pill status-implemented">Implemented</span></td><td><code>+ - * / % **</code>, concat <code>.</code>, compound assign, <code>++</code>/<code>--</code>, loose/strict compare, <code>&amp;&amp; || and or</code>, <code>?:</code>/elvis, <code>??</code>.</td></tr>
+            <tr><td>Arrays (indexed / assoc / append)</td><td><span class="status-pill status-implemented">Implemented</span></td><td>Ordered on the <code>PhpHost</code> heap; index read/write, <code>$a[] =</code> append (<code>src/host.rs</code>).</td></tr>
+            <tr><td>Control flow</td><td><span class="status-pill status-implemented">Implemented</span></td><td><code>if</code>/<code>elseif</code>/<code>else</code>, <code>while</code>, <code>do…while</code>, <code>for</code>, <code>foreach</code>, <code>switch</code> (fall-through), <code>break</code>/<code>continue</code>/<code>return</code>, <code>match</code>.</td></tr>
+            <tr><td>User functions</td><td><span class="status-pill status-implemented">Implemented</span></td><td>Positional parameters and recursion.</td></tr>
+            <tr><td>Standard library (~90 functions)</td><td><span class="status-pill status-implemented">Implemented</span></td><td>String, array, math, and type/util families (<code>str_*</code>, <code>array_*</code>, <code>sprintf</code>, <code>json_encode</code>, <code>var_dump</code>, …) in <code>src/builtins.rs</code>.</td></tr>
+            <tr><td>Differential parity fuzzer</td><td><span class="status-pill status-implemented">Implemented</span></td><td>Seed-deterministic snippets diffed against the reference <code>php</code>; delta-debugged repros (<code>src/bin/parity_fuzz.rs</code>). Dev tool — needs <code>php</code> on PATH, never in CI.</td></tr>
+            <tr><td>Classes / traits / namespaces / closures</td><td><span class="status-pill status-planned">Planned</span></td><td>OO, closures/arrow functions, references, <code>try</code>/<code>catch</code>, generators, superglobals, default/variadic/typed params, deep lvalues.</td></tr>
+            <tr><td>Bytecode cache / AOT / LSP / DAP</td><td><span class="status-pill status-planned">Planned</span></td><td>Present in sibling frontends; not wired in phplang yet.</td></tr>
+          </tbody>
+        </table>
+        <p style="font-size:11.5px;color:var(--text-dim);">Documented deviations (in-code): array semantics are reference-based rather than PHP's copy-on-write; <code>array_pop</code>/<code>array_shift</code> await a host by-reference delete; a <code>match</code> with no arm and no <code>default</code> yields <code>null</code> instead of throwing <code>\UnhandledMatchError</code>; loose comparison follows a simplified model.</p>
+      </section>
+
+      <section class="tutorial-section">
+        <h2>Building from source</h2>
+        <p>phplang builds as a standalone Rust crate (an explicit empty <code>[workspace]</code> keeps it independent of the meta repo):</p>
+<pre># clone
+git clone https://github.com/MenkeTechnologies/phplang
+cd phplang
+
+# build (produces target/debug/php + parity-fuzz)
+cargo build
+
+# run a file, a one-liner, or the REPL
+./target/debug/php script.php
+./target/debug/php -r 'echo array_sum(range(1, 100));'
+./target/debug/php -a
+
+# run tests
+cargo test</pre>
+        <p><code>fusevm</code> is pulled from crates.io with the <code>jit</code> feature.</p>
+      </section>
+
+      <section class="tutorial-section">
+        <h2>License</h2>
+        <p>phplang is <strong>MIT licensed</strong> — free and open source. See <a href="https://github.com/MenkeTechnologies/phplang/blob/main/LICENSE">LICENSE</a>.</p>
+      </section>
+
+      <section class="tutorial-section">
+        <h2>Repository &amp; links</h2>
+        <ul>
+          <li><strong>Engineering report</strong> — <a href="report.html">report.html</a> (architecture, fusevm hosting, roadmap, dependency posture)</li>
+          <li><strong>Source</strong> — <a href="https://github.com/MenkeTechnologies/phplang">github.com/MenkeTechnologies/phplang</a></li>
+          <li><strong>Issues</strong> — <a href="https://github.com/MenkeTechnologies/phplang/issues">github.com/MenkeTechnologies/phplang/issues</a></li>
+          <li><strong>The shared VM</strong> — <a href="https://github.com/MenkeTechnologies/fusevm">fusevm</a> (also behind <code>zshrs</code>, <code>stryke</code>, <code>awkrs</code>, <code>pythonrs</code>, <code>rubylang</code>)</li>
+        </ul>
+      </section>
+    </main>
+  </div>
+
+  <script src="hud-theme.js"></script>
+</body>
+</html>

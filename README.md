@@ -1,14 +1,69 @@
-# phplang
+```text
+██████╗ ██╗  ██╗██████╗ ██╗      █████╗ ███╗   ██╗ ██████╗
+██╔══██╗██║  ██║██╔══██╗██║     ██╔══██╗████╗  ██║██╔════╝
+██████╔╝███████║██████╔╝██║     ███████║██╔██╗ ██║██║  ███╗
+██╔═══╝ ██╔══██║██╔═══╝ ██║     ██╔══██║██║╚██╗██║██║   ██║
+██║     ██║  ██║██║     ███████╗██║  ██║██║ ╚████║╚██████╔╝
+╚═╝     ╚═╝  ╚═╝╚═╝     ╚══════╝╚═╝  ╚═╝╚═╝  ╚═══╝ ╚═════╝
+```
 
-PHP as a [fusevm](https://crates.io/crates/fusevm) frontend — the first compiled
-standalone PHP runtime. phplang is a pure frontend: it lexes and parses PHP,
-lowers it to `fusevm::Chunk` bytecode, and executes on fusevm's bytecode VM +
-tracing Cranelift JIT. There is no bespoke interpreter loop — codegen and
-execution live in fusevm; phplang supplies the PHP object heap and semantics.
+![Rust](https://img.shields.io/badge/Rust-2021-05d9e8?style=flat-square)
+[![Docs](https://img.shields.io/badge/docs-online-blue.svg)](https://menketechnologies.github.io/phplang/)
+[![Built on](https://img.shields.io/badge/built%20on-fusevm-8a2be2.svg)](https://github.com/MenkeTechnologies/fusevm)
+![status](https://img.shields.io/badge/status-active%20%C2%B7%20in%20development-9b5de5?style=flat-square)
+![license](https://img.shields.io/badge/license-MIT-ff2a6d?style=flat-square)
 
-The binary is `php`.
+### `[PHP, COMPILED TO BYTECODE — ON A SHARED CRANELIFT JIT]`
 
-## Pipeline
+> *"Zend compiles PHP to its own opcodes and walks them. phplang lowers PHP to a
+> shared machine that other languages already run on, and lets a tracing JIT
+> compile the hot loops."*
+
+**phplang** is PHP as a [`fusevm`](https://github.com/MenkeTechnologies/fusevm)
+frontend — a lexer/parser and compiler that lowers PHP to `fusevm::Chunk`
+bytecode running on fusevm's bytecode VM + tracing Cranelift JIT, over a
+`PhpHost` object heap. There is no bespoke interpreter loop: phplang is a pure
+front end; execution and codegen live in `fusevm` — the same engine behind
+[`zshrs`](https://github.com/MenkeTechnologies/zshrs),
+[`strykelang`](https://github.com/MenkeTechnologies/strykelang),
+[`awkrs`](https://github.com/MenkeTechnologies/awkrs),
+[`pythonrs`](https://github.com/MenkeTechnologies/pythonrs), and
+[`rubylang`](https://github.com/MenkeTechnologies/rubylang).
+
+It is, to our knowledge, the first compiled standalone PHP runtime. The binary
+is `php`.
+
+### [`Read the Docs`](https://menketechnologies.github.io/phplang/) &middot; [`Engineering Report`](https://menketechnologies.github.io/phplang/report.html) &middot; [`fusevm`](https://github.com/MenkeTechnologies/fusevm)
+
+---
+
+## Table of Contents
+
+- [\[0x00\] Overview](#0x00-overview)
+- [\[0x01\] Pipeline](#0x01-pipeline)
+- [\[0x02\] Usage](#0x02-usage)
+- [\[0x03\] Supported Today](#0x03-supported-today)
+- [\[0x04\] Not Yet (Later Waves)](#0x04-not-yet-later-waves)
+- [\[0x05\] Parity Fuzzer](#0x05-parity-fuzzer)
+- [\[0x06\] Build](#0x06-build)
+- [\[0x07\] Documentation](#0x07-documentation)
+- [\[0xFF\] License](#0xff-license)
+
+---
+
+## [0x00] OVERVIEW
+
+phplang keeps PHP the language and throws away Zend's execution model. It lexes
+and parses PHP (two-mode: inline-HTML passthrough plus `<?php … ?>` code), lowers
+the AST to `fusevm` bytecode, and runs it on the shared bytecode VM with a
+tracing Cranelift JIT. Arithmetic lowers to native ops so the JIT can trace hot
+loops; PHP-specific behavior — loose comparison, string↔number coercion, array
+semantics, the standard library — is served by the `PhpHost` object heap.
+
+It carries no VM or JIT of its own. Bug fixes and JIT improvements in `fusevm`
+land once and benefit every hosted frontend at the same time.
+
+## [0x01] PIPELINE
 
 ```
 source ──▶ lexer ──▶ parser ──▶ compiler ──▶ fusevm::Chunk ──▶ fusevm VM + JIT
@@ -26,7 +81,7 @@ source ──▶ lexer ──▶ parser ──▶ compiler ──▶ fusevm::Chu
   string/array/null or an `i64` op overflows. `/ % **`, concatenation,
   comparisons, and everything PHP-specific lower to `CallBuiltin` handlers.
 
-## Usage
+## [0x02] USAGE
 
 ```sh
 php script.php              # run a file
@@ -37,10 +92,10 @@ php --dump-bytecode f.php   # print the lowered fusevm bytecode
 
 A `man/php.1` man page and runnable `examples/*.php` ship with the crate.
 
-## Supported today
+## [0x03] SUPPORTED TODAY
 
-This is a working core, grown outward from the sibling frontends. Implemented and
-tested end-to-end (see `tests/basic.rs`):
+A working core, grown outward from the sibling frontends. Implemented and tested
+end-to-end (see `tests/basic.rs`):
 
 - `<?php … ?>` tags with inline-HTML passthrough; `<?=` short echo; `#`, `//`,
   and `/* */` comments.
@@ -62,7 +117,7 @@ tested end-to-end (see `tests/basic.rs`):
   trig, `intdiv`, `fmod`), type/util (`is_*`, `gettype`, `json_encode`,
   `var_dump`, `print_r`, `var_export`).
 
-## Not yet (later waves)
+## [0x04] NOT YET (LATER WAVES)
 
 Classes, interfaces, traits, namespaces, closures/arrow functions, references,
 `try`/`catch`, generators, superglobals, default/variadic/typed parameters, and
@@ -73,12 +128,12 @@ are omitted pending a host by-reference delete; `match` with no arm and no
 follows a simplified model. Persistent bytecode caching, AOT (`--build`), LSP, and
 DAP — present in the sibling frontends — are not wired yet.
 
-## Parity
+## [0x05] PARITY FUZZER
 
 `parity-fuzz` is a differential fuzzer: it generates seed-deterministic PHP
 snippets, runs each through both the reference `php` and phplang, and reports
 every case where stdout or success/failure diverges. It is a development tool —
-it needs a reference `php` on PATH, so CI never runs it.
+it needs a reference `php` on `PATH`, so CI never runs it.
 
 ```sh
 cargo build --bin parity-fuzz
@@ -93,9 +148,24 @@ string↔number coercion. Divergences are delta-debugged to a minimal reproducer
 and grouped by signature; a full report lands in
 `target/parity-fuzz/divergences.txt`.
 
-## Build
+## [0x06] BUILD
 
 ```sh
 cargo build
 cargo test
 ```
+
+phplang is a standalone crate (an explicit empty `[workspace]` stops cargo
+walking up to the meta parent). `fusevm` is pulled from crates.io with the `jit`
+feature.
+
+## [0x07] DOCUMENTATION
+
+- **Docs hub** — <https://menketechnologies.github.io/phplang/>
+- **Engineering report** — <https://menketechnologies.github.io/phplang/report.html>
+- **fusevm** — <https://github.com/MenkeTechnologies/fusevm> (the shared VM)
+- **Source** — <https://github.com/MenkeTechnologies/phplang>
+
+## [0xFF] LICENSE
+
+MIT — free and open source. See [LICENSE](LICENSE).
