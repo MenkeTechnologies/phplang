@@ -456,11 +456,7 @@ impl Parser {
             let then = self.expression()?;
             self.expect_punct(":")?;
             let els = self.assignment()?;
-            return Ok(Expr::Ternary(
-                Box::new(cond),
-                Box::new(then),
-                Box::new(els),
-            ));
+            return Ok(Expr::Ternary(Box::new(cond), Box::new(then), Box::new(els)));
         }
         Ok(cond)
     }
@@ -468,10 +464,7 @@ impl Parser {
     /// Precedence-climbing binary parser. Higher `min_bp` binds tighter.
     fn binary(&mut self, min_bp: u8) -> Result<Expr, String> {
         let mut lhs = self.unary()?;
-        loop {
-            let Some((op, lbp, rbp)) = self.peek_binop() else {
-                break;
-            };
+        while let Some((op, lbp, rbp)) = self.peek_binop() {
             if lbp < min_bp {
                 break;
             }
@@ -526,7 +519,10 @@ impl Parser {
         // matching conversion call so no new opcode is needed.
         if self.at_punct("(") {
             if let Some(Tok::Ident(t)) = self.toks.get(self.pos + 1).map(|s| &s.tok) {
-                if matches!(self.toks.get(self.pos + 2).map(|s| &s.tok), Some(Tok::Punct(")"))) {
+                if matches!(
+                    self.toks.get(self.pos + 2).map(|s| &s.tok),
+                    Some(Tok::Punct(")"))
+                ) {
                     if let Some(fname) = cast_fn(t) {
                         self.pos += 3; // consume `( ident )`
                         let operand = self.unary()?;
@@ -652,7 +648,10 @@ impl Parser {
                     // desugar to plain operators over existing ops.
                     if name.eq_ignore_ascii_case("empty") && args.len() == 1 {
                         // empty($x) ≡ !$x (both are false-on-truthy, quiet on unset).
-                        return Ok(Expr::Unary(UnOp::Not, Box::new(args.into_iter().next().unwrap())));
+                        return Ok(Expr::Unary(
+                            UnOp::Not,
+                            Box::new(args.into_iter().next().unwrap()),
+                        ));
                     }
                     if name.eq_ignore_ascii_case("isset") && !args.is_empty() {
                         // isset($a, $b, …) ≡ ($a !== null) && ($b !== null) && …
@@ -663,7 +662,8 @@ impl Parser {
                             Box::new(Expr::Null),
                         );
                         for a in it {
-                            let term = Expr::Binary(BinOp::StrictNe, Box::new(a), Box::new(Expr::Null));
+                            let term =
+                                Expr::Binary(BinOp::StrictNe, Box::new(a), Box::new(Expr::Null));
                             expr = Expr::Binary(BinOp::And, Box::new(expr), Box::new(term));
                         }
                         return Ok(expr);
@@ -676,10 +676,7 @@ impl Parser {
                     Ok(Expr::Str(name))
                 }
             }
-            other => Err(format!(
-                "unexpected token {other:?} (line {})",
-                self.line()
-            )),
+            other => Err(format!("unexpected token {other:?} (line {})", self.line())),
         }
     }
 

@@ -11,19 +11,43 @@ fn run(src: &str) -> String {
 #[test]
 fn isset_on_variables() {
     assert_eq!(run(r#"<?php $x = 5; var_dump(isset($x));"#), "bool(true)\n");
-    assert_eq!(run(r#"<?php var_dump(isset($undefined));"#), "bool(false)\n");
-    assert_eq!(run(r#"<?php $x = null; var_dump(isset($x));"#), "bool(false)\n");
+    assert_eq!(
+        run(r#"<?php var_dump(isset($undefined));"#),
+        "bool(false)\n"
+    );
+    assert_eq!(
+        run(r#"<?php $x = null; var_dump(isset($x));"#),
+        "bool(false)\n"
+    );
     // Multiple operands: true only if all are set.
-    assert_eq!(run(r#"<?php $a = 1; $b = 2; var_dump(isset($a, $b));"#), "bool(true)\n");
-    assert_eq!(run(r#"<?php $a = 1; var_dump(isset($a, $missing));"#), "bool(false)\n");
+    assert_eq!(
+        run(r#"<?php $a = 1; $b = 2; var_dump(isset($a, $b));"#),
+        "bool(true)\n"
+    );
+    assert_eq!(
+        run(r#"<?php $a = 1; var_dump(isset($a, $missing));"#),
+        "bool(false)\n"
+    );
 }
 
 #[test]
 fn isset_on_array_and_string_offsets() {
-    assert_eq!(run(r#"<?php $a = ["k" => 1]; var_dump(isset($a["k"]));"#), "bool(true)\n");
-    assert_eq!(run(r#"<?php $a = ["k" => 1]; var_dump(isset($a["nope"]));"#), "bool(false)\n");
-    assert_eq!(run(r#"<?php $s = "hi"; var_dump(isset($s[0]));"#), "bool(true)\n");
-    assert_eq!(run(r#"<?php $s = "hi"; var_dump(isset($s[9]));"#), "bool(false)\n");
+    assert_eq!(
+        run(r#"<?php $a = ["k" => 1]; var_dump(isset($a["k"]));"#),
+        "bool(true)\n"
+    );
+    assert_eq!(
+        run(r#"<?php $a = ["k" => 1]; var_dump(isset($a["nope"]));"#),
+        "bool(false)\n"
+    );
+    assert_eq!(
+        run(r#"<?php $s = "hi"; var_dump(isset($s[0]));"#),
+        "bool(true)\n"
+    );
+    assert_eq!(
+        run(r#"<?php $s = "hi"; var_dump(isset($s[9]));"#),
+        "bool(false)\n"
+    );
 }
 
 #[test]

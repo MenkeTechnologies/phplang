@@ -86,7 +86,10 @@ fn main() {
 
     let ours = ours_bin();
     if !ours.exists() {
-        eprintln!("parity-drupal: phplang binary not found at {} (run `cargo build`)", ours.display());
+        eprintln!(
+            "parity-drupal: phplang binary not found at {} (run `cargo build`)",
+            ours.display()
+        );
         std::process::exit(2);
     }
     let php = oracle_path();
@@ -106,7 +109,10 @@ fn main() {
                     prog.push('\n');
                 }
                 None => {
-                    println!("  SKIP  {} — function `{dep}` not found in checkout", case.label);
+                    println!(
+                        "  SKIP  {} — function `{dep}` not found in checkout",
+                        case.label
+                    );
                     continue;
                 }
             }
@@ -123,8 +129,16 @@ fn main() {
             pass += 1;
         } else {
             println!("  \u{2717} FAIL  {}", case.label);
-            println!("        php  (exit {}): {:?}", a.1, String::from_utf8_lossy(&a.0));
-            println!("        ours (exit {}): {:?}", b.1, String::from_utf8_lossy(&b.0));
+            println!(
+                "        php  (exit {}): {:?}",
+                a.1,
+                String::from_utf8_lossy(&a.0)
+            );
+            println!(
+                "        ours (exit {}): {:?}",
+                b.1,
+                String::from_utf8_lossy(&b.0)
+            );
             fail += 1;
         }
     }
@@ -139,10 +153,7 @@ fn main() {
 /// (stdout bytes, exit code). phplang's `-r` prepends the open tag; reference PHP
 /// `-r` runs raw code — so both receive the same source.
 fn run(bin: &str, extra: &[&str], code: &str) -> (Vec<u8>, i32) {
-    let out = Command::new(bin)
-        .args(extra)
-        .args(["-r", code])
-        .output();
+    let out = Command::new(bin).args(extra).args(["-r", code]).output();
     match out {
         Ok(o) => (o.stdout, o.status.code().unwrap_or(-1)),
         Err(_) => (Vec::new(), -1),
@@ -206,7 +217,11 @@ fn oracle_path() -> String {
     if let Ok(p) = std::env::var("PHPLANG_FUZZ_PHP") {
         return p;
     }
-    for p in ["/opt/homebrew/bin/php", "/usr/local/bin/php", "/usr/bin/php"] {
+    for p in [
+        "/opt/homebrew/bin/php",
+        "/usr/local/bin/php",
+        "/usr/bin/php",
+    ] {
         if Path::new(p).exists() {
             return p.to_string();
         }

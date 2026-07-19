@@ -94,7 +94,11 @@ fn oracle_path() -> &'static str {
             }
             return p;
         }
-        for p in ["/opt/homebrew/bin/php", "/usr/local/bin/php", "/usr/bin/php"] {
+        for p in [
+            "/opt/homebrew/bin/php",
+            "/usr/local/bin/php",
+            "/usr/bin/php",
+        ] {
             if Path::new(p).exists() {
                 return p.to_string();
             }
@@ -110,7 +114,14 @@ fn oracle_id() -> String {
         .output()
         .ok()
         .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or("").trim().to_string())
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_string()
+        })
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "unknown".to_string());
     format!("{path} ({ver})")
@@ -126,7 +137,9 @@ struct RunOut {
 
 /// Render captured bytes for a report, trimming one trailing newline.
 fn render(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes).trim_end_matches('\n').to_string()
+    String::from_utf8_lossy(bytes)
+        .trim_end_matches('\n')
+        .to_string()
 }
 
 /// The divergence predicate: stdout must match exactly, and the two runs must
@@ -141,11 +154,18 @@ fn differs(a: &RunOut, b: &RunOut) -> bool {
 
 /// Spawn `cmd` and wait up to `timeout`, killing it if it overruns.
 fn run_with_timeout(mut cmd: Command, timeout: Duration) -> RunOut {
-    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(_) => {
-            return RunOut { stdout: Vec::new(), exit: -999, timed_out: false, infra_fail: true }
+            return RunOut {
+                stdout: Vec::new(),
+                exit: -999,
+                timed_out: false,
+                infra_fail: true,
+            }
         }
     };
     let start = Instant::now();
@@ -168,12 +188,22 @@ fn run_with_timeout(mut cmd: Command, timeout: Duration) -> RunOut {
                 if start.elapsed() >= timeout {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return RunOut { stdout: Vec::new(), exit: -1, timed_out: true, infra_fail: false };
+                    return RunOut {
+                        stdout: Vec::new(),
+                        exit: -1,
+                        timed_out: true,
+                        infra_fail: false,
+                    };
                 }
                 std::thread::sleep(Duration::from_millis(2));
             }
             Err(_) => {
-                return RunOut { stdout: Vec::new(), exit: -998, timed_out: false, infra_fail: true }
+                return RunOut {
+                    stdout: Vec::new(),
+                    exit: -998,
+                    timed_out: false,
+                    infra_fail: true,
+                }
             }
         }
     }
@@ -198,10 +228,15 @@ fn run_ours(script: &str, bin: &Path, timeout: Duration) -> RunOut {
 // Every program echoes something deterministic.
 // ---------------------------------------------------------------------------
 
-const INTS: &[&str] = &["0", "1", "2", "7", "10", "-3", "-7", "42", "100", "-1", "5", "9", "-2"];
-const FLOATS: &[&str] =
-    &["0.1", "0.2", "1.5", "3.14", "2.0", "-1.5", "10.0", "0.0", "100.25", "-0.5", "1.0", "0.3"];
-const WORDS: &[&str] = &["foo", "bar", "baz", "hello", "world", "abc", "PHP", "Lang", "x"];
+const INTS: &[&str] = &[
+    "0", "1", "2", "7", "10", "-3", "-7", "42", "100", "-1", "5", "9", "-2",
+];
+const FLOATS: &[&str] = &[
+    "0.1", "0.2", "1.5", "3.14", "2.0", "-1.5", "10.0", "0.0", "100.25", "-0.5", "1.0", "0.3",
+];
+const WORDS: &[&str] = &[
+    "foo", "bar", "baz", "hello", "world", "abc", "PHP", "Lang", "x",
+];
 
 fn ii<'a>(r: &mut Rng) -> &'a str {
     r.pick(INTS)
@@ -236,14 +271,21 @@ fn gen_floatfmt(seed: u64) -> Vec<String> {
     match r.below(4) {
         0 => vec![format!("echo {} + {};", ff(r), ff(r))],
         1 => vec![format!("echo {} * {};", ff(r), ff(r))],
-        2 => vec![format!("echo {} / {};", ii(r), r.pick(&["3", "7", "9", "4"]))],
+        2 => vec![format!(
+            "echo {} / {};",
+            ii(r),
+            r.pick(&["3", "7", "9", "4"])
+        )],
         _ => vec![format!("echo {};", ff(r))],
     }
 }
 
 fn gen_pow(seed: u64) -> Vec<String> {
     let r = &mut Rng::seed(seed);
-    let (a, b) = (r.pick(&["2", "3", "5", "10", "-2"]), r.pick(&["0", "1", "2", "3", "4"]));
+    let (a, b) = (
+        r.pick(&["2", "3", "5", "10", "-2"]),
+        r.pick(&["0", "1", "2", "3", "4"]),
+    );
     vec![format!("echo {a} ** {b};")]
 }
 
@@ -260,8 +302,12 @@ fn gen_concat(seed: u64) -> Vec<String> {
 fn gen_compare(seed: u64) -> Vec<String> {
     let r = &mut Rng::seed(seed);
     let ops = ["==", "===", "!=", "<", ">", "<=", ">="];
-    let lhs = *r.pick(&["1", "0", "\"1\"", "\"0\"", "\"a\"", "1.0", "\"1.0\"", "10", "\"10\""]);
-    let rhs = *r.pick(&["1", "0", "\"1\"", "\"0\"", "\"a\"", "1.0", "\"1.0\"", "2", "\"2\""]);
+    let lhs = *r.pick(&[
+        "1", "0", "\"1\"", "\"0\"", "\"a\"", "1.0", "\"1.0\"", "10", "\"10\"",
+    ]);
+    let rhs = *r.pick(&[
+        "1", "0", "\"1\"", "\"0\"", "\"a\"", "1.0", "\"1.0\"", "2", "\"2\"",
+    ]);
     let op = r.pick(&ops);
     vec![format!("echo ({lhs} {op} {rhs}) ? \"T\" : \"F\";")]
 }
@@ -269,9 +315,15 @@ fn gen_compare(seed: u64) -> Vec<String> {
 fn gen_ternary(seed: u64) -> Vec<String> {
     let r = &mut Rng::seed(seed);
     match r.below(3) {
-        0 => vec![format!("$x = {}; echo $x ?: \"empty\";", r.pick(&["0", "5", "\"\"", "\"hi\""]))],
+        0 => vec![format!(
+            "$x = {}; echo $x ?: \"empty\";",
+            r.pick(&["0", "5", "\"\"", "\"hi\""])
+        )],
         1 => vec![format!("echo {} > {} ? \"a\" : \"b\";", ii(r), ii(r))],
-        _ => vec![format!("$x = {}; echo $x ?? \"nil\";", r.pick(&["null", "0", "7"]))],
+        _ => vec![format!(
+            "$x = {}; echo $x ?? \"nil\";",
+            r.pick(&["null", "0", "7"])
+        )],
     }
 }
 
@@ -284,9 +336,16 @@ fn gen_strfns(seed: u64) -> Vec<String> {
         2 => vec![format!("echo ucfirst(\"{w}\");")],
         3 => vec![format!("echo strrev(\"{w}\");")],
         4 => vec![format!("echo str_repeat(\"{w}\", {});", r.below(4))],
-        5 => vec![format!("echo substr(\"{w}\", {}, {});", r.below(3), 1 + r.below(3))],
+        5 => vec![format!(
+            "echo substr(\"{w}\", {}, {});",
+            r.below(3),
+            1 + r.below(3)
+        )],
         6 => vec![format!("echo str_pad(\"{w}\", {}, \"-\");", 4 + r.below(4))],
-        _ => vec![format!("echo strpos(\"hello\", \"{}\") === false ? \"no\" : \"yes\";", r.pick(&["l", "z", "e"]))],
+        _ => vec![format!(
+            "echo strpos(\"hello\", \"{}\") === false ? \"no\" : \"yes\";",
+            r.pick(&["l", "z", "e"])
+        )],
     }
 }
 
@@ -319,9 +378,14 @@ fn gen_assoc(seed: u64) -> Vec<String> {
     let r = &mut Rng::seed(seed);
     let m = format!("[\"{}\" => {}, \"{}\" => {}]", ww(r), ii(r), ww(r), ii(r));
     match r.below(3) {
-        0 => vec![format!("$m = {m}; $t = 0; foreach ($m as $k => $v) {{ $t += $v; }} echo $t;")],
+        0 => vec![format!(
+            "$m = {m}; $t = 0; foreach ($m as $k => $v) {{ $t += $v; }} echo $t;"
+        )],
         1 => vec![format!("echo implode(\",\", array_keys({m}));")],
-        _ => vec![format!("echo array_key_exists(\"{}\", {m}) ? \"y\" : \"n\";", ww(r))],
+        _ => vec![format!(
+            "echo array_key_exists(\"{}\", {m}) ? \"y\" : \"n\";",
+            ww(r)
+        )],
     }
 }
 
@@ -329,7 +393,11 @@ fn gen_printf(seed: u64) -> Vec<String> {
     let r = &mut Rng::seed(seed);
     match r.below(4) {
         0 => vec![format!("echo sprintf(\"%d\", {});", ii(r))],
-        1 => vec![format!("echo sprintf(\"%s-%d\", \"{}\", {});", ww(r), ii(r))],
+        1 => vec![format!(
+            "echo sprintf(\"%s-%d\", \"{}\", {});",
+            ww(r),
+            ii(r)
+        )],
         2 => vec![format!("echo sprintf(\"%b\", {});", r.below(16))],
         _ => vec![format!("echo number_format({}, {});", ff(r), r.below(3))],
     }
@@ -352,7 +420,9 @@ fn gen_control(seed: u64) -> Vec<String> {
         }
         _ => {
             let n = r.pick(&["0", "3", "6", "9"]);
-            vec![format!("$n = {n}; echo ($n % 2 == 0) ? \"even\" : \"odd\";")]
+            vec![format!(
+                "$n = {n}; echo ($n % 2 == 0) ? \"even\" : \"odd\";"
+            )]
         }
     }
 }
@@ -361,8 +431,12 @@ fn gen_loops(seed: u64) -> Vec<String> {
     let r = &mut Rng::seed(seed);
     let n = r.pick(&["3", "4", "5", "6"]);
     match r.below(2) {
-        0 => vec![format!("$s = 0; for ($i = 1; $i <= {n}; $i++) {{ $s += $i; }} echo $s;")],
-        _ => vec![format!("$s = 1; $i = 1; while ($i <= {n}) {{ $s *= $i; $i++; }} echo $s;")],
+        0 => vec![format!(
+            "$s = 0; for ($i = 1; $i <= {n}; $i++) {{ $s += $i; }} echo $s;"
+        )],
+        _ => vec![format!(
+            "$s = 1; $i = 1; while ($i <= {n}) {{ $s *= $i; $i++; }} echo $s;"
+        )],
     }
 }
 
@@ -440,7 +514,12 @@ fn gen_exprtree(seed: u64) -> Vec<String> {
     // Optionally cap the arithmetic with a single top-level comparison.
     if r.below(2) == 0 {
         let cmp = ["<", ">", "<=", ">=", "==", "!="];
-        vec![format!("var_dump({} {} {});", arith(r), r.pick(&cmp), arith(r))]
+        vec![format!(
+            "var_dump({} {} {});",
+            arith(r),
+            r.pick(&cmp),
+            arith(r)
+        )]
     } else {
         vec![format!("echo {};", arith(r))]
     }
@@ -452,8 +531,15 @@ fn gen_unary(seed: u64) -> Vec<String> {
     let r = &mut Rng::seed(seed);
     match r.below(6) {
         0 => vec![format!("echo - - {};", ii(r))],
-        1 => vec![format!("echo -{} ** {};", r.pick(&["2", "3", "4"]), r.pick(&["2", "3"]))],
-        2 => vec![format!("echo !!{};", r.pick(&["0", "1", "5", "\"\"", "\"a\""]))],
+        1 => vec![format!(
+            "echo -{} ** {};",
+            r.pick(&["2", "3", "4"]),
+            r.pick(&["2", "3"])
+        )],
+        2 => vec![format!(
+            "echo !!{};",
+            r.pick(&["0", "1", "5", "\"\"", "\"a\""])
+        )],
         3 => vec![format!("echo -{} * -{};", ii(r), ii(r))],
         4 => vec![format!("echo {} - -{};", ii(r), ii(r))],
         _ => vec![format!("var_dump(!({} > {}));", ii(r), ii(r))],
@@ -519,12 +605,26 @@ fn gen_stredge(seed: u64) -> Vec<String> {
     let w = ww(r);
     match r.below(9) {
         0 => vec![format!("echo substr(\"{w}\", -{});", 1 + r.below(3))],
-        1 => vec![format!("echo substr(\"hello\", {}, -{});", r.below(2), 1 + r.below(2))],
-        2 => vec![format!("echo str_pad(\"{w}\", {}, \"ab\", {});", 6 + r.below(3), r.below(3))],
-        3 => vec![format!("echo str_replace(\"{}\", \"X\", \"{w}{w}\");", &w[..1])],
+        1 => vec![format!(
+            "echo substr(\"hello\", {}, -{});",
+            r.below(2),
+            1 + r.below(2)
+        )],
+        2 => vec![format!(
+            "echo str_pad(\"{w}\", {}, \"ab\", {});",
+            6 + r.below(3),
+            r.below(3)
+        )],
+        3 => vec![format!(
+            "echo str_replace(\"{}\", \"X\", \"{w}{w}\");",
+            &w[..1]
+        )],
         4 => vec![format!("echo ucwords(\"{} {}\");", ww(r), ww(r))],
         5 => vec![format!("echo strrev(\"{w}\");")],
-        6 => vec![format!("echo wordwrap(\"{w} {w} {w}\", {}, \"\\n\", true);", 4 + r.below(6))],
+        6 => vec![format!(
+            "echo wordwrap(\"{w} {w} {w}\", {}, \"\\n\", true);",
+            4 + r.below(6)
+        )],
         7 => vec![format!("echo str_repeat(\"{}\", {});", &w[..1], r.below(6))],
         _ => vec![format!("var_dump(strpos(\"{w}\", \"{}\"));", &w[..1])],
     }
@@ -536,16 +636,27 @@ fn gen_arraypipe(seed: u64) -> Vec<String> {
     let r = &mut Rng::seed(seed);
     let arr = format!("[{}, {}, {}, {}, {}]", ii(r), ii(r), ii(r), ii(r), ii(r));
     match r.below(8) {
-        0 => vec![format!("echo implode(\",\", array_slice({arr}, {}, {}));", r.below(3), 1 + r.below(3))],
-        1 => vec![format!("echo implode(\",\", array_slice({arr}, -{}));", 1 + r.below(3))],
+        0 => vec![format!(
+            "echo implode(\",\", array_slice({arr}, {}, {}));",
+            r.below(3),
+            1 + r.below(3)
+        )],
+        1 => vec![format!(
+            "echo implode(\",\", array_slice({arr}, -{}));",
+            1 + r.below(3)
+        )],
         2 => vec![format!("echo array_sum(array_map(\"abs\", {arr}));")],
         3 => vec![format!("echo implode(\",\", array_merge([1, 2], {arr}));")],
-        4 => vec![format!("echo implode(\",\", array_unique([1, 1, 2, 2, 3]));")],
+        4 => vec![format!(
+            "echo implode(\",\", array_unique([1, 1, 2, 2, 3]));"
+        )],
         5 => vec![format!("echo count(array_filter({arr}));")],
         6 => vec![format!(
             "function dbl($x) {{ return $x * 2; }} echo implode(\",\", array_map(\"dbl\", {arr}));"
         )],
-        _ => vec![format!("echo implode(\",\", array_reverse(array_slice({arr}, 1)));")],
+        _ => vec![format!(
+            "echo implode(\",\", array_reverse(array_slice({arr}, 1)));"
+        )],
     }
 }
 
@@ -556,7 +667,10 @@ fn gen_multi(seed: u64) -> Vec<String> {
     match r.below(5) {
         0 => vec![
             "$a = [];".into(),
-            format!("for ($i = 0; $i < {}; $i++) {{ $a[] = $i * $i; }}", 3 + r.below(4)),
+            format!(
+                "for ($i = 0; $i < {}; $i++) {{ $a[] = $i * $i; }}",
+                3 + r.below(4)
+            ),
             "echo implode(\",\", $a);".into(),
         ],
         1 => vec![
@@ -575,7 +689,12 @@ fn gen_multi(seed: u64) -> Vec<String> {
             "echo $x;".into(),
         ],
         _ => vec![
-            format!("$t = 0; foreach ([{}, {}, {}] as $v) {{ if ($v % 2 == 0) {{ $t += $v; }} }}", ii(r), ii(r), ii(r)),
+            format!(
+                "$t = 0; foreach ([{}, {}, {}] as $v) {{ if ($v % 2 == 0) {{ $t += $v; }} }}",
+                ii(r),
+                ii(r),
+                ii(r)
+            ),
             "echo $t;".into(),
         ],
     }
@@ -592,30 +711,102 @@ struct Mode {
 }
 
 const MODES: &[Mode] = &[
-    Mode { name: "arith", gen: gen_arith },
-    Mode { name: "intdiv", gen: gen_intdiv },
-    Mode { name: "floatfmt", gen: gen_floatfmt },
-    Mode { name: "pow", gen: gen_pow },
-    Mode { name: "concat", gen: gen_concat },
-    Mode { name: "compare", gen: gen_compare },
-    Mode { name: "ternary", gen: gen_ternary },
-    Mode { name: "strfns", gen: gen_strfns },
-    Mode { name: "arrays", gen: gen_arrays },
-    Mode { name: "sorting", gen: gen_sorting },
-    Mode { name: "assoc", gen: gen_assoc },
-    Mode { name: "printf", gen: gen_printf },
-    Mode { name: "control", gen: gen_control },
-    Mode { name: "loops", gen: gen_loops },
-    Mode { name: "funcs", gen: gen_funcs },
-    Mode { name: "typeconv", gen: gen_typeconv },
-    Mode { name: "mathfns", gen: gen_mathfns },
-    Mode { name: "exprtree", gen: gen_exprtree },
-    Mode { name: "unary", gen: gen_unary },
-    Mode { name: "sprintf_rich", gen: gen_sprintf_rich },
-    Mode { name: "numedge", gen: gen_numedge },
-    Mode { name: "stredge", gen: gen_stredge },
-    Mode { name: "arraypipe", gen: gen_arraypipe },
-    Mode { name: "multi", gen: gen_multi },
+    Mode {
+        name: "arith",
+        gen: gen_arith,
+    },
+    Mode {
+        name: "intdiv",
+        gen: gen_intdiv,
+    },
+    Mode {
+        name: "floatfmt",
+        gen: gen_floatfmt,
+    },
+    Mode {
+        name: "pow",
+        gen: gen_pow,
+    },
+    Mode {
+        name: "concat",
+        gen: gen_concat,
+    },
+    Mode {
+        name: "compare",
+        gen: gen_compare,
+    },
+    Mode {
+        name: "ternary",
+        gen: gen_ternary,
+    },
+    Mode {
+        name: "strfns",
+        gen: gen_strfns,
+    },
+    Mode {
+        name: "arrays",
+        gen: gen_arrays,
+    },
+    Mode {
+        name: "sorting",
+        gen: gen_sorting,
+    },
+    Mode {
+        name: "assoc",
+        gen: gen_assoc,
+    },
+    Mode {
+        name: "printf",
+        gen: gen_printf,
+    },
+    Mode {
+        name: "control",
+        gen: gen_control,
+    },
+    Mode {
+        name: "loops",
+        gen: gen_loops,
+    },
+    Mode {
+        name: "funcs",
+        gen: gen_funcs,
+    },
+    Mode {
+        name: "typeconv",
+        gen: gen_typeconv,
+    },
+    Mode {
+        name: "mathfns",
+        gen: gen_mathfns,
+    },
+    Mode {
+        name: "exprtree",
+        gen: gen_exprtree,
+    },
+    Mode {
+        name: "unary",
+        gen: gen_unary,
+    },
+    Mode {
+        name: "sprintf_rich",
+        gen: gen_sprintf_rich,
+    },
+    Mode {
+        name: "numedge",
+        gen: gen_numedge,
+    },
+    Mode {
+        name: "stredge",
+        gen: gen_stredge,
+    },
+    Mode {
+        name: "arraypipe",
+        gen: gen_arraypipe,
+    },
+    Mode {
+        name: "multi",
+        gen: gen_multi,
+    },
 ];
 
 fn build_program(stmts: &[String]) -> String {
@@ -675,7 +866,10 @@ fn minimize(stmts: Vec<String>, bin: &Path, timeout: Duration) -> Vec<String> {
 
 /// Mask numeric/quoted literals so many instances of one gap collapse to a class.
 fn signature(mode: &str, program: &str) -> String {
-    let line = program.lines().filter(|l| !l.trim().is_empty()).next_back().unwrap_or("");
+    let line = program
+        .lines()
+        .rfind(|l| !l.trim().is_empty())
+        .unwrap_or("");
     let mut out = String::with_capacity(line.len());
     let bytes = line.as_bytes();
     let mut i = 0;
@@ -736,7 +930,9 @@ fn parse_args() -> Args {
     let mut a = Args {
         count: 2000,
         base_seed: 0,
-        jobs: std::thread::available_parallelism().map(|n| n.get().min(8)).unwrap_or(4),
+        jobs: std::thread::available_parallelism()
+            .map(|n| n.get().min(8))
+            .unwrap_or(4),
         timeout: Duration::from_millis(5000),
         once: None,
         mode: None,
@@ -748,9 +944,19 @@ fn parse_args() -> Args {
         match arg.as_str() {
             "--count" => a.count = it.next().and_then(|s| s.parse().ok()).unwrap_or(a.count),
             "--seed" => a.base_seed = it.next().and_then(|s| s.parse().ok()).unwrap_or(0),
-            "--jobs" => a.jobs = it.next().and_then(|s| s.parse().ok()).unwrap_or(a.jobs).max(1),
+            "--jobs" => {
+                a.jobs = it
+                    .next()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(a.jobs)
+                    .max(1)
+            }
             "--timeout" => {
-                a.timeout = it.next().and_then(|s| s.parse().ok()).map(Duration::from_millis).unwrap_or(a.timeout)
+                a.timeout = it
+                    .next()
+                    .and_then(|s| s.parse().ok())
+                    .map(Duration::from_millis)
+                    .unwrap_or(a.timeout)
             }
             "--once" => a.once = Some(1),
             "--mode" => a.mode = it.next().cloned(),
@@ -772,7 +978,10 @@ fn main() {
     let args = parse_args();
     let bin = ours_bin();
     if !bin.exists() {
-        eprintln!("parity-fuzz: phplang binary not found at {} (run `cargo build` first)", bin.display());
+        eprintln!(
+            "parity-fuzz: phplang binary not found at {} (run `cargo build` first)",
+            bin.display()
+        );
         std::process::exit(2);
     }
 
@@ -801,7 +1010,10 @@ fn main() {
 
     eprintln!("parity-fuzz: oracle = {}", oracle_id());
     eprintln!("parity-fuzz: ours   = {}", bin.display());
-    eprintln!("parity-fuzz: {} cases, {} jobs, base seed {}", args.count, args.jobs, args.base_seed);
+    eprintln!(
+        "parity-fuzz: {} cases, {} jobs, base seed {}",
+        args.count, args.jobs, args.base_seed
+    );
 
     let next = Arc::new(AtomicUsize::new(0));
     let divergences = Arc::new(Mutex::new(Vec::<Divergence>::new()));
@@ -876,7 +1088,11 @@ fn main() {
 
     println!("\n=== parity-fuzz summary ===");
     println!("ran        : {ran} cases in {:.1}s", elapsed.as_secs_f64());
-    println!("divergences: {} ({} distinct gap classes)", divs.len(), classes.len());
+    println!(
+        "divergences: {} ({} distinct gap classes)",
+        divs.len(),
+        classes.len()
+    );
 
     if !divs.is_empty() {
         let n = args.show.min(divs.len());
@@ -884,29 +1100,55 @@ fn main() {
         for d in divs.iter().take(n) {
             println!("\n[seed {}] mode={}", d.seed, d.mode);
             println!("  prog  : {}", d.program.replace('\n', " ⏎ "));
-            println!("  oracle: {}{:?}", if d.oracle_ok { "" } else { "(err) " }, d.oracle_out);
-            println!("  ours  : {}{:?}", if d.ours_ok { "" } else { "(err) " }, d.ours_out);
+            println!(
+                "  oracle: {}{:?}",
+                if d.oracle_ok { "" } else { "(err) " },
+                d.oracle_out
+            );
+            println!(
+                "  ours  : {}{:?}",
+                if d.ours_ok { "" } else { "(err) " },
+                d.ours_out
+            );
         }
         println!("\n--- gap classes (by frequency) ---");
         let mut sorted = classes.clone();
-        sorted.sort_by(|a, b| b.1.cmp(&a.1));
+        sorted.sort_by_key(|c| std::cmp::Reverse(c.1));
         for (sig, n, ex) in sorted {
             println!("  {n:>4}x  {sig}");
-            println!("          e.g. oracle={:?} ours={:?}", ex.oracle_out, ex.ours_out);
+            println!(
+                "          e.g. oracle={:?} ours={:?}",
+                ex.oracle_out, ex.ours_out
+            );
         }
 
         // Report file.
-        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target").join("parity-fuzz");
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("parity-fuzz");
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("divergences.txt");
         let mut report = String::new();
         report.push_str(&format!("oracle: {}\n", oracle_id()));
-        report.push_str(&format!("ran {ran} cases, {} divergences, {} classes\n\n", divs.len(), classes.len()));
+        report.push_str(&format!(
+            "ran {ran} cases, {} divergences, {} classes\n\n",
+            divs.len(),
+            classes.len()
+        ));
         for d in &divs {
-            report.push_str(&format!("[seed {}] mode={} sig={}\n", d.seed, d.mode, d.signature));
+            report.push_str(&format!(
+                "[seed {}] mode={} sig={}\n",
+                d.seed, d.mode, d.signature
+            ));
             report.push_str(&format!("  prog  : {}\n", d.program.replace('\n', " ; ")));
-            report.push_str(&format!("  oracle: exit_ok={} {:?}\n", d.oracle_ok, d.oracle_out));
-            report.push_str(&format!("  ours  : exit_ok={} {:?}\n\n", d.ours_ok, d.ours_out));
+            report.push_str(&format!(
+                "  oracle: exit_ok={} {:?}\n",
+                d.oracle_ok, d.oracle_out
+            ));
+            report.push_str(&format!(
+                "  ours  : exit_ok={} {:?}\n\n",
+                d.ours_ok, d.ours_out
+            ));
         }
         use std::io::Write;
         if let Ok(mut f) = std::fs::File::create(&path) {
@@ -915,6 +1157,9 @@ fn main() {
         }
         std::process::exit(1);
     } else {
-        println!("\nno divergences — phplang matches {} on this corpus.", oracle_path());
+        println!(
+            "\nno divergences — phplang matches {} on this corpus.",
+            oracle_path()
+        );
     }
 }

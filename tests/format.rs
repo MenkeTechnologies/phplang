@@ -42,7 +42,10 @@ fn float_scientific_notation() {
     assert_eq!(run(r#"<?php echo 1e100;"#), "1.0E+100");
     assert_eq!(run(r#"<?php echo 1.5e-10;"#), "1.5E-10");
     assert_eq!(run(r#"<?php echo 100000000000000.0;"#), "1.0E+14");
-    assert_eq!(run(r#"<?php echo 9223372036854775807 * 2;"#), "1.844674407371E+19");
+    assert_eq!(
+        run(r#"<?php echo 9223372036854775807 * 2;"#),
+        "1.844674407371E+19"
+    );
 }
 
 #[test]
@@ -55,7 +58,10 @@ fn float_fixed_notation() {
 
 #[test]
 fn wordwrap_cut_and_wrap() {
-    assert_eq!(run(r#"<?php echo wordwrap("aaa bbb ccc", 3, "/", true);"#), "aaa/bbb/ccc");
+    assert_eq!(
+        run(r#"<?php echo wordwrap("aaa bbb ccc", 3, "/", true);"#),
+        "aaa/bbb/ccc"
+    );
     assert_eq!(
         run(r#"<?php echo wordwrap("The quick brown fox", 10);"#),
         "The quick\nbrown fox"

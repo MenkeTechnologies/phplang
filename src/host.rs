@@ -246,7 +246,11 @@ impl PhpHost {
     pub fn index_set_var(&mut self, name: &str, key: &Value, val: Value) {
         let arr = self.ensure_array_var(name);
         let k = self.norm_key(key);
-        if let Some(PhpObj::Array { entries, next_index }) = self.as_array_mut(&arr) {
+        if let Some(PhpObj::Array {
+            entries,
+            next_index,
+        }) = self.as_array_mut(&arr)
+        {
             if let ArrayKey::Int(n) = k {
                 if n >= *next_index {
                     *next_index = n + 1;
@@ -259,7 +263,11 @@ impl PhpHost {
     /// `$var[] = val` append on the named scope variable, auto-vivifying.
     pub fn append_var(&mut self, name: &str, val: Value) {
         let arr = self.ensure_array_var(name);
-        if let Some(PhpObj::Array { entries, next_index }) = self.as_array_mut(&arr) {
+        if let Some(PhpObj::Array {
+            entries,
+            next_index,
+        }) = self.as_array_mut(&arr)
+        {
             let k = ArrayKey::Int(*next_index);
             *next_index += 1;
             entries.insert(k, val);
@@ -280,7 +288,11 @@ impl PhpHost {
 
     /// Append `v` under the next integer key of the array `arr` (a handle).
     pub fn arr_push_auto(&mut self, arr: &Value, v: Value) {
-        if let Some(PhpObj::Array { entries, next_index }) = self.as_array_mut(arr) {
+        if let Some(PhpObj::Array {
+            entries,
+            next_index,
+        }) = self.as_array_mut(arr)
+        {
             let k = ArrayKey::Int(*next_index);
             *next_index += 1;
             entries.insert(k, v);
@@ -290,7 +302,11 @@ impl PhpHost {
     /// Insert `v` under `key` in the array `arr` (a handle).
     pub fn arr_set_key(&mut self, arr: &Value, key: &Value, v: Value) {
         let k = self.norm_key(key);
-        if let Some(PhpObj::Array { entries, next_index }) = self.as_array_mut(arr) {
+        if let Some(PhpObj::Array {
+            entries,
+            next_index,
+        }) = self.as_array_mut(arr)
+        {
             if let ArrayKey::Int(n) = k {
                 if n >= *next_index {
                     *next_index = n + 1;
@@ -304,7 +320,11 @@ impl PhpHost {
     /// in place — the mutation is visible through every variable holding the same
     /// handle (`sort`/`rsort`). No-op if `arr` is not an array.
     pub fn arr_set_reindexed(&mut self, arr: &Value, vals: Vec<Value>) {
-        if let Some(PhpObj::Array { entries, next_index }) = self.as_array_mut(arr) {
+        if let Some(PhpObj::Array {
+            entries,
+            next_index,
+        }) = self.as_array_mut(arr)
+        {
             entries.clear();
             *next_index = 0;
             for v in vals {
@@ -319,9 +339,15 @@ impl PhpHost {
     /// list, preserving keys, in place (`asort`/`ksort`).
     pub fn arr_set_pairs(&mut self, arr: &Value, pairs: Vec<(Value, Value)>) {
         // Normalize keys under `&self` first, then take the `&mut self` borrow.
-        let normed: Vec<(ArrayKey, Value)> =
-            pairs.into_iter().map(|(k, v)| (self.norm_key(&k), v)).collect();
-        if let Some(PhpObj::Array { entries, next_index }) = self.as_array_mut(arr) {
+        let normed: Vec<(ArrayKey, Value)> = pairs
+            .into_iter()
+            .map(|(k, v)| (self.norm_key(&k), v))
+            .collect();
+        if let Some(PhpObj::Array {
+            entries,
+            next_index,
+        }) = self.as_array_mut(arr)
+        {
             entries.clear();
             *next_index = 0;
             for (k, v) in normed {
@@ -350,7 +376,11 @@ impl PhpHost {
             _ => Vec::new(),
         };
         let arr = self.new_array();
-        if let Some(PhpObj::Array { entries, next_index }) = self.as_array_mut(&arr) {
+        if let Some(PhpObj::Array {
+            entries,
+            next_index,
+        }) = self.as_array_mut(&arr)
+        {
             for (i, k) in keys.into_iter().enumerate() {
                 entries.insert(ArrayKey::Int(i as i64), k);
                 *next_index = (i + 1) as i64;
@@ -369,9 +399,12 @@ impl PhpHost {
     /// The array's `(key, value)` pairs, cloned (for `print_r`/`implode`/etc.).
     pub fn array_pairs(&self, recv: &Value) -> Option<Vec<(Value, Value)>> {
         match self.as_array(recv) {
-            Some(PhpObj::Array { entries, .. }) => {
-                Some(entries.iter().map(|(k, v)| (k.to_value(), v.clone())).collect())
-            }
+            Some(PhpObj::Array { entries, .. }) => Some(
+                entries
+                    .iter()
+                    .map(|(k, v)| (k.to_value(), v.clone()))
+                    .collect(),
+            ),
             _ => None,
         }
     }
@@ -489,7 +522,9 @@ pub fn call_function(name: &str, args: Vec<Value>) -> Result<Value, String> {
         with_host(|h| {
             let mut scope = Scope::default();
             for (i, p) in def.params.iter().enumerate() {
-                scope.vars.insert(p.clone(), args.get(i).cloned().unwrap_or(Value::Undef));
+                scope
+                    .vars
+                    .insert(p.clone(), args.get(i).cloned().unwrap_or(Value::Undef));
             }
             h.scopes.push(scope);
         });
@@ -536,7 +571,11 @@ fn float_to_php_string(f: f64) -> String {
 /// `%g` with a caller-supplied precision.
 pub fn php_gcvt(f: f64, precision: usize) -> String {
     if f == 0.0 {
-        return if f.is_sign_negative() { "-0".into() } else { "0".into() };
+        return if f.is_sign_negative() {
+            "-0".into()
+        } else {
+            "0".into()
+        };
     }
     let neg = f < 0.0;
     let a = f.abs();
@@ -560,7 +599,11 @@ pub fn php_gcvt(f: f64, precision: usize) -> String {
             format!("{mant}.0")
         };
         let exp_n: i32 = ex.parse().unwrap_or(0);
-        format!("{mant}E{}{}", if exp_n < 0 { "-" } else { "+" }, exp_n.abs())
+        format!(
+            "{mant}E{}{}",
+            if exp_n < 0 { "-" } else { "+" },
+            exp_n.abs()
+        )
     } else {
         let decimals = (precision as i32 - 1 - exp).max(0) as usize;
         let s = format!("{a:.decimals$}");
@@ -625,7 +668,7 @@ pub fn is_numeric_string(s: &str) -> bool {
     if t.is_empty() {
         return false;
     }
-    matches!(parse_php_number_full(t), Some(_))
+    parse_php_number_full(t).is_some()
 }
 
 /// Parse a string that is *entirely* numeric (no trailing garbage), or `None`.

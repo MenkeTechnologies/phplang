@@ -436,7 +436,10 @@ pub fn numeric_hook(op: NumOp, a: &Value, b: &Value) -> Result<Value, String> {
         let an = h.to_number(a);
         if op == NumOp::Neg {
             return Ok(match an {
-                Value::Int(n) => n.checked_neg().map(Value::int).unwrap_or(Value::float(-(n as f64))),
+                Value::Int(n) => n
+                    .checked_neg()
+                    .map(Value::int)
+                    .unwrap_or(Value::float(-(n as f64))),
                 Value::Float(f) => Value::float(-f),
                 _ => Value::int(0),
             });
@@ -502,7 +505,9 @@ pub fn call_library(name: &str, args: Vec<Value>) -> Result<Value, String> {
             let n = arg(&args, 1).to_int().max(0) as usize;
             Value::str(s.repeat(n))
         }),
-        "strrev" => with_host(|h| Value::str(h.to_str(&arg(&args, 0)).chars().rev().collect::<String>())),
+        "strrev" => {
+            with_host(|h| Value::str(h.to_str(&arg(&args, 0)).chars().rev().collect::<String>()))
+        }
         "wordwrap" => with_host(|h| php_wordwrap(h, &args)),
         "substr" => with_host(|h| Value::str(php_substr(&h.to_str(&arg(&args, 0)), &args))),
         "strpos" => with_host(|h| php_strpos(h, &args)),
@@ -530,9 +535,7 @@ pub fn call_library(name: &str, args: Vec<Value>) -> Result<Value, String> {
         "min" => with_host(|h| fold_cmp(h, &args, false)),
         "gettype" => with_host(|h| Value::str(h.type_name(&arg(&args, 0)).to_string())),
         "is_array" => with_host(|h| Value::bool(h.is_array(&arg(&args, 0)))),
-        "is_int" | "is_integer" | "is_long" => {
-            Value::bool(matches!(arg(&args, 0), Value::Int(_)))
-        }
+        "is_int" | "is_integer" | "is_long" => Value::bool(matches!(arg(&args, 0), Value::Int(_))),
         "is_float" | "is_double" => Value::bool(matches!(arg(&args, 0), Value::Float(_))),
         "is_string" => Value::bool(matches!(arg(&args, 0), Value::Str(_))),
         "is_bool" => Value::bool(matches!(arg(&args, 0), Value::Bool(_))),
@@ -575,14 +578,20 @@ pub fn call_library(name: &str, args: Vec<Value>) -> Result<Value, String> {
         // ── strings ──────────────────────────────────────────────────────
         "str_split" => with_host(|h| php_str_split(h, &args)),
         "str_pad" => with_host(|h| Value::str(php_str_pad(h, &args))),
-        "str_contains" => with_host(|h| {
-            Value::bool(h.to_str(&arg(&args, 0)).contains(&h.to_str(&arg(&args, 1))))
-        }),
+        "str_contains" => {
+            with_host(|h| Value::bool(h.to_str(&arg(&args, 0)).contains(&h.to_str(&arg(&args, 1)))))
+        }
         "str_starts_with" => with_host(|h| {
-            Value::bool(h.to_str(&arg(&args, 0)).starts_with(&h.to_str(&arg(&args, 1))))
+            Value::bool(
+                h.to_str(&arg(&args, 0))
+                    .starts_with(&h.to_str(&arg(&args, 1))),
+            )
         }),
         "str_ends_with" => with_host(|h| {
-            Value::bool(h.to_str(&arg(&args, 0)).ends_with(&h.to_str(&arg(&args, 1))))
+            Value::bool(
+                h.to_str(&arg(&args, 0))
+                    .ends_with(&h.to_str(&arg(&args, 1))),
+            )
         }),
         "ucwords" => with_host(|h| Value::str(ucwords(&h.to_str(&arg(&args, 0))))),
         "lcfirst" => with_host(|h| Value::str(lcfirst(&h.to_str(&arg(&args, 0))))),
@@ -591,7 +600,9 @@ pub fn call_library(name: &str, args: Vec<Value>) -> Result<Value, String> {
             with_host(|h| Value::str(html_special_chars(&h.to_str(&arg(&args, 0)))))
         }
         "strcmp" => with_host(|h| {
-            Value::int(sign(h.to_str(&arg(&args, 0)).cmp(&h.to_str(&arg(&args, 1)))))
+            Value::int(sign(
+                h.to_str(&arg(&args, 0)).cmp(&h.to_str(&arg(&args, 1))),
+            ))
         }),
         "strcasecmp" => with_host(|h| {
             let a = h.to_str(&arg(&args, 0)).to_lowercase();
@@ -605,10 +616,12 @@ pub fn call_library(name: &str, args: Vec<Value>) -> Result<Value, String> {
             let n = (h.to_number(&arg(&args, 0)).to_int().rem_euclid(256)) as u8;
             Value::str((n as char).to_string())
         }),
-        "ord" => with_host(|h| {
-            Value::int(h.to_str(&arg(&args, 0)).bytes().next().unwrap_or(0) as i64)
-        }),
-        "dechex" => with_host(|h| Value::str(format!("{:x}", h.to_number(&arg(&args, 0)).to_int()))),
+        "ord" => {
+            with_host(|h| Value::int(h.to_str(&arg(&args, 0)).bytes().next().unwrap_or(0) as i64))
+        }
+        "dechex" => {
+            with_host(|h| Value::str(format!("{:x}", h.to_number(&arg(&args, 0)).to_int())))
+        }
         "hexdec" => with_host(|h| {
             Value::int(i64::from_str_radix(h.to_str(&arg(&args, 0)).trim(), 16).unwrap_or(0))
         }),
@@ -621,7 +634,9 @@ pub fn call_library(name: &str, args: Vec<Value>) -> Result<Value, String> {
         "pow" => with_host(|h| php_pow(h, &args)),
         "intdiv" => return php_intdiv(&args),
         "fmod" => with_host(|h| {
-            Value::float(h.to_number(&arg(&args, 0)).to_float() % h.to_number(&arg(&args, 1)).to_float())
+            Value::float(
+                h.to_number(&arg(&args, 0)).to_float() % h.to_number(&arg(&args, 1)).to_float(),
+            )
         }),
         "sin" => with_host(|h| Value::float(h.to_number(&arg(&args, 0)).to_float().sin())),
         "cos" => with_host(|h| Value::float(h.to_number(&arg(&args, 0)).to_float().cos())),
@@ -630,7 +645,9 @@ pub fn call_library(name: &str, args: Vec<Value>) -> Result<Value, String> {
         "log" => with_host(|h| {
             let x = h.to_number(&arg(&args, 0)).to_float();
             match args.get(1) {
-                Some(b) if !matches!(b, Value::Undef) => Value::float(x.log(h.to_number(b).to_float())),
+                Some(b) if !matches!(b, Value::Undef) => {
+                    Value::float(x.log(h.to_number(b).to_float()))
+                }
                 _ => Value::float(x.ln()),
             }
         }),
@@ -696,7 +713,11 @@ fn ucfirst(s: &str) -> String {
 fn fold_cmp(h: &host::PhpHost, args: &[Value], want_max: bool) -> Value {
     // max/min accept either a single array or a variadic list.
     let items: Vec<Value> = if args.len() == 1 && h.is_array(&args[0]) {
-        h.array_pairs(&args[0]).unwrap_or_default().into_iter().map(|(_, v)| v).collect()
+        h.array_pairs(&args[0])
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(_, v)| v)
+            .collect()
     } else {
         args.to_vec()
     };
@@ -736,7 +757,9 @@ fn php_substr(s: &str, args: &[Value]) -> String {
         }
         _ => chars.len() - start,
     };
-    chars[start..(start + count).min(chars.len())].iter().collect()
+    chars[start..(start + count).min(chars.len())]
+        .iter()
+        .collect()
 }
 
 fn php_strpos(h: &host::PhpHost, args: &[Value]) -> Value {
@@ -789,13 +812,17 @@ fn php_in_array(h: &host::PhpHost, args: &[Value]) -> Value {
     let needle = arg(args, 0);
     let hay = arg(args, 1);
     let strict = args.get(2).map(|v| h.is_truthy(v)).unwrap_or(false);
-    let found = h.array_pairs(&hay).unwrap_or_default().iter().any(|(_, v)| {
-        if strict {
-            strict_eq(h, &needle, v)
-        } else {
-            loose_eq(h, &needle, v)
-        }
-    });
+    let found = h
+        .array_pairs(&hay)
+        .unwrap_or_default()
+        .iter()
+        .any(|(_, v)| {
+            if strict {
+                strict_eq(h, &needle, v)
+            } else {
+                loose_eq(h, &needle, v)
+            }
+        });
     Value::bool(found)
 }
 
@@ -929,7 +956,16 @@ fn parse_spec(fmt: &[char], i: &mut usize) -> Option<FmtSpec> {
     let conv = *fmt.get(j)?;
     j += 1;
     *i = j;
-    Some(FmtSpec { argnum, left, plus, space, pad, width, precision, conv })
+    Some(FmtSpec {
+        argnum,
+        left,
+        plus,
+        space,
+        pad,
+        width,
+        precision,
+        conv,
+    })
 }
 
 /// Render one parsed spec against its argument value.
@@ -942,10 +978,22 @@ fn render_spec(h: &host::PhpHost, s: &FmtSpec, v: &Value) -> String {
             (signed(n.unsigned_abs().to_string(), n < 0, s), true)
         }
         'u' => ((h.to_number(v).to_int() as u64).to_string(), true),
-        'b' => ((h.to_number(v).to_int() as u64).pipe(|u| format!("{u:b}")), true),
-        'o' => ((h.to_number(v).to_int() as u64).pipe(|u| format!("{u:o}")), true),
-        'x' => ((h.to_number(v).to_int() as u64).pipe(|u| format!("{u:x}")), true),
-        'X' => ((h.to_number(v).to_int() as u64).pipe(|u| format!("{u:X}")), true),
+        'b' => (
+            (h.to_number(v).to_int() as u64).pipe(|u| format!("{u:b}")),
+            true,
+        ),
+        'o' => (
+            (h.to_number(v).to_int() as u64).pipe(|u| format!("{u:o}")),
+            true,
+        ),
+        'x' => (
+            (h.to_number(v).to_int() as u64).pipe(|u| format!("{u:x}")),
+            true,
+        ),
+        'X' => (
+            (h.to_number(v).to_int() as u64).pipe(|u| format!("{u:X}")),
+            true,
+        ),
         'c' => (
             char::from_u32(h.to_number(v).to_int() as u32 & 0xff)
                 .map(|c| c.to_string())
@@ -955,7 +1003,10 @@ fn render_spec(h: &host::PhpHost, s: &FmtSpec, v: &Value) -> String {
         'f' | 'F' => {
             let f = h.to_number(v).to_float();
             let p = s.precision.unwrap_or(6);
-            (signed(format!("{:.*}", p, f.abs()), f.is_sign_negative(), s), true)
+            (
+                signed(format!("{:.*}", p, f.abs()), f.is_sign_negative(), s),
+                true,
+            )
         }
         'e' | 'E' => {
             let f = h.to_number(v).to_float();
@@ -998,7 +1049,11 @@ fn fmt_exp(f: f64, prec: usize, upper: bool) -> String {
     let (mant, ex) = raw.split_once('e').unwrap_or((raw.as_str(), "0"));
     let exp_n: i32 = ex.parse().unwrap_or(0);
     let e = if upper { 'E' } else { 'e' };
-    format!("{mant}{e}{}{}", if exp_n < 0 { "-" } else { "+" }, exp_n.abs())
+    format!(
+        "{mant}{e}{}{}",
+        if exp_n < 0 { "-" } else { "+" },
+        exp_n.abs()
+    )
 }
 
 /// Apply width/justification/pad to a rendered body.
@@ -1030,7 +1085,10 @@ fn pad_field(body: String, s: &FmtSpec, is_num: bool) -> String {
 fn php_wordwrap(h: &host::PhpHost, args: &[Value]) -> Value {
     let text = h.to_str(&arg(args, 0));
     let width = args.get(1).map(|v| v.to_int()).unwrap_or(75).max(1) as usize;
-    let brk = args.get(2).map(|v| h.to_str(v)).unwrap_or_else(|| "\n".to_string());
+    let brk = args
+        .get(2)
+        .map(|v| h.to_str(v))
+        .unwrap_or_else(|| "\n".to_string());
     let cut = args.get(3).map(|v| h.is_truthy(v)).unwrap_or(false);
 
     let mut out = String::new();
@@ -1172,9 +1230,7 @@ fn php_str_pad(h: &host::PhpHost, args: &[Value]) -> String {
         return s;
     }
     let need = (target - cur) as usize;
-    let make = |n: usize| -> String {
-        pad.chars().cycle().take(n).collect::<String>()
-    };
+    let make = |n: usize| -> String { pad.chars().cycle().take(n).collect::<String>() };
     match ty {
         0 => format!("{}{}", make(need), s),
         2 => {
@@ -1223,8 +1279,14 @@ fn html_special_chars(s: &str) -> String {
 fn php_number_format(h: &host::PhpHost, args: &[Value]) -> String {
     let num = h.to_number(&arg(args, 0)).to_float();
     let dec = args.get(1).map(|v| v.to_int()).unwrap_or(0).max(0) as usize;
-    let dp = args.get(2).map(|v| h.to_str(v)).unwrap_or_else(|| ".".to_string());
-    let ts = args.get(3).map(|v| h.to_str(v)).unwrap_or_else(|| ",".to_string());
+    let dp = args
+        .get(2)
+        .map(|v| h.to_str(v))
+        .unwrap_or_else(|| ".".to_string());
+    let ts = args
+        .get(3)
+        .map(|v| h.to_str(v))
+        .unwrap_or_else(|| ",".to_string());
     let neg = num < 0.0;
     // PHP rounds half away from zero; pre-round so Rust's round-half-to-even
     // formatting can't turn 100.25 into "100.2" where PHP gives "100.3".
@@ -1271,7 +1333,12 @@ fn php_pow(h: &host::PhpHost, args: &[Value]) -> Value {
 }
 
 fn php_intdiv(args: &[Value]) -> Result<Value, String> {
-    let (x, y) = with_host(|h| (h.to_number(&arg(args, 0)).to_int(), h.to_number(&arg(args, 1)).to_int()));
+    let (x, y) = with_host(|h| {
+        (
+            h.to_number(&arg(args, 0)).to_int(),
+            h.to_number(&arg(args, 1)).to_int(),
+        )
+    });
     if y == 0 {
         return Err("Division by zero".to_string());
     }
@@ -1290,8 +1357,7 @@ fn is_list(pairs: &[(Value, Value)]) -> bool {
 }
 
 fn php_array_merge(h: &mut host::PhpHost, args: &[Value]) -> Value {
-    let all: Vec<Vec<(Value, Value)>> =
-        args.iter().filter_map(|a| h.array_pairs(a)).collect();
+    let all: Vec<Vec<(Value, Value)>> = args.iter().filter_map(|a| h.array_pairs(a)).collect();
     let out = h.new_array();
     for pairs in all {
         for (k, v) in pairs {
@@ -1431,7 +1497,11 @@ fn php_array_fold(h: &host::PhpHost, arr: &Value, product: bool) -> Value {
         let mut acc: i64 = if product { 1 } else { 0 };
         for (_, v) in &pairs {
             let n = h.to_number(v).to_int();
-            acc = if product { acc.wrapping_mul(n) } else { acc.wrapping_add(n) };
+            acc = if product {
+                acc.wrapping_mul(n)
+            } else {
+                acc.wrapping_add(n)
+            };
         }
         Value::int(acc)
     } else {
@@ -1555,7 +1625,7 @@ fn php_array_combine(h: &mut host::PhpHost, args: &[Value]) -> Value {
     let keys = h.array_pairs(&arg(args, 0)).unwrap_or_default();
     let vals = h.array_pairs(&arg(args, 1)).unwrap_or_default();
     let out = h.new_array();
-    for ((_, k), (_, v)) in keys.into_iter().zip(vals.into_iter()) {
+    for ((_, k), (_, v)) in keys.into_iter().zip(vals) {
         h.arr_set_key(&out, &k, v);
     }
     out
@@ -1600,7 +1670,7 @@ fn php_var_export(h: &host::PhpHost, v: &Value, depth: usize) -> String {
         Value::Obj(_) => {
             let pad = "  ".repeat(depth);
             let inner = "  ".repeat(depth + 1);
-            let mut out = format!("array (\n");
+            let mut out = "array (\n".to_string();
             for (k, val) in h.array_pairs(v).unwrap_or_default() {
                 let key = match k {
                     Value::Int(n) => n.to_string(),
@@ -1628,13 +1698,17 @@ fn php_json_encode(h: &host::PhpHost, v: &Value) -> String {
         Value::Obj(_) => {
             let pairs = h.array_pairs(v).unwrap_or_default();
             if is_list(&pairs) {
-                let items: Vec<String> =
-                    pairs.iter().map(|(_, val)| php_json_encode(h, val)).collect();
+                let items: Vec<String> = pairs
+                    .iter()
+                    .map(|(_, val)| php_json_encode(h, val))
+                    .collect();
                 format!("[{}]", items.join(","))
             } else {
                 let items: Vec<String> = pairs
                     .iter()
-                    .map(|(k, val)| format!("{}:{}", json_string(&h.to_str(k)), php_json_encode(h, val)))
+                    .map(|(k, val)| {
+                        format!("{}:{}", json_string(&h.to_str(k)), php_json_encode(h, val))
+                    })
                     .collect();
                 format!("{{{}}}", items.join(","))
             }

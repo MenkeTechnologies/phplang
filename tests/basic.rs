@@ -112,7 +112,10 @@ fn library_functions() {
     assert_eq!(run(r#"<?php echo strtoupper("abc");"#), "ABC");
     assert_eq!(run(r#"<?php echo implode("-", [1, 2, 3]);"#), "1-2-3");
     assert_eq!(run(r#"<?php echo count([1, 2, 3]);"#), "3");
-    assert_eq!(run(r#"<?php echo in_array(2, [1, 2, 3]) ? "y" : "n";"#), "y");
+    assert_eq!(
+        run(r#"<?php echo in_array(2, [1, 2, 3]) ? "y" : "n";"#),
+        "y"
+    );
     assert_eq!(run(r#"<?php echo max(3, 7, 1);"#), "7");
 }
 

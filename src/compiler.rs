@@ -154,7 +154,7 @@ impl Compiler {
     ) -> Result<(), String> {
         // Flatten if/elseif/else into a chain; each arm jumps to the shared end.
         let mut ends: Vec<usize> = Vec::new();
-        let arms: Vec<(&Expr, &[Stmt])> = std::iter::once((cond, then.as_ref()))
+        let arms: Vec<(&Expr, &[Stmt])> = std::iter::once((cond, then))
             .chain(elifs.iter().map(|(c, body)| (c, body.as_slice())))
             .collect();
 
@@ -640,7 +640,14 @@ impl Compiler {
             let jend = b.emit(Op::Jump(0), 0);
             let shortcut = b.current_pos();
             b.patch_jump(short, shortcut);
-            b.emit(if op == BinOp::And { Op::LoadFalse } else { Op::LoadTrue }, 0);
+            b.emit(
+                if op == BinOp::And {
+                    Op::LoadFalse
+                } else {
+                    Op::LoadTrue
+                },
+                0,
+            );
             let end = b.current_pos();
             b.patch_jump(jend, end);
             return Ok(());
