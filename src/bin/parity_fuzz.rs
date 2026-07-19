@@ -405,6 +405,183 @@ fn gen_mathfns(seed: u64) -> Vec<String> {
 }
 
 // ---------------------------------------------------------------------------
+// Harder generators — compound programs stressing precedence, coercion, and
+// stdlib edge cases where a scaffold is most likely to disagree with real PHP.
+// ---------------------------------------------------------------------------
+
+/// A numeric leaf (int or float literal) for the precedence tree.
+fn num_leaf<'a>(r: &mut Rng) -> &'a str {
+    if r.below(3) == 0 {
+        ff(r)
+    } else {
+        ii(r)
+    }
+}
+
+/// An UNPARENTHESIZED flat sequence of numeric operands joined by mixed-precedence
+/// operators — no parens, so the two implementations must agree on precedence and
+/// associativity to produce the same value. Operands stay numeric so PHP 8's
+/// non-numeric-string TypeError never enters (that is a separate mode).
+fn gen_exprtree(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    // Arithmetic-only chain — no `/`/`%` (div-by-zero would just make both sides
+    // error and agree) and NO chained comparisons (PHP 8 comparison operators are
+    // non-associative: `1 < 2 < 3` is a fatal parse error, so a chain would only
+    // test that we also reject invalid PHP, not real semantics).
+    let ops = ["+", "-", "*"];
+    let arith = |r: &mut Rng| {
+        let n = 2 + r.below(4); // 2..=5 operands
+        let mut e = num_leaf(r).to_string();
+        for _ in 1..n {
+            e = format!("{e} {} {}", r.pick(&ops), num_leaf(r));
+        }
+        e
+    };
+    // Optionally cap the arithmetic with a single top-level comparison.
+    if r.below(2) == 0 {
+        let cmp = ["<", ">", "<=", ">=", "==", "!="];
+        vec![format!("var_dump({} {} {});", arith(r), r.pick(&cmp), arith(r))]
+    } else {
+        vec![format!("echo {};", arith(r))]
+    }
+}
+
+/// Unary-operator stress: stacked `-`/`!`, mixed with `**` (which must bind
+/// tighter than unary minus) and parenthesised sub-expressions.
+fn gen_unary(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    match r.below(6) {
+        0 => vec![format!("echo - - {};", ii(r))],
+        1 => vec![format!("echo -{} ** {};", r.pick(&["2", "3", "4"]), r.pick(&["2", "3"]))],
+        2 => vec![format!("echo !!{};", r.pick(&["0", "1", "5", "\"\"", "\"a\""]))],
+        3 => vec![format!("echo -{} * -{};", ii(r), ii(r))],
+        4 => vec![format!("echo {} - -{};", ii(r), ii(r))],
+        _ => vec![format!("var_dump(!({} > {}));", ii(r), ii(r))],
+    }
+}
+
+const SPRINTF_SPECS: &[&str] = &[
+    "%d", "%5d", "%-5d", "%05d", "%+d", "%x", "%X", "%o", "%b", "%c", "%e", "%.2f", "%8.3f",
+    "%-8.2f", "%+.1f", "%s", "%10s", "%-10s", "%%", "%'*8d", "%1\\$d", "%g",
+];
+
+/// `sprintf`/`printf` with width, precision, flags, and the full conversion set —
+/// stresses the format engine well past the plain `%s %d %f` the tests cover.
+fn gen_sprintf_rich(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let spec = r.pick(SPRINTF_SPECS);
+    let arg = if spec.contains('f') || spec.contains('e') || spec.contains('g') {
+        ff(r)
+    } else if spec.contains('s') {
+        return vec![format!("echo sprintf(\"[{spec}]\", \"{}\");", ww(r))];
+    } else if spec.contains('c') {
+        return vec![format!("echo sprintf(\"{spec}\", {});", 65 + r.below(26))];
+    } else if *spec == "%%" {
+        return vec!["echo sprintf(\"100%%\");".to_string()];
+    } else {
+        ii(r)
+    };
+    vec![format!("echo sprintf(\"[{spec}]\", {arg});")]
+}
+
+/// Number-formatting edge cases: values needing 14-digit precision, integer
+/// overflow into float, scientific notation, very small/large magnitudes.
+fn gen_numedge(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let vals = [
+        "0.1 + 0.2",
+        "1 / 3",
+        "2 / 3",
+        "10 / 7",
+        "9223372036854775807 + 1",
+        "9223372036854775807 * 2",
+        "1.0e100",
+        "1.5e-10",
+        "0.0001",
+        "123456789012345",
+        "1234567890.12345",
+        "1e20",
+        "-0.0",
+        "100000000000000.0",
+        "3.0 / 2.0",
+        "7 % 3",
+        "-7 % 3",
+        "7 % -3",
+        "2 ** 63",
+        "2 ** 64",
+    ];
+    vec![format!("echo {};", r.pick(&vals))]
+}
+
+/// String-function edge cases: negative offsets, pad types, replace, case ops.
+fn gen_stredge(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let w = ww(r);
+    match r.below(9) {
+        0 => vec![format!("echo substr(\"{w}\", -{});", 1 + r.below(3))],
+        1 => vec![format!("echo substr(\"hello\", {}, -{});", r.below(2), 1 + r.below(2))],
+        2 => vec![format!("echo str_pad(\"{w}\", {}, \"ab\", {});", 6 + r.below(3), r.below(3))],
+        3 => vec![format!("echo str_replace(\"{}\", \"X\", \"{w}{w}\");", &w[..1])],
+        4 => vec![format!("echo ucwords(\"{} {}\");", ww(r), ww(r))],
+        5 => vec![format!("echo strrev(\"{w}\");")],
+        6 => vec![format!("echo wordwrap(\"{w} {w} {w}\", {}, \"\\n\", true);", 4 + r.below(6))],
+        7 => vec![format!("echo str_repeat(\"{}\", {});", &w[..1], r.below(6))],
+        _ => vec![format!("var_dump(strpos(\"{w}\", \"{}\"));", &w[..1])],
+    }
+}
+
+/// Array pipelines: map/filter/reduce with named callbacks, slice with negatives,
+/// merge, unique — the compositional core of everyday PHP.
+fn gen_arraypipe(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let arr = format!("[{}, {}, {}, {}, {}]", ii(r), ii(r), ii(r), ii(r), ii(r));
+    match r.below(8) {
+        0 => vec![format!("echo implode(\",\", array_slice({arr}, {}, {}));", r.below(3), 1 + r.below(3))],
+        1 => vec![format!("echo implode(\",\", array_slice({arr}, -{}));", 1 + r.below(3))],
+        2 => vec![format!("echo array_sum(array_map(\"abs\", {arr}));")],
+        3 => vec![format!("echo implode(\",\", array_merge([1, 2], {arr}));")],
+        4 => vec![format!("echo implode(\",\", array_unique([1, 1, 2, 2, 3]));")],
+        5 => vec![format!("echo count(array_filter({arr}));")],
+        6 => vec![format!(
+            "function dbl($x) {{ return $x * 2; }} echo implode(\",\", array_map(\"dbl\", {arr}));"
+        )],
+        _ => vec![format!("echo implode(\",\", array_reverse(array_slice({arr}, 1)));")],
+    }
+}
+
+/// Multi-statement accumulation programs: build state across statements, then
+/// print a deterministic summary.
+fn gen_multi(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    match r.below(5) {
+        0 => vec![
+            "$a = [];".into(),
+            format!("for ($i = 0; $i < {}; $i++) {{ $a[] = $i * $i; }}", 3 + r.below(4)),
+            "echo implode(\",\", $a);".into(),
+        ],
+        1 => vec![
+            format!("$s = \"\"; $n = {};", 3 + r.below(4)),
+            "for ($i = 1; $i <= $n; $i++) { $s .= $i; }".into(),
+            "echo $s;".into(),
+        ],
+        2 => vec![
+            format!("$m = [\"a\" => {}, \"b\" => {}];", ii(r), ii(r)),
+            "$m[\"c\"] = $m[\"a\"] + $m[\"b\"];".into(),
+            "echo $m[\"c\"];".into(),
+        ],
+        3 => vec![
+            format!("$x = {};", ii(r)),
+            format!("$x += {}; $x *= 2; $x -= {};", ii(r), ii(r)),
+            "echo $x;".into(),
+        ],
+        _ => vec![
+            format!("$t = 0; foreach ([{}, {}, {}] as $v) {{ if ($v % 2 == 0) {{ $t += $v; }} }}", ii(r), ii(r), ii(r)),
+            "echo $t;".into(),
+        ],
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Mode registry.
 // ---------------------------------------------------------------------------
 
@@ -432,6 +609,13 @@ const MODES: &[Mode] = &[
     Mode { name: "funcs", gen: gen_funcs },
     Mode { name: "typeconv", gen: gen_typeconv },
     Mode { name: "mathfns", gen: gen_mathfns },
+    Mode { name: "exprtree", gen: gen_exprtree },
+    Mode { name: "unary", gen: gen_unary },
+    Mode { name: "sprintf_rich", gen: gen_sprintf_rich },
+    Mode { name: "numedge", gen: gen_numedge },
+    Mode { name: "stredge", gen: gen_stredge },
+    Mode { name: "arraypipe", gen: gen_arraypipe },
+    Mode { name: "multi", gen: gen_multi },
 ];
 
 fn build_program(stmts: &[String]) -> String {

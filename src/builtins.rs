@@ -503,6 +503,7 @@ pub fn call_library(name: &str, args: Vec<Value>) -> Result<Value, String> {
             Value::str(s.repeat(n))
         }),
         "strrev" => with_host(|h| Value::str(h.to_str(&arg(&args, 0)).chars().rev().collect::<String>())),
+        "wordwrap" => with_host(|h| php_wordwrap(h, &args)),
         "substr" => with_host(|h| Value::str(php_substr(&h.to_str(&arg(&args, 0)), &args))),
         "strpos" => with_host(|h| php_strpos(h, &args)),
         "str_replace" => with_host(|h| php_str_replace(h, &args)),
@@ -832,44 +833,255 @@ fn php_range(h: &mut host::PhpHost, args: &[Value]) -> Value {
     arr
 }
 
-/// A small `sprintf`: supports `%s %d %i %f %b %% ` (no width/precision flags).
+/// A parsed conversion spec `%[argnum$][flags][width][.precision]conv`.
+struct FmtSpec {
+    argnum: Option<usize>,
+    left: bool,
+    plus: bool,
+    space: bool,
+    pad: char,
+    width: usize,
+    precision: Option<usize>,
+    conv: char,
+}
+
+/// `sprintf`: a format engine covering PHP's flags (`- + 0 ' `), width, precision,
+/// positional args (`%2$s`), and the `d i u f F e E g G s x X o b c %` conversions.
 fn php_sprintf(h: &host::PhpHost, args: &[Value]) -> String {
-    let fmt = h.to_str(&arg(args, 0));
+    let fmt: Vec<char> = h.to_str(&arg(args, 0)).chars().collect();
     let mut out = String::new();
-    let mut ai = 1;
-    let mut chars = fmt.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c != '%' {
-            out.push(c);
+    let mut i = 0;
+    let mut next_arg = 1usize;
+    while i < fmt.len() {
+        if fmt[i] != '%' {
+            out.push(fmt[i]);
+            i += 1;
             continue;
         }
-        match chars.next() {
-            Some('%') => out.push('%'),
-            Some('s') => {
-                out.push_str(&h.to_str(&arg(args, ai)));
-                ai += 1;
-            }
-            Some('d') | Some('i') => {
-                out.push_str(&h.to_number(&arg(args, ai)).to_int().to_string());
-                ai += 1;
-            }
-            Some('f') | Some('F') => {
-                out.push_str(&format!("{:.6}", h.to_number(&arg(args, ai)).to_float()));
-                ai += 1;
-            }
-            Some('b') => {
-                out.push_str(&format!("{:b}", h.to_number(&arg(args, ai)).to_int()));
-                ai += 1;
-            }
-            Some(other) => {
-                out.push('%');
-                out.push(other);
-            }
-            None => out.push('%'),
+        i += 1;
+        if i < fmt.len() && fmt[i] == '%' {
+            out.push('%');
+            i += 1;
+            continue;
         }
+        let Some(spec) = parse_spec(&fmt, &mut i) else {
+            out.push('%');
+            continue;
+        };
+        let ai = spec.argnum.unwrap_or_else(|| {
+            let a = next_arg;
+            next_arg += 1;
+            a
+        });
+        out.push_str(&render_spec(h, &spec, &arg(args, ai)));
     }
     out
 }
+
+/// Parse one conversion spec, advancing `i` past it. Returns `None` (and leaves
+/// `i` unmoved past a stray `%`) if the spec is malformed.
+fn parse_spec(fmt: &[char], i: &mut usize) -> Option<FmtSpec> {
+    let mut j = *i;
+    // Positional `N$`.
+    let mut argnum = None;
+    let mut k = j;
+    while k < fmt.len() && fmt[k].is_ascii_digit() {
+        k += 1;
+    }
+    if k > j && k < fmt.len() && fmt[k] == '$' {
+        argnum = fmt[j..k].iter().collect::<String>().parse::<usize>().ok();
+        j = k + 1;
+    }
+    // Flags.
+    let (mut left, mut plus, mut space, mut pad) = (false, false, false, ' ');
+    loop {
+        match fmt.get(j) {
+            Some('-') => left = true,
+            Some('+') => plus = true,
+            Some(' ') => space = true,
+            Some('0') => pad = '0',
+            Some('\'') => {
+                pad = *fmt.get(j + 1)?;
+                j += 2;
+                continue;
+            }
+            _ => break,
+        }
+        j += 1;
+    }
+    // Width.
+    let mut width = 0usize;
+    while let Some(d) = fmt.get(j).filter(|c| c.is_ascii_digit()) {
+        width = width * 10 + (*d as usize - '0' as usize);
+        j += 1;
+    }
+    // Precision.
+    let mut precision = None;
+    if fmt.get(j) == Some(&'.') {
+        j += 1;
+        let mut p = 0usize;
+        while let Some(d) = fmt.get(j).filter(|c| c.is_ascii_digit()) {
+            p = p * 10 + (*d as usize - '0' as usize);
+            j += 1;
+        }
+        precision = Some(p);
+    }
+    let conv = *fmt.get(j)?;
+    j += 1;
+    *i = j;
+    Some(FmtSpec { argnum, left, plus, space, pad, width, precision, conv })
+}
+
+/// Render one parsed spec against its argument value.
+fn render_spec(h: &host::PhpHost, s: &FmtSpec, v: &Value) -> String {
+    // `body` = the value with sign but no field padding; `is_num` gates
+    // zero-padding-after-sign.
+    let (body, is_num) = match s.conv {
+        'd' | 'i' => {
+            let n = h.to_number(v).to_int();
+            (signed(n.unsigned_abs().to_string(), n < 0, s), true)
+        }
+        'u' => ((h.to_number(v).to_int() as u64).to_string(), true),
+        'b' => ((h.to_number(v).to_int() as u64).pipe(|u| format!("{u:b}")), true),
+        'o' => ((h.to_number(v).to_int() as u64).pipe(|u| format!("{u:o}")), true),
+        'x' => ((h.to_number(v).to_int() as u64).pipe(|u| format!("{u:x}")), true),
+        'X' => ((h.to_number(v).to_int() as u64).pipe(|u| format!("{u:X}")), true),
+        'c' => (
+            char::from_u32(h.to_number(v).to_int() as u32 & 0xff)
+                .map(|c| c.to_string())
+                .unwrap_or_default(),
+            false,
+        ),
+        'f' | 'F' => {
+            let f = h.to_number(v).to_float();
+            let p = s.precision.unwrap_or(6);
+            (signed(format!("{:.*}", p, f.abs()), f.is_sign_negative(), s), true)
+        }
+        'e' | 'E' => {
+            let f = h.to_number(v).to_float();
+            (fmt_exp(f, s.precision.unwrap_or(6), s.conv == 'E'), true)
+        }
+        'g' | 'G' => {
+            let f = h.to_number(v).to_float();
+            let p = s.precision.unwrap_or(6).max(1);
+            let g = host::php_gcvt(f, p);
+            (if s.conv == 'g' { g.to_lowercase() } else { g }, true)
+        }
+        's' => {
+            let mut txt = h.to_str(v);
+            if let Some(p) = s.precision {
+                txt = txt.chars().take(p).collect();
+            }
+            (txt, false)
+        }
+        other => return format!("%{other}"),
+    };
+    pad_field(body, s, is_num)
+}
+
+/// Prefix a magnitude string with the correct sign per the `+`/` ` flags.
+fn signed(mag: String, neg: bool, s: &FmtSpec) -> String {
+    if neg {
+        format!("-{mag}")
+    } else if s.plus {
+        format!("+{mag}")
+    } else if s.space {
+        format!(" {mag}")
+    } else {
+        mag
+    }
+}
+
+/// PHP `%e`: `d.dddddde±d`, exponent always signed with at least one digit.
+fn fmt_exp(f: f64, prec: usize, upper: bool) -> String {
+    let raw = format!("{:.*e}", prec, f);
+    let (mant, ex) = raw.split_once('e').unwrap_or((raw.as_str(), "0"));
+    let exp_n: i32 = ex.parse().unwrap_or(0);
+    let e = if upper { 'E' } else { 'e' };
+    format!("{mant}{e}{}{}", if exp_n < 0 { "-" } else { "+" }, exp_n.abs())
+}
+
+/// Apply width/justification/pad to a rendered body.
+fn pad_field(body: String, s: &FmtSpec, is_num: bool) -> String {
+    let len = body.chars().count();
+    if len >= s.width {
+        return body;
+    }
+    let fill = s.width - len;
+    if s.left {
+        // Left-justified fields always pad with spaces on the right.
+        format!("{body}{}", " ".repeat(fill))
+    } else if s.pad == '0' && is_num {
+        // Zero-pad after any leading sign character.
+        let mut chars = body.chars();
+        match body.chars().next() {
+            Some(sign @ ('-' | '+' | ' ')) => {
+                chars.next();
+                format!("{sign}{}{}", "0".repeat(fill), chars.as_str())
+            }
+            _ => format!("{}{body}", "0".repeat(fill)),
+        }
+    } else {
+        format!("{}{body}", s.pad.to_string().repeat(fill))
+    }
+}
+
+/// `wordwrap($str, $width = 75, $break = "\n", $cut = false)`.
+fn php_wordwrap(h: &host::PhpHost, args: &[Value]) -> Value {
+    let text = h.to_str(&arg(args, 0));
+    let width = args.get(1).map(|v| v.to_int()).unwrap_or(75).max(1) as usize;
+    let brk = args.get(2).map(|v| h.to_str(v)).unwrap_or_else(|| "\n".to_string());
+    let cut = args.get(3).map(|v| h.is_truthy(v)).unwrap_or(false);
+
+    let mut out = String::new();
+    for (li, line) in text.split('\n').enumerate() {
+        if li > 0 {
+            out.push('\n');
+        }
+        let mut cur = 0usize; // chars on the current output line
+        let mut first = true;
+        for word in line.split(' ') {
+            let wlen = word.chars().count();
+            if !first {
+                if cur + 1 + wlen <= width {
+                    out.push(' ');
+                    cur += 1;
+                } else {
+                    out.push_str(&brk);
+                    cur = 0;
+                }
+            }
+            first = false;
+            if cut && wlen > width {
+                // Break the long word into width-sized pieces.
+                let chars: Vec<char> = word.chars().collect();
+                let mut idx = 0;
+                while idx < chars.len() {
+                    if cur == width {
+                        out.push_str(&brk);
+                        cur = 0;
+                    }
+                    let take = (width - cur).min(chars.len() - idx);
+                    out.extend(&chars[idx..idx + take]);
+                    cur += take;
+                    idx += take;
+                }
+            } else {
+                out.push_str(word);
+                cur += wlen;
+            }
+        }
+    }
+    Value::str(out)
+}
+
+/// Tiny postfix-apply helper so integer→radix formatting reads left-to-right.
+trait Pipe: Sized {
+    fn pipe<R>(self, f: impl FnOnce(Self) -> R) -> R {
+        f(self)
+    }
+}
+impl Pipe for u64 {}
 
 /// `print_r` rendering (arrays one level indented, as PHP).
 fn php_print_r(h: &host::PhpHost, v: &Value, depth: usize) -> String {

@@ -525,15 +525,56 @@ fn float_to_php_string(f: f64) -> String {
         // PHP prints negative zero as "-0".
         return if f.is_sign_negative() { "-0" } else { "0" }.into();
     }
-    let mag = f.abs().log10().floor() as i32;
-    // 14 significant digits: place the last digit at 10^(mag-13).
-    let decimals = (13 - mag).clamp(0, 17) as usize;
-    let mut s = format!("{f:.decimals$}");
-    if s.contains('.') {
-        let trimmed = s.trim_end_matches('0').trim_end_matches('.');
-        s = trimmed.to_string();
+    // PHP's default echo uses `zend_gcvt` with precision 14 (significant digits):
+    // fixed notation in the normal range, scientific (`1.5E-10`, `1.0E+100`) once
+    // the decimal exponent is < -4 or >= 15.
+    php_gcvt(f, 14)
+}
+
+/// Format a positive-or-negative float the way PHP renders it — 14 significant
+/// digits, `%G`-style choice of fixed vs scientific. Also used by `sprintf`'s
+/// `%g` with a caller-supplied precision.
+pub fn php_gcvt(f: f64, precision: usize) -> String {
+    if f == 0.0 {
+        return if f.is_sign_negative() { "-0".into() } else { "0".into() };
     }
-    s
+    let neg = f < 0.0;
+    let a = f.abs();
+    let exp = a.log10().floor() as i32;
+    // `%G` rule: scientific when the exponent is below -4 or reaches the
+    // significant-digit precision (PHP's default precision is 14).
+    let sci = exp < -4 || exp >= precision as i32;
+    let body = if sci {
+        // Mantissa with (precision-1) fractional digits, trailing zeros stripped
+        // but a decimal point kept (`1.0E+100`); explicit exponent sign.
+        let raw = format!("{:.*e}", precision.saturating_sub(1), a);
+        let (mant, ex) = raw.split_once('e').unwrap_or((raw.as_str(), "0"));
+        let mant = mant.trim_end_matches('0');
+        // Keep exactly one fractional digit when the mantissa is integer-valued:
+        // "1." → "1.0", "1" → "1.0"; leave "1.844674407371" untouched.
+        let mant = if let Some(stripped) = mant.strip_suffix('.') {
+            format!("{stripped}.0")
+        } else if mant.contains('.') {
+            mant.to_string()
+        } else {
+            format!("{mant}.0")
+        };
+        let exp_n: i32 = ex.parse().unwrap_or(0);
+        format!("{mant}E{}{}", if exp_n < 0 { "-" } else { "+" }, exp_n.abs())
+    } else {
+        let decimals = (precision as i32 - 1 - exp).max(0) as usize;
+        let s = format!("{a:.decimals$}");
+        if s.contains('.') {
+            s.trim_end_matches('0').trim_end_matches('.').to_string()
+        } else {
+            s
+        }
+    };
+    if neg {
+        format!("-{body}")
+    } else {
+        body
+    }
 }
 
 /// Parse the leading numeric prefix of a string into an `Int`/`Float` `Value`,
