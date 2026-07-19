@@ -44,6 +44,14 @@ path = "src/main.rs"
 name = "parity-fuzz"
 path = "src/bin/parity_fuzz.rs"
 
+# Byte-parity harness over real Drupal 7 procedural functions: extracts each from
+# a gitignored Drupal checkout (scripts/fetch-drupal.sh), composes it with a
+# driver, and asserts phplang's stdout matches reference `php` byte for byte.
+# Development tool — needs `php` on PATH and the checkout, so CI never runs it.
+[[bin]]
+name = "parity-drupal"
+path = "src/bin/parity_drupal.rs"
+
 [dependencies]
 # PHP executes on fusevm. phplang is a pure frontend: it lowers PHP to fusevm
 # bytecode (src/compiler.rs) and hosts the PHP object heap (src/host.rs, reached

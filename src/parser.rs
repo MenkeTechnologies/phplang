@@ -646,6 +646,28 @@ impl Parser {
                         }
                     }
                     self.expect_punct(")")?;
+                    // `isset()`/`empty()` are language constructs, not functions:
+                    // they must not error on an undefined variable/key. phplang
+                    // returns `null` for a missing var/index silently, so both
+                    // desugar to plain operators over existing ops.
+                    if name.eq_ignore_ascii_case("empty") && args.len() == 1 {
+                        // empty($x) ≡ !$x (both are false-on-truthy, quiet on unset).
+                        return Ok(Expr::Unary(UnOp::Not, Box::new(args.into_iter().next().unwrap())));
+                    }
+                    if name.eq_ignore_ascii_case("isset") && !args.is_empty() {
+                        // isset($a, $b, …) ≡ ($a !== null) && ($b !== null) && …
+                        let mut it = args.into_iter();
+                        let mut expr = Expr::Binary(
+                            BinOp::StrictNe,
+                            Box::new(it.next().unwrap()),
+                            Box::new(Expr::Null),
+                        );
+                        for a in it {
+                            let term = Expr::Binary(BinOp::StrictNe, Box::new(a), Box::new(Expr::Null));
+                            expr = Expr::Binary(BinOp::And, Box::new(expr), Box::new(term));
+                        }
+                        return Ok(expr);
+                    }
                     Ok(Expr::Call(name, args))
                 } else {
                     // A bare constant name; the scaffold has no user constants, so

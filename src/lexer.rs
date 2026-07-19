@@ -234,8 +234,13 @@ impl<'a> Lexer<'a> {
                     self.pos += 1;
                 }
                 _ => {
-                    s.push(c as char);
-                    self.pos += 1;
+                    // Preserve multibyte UTF-8 sequences verbatim (a raw
+                    // `c as char` would decode each byte as Latin-1 and mojibake
+                    // any non-ASCII text).
+                    let ch_len = utf8_len(c);
+                    let end = (self.pos + ch_len).min(self.src.len());
+                    s.push_str(&String::from_utf8_lossy(&self.src[self.pos..end]));
+                    self.pos = end;
                 }
             }
         }
