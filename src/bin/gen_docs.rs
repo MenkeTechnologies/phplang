@@ -52,10 +52,13 @@ fn main() {
 /// in that chapter's single section — even when the corpus interleaves chapters.
 /// Grouping keeps each `id="ch-…"` anchor unique, so the reference PDF never
 /// emits a multiply-defined label.
-fn build_body(corpus: &[(&str, &str, &str, &str)]) -> String {
+/// One reference entry: (name, chapter, signature, description).
+type Entry<'a> = (&'a str, &'a str, &'a str, &'a str);
+
+fn build_body(corpus: &[Entry]) -> String {
     // Ordered list of chapters (first-seen) plus each chapter's entries. A plain
     // Vec of (chapter, Vec<entry>) keeps insertion order without a dependency.
-    let mut chapters: Vec<(&str, Vec<&(&str, &str, &str, &str)>)> = Vec::new();
+    let mut chapters: Vec<(&str, Vec<&Entry>)> = Vec::new();
     for entry in corpus {
         let chapter = entry.1;
         match chapters.iter_mut().find(|(c, _)| *c == chapter) {
