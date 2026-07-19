@@ -35,6 +35,8 @@ php -a                      # interactive REPL (persistent state per line)
 php --dump-bytecode f.php   # print the lowered fusevm bytecode
 ```
 
+A `man/php.1` man page and runnable `examples/*.php` ship with the crate.
+
 ## Supported today
 
 This is a working core, grown outward from the sibling frontends. Implemented and
@@ -46,24 +48,30 @@ tested end-to-end (see `tests/basic.rs`):
 - Variables, arithmetic (`+ - * / % **`), string concat (`.`), compound
   assignment (`+= .=` …), pre/post `++`/`--`.
 - Loose/strict comparison (`== != === !== < > <= >=`), short-circuit `&& || and
-  or`, ternary `?:`, `!`.
+  or`, ternary `?:` (incl. the elvis short form), null-coalesce `??`, `!`.
 - Indexed, associative, and appended (`$a[] =`) arrays; index read/write.
-- `if` / `elseif` / `else`, `while`, `for`, `foreach ($a as [$k =>] $v)`,
-  `break`, `continue`, `return`.
+- `if` / `elseif` / `else`, `while`, `do … while`, `for`,
+  `foreach ($a as [$k =>] $v)`, `switch` (with fall-through), `break`,
+  `continue`, `return`; `match` expressions.
 - User `function`s with positional parameters and recursion.
-- A starter standard library: `strlen`, `count`, `str*`/`substr`/`trim`,
-  `implode`, `explode`, `in_array`, `array_keys`/`array_values`/`array_push`,
-  `range`, `abs`/`floor`/`ceil`/`round`/`sqrt`/`max`/`min`, `is_*`, `gettype`,
-  `sprintf`/`printf`, `print_r`, `var_dump`.
+- A ~90-function standard library across strings (`str_*`, `substr`, `trim`,
+  `sprintf`, `number_format`, `htmlspecialchars`, `chr`/`ord`, …), arrays
+  (`array_map`/`filter`/`reduce`/`merge`/`slice`/`keys`/`values`, `sort` family,
+  `in_array`, `array_sum`, `range`, …), math (`abs`/`floor`/`ceil`/`round`/`sqrt`,
+  trig, `intdiv`, `fmod`), type/util (`is_*`, `gettype`, `json_encode`,
+  `var_dump`, `print_r`, `var_export`).
 
 ## Not yet (later waves)
 
 Classes, interfaces, traits, namespaces, closures/arrow functions, references,
-`match`/`switch`, `try`/`catch`, generators, superglobals, default/variadic/typed
-parameters, deep (`$a[b][c]`) lvalues, and the full standard library. Array
-semantics are currently reference-based rather than PHP's copy-on-write; loose
-comparison follows a simplified model. Persistent bytecode caching, AOT
-(`--build`), LSP, and DAP — present in the sibling frontends — are not wired yet.
+`try`/`catch`, generators, superglobals, default/variadic/typed parameters, and
+deep (`$a[b][c]`) lvalues. A few current deviations, documented in-code: array
+semantics are reference-based rather than PHP's copy-on-write, so the `sort`
+family returns a sorted copy instead of sorting in place; `array_pop`/`shift` are
+omitted pending a host by-reference delete; `match` with no arm and no `default`
+yields null instead of throwing `\UnhandledMatchError`; loose comparison follows
+a simplified model. Persistent bytecode caching, AOT (`--build`), LSP, and DAP —
+present in the sibling frontends — are not wired yet.
 
 ## Build
 

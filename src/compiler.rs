@@ -126,6 +126,8 @@ impl Compiler {
                 els,
             } => self.compile_if(b, cond, then, elifs, els)?,
             StmtKind::While { cond, body } => self.compile_while(b, cond, body)?,
+            StmtKind::DoWhile { cond, body } => self.compile_do_while(b, cond, body)?,
+            StmtKind::Switch { subj, cases } => self.compile_switch(b, subj, cases)?,
             StmtKind::For {
                 init,
                 cond,
@@ -197,6 +199,96 @@ impl Compiler {
         }
         for j in ctx.continues {
             b.patch_jump(j, top);
+        }
+        Ok(())
+    }
+
+    fn compile_do_while(
+        &mut self,
+        b: &mut ChunkBuilder,
+        cond: &Expr,
+        body: &[Stmt],
+    ) -> Result<(), String> {
+        // The body runs once before the condition is ever tested.
+        let top = b.current_pos();
+        self.loops.push(LoopCtx {
+            breaks: vec![],
+            continues: vec![],
+        });
+        self.compile_seq(b, body)?;
+        let ctx = self.loops.pop().unwrap();
+        // `continue` re-tests the condition; `break` exits.
+        let cond_pos = b.current_pos();
+        self.compile_truthy(b, cond)?;
+        b.emit(Op::JumpIfTrue(top), 0);
+        let end = b.current_pos();
+        for j in ctx.breaks {
+            b.patch_jump(j, end);
+        }
+        for j in ctx.continues {
+            b.patch_jump(j, cond_pos);
+        }
+        Ok(())
+    }
+
+    /// `switch`: evaluate the subject once, dispatch to the first `case` whose
+    /// value is loosely (`==`) equal (or `default`), then run bodies in source
+    /// order so fall-through is natural. `break` exits the switch.
+    fn compile_switch(
+        &mut self,
+        b: &mut ChunkBuilder,
+        subj: &Expr,
+        cases: &[SwitchCase],
+    ) -> Result<(), String> {
+        let sw_t = self.tmp_name("sw");
+        self.emit_set_var(b, &sw_t, |c, b| c.compile_expr(b, subj))?;
+
+        // Dispatch chain: `@sw == case_value` for each non-default case.
+        let mut dispatch: Vec<(usize, usize)> = Vec::new(); // (case index, JumpIfTrue pos)
+        let mut default_index: Option<usize> = None;
+        for (i, case) in cases.iter().enumerate() {
+            match &case.test {
+                Some(test) => {
+                    self.emit_get_var(b, &sw_t);
+                    self.compile_expr(b, test)?;
+                    b.emit(Op::CallBuiltin(ops::LOOSE_EQ, 2), 0);
+                    b.emit(Op::CallBuiltin(ops::TRUTHY, 1), 0);
+                    let jt = b.emit(Op::JumpIfTrue(0), 0);
+                    dispatch.push((i, jt));
+                }
+                None => default_index = Some(i),
+            }
+        }
+        // No case matched: fall to `default` if present, else past the switch.
+        let fallthrough = b.emit(Op::Jump(0), 0);
+
+        // Bodies, emitted in source order (no jumps between them → fall-through).
+        self.loops.push(LoopCtx {
+            breaks: vec![],
+            continues: vec![],
+        });
+        let mut body_starts = Vec::with_capacity(cases.len());
+        for case in cases {
+            body_starts.push(b.current_pos());
+            self.compile_seq(b, &case.body)?;
+        }
+        let ctx = self.loops.pop().unwrap();
+        let end = b.current_pos();
+
+        for (i, jt) in dispatch {
+            b.patch_jump(jt, body_starts[i]);
+        }
+        match default_index {
+            Some(di) => b.patch_jump(fallthrough, body_starts[di]),
+            None => b.patch_jump(fallthrough, end),
+        }
+        for j in ctx.breaks {
+            b.patch_jump(j, end);
+        }
+        // `continue` inside a switch acts like `break` of the switch (PHP treats
+        // the switch as a loop level; `continue 1` exits it).
+        for j in ctx.continues {
+            b.patch_jump(j, end);
         }
         Ok(())
     }
@@ -412,6 +504,103 @@ impl Compiler {
                 let end = b.current_pos();
                 b.patch_jump(jend, end);
             }
+            Expr::Elvis(a, els) => {
+                // `a ?: b` — evaluate `a` once; keep it if truthy, else use `b`.
+                self.compile_expr(b, a)?; // [a]
+                b.emit(Op::Dup, 0); // [a, a]
+                b.emit(Op::CallBuiltin(ops::TRUTHY, 1), 0); // [a, bool]
+                let keep = b.emit(Op::JumpIfTrue(0), 0); // truthy → keep a, leaving [a]
+                b.emit(Op::Pop, 0); // discard a
+                self.compile_expr(b, els)?; // [b]
+                let jend = b.emit(Op::Jump(0), 0);
+                let keep_pos = b.current_pos();
+                b.patch_jump(keep, keep_pos);
+                let end = b.current_pos();
+                b.patch_jump(jend, end);
+            }
+            Expr::Coalesce(a, els) => {
+                // `a ?? b` — use `b` only when `a` is null (=== null).
+                self.compile_expr(b, a)?; // [a]
+                b.emit(Op::Dup, 0); // [a, a]
+                b.emit(Op::LoadUndef, 0); // [a, a, null]
+                b.emit(Op::CallBuiltin(ops::STRICT_EQ, 2), 0); // [a, a===null]
+                b.emit(Op::CallBuiltin(ops::TRUTHY, 1), 0); // [a, bool]
+                let use_b = b.emit(Op::JumpIfTrue(0), 0); // a is null → use b
+                let jend = b.emit(Op::Jump(0), 0); // a not null → keep a, leaving [a]
+                let use_b_pos = b.current_pos();
+                b.patch_jump(use_b, use_b_pos);
+                b.emit(Op::Pop, 0); // discard a
+                self.compile_expr(b, els)?; // [b]
+                let end = b.current_pos();
+                b.patch_jump(jend, end);
+            }
+            Expr::Match { subj, arms } => self.compile_match(b, subj, arms)?,
+        }
+        Ok(())
+    }
+
+    /// `match (subj) { A, B => R, default => D }` — a value-producing expression.
+    /// The subject is compared (`===`) against each arm's conditions; the first
+    /// match's body value is left on the stack.
+    fn compile_match(
+        &mut self,
+        b: &mut ChunkBuilder,
+        subj: &Expr,
+        arms: &[MatchArm],
+    ) -> Result<(), String> {
+        let m_t = self.tmp_name("m");
+        self.emit_set_var(b, &m_t, |c, b| c.compile_expr(b, subj))?;
+
+        // Dispatch: strict compare against every condition of every non-default
+        // arm; the `default` arm is the fallback regardless of its position.
+        let mut dispatch: Vec<(usize, usize)> = Vec::new(); // (arm index, JumpIfTrue pos)
+        let mut default_index: Option<usize> = None;
+        for (i, arm) in arms.iter().enumerate() {
+            match &arm.conds {
+                Some(conds) => {
+                    for cond in conds {
+                        self.emit_get_var(b, &m_t);
+                        self.compile_expr(b, cond)?;
+                        b.emit(Op::CallBuiltin(ops::STRICT_EQ, 2), 0);
+                        b.emit(Op::CallBuiltin(ops::TRUTHY, 1), 0);
+                        let jt = b.emit(Op::JumpIfTrue(0), 0);
+                        dispatch.push((i, jt));
+                    }
+                }
+                None => default_index = Some(i),
+            }
+        }
+        // No arm matched: jump to the default body, or — SCAFFOLD DEVIATION —
+        // yield null. Real PHP throws \UnhandledMatchError here; adding that
+        // needs a host op this wave does not introduce, so null is used instead.
+        let (default_jump, no_match_jump) = if default_index.is_some() {
+            (Some(b.emit(Op::Jump(0), 0)), None)
+        } else {
+            b.emit(Op::LoadUndef, 0);
+            (None, Some(b.emit(Op::Jump(0), 0)))
+        };
+
+        // Arm bodies: each leaves exactly one value, then jumps to the end.
+        let mut body_starts = Vec::with_capacity(arms.len());
+        let mut body_ends = Vec::with_capacity(arms.len());
+        for arm in arms {
+            body_starts.push(b.current_pos());
+            self.compile_expr(b, &arm.body)?;
+            body_ends.push(b.emit(Op::Jump(0), 0));
+        }
+        let end = b.current_pos();
+
+        for (i, jt) in dispatch {
+            b.patch_jump(jt, body_starts[i]);
+        }
+        if let Some(di) = default_index {
+            b.patch_jump(default_jump.unwrap(), body_starts[di]);
+        }
+        if let Some(nm) = no_match_jump {
+            b.patch_jump(nm, end);
+        }
+        for j in body_ends {
+            b.patch_jump(j, end);
         }
         Ok(())
     }

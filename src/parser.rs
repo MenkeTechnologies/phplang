@@ -44,6 +44,12 @@ impl Parser {
         matches!(self.peek(), Some(Tok::Punct(x)) if *x == p)
     }
 
+    /// Whether the token *after* the cursor is the punctuation `p` (used to spot
+    /// `??`, which the lexer emits as two `?` tokens).
+    fn peek2_is_punct(&self, p: &str) -> bool {
+        matches!(self.toks.get(self.pos + 1).map(|s| &s.tok), Some(Tok::Punct(x)) if *x == p)
+    }
+
     fn eat_punct(&mut self, p: &str) -> bool {
         if self.at_punct(p) {
             self.pos += 1;
@@ -118,6 +124,8 @@ impl Parser {
             }
             _ if self.at_kw("if") => self.if_stmt()?,
             _ if self.at_kw("while") => self.while_stmt()?,
+            _ if self.at_kw("do") => self.do_while_stmt()?,
+            _ if self.at_kw("switch") => self.switch_stmt()?,
             _ if self.at_kw("for") => self.for_stmt()?,
             _ if self.at_kw("foreach") => self.foreach_stmt()?,
             _ if self.at_kw("function") => self.function_stmt()?,
@@ -223,6 +231,63 @@ impl Parser {
         self.expect_punct(")")?;
         let body = self.body()?;
         Ok(StmtKind::While { cond, body })
+    }
+
+    fn do_while_stmt(&mut self) -> Result<StmtKind, String> {
+        self.pos += 1; // do
+        let body = self.body()?;
+        if !self.eat_kw("while") {
+            return Err(format!(
+                "expected 'while' after 'do' body (line {})",
+                self.line()
+            ));
+        }
+        self.expect_punct("(")?;
+        let cond = self.expression()?;
+        self.expect_punct(")")?;
+        self.expect_punct(";")?;
+        Ok(StmtKind::DoWhile { cond, body })
+    }
+
+    fn switch_stmt(&mut self) -> Result<StmtKind, String> {
+        self.pos += 1; // switch
+        self.expect_punct("(")?;
+        let subj = self.expression()?;
+        self.expect_punct(")")?;
+        self.expect_punct("{")?;
+        let mut cases = Vec::new();
+        while !self.at_punct("}") && !self.at_end() {
+            // A `case EXPR:` or `default:` label (PHP also allows `;` for `:`).
+            let test = if self.eat_kw("case") {
+                let e = self.expression()?;
+                if !self.eat_punct(":") {
+                    self.expect_punct(";")?;
+                }
+                Some(e)
+            } else if self.eat_kw("default") {
+                if !self.eat_punct(":") {
+                    self.expect_punct(";")?;
+                }
+                None
+            } else {
+                return Err(format!(
+                    "expected 'case' or 'default' in switch (line {})",
+                    self.line()
+                ));
+            };
+            // The case body runs until the next case/default or the closing brace.
+            let mut body = Vec::new();
+            while !self.at_kw("case")
+                && !self.at_kw("default")
+                && !self.at_punct("}")
+                && !self.at_end()
+            {
+                body.push(self.statement()?);
+            }
+            cases.push(SwitchCase { test, body });
+        }
+        self.expect_punct("}")?;
+        Ok(StmtKind::Switch { subj, cases })
     }
 
     fn for_stmt(&mut self) -> Result<StmtKind, String> {
@@ -363,7 +428,19 @@ impl Parser {
 
     fn ternary(&mut self) -> Result<Expr, String> {
         let cond = self.binary(0)?;
+        // Null coalesce `a ?? b` (right-associative). The lexer has no `??`
+        // token, so it surfaces as two consecutive `?` tokens.
+        if self.at_punct("?") && self.peek2_is_punct("?") {
+            self.pos += 2;
+            let rhs = self.ternary()?;
+            return Ok(Expr::Coalesce(Box::new(cond), Box::new(rhs)));
+        }
         if self.eat_punct("?") {
+            // Short ternary / elvis `a ?: b`.
+            if self.eat_punct(":") {
+                let els = self.assignment()?;
+                return Ok(Expr::Elvis(Box::new(cond), Box::new(els)));
+            }
             let then = self.expression()?;
             self.expect_punct(":")?;
             let els = self.assignment()?;
@@ -512,6 +589,11 @@ impl Parser {
                 self.expect_punct("(")?;
                 self.array_literal(")")
             }
+            // `match (subj) { ... }` — only when followed by `(`, so a plain
+            // bareword `match` still parses as a name.
+            Some(Tok::Ident(kw)) if kw.eq_ignore_ascii_case("match") && self.at_punct("(") => {
+                self.match_expr()
+            }
             Some(Tok::Ident(name)) => {
                 // A bareword followed by `(` is a function call.
                 if self.eat_punct("(") {
@@ -557,5 +639,44 @@ impl Parser {
         }
         self.expect_punct(close)?;
         Ok(Expr::Array(elems))
+    }
+
+    /// Parse a `match (subj) { A, B => R, default => D }` expression. The `match`
+    /// keyword has already been consumed by `primary`.
+    fn match_expr(&mut self) -> Result<Expr, String> {
+        self.expect_punct("(")?;
+        let subj = self.expression()?;
+        self.expect_punct(")")?;
+        self.expect_punct("{")?;
+        let mut arms = Vec::new();
+        while !self.at_punct("}") && !self.at_end() {
+            let conds = if self.eat_kw("default") {
+                None
+            } else {
+                let mut cs = vec![self.expression()?];
+                while self.eat_punct(",") {
+                    // Tolerate a trailing comma before `=>`.
+                    if self.at_punct("=>") {
+                        break;
+                    }
+                    cs.push(self.expression()?);
+                }
+                Some(cs)
+            };
+            self.expect_punct("=>")?;
+            let body = self.expression()?;
+            arms.push(MatchArm {
+                conds,
+                body: Box::new(body),
+            });
+            if !self.eat_punct(",") {
+                break;
+            }
+        }
+        self.expect_punct("}")?;
+        Ok(Expr::Match {
+            subj: Box::new(subj),
+            arms,
+        })
     }
 }

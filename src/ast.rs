@@ -80,6 +80,26 @@ pub enum Expr {
     Call(String, Vec<Expr>),
     /// Ternary `cond ? then : els`.
     Ternary(Box<Expr>, Box<Expr>, Box<Expr>),
+    /// Short ternary / elvis `a ?: b` — `a` if truthy, else `b` (evaluates `a`
+    /// once).
+    Elvis(Box<Expr>, Box<Expr>),
+    /// Null coalesce `a ?? b` — `a` unless it is null, then `b`.
+    Coalesce(Box<Expr>, Box<Expr>),
+    /// PHP 8 `match` expression: strict (`===`) comparison of the subject
+    /// against each arm's conditions, returning the matching arm's value.
+    Match {
+        subj: Box<Expr>,
+        arms: Vec<MatchArm>,
+    },
+}
+
+/// One arm of a `match` expression. `conds` is `None` for the `default` arm;
+/// otherwise the subject is compared (`===`) against each condition, and the arm
+/// fires if any matches.
+#[derive(Debug, Clone)]
+pub struct MatchArm {
+    pub conds: Option<Vec<Expr>>,
+    pub body: Box<Expr>,
 }
 
 /// A statement. `line` is the 1-based source line, used for the bytecode dump.
@@ -109,6 +129,17 @@ pub enum StmtKind {
         cond: Expr,
         body: Vec<Stmt>,
     },
+    /// `do { body } while (cond);` — the body always runs at least once.
+    DoWhile {
+        cond: Expr,
+        body: Vec<Stmt>,
+    },
+    /// `switch ($subj) { case A: ...; default: ... }`. Cases compare with loose
+    /// (`==`) equality and fall through unless a `break` is hit.
+    Switch {
+        subj: Expr,
+        cases: Vec<SwitchCase>,
+    },
     For {
         init: Vec<Expr>,
         cond: Option<Expr>,
@@ -133,4 +164,12 @@ pub enum StmtKind {
     Continue,
     /// An empty `;` or a `{ }` block.
     Block(Vec<Stmt>),
+}
+
+/// One `case`/`default` label of a `switch` plus its (fall-through) body. `test`
+/// is `None` for the `default` label.
+#[derive(Debug, Clone)]
+pub struct SwitchCase {
+    pub test: Option<Expr>,
+    pub body: Vec<Stmt>,
 }

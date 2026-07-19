@@ -548,6 +548,115 @@ pub fn call_library(name: &str, args: Vec<Value>) -> Result<Value, String> {
             }
             Value::Undef
         }),
+
+        // ── strings ──────────────────────────────────────────────────────
+        "str_split" => with_host(|h| php_str_split(h, &args)),
+        "str_pad" => with_host(|h| Value::str(php_str_pad(h, &args))),
+        "str_contains" => with_host(|h| {
+            Value::bool(h.to_str(&arg(&args, 0)).contains(&h.to_str(&arg(&args, 1))))
+        }),
+        "str_starts_with" => with_host(|h| {
+            Value::bool(h.to_str(&arg(&args, 0)).starts_with(&h.to_str(&arg(&args, 1))))
+        }),
+        "str_ends_with" => with_host(|h| {
+            Value::bool(h.to_str(&arg(&args, 0)).ends_with(&h.to_str(&arg(&args, 1))))
+        }),
+        "ucwords" => with_host(|h| Value::str(ucwords(&h.to_str(&arg(&args, 0))))),
+        "lcfirst" => with_host(|h| Value::str(lcfirst(&h.to_str(&arg(&args, 0))))),
+        "number_format" => with_host(|h| Value::str(php_number_format(h, &args))),
+        "htmlspecialchars" | "htmlentities" => {
+            with_host(|h| Value::str(html_special_chars(&h.to_str(&arg(&args, 0)))))
+        }
+        "strcmp" => with_host(|h| {
+            Value::int(sign(h.to_str(&arg(&args, 0)).cmp(&h.to_str(&arg(&args, 1)))))
+        }),
+        "strcasecmp" => with_host(|h| {
+            let a = h.to_str(&arg(&args, 0)).to_lowercase();
+            let b = h.to_str(&arg(&args, 1)).to_lowercase();
+            Value::int(sign(a.cmp(&b)))
+        }),
+        "str_word_count" => {
+            with_host(|h| Value::int(h.to_str(&arg(&args, 0)).split_whitespace().count() as i64))
+        }
+        "chr" => with_host(|h| {
+            let n = (h.to_number(&arg(&args, 0)).to_int().rem_euclid(256)) as u8;
+            Value::str((n as char).to_string())
+        }),
+        "ord" => with_host(|h| {
+            Value::int(h.to_str(&arg(&args, 0)).bytes().next().unwrap_or(0) as i64)
+        }),
+        "dechex" => with_host(|h| Value::str(format!("{:x}", h.to_number(&arg(&args, 0)).to_int()))),
+        "hexdec" => with_host(|h| {
+            Value::int(i64::from_str_radix(h.to_str(&arg(&args, 0)).trim(), 16).unwrap_or(0))
+        }),
+        "bin2hex" => with_host(|h| {
+            let s = h.to_str(&arg(&args, 0));
+            Value::str(s.bytes().map(|b| format!("{b:02x}")).collect::<String>())
+        }),
+
+        // ── math ─────────────────────────────────────────────────────────
+        "pow" => with_host(|h| php_pow(h, &args)),
+        "intdiv" => return php_intdiv(&args),
+        "fmod" => with_host(|h| {
+            Value::float(h.to_number(&arg(&args, 0)).to_float() % h.to_number(&arg(&args, 1)).to_float())
+        }),
+        "sin" => with_host(|h| Value::float(h.to_number(&arg(&args, 0)).to_float().sin())),
+        "cos" => with_host(|h| Value::float(h.to_number(&arg(&args, 0)).to_float().cos())),
+        "tan" => with_host(|h| Value::float(h.to_number(&arg(&args, 0)).to_float().tan())),
+        "exp" => with_host(|h| Value::float(h.to_number(&arg(&args, 0)).to_float().exp())),
+        "log" => with_host(|h| {
+            let x = h.to_number(&arg(&args, 0)).to_float();
+            match args.get(1) {
+                Some(b) if !matches!(b, Value::Undef) => Value::float(x.log(h.to_number(b).to_float())),
+                _ => Value::float(x.ln()),
+            }
+        }),
+        "log10" => with_host(|h| Value::float(h.to_number(&arg(&args, 0)).to_float().log10())),
+        "pi" => Value::float(std::f64::consts::PI),
+
+        // ── arrays ───────────────────────────────────────────────────────
+        "array_merge" => with_host(|h| php_array_merge(h, &args)),
+        "array_map" => return php_array_map(&args),
+        "array_filter" => return php_array_filter(&args),
+        "array_reduce" => return php_array_reduce(&args),
+        "array_slice" => with_host(|h| php_array_slice(h, &args)),
+        "array_reverse" => with_host(|h| php_array_reverse(h, &args)),
+        "array_sum" => with_host(|h| php_array_fold(h, &arg(&args, 0), false)),
+        "array_product" => with_host(|h| php_array_fold(h, &arg(&args, 0), true)),
+        "array_flip" => with_host(|h| php_array_flip(h, &arg(&args, 0))),
+        "array_unique" => with_host(|h| php_array_unique(h, &arg(&args, 0))),
+        "array_key_exists" | "key_exists" => with_host(|h| php_array_key_exists(h, &args)),
+        "array_search" => with_host(|h| php_array_search(h, &args)),
+        "sort" => with_host(|h| php_sort(h, &arg(&args, 0), false)),
+        "rsort" => with_host(|h| php_sort(h, &arg(&args, 0), true)),
+        "asort" => with_host(|h| php_asort(h, &arg(&args, 0), false)),
+        "arsort" => with_host(|h| php_asort(h, &arg(&args, 0), true)),
+        "ksort" => with_host(|h| php_ksort(h, &arg(&args, 0), false)),
+        "krsort" => with_host(|h| php_ksort(h, &arg(&args, 0), true)),
+        "array_fill" => with_host(|h| php_array_fill(h, &args)),
+        "array_combine" => with_host(|h| php_array_combine(h, &args)),
+        "array_diff" => with_host(|h| php_array_diff(h, &args, false)),
+        "array_intersect" => with_host(|h| php_array_diff(h, &args, true)),
+
+        // ── type / util ──────────────────────────────────────────────────
+        "boolval" => with_host(|h| Value::bool(h.is_truthy(&arg(&args, 0)))),
+        "is_callable" => {
+            // Scaffold: the host exposes no function-table accessor, so a
+            // non-empty string name is treated as callable (cannot verify that
+            // a user function is actually defined).
+            Value::bool(matches!(&arg(&args, 0), Value::Str(s) if !s.is_empty()))
+        }
+        "var_export" => with_host(|h| {
+            let s = php_var_export(h, &arg(&args, 0), 0);
+            if args.get(1).map(|v| h.is_truthy(v)).unwrap_or(false) {
+                Value::str(s)
+            } else {
+                h.write_out(&s);
+                Value::Undef
+            }
+        }),
+        "json_encode" => with_host(|h| Value::str(php_json_encode(h, &arg(&args, 0)))),
+
         _ => return Err(format!("call to undefined function {name}()")),
     };
     Ok(v)
@@ -785,4 +894,542 @@ fn php_var_dump(h: &host::PhpHost, v: &Value, depth: usize) -> String {
         }
         _ => format!("{pad}NULL\n"),
     }
+}
+
+// ── string helpers (added stdlib wave) ───────────────────────────────────────
+
+/// Sign of an ordering as PHP's strcmp-style -1/0/1.
+fn sign(o: std::cmp::Ordering) -> i64 {
+    match o {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => 1,
+    }
+}
+
+fn php_str_split(h: &mut host::PhpHost, args: &[Value]) -> Value {
+    let s = h.to_str(&arg(args, 0));
+    let len = args.get(1).map(|v| v.to_int()).unwrap_or(1).max(1) as usize;
+    let chars: Vec<char> = s.chars().collect();
+    let arr = h.new_array();
+    if chars.is_empty() {
+        // PHP returns [""] for an empty subject.
+        h.arr_push_auto(&arr, Value::str(String::new()));
+        return arr;
+    }
+    for chunk in chars.chunks(len) {
+        h.arr_push_auto(&arr, Value::str(chunk.iter().collect::<String>()));
+    }
+    arr
+}
+
+fn php_str_pad(h: &host::PhpHost, args: &[Value]) -> String {
+    let s = h.to_str(&arg(args, 0));
+    let target = arg(args, 1).to_int();
+    let pad = args
+        .get(2)
+        .map(|v| h.to_str(v))
+        .filter(|p| !p.is_empty())
+        .unwrap_or_else(|| " ".to_string());
+    // STR_PAD_RIGHT=1 (default), STR_PAD_LEFT=0, STR_PAD_BOTH=2.
+    let ty = args.get(3).map(|v| v.to_int()).unwrap_or(1);
+    let cur = s.chars().count() as i64;
+    if target <= cur {
+        return s;
+    }
+    let need = (target - cur) as usize;
+    let make = |n: usize| -> String {
+        pad.chars().cycle().take(n).collect::<String>()
+    };
+    match ty {
+        0 => format!("{}{}", make(need), s),
+        2 => {
+            let left = need / 2;
+            let right = need - left;
+            format!("{}{}{}", make(left), s, make(right))
+        }
+        _ => format!("{}{}", s, make(need)),
+    }
+}
+
+fn ucwords(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut cap = true;
+    for c in s.chars() {
+        if cap && c.is_alphabetic() {
+            out.extend(c.to_uppercase());
+            cap = false;
+        } else {
+            out.push(c);
+            if c.is_whitespace() {
+                cap = true;
+            }
+        }
+    }
+    out
+}
+
+fn lcfirst(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        Some(first) => first.to_lowercase().chain(c).collect(),
+        None => String::new(),
+    }
+}
+
+fn html_special_chars(s: &str) -> String {
+    // ENT_QUOTES-equivalent: escape &, <, >, ", and '.
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#039;")
+}
+
+fn php_number_format(h: &host::PhpHost, args: &[Value]) -> String {
+    let num = h.to_number(&arg(args, 0)).to_float();
+    let dec = args.get(1).map(|v| v.to_int()).unwrap_or(0).max(0) as usize;
+    let dp = args.get(2).map(|v| h.to_str(v)).unwrap_or_else(|| ".".to_string());
+    let ts = args.get(3).map(|v| h.to_str(v)).unwrap_or_else(|| ",".to_string());
+    let neg = num < 0.0;
+    let formatted = format!("{:.*}", dec, num.abs());
+    let (int_part, frac_part) = match formatted.split_once('.') {
+        Some((i, f)) => (i.to_string(), f.to_string()),
+        None => (formatted.clone(), String::new()),
+    };
+    // Group the integer part into threes.
+    let bytes: Vec<char> = int_part.chars().collect();
+    let mut grouped = String::new();
+    for (i, c) in bytes.iter().enumerate() {
+        if i > 0 && (bytes.len() - i) % 3 == 0 {
+            grouped.push_str(&ts);
+        }
+        grouped.push(*c);
+    }
+    let mut out = String::new();
+    if neg && (grouped.chars().any(|c| c != '0') || frac_part.chars().any(|c| c != '0')) {
+        out.push('-');
+    }
+    out.push_str(&grouped);
+    if dec > 0 {
+        out.push_str(&dp);
+        out.push_str(&frac_part);
+    }
+    out
+}
+
+// ── math helpers ─────────────────────────────────────────────────────────────
+
+fn php_pow(h: &host::PhpHost, args: &[Value]) -> Value {
+    let an = h.to_number(&arg(args, 0));
+    let bn = h.to_number(&arg(args, 1));
+    match (an, bn) {
+        (Value::Int(x), Value::Int(y)) if y >= 0 => match checked_ipow(x, y as u32) {
+            Some(v) => Value::int(v),
+            None => Value::float((x as f64).powf(y as f64)),
+        },
+        (an, bn) => Value::float(an.to_float().powf(bn.to_float())),
+    }
+}
+
+fn php_intdiv(args: &[Value]) -> Result<Value, String> {
+    let (x, y) = with_host(|h| (h.to_number(&arg(args, 0)).to_int(), h.to_number(&arg(args, 1)).to_int()));
+    if y == 0 {
+        return Err("Division by zero".to_string());
+    }
+    Ok(Value::int(x / y))
+}
+
+// ── array helpers (added stdlib wave) ────────────────────────────────────────
+
+/// Whether normalized keys form the list 0,1,2,… (so JSON/`array_merge` treat it
+/// as a sequential array rather than a map).
+fn is_list(pairs: &[(Value, Value)]) -> bool {
+    pairs
+        .iter()
+        .enumerate()
+        .all(|(i, (k, _))| matches!(k, Value::Int(n) if *n == i as i64))
+}
+
+fn php_array_merge(h: &mut host::PhpHost, args: &[Value]) -> Value {
+    let all: Vec<Vec<(Value, Value)>> =
+        args.iter().filter_map(|a| h.array_pairs(a)).collect();
+    let out = h.new_array();
+    for pairs in all {
+        for (k, v) in pairs {
+            match k {
+                // Integer keys are renumbered; string keys overwrite.
+                Value::Int(_) => h.arr_push_auto(&out, v),
+                _ => h.arr_set_key(&out, &k, v),
+            }
+        }
+    }
+    out
+}
+
+fn php_array_map(args: &[Value]) -> Result<Value, String> {
+    let cb = arg(args, 0);
+    let arr = arg(args, 1);
+    let pairs = with_host(|h| h.array_pairs(&arr)).unwrap_or_default();
+    let cb_name = match &cb {
+        Value::Str(s) if !s.is_empty() => Some(s.to_string()),
+        _ => None,
+    };
+    let mut mapped: Vec<(Value, Value)> = Vec::with_capacity(pairs.len());
+    for (k, v) in pairs {
+        let out = match &cb_name {
+            Some(name) => host::call_function(name, vec![v])?,
+            None => v,
+        };
+        mapped.push((k, out));
+    }
+    Ok(with_host(|h| {
+        let out = h.new_array();
+        for (k, v) in mapped {
+            h.arr_set_key(&out, &k, v);
+        }
+        out
+    }))
+}
+
+fn php_array_filter(args: &[Value]) -> Result<Value, String> {
+    let arr = arg(args, 0);
+    let cb = arg(args, 1);
+    let pairs = with_host(|h| h.array_pairs(&arr)).unwrap_or_default();
+    let cb_name = match &cb {
+        Value::Str(s) if !s.is_empty() => Some(s.to_string()),
+        _ => None,
+    };
+    let mut kept: Vec<(Value, Value)> = Vec::new();
+    for (k, v) in pairs {
+        let keep = match &cb_name {
+            Some(name) => {
+                let r = host::call_function(name, vec![v.clone()])?;
+                with_host(|h| h.is_truthy(&r))
+            }
+            None => with_host(|h| h.is_truthy(&v)),
+        };
+        if keep {
+            kept.push((k, v));
+        }
+    }
+    Ok(with_host(|h| {
+        let out = h.new_array();
+        for (k, v) in kept {
+            h.arr_set_key(&out, &k, v);
+        }
+        out
+    }))
+}
+
+fn php_array_reduce(args: &[Value]) -> Result<Value, String> {
+    let arr = arg(args, 0);
+    let cb = arg(args, 1);
+    let init = arg(args, 2);
+    let pairs = with_host(|h| h.array_pairs(&arr)).unwrap_or_default();
+    let cb_name = match &cb {
+        Value::Str(s) if !s.is_empty() => s.to_string(),
+        _ => return Ok(init),
+    };
+    let mut acc = init;
+    for (_, v) in pairs {
+        acc = host::call_function(&cb_name, vec![acc, v])?;
+    }
+    Ok(acc)
+}
+
+fn php_array_slice(h: &mut host::PhpHost, args: &[Value]) -> Value {
+    let arr = arg(args, 0);
+    let pairs = h.array_pairs(&arr).unwrap_or_default();
+    let n = pairs.len() as i64;
+    let mut off = arg(args, 1).to_int();
+    if off < 0 {
+        off = (n + off).max(0);
+    }
+    let off = off.min(n).max(0) as usize;
+    let len = match args.get(2) {
+        Some(v) if !matches!(v, Value::Undef) => {
+            let l = v.to_int();
+            if l < 0 {
+                (n - off as i64 + l).max(0) as usize
+            } else {
+                l as usize
+            }
+        }
+        _ => pairs.len() - off,
+    };
+    let preserve = args.get(3).map(|v| h.is_truthy(v)).unwrap_or(false);
+    let end = (off + len).min(pairs.len());
+    let out = h.new_array();
+    for (k, v) in &pairs[off..end] {
+        match k {
+            Value::Int(_) if !preserve => h.arr_push_auto(&out, v.clone()),
+            _ => h.arr_set_key(&out, k, v.clone()),
+        }
+    }
+    out
+}
+
+fn php_array_reverse(h: &mut host::PhpHost, args: &[Value]) -> Value {
+    let arr = arg(args, 0);
+    let pairs = h.array_pairs(&arr).unwrap_or_default();
+    let preserve = args.get(1).map(|v| h.is_truthy(v)).unwrap_or(false);
+    let out = h.new_array();
+    for (k, v) in pairs.into_iter().rev() {
+        match k {
+            Value::Int(_) if !preserve => h.arr_push_auto(&out, v),
+            _ => h.arr_set_key(&out, &k, v),
+        }
+    }
+    out
+}
+
+fn php_array_fold(h: &host::PhpHost, arr: &Value, product: bool) -> Value {
+    let pairs = h.array_pairs(arr).unwrap_or_default();
+    let all_int = pairs
+        .iter()
+        .all(|(_, v)| matches!(h.to_number(v), Value::Int(_)));
+    if all_int {
+        let mut acc: i64 = if product { 1 } else { 0 };
+        for (_, v) in &pairs {
+            let n = h.to_number(v).to_int();
+            acc = if product { acc.wrapping_mul(n) } else { acc.wrapping_add(n) };
+        }
+        Value::int(acc)
+    } else {
+        let mut acc: f64 = if product { 1.0 } else { 0.0 };
+        for (_, v) in &pairs {
+            let n = h.to_number(v).to_float();
+            if product {
+                acc *= n;
+            } else {
+                acc += n;
+            }
+        }
+        Value::float(acc)
+    }
+}
+
+fn php_array_flip(h: &mut host::PhpHost, arr: &Value) -> Value {
+    let pairs = h.array_pairs(arr).unwrap_or_default();
+    let out = h.new_array();
+    for (k, v) in pairs {
+        // value becomes key, key becomes value (host normalizes the new key).
+        h.arr_set_key(&out, &v, k);
+    }
+    out
+}
+
+fn php_array_unique(h: &mut host::PhpHost, arr: &Value) -> Value {
+    let pairs = h.array_pairs(arr).unwrap_or_default();
+    let out = h.new_array();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (k, v) in pairs {
+        // PHP's default SORT_STRING comparison: dedupe by string form.
+        if seen.insert(h.to_str(&v)) {
+            h.arr_set_key(&out, &k, v);
+        }
+    }
+    out
+}
+
+fn php_array_key_exists(h: &host::PhpHost, args: &[Value]) -> Value {
+    let key = arg(args, 0);
+    let arr = arg(args, 1);
+    let want = h.to_str(&key);
+    let found = h
+        .array_pairs(&arr)
+        .unwrap_or_default()
+        .iter()
+        .any(|(k, _)| h.to_str(k) == want);
+    Value::bool(found)
+}
+
+fn php_array_search(h: &host::PhpHost, args: &[Value]) -> Value {
+    let needle = arg(args, 0);
+    let arr = arg(args, 1);
+    let strict = args.get(2).map(|v| h.is_truthy(v)).unwrap_or(false);
+    for (k, v) in h.array_pairs(&arr).unwrap_or_default() {
+        let hit = if strict {
+            strict_eq(h, &needle, &v)
+        } else {
+            loose_eq(h, &needle, &v)
+        };
+        if hit {
+            return k;
+        }
+    }
+    Value::bool(false)
+}
+
+/// `sort`/`rsort` — scaffold DEVIATION: returns a NEW sorted (re-indexed) array
+/// rather than sorting `$arr` in place, because the host exposes no
+/// entry-replacement API on an array handle.
+fn php_sort(h: &mut host::PhpHost, arr: &Value, reverse: bool) -> Value {
+    let mut vals: Vec<Value> = h
+        .array_pairs(arr)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(_, v)| v)
+        .collect();
+    vals.sort_by(|a, b| php_compare(h, a, b).cmp(&0));
+    if reverse {
+        vals.reverse();
+    }
+    let out = h.new_array();
+    for v in vals {
+        h.arr_push_auto(&out, v);
+    }
+    out
+}
+
+/// `asort`/`arsort` — scaffold DEVIATION: returns a NEW value-sorted array with
+/// keys preserved (not in place).
+fn php_asort(h: &mut host::PhpHost, arr: &Value, reverse: bool) -> Value {
+    let mut pairs = h.array_pairs(arr).unwrap_or_default();
+    pairs.sort_by(|(_, a), (_, b)| php_compare(h, a, b).cmp(&0));
+    if reverse {
+        pairs.reverse();
+    }
+    let out = h.new_array();
+    for (k, v) in pairs {
+        h.arr_set_key(&out, &k, v);
+    }
+    out
+}
+
+/// `ksort`/`krsort` — scaffold DEVIATION: returns a NEW key-sorted array (not in
+/// place).
+fn php_ksort(h: &mut host::PhpHost, arr: &Value, reverse: bool) -> Value {
+    let mut pairs = h.array_pairs(arr).unwrap_or_default();
+    pairs.sort_by(|(a, _), (b, _)| php_compare(h, a, b).cmp(&0));
+    if reverse {
+        pairs.reverse();
+    }
+    let out = h.new_array();
+    for (k, v) in pairs {
+        h.arr_set_key(&out, &k, v);
+    }
+    out
+}
+
+fn php_array_fill(h: &mut host::PhpHost, args: &[Value]) -> Value {
+    let start = arg(args, 0).to_int();
+    let count = arg(args, 1).to_int().max(0);
+    let val = arg(args, 2);
+    let out = h.new_array();
+    for i in 0..count {
+        h.arr_set_key(&out, &Value::int(start + i), val.clone());
+    }
+    out
+}
+
+fn php_array_combine(h: &mut host::PhpHost, args: &[Value]) -> Value {
+    let keys = h.array_pairs(&arg(args, 0)).unwrap_or_default();
+    let vals = h.array_pairs(&arg(args, 1)).unwrap_or_default();
+    let out = h.new_array();
+    for ((_, k), (_, v)) in keys.into_iter().zip(vals.into_iter()) {
+        h.arr_set_key(&out, &k, v);
+    }
+    out
+}
+
+/// `array_diff` (`intersect=false`) / `array_intersect` (`intersect=true`) over
+/// the first array against the rest, compared by string form (PHP's default).
+fn php_array_diff(h: &mut host::PhpHost, args: &[Value], intersect: bool) -> Value {
+    let first = h.array_pairs(&arg(args, 0)).unwrap_or_default();
+    let others: Vec<std::collections::HashSet<String>> = args[1.min(args.len())..]
+        .iter()
+        .map(|a| {
+            h.array_pairs(a)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(_, v)| h.to_str(&v))
+                .collect()
+        })
+        .collect();
+    let out = h.new_array();
+    for (k, v) in first {
+        let s = h.to_str(&v);
+        let in_all = others.iter().all(|set| set.contains(&s));
+        let in_any = others.iter().any(|set| set.contains(&s));
+        let keep = if intersect { in_all } else { !in_any };
+        if keep {
+            h.arr_set_key(&out, &k, v);
+        }
+    }
+    out
+}
+
+// ── var_export / json_encode ─────────────────────────────────────────────────
+
+fn php_var_export(h: &host::PhpHost, v: &Value, depth: usize) -> String {
+    match v {
+        Value::Undef => "NULL".to_string(),
+        Value::Bool(b) => if *b { "true" } else { "false" }.to_string(),
+        Value::Int(n) => n.to_string(),
+        Value::Float(_) => h.to_str(v),
+        Value::Str(s) => format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'")),
+        Value::Obj(_) => {
+            let pad = "  ".repeat(depth);
+            let inner = "  ".repeat(depth + 1);
+            let mut out = format!("array (\n");
+            for (k, val) in h.array_pairs(v).unwrap_or_default() {
+                let key = match k {
+                    Value::Int(n) => n.to_string(),
+                    other => format!("'{}'", h.to_str(&other).replace('\'', "\\'")),
+                };
+                out.push_str(&format!(
+                    "{inner}{key} => {},\n",
+                    php_var_export(h, &val, depth + 1)
+                ));
+            }
+            out.push_str(&format!("{pad})"));
+            out
+        }
+        _ => "NULL".to_string(),
+    }
+}
+
+fn php_json_encode(h: &host::PhpHost, v: &Value) -> String {
+    match v {
+        Value::Undef => "null".to_string(),
+        Value::Bool(b) => if *b { "true" } else { "false" }.to_string(),
+        Value::Int(n) => n.to_string(),
+        Value::Float(_) => h.to_str(v),
+        Value::Str(s) => json_string(s),
+        Value::Obj(_) => {
+            let pairs = h.array_pairs(v).unwrap_or_default();
+            if is_list(&pairs) {
+                let items: Vec<String> =
+                    pairs.iter().map(|(_, val)| php_json_encode(h, val)).collect();
+                format!("[{}]", items.join(","))
+            } else {
+                let items: Vec<String> = pairs
+                    .iter()
+                    .map(|(k, val)| format!("{}:{}", json_string(&h.to_str(k)), php_json_encode(h, val)))
+                    .collect();
+                format!("{{{}}}", items.join(","))
+            }
+        }
+        _ => "null".to_string(),
+    }
+}
+
+fn json_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }

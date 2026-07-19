@@ -1,0 +1,103 @@
+.TH PHP 1 "2026-07-19" "phplang 0.1.0" "User Commands"
+.SH NAME
+php \- compiled PHP runtime on the fusevm bytecode VM
+.SH SYNOPSIS
+.B php
+[\fIOPTIONS\fR]
+[\fIFILE\fR]
+[\fIARGV\fR...]
+.br
+.B php
+\-r \fICODE\fR
+.br
+.B php
+\-a
+.SH DESCRIPTION
+.B phplang
+runs PHP programs by lexing and parsing to an AST, lowering to
+.B fusevm
+bytecode, and executing on the fusevm bytecode VM with a tracing Cranelift
+JIT for hot arithmetic loops. There is no bespoke PHP VM or JIT; execution
+and codegen live entirely in fusevm. PHP object semantics (arrays, strings,
+type coercion) are served by a runtime host on top of the VM.
+.PP
+Source files use the standard \(oq\fI<?php ... ?>\fR\(cq and
+\(oq\fI<?= ... ?>\fR\(cq tags; any text outside a PHP tag is passed through
+verbatim as inline HTML.
+.SH OPTIONS
+.TP
+.BR \-r ", " \-\-run " " \fICODE\fR
+Run PHP code given directly on the command line, e.g.
+\(oq\fIphp \-r 'echo 1+1;'\fR\(cq. The code is run as if wrapped in
+\fI<?php ... ?>\fR; no opening tag is required.
+.TP
+.BR \-a ", " \-\-interactive
+Start the interactive REPL. Also entered automatically when
+.B php
+is run with no
+.I FILE
+and stdin is a TTY.
+.TP
+.B \-\-dump\-bytecode
+Print the compiled fusevm bytecode for
+.I FILE
+(the main chunk and every user function's chunk) and exit, instead of
+running it.
+.TP
+.BR \-h ", " \-\-help
+Print usage and exit.
+.TP
+.BR \-V ", " \-\-version
+Print the version and exit.
+.SH ARGUMENTS
+.TP
+.I FILE
+The
+.B .php
+script to run. Omit to use
+.B \-a
+or
+.BR \-r ,
+or to read the script from stdin (non-interactive stdin with no
+.I FILE
+runs stdin as a script).
+.TP
+.I ARGV
+Trailing arguments passed through to the running PHP program as
+.BR $argv .
+.SH LANGUAGE
+Supported: scalars, variables and \fI$var\fR string interpolation, arithmetic
+(\fI+ \- * / % **\fR), string concatenation (\fI.\fR), compound assignment,
+increment/decrement (\fI++/\-\-\fR), loose and strict comparison
+(\fI== != === !== < > <= >=\fR), logical operators (\fI&& || and or\fR), the
+ternary operator (\fI?:\fR), indexed and associative arrays (literals, append
+via \fI$a[]=\fR, index read/write), control flow (\fIif/elseif/else, while,
+for, foreach, break, continue, return\fR), and user-defined functions with
+positional parameters and recursion.
+.PP
+A standard library is built in, including string functions (\fIstrlen,
+str_repeat, strrev, substr, strpos, str_replace, strtoupper, strtolower,
+ucfirst, trim, ltrim, rtrim\fR), array functions (\fIcount, implode, explode,
+in_array, array_keys, array_values, array_push, range\fR), math functions
+(\fIabs, floor, ceil, round, sqrt, max, min, intval, floatval\fR), type
+introspection (\fIgettype, is_array, is_int, is_float, is_string, is_bool,
+is_null, is_numeric\fR), and output formatting (\fIsprintf, printf, print_r,
+var_dump\fR), and more.
+.SH EXIT STATUS
+0 on success, 1 on a parse or runtime error (reported to stderr as
+\fIphp: <reason>\fR, nothing else is printed on failure).
+.SH EXAMPLES
+.TP
+Run a script:
+.B php script.php
+.TP
+Run a one-liner:
+.B php \-r 'echo 6 * 7;'
+.TP
+Start the REPL:
+.B php \-a
+.TP
+Inspect the compiled bytecode:
+.B php \-\-dump\-bytecode script.php
+.SH SEE ALSO
+Project: https://github.com/MenkeTechnologies/phplang
