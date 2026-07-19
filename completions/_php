@@ -1,0 +1,14 @@
+#compdef php
+# zsh completion for phplang `php`.
+_php() {
+  _arguments -s \
+    '(-r --run)'{-r,--run}'[run PHP code from the argument]:code' \
+    '(-a --interactive)'{-a,--interactive}'[start the interactive REPL]' \
+    '--lsp[speak LSP over stdio]' \
+    '--dap[speak DAP over stdio]' \
+    '--dump-bytecode[print lowered fusevm bytecode]' \
+    '(-h --help)'{-h,--help}'[show help]' \
+    '(-V --version)'{-V,--version}'[show version]' \
+    '*:PHP file:_files -g "*.php"'
+}
+_php "$@"

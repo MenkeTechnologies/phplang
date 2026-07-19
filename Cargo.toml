@@ -90,5 +90,12 @@ libc = "0.2"
 reedline = "0.47.0"
 nu-ansi-term = "0.50"
 
+# `php --lsp` (Language Server) and `php --dap` (Debug Adapter) speak their
+# JSON-RPC protocols over stdio. Pins match the sibling frontends (pythonrs).
+lsp-server = "0.7.9"
+lsp-types = "0.97.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
 [dev-dependencies]
 tempfile = "3"

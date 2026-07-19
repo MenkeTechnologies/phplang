@@ -20,11 +20,19 @@ pub struct Cli {
     #[arg(short = 'a', long = "interactive")]
     pub interactive: bool,
 
+    /// Speak the Language Server Protocol over stdio.
+    #[arg(long = "lsp")]
+    pub lsp: bool,
+
+    /// Speak the Debug Adapter Protocol over stdio.
+    #[arg(long = "dap")]
+    pub dap: bool,
+
     /// Print the compiled fusevm bytecode for the script and exit.
     #[arg(long = "dump-bytecode")]
     pub dump_bytecode: bool,
 
-    /// The `.php` script to run (omit with -a / -r).
+    /// The `.php` script to run (omit with -a / -r / --lsp / --dap).
     #[arg(value_name = "FILE")]
     pub file: Option<String>,
 

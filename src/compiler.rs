@@ -31,11 +31,17 @@ pub struct Compiler {
     /// Monotonic counter for compiler-generated temporary variable names
     /// (`foreach` desugaring), kept out of the PHP identifier space with a `@`.
     tmp: usize,
+    /// Emit per-statement DAP line markers (`php --dap`). Off for normal runs so
+    /// the compiled chunk carries zero extra ops.
+    debug: bool,
 }
 
-/// Compile a parsed program.
-pub fn compile(stmts: &[Stmt]) -> Result<Program, String> {
-    let mut c = Compiler::default();
+/// Compile a parsed program. `debug` enables per-statement DAP line markers.
+pub fn compile(stmts: &[Stmt], debug: bool) -> Result<Program, String> {
+    let mut c = Compiler {
+        debug,
+        ..Compiler::default()
+    };
     let mut b = ChunkBuilder::new();
     c.compile_seq(&mut b, stmts)?;
     Ok(Program {
@@ -58,6 +64,13 @@ impl Compiler {
     }
 
     fn compile_stmt(&mut self, b: &mut ChunkBuilder, s: &Stmt) -> Result<(), String> {
+        // Under `--dap` each statement is preceded by a `DBG_LINE` marker so the
+        // debugger can stop on it; the builtin returns Undef, popped immediately.
+        if self.debug && s.line != 0 {
+            b.emit(Op::LoadInt(s.line as i64), s.line);
+            b.emit(Op::CallBuiltin(ops::DBG_LINE, 1), s.line);
+            b.emit(Op::Pop, s.line);
+        }
         let line = s.line;
         match &s.kind {
             StmtKind::InlineHtml(text) => {

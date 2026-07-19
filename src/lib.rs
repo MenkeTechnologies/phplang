@@ -11,6 +11,7 @@ pub mod banner;
 pub mod builtins;
 pub mod cli;
 pub mod compiler;
+pub mod dap;
 pub mod host;
 pub mod intercepts;
 pub mod lexer;
@@ -23,7 +24,13 @@ pub use fusevm::Value;
 /// Compile a PHP source string to a runnable program.
 pub fn compile(src: &str) -> Result<compiler::Program, String> {
     let stmts = parser::parse(src)?;
-    compiler::compile(&stmts)
+    compiler::compile(&stmts, false)
+}
+
+/// Compile with per-statement DAP line markers enabled (`php --dap`).
+pub fn compile_debug(src: &str) -> Result<compiler::Program, String> {
+    let stmts = parser::parse(src)?;
+    compiler::compile(&stmts, true)
 }
 
 /// Merge an already-compiled program onto the current host (install its user
@@ -51,6 +58,18 @@ pub fn eval_file(path: &str) -> Result<Value, String> {
     let src = std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?;
     host::reset_host();
     run_compiled(compile(&src)?)
+}
+
+/// Read and run a `.php` file under the DAP debugger (per-statement line markers,
+/// tracing JIT disabled so the markers fire).
+pub fn eval_file_debug(path: &str) -> Result<Value, String> {
+    let src = std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?;
+    let prog = compile_debug(&src)?;
+    host::reset_host();
+    host::set_debug_mode(true);
+    let r = run_compiled(prog);
+    host::set_debug_mode(false);
+    r
 }
 
 /// Evaluate `src` and return the captured program output. The convenience entry

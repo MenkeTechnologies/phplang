@@ -47,6 +47,7 @@ pub mod ops {
     pub const SHR: u16 = 30; // [a, b] -> a >> b
     pub const BITNOT: u16 = 31; // [a] -> ~a
     pub const SPACESHIP: u16 = 32; // [a, b] -> -1 | 0 | 1
+    pub const DBG_LINE: u16 = 33; // [line] -> DAP statement marker (debug only)
 }
 
 /// A compiled user function: its parameter names plus the lowered body chunk.
@@ -94,6 +95,12 @@ enum Signal {
 #[derive(Default)]
 struct Scope {
     vars: FxHashMap<String, Value>,
+    /// The source line this frame is currently executing (DAP line hook). Only
+    /// meaningful under `--dap`; `0` otherwise.
+    line: u32,
+    /// The function name for a call frame, `None` for the global scope. Reported
+    /// as the frame name in a DAP `stackTrace`.
+    name: Option<String>,
 }
 
 /// The PHP runtime state for one thread.
@@ -184,6 +191,53 @@ impl PhpHost {
         if let Some(scope) = self.scopes.last_mut() {
             scope.vars.insert(name.to_string(), val);
         }
+    }
+
+    // ── DAP debug introspection (used only under `--dap`) ────────────────────
+
+    /// Number of active scopes (the debugger's step-depth reference).
+    pub fn frame_depth(&self) -> usize {
+        self.scopes.len()
+    }
+
+    /// Record the source line the innermost frame is executing (DAP line hook).
+    pub fn set_cur_line(&mut self, line: u32) {
+        if let Some(s) = self.scopes.last_mut() {
+            s.line = line;
+        }
+    }
+
+    /// The call stack as `(frame name, line)` pairs, innermost first — for the
+    /// DAP `stackTrace`. The global scope is reported as `{main}`.
+    pub fn dbg_stack(&self) -> Vec<(String, u32)> {
+        self.scopes
+            .iter()
+            .rev()
+            .map(|s| {
+                let name = s.name.clone().unwrap_or_else(|| "{main}".to_string());
+                (name, s.line)
+            })
+            .collect()
+    }
+
+    /// The innermost frame's locals as `(name, string-cast)` pairs — for DAP
+    /// `variables`. Compiler temporaries (`@`-prefixed) are hidden, matching a
+    /// debugger's default locals view.
+    pub fn dbg_locals(&self) -> Vec<(String, String)> {
+        let vars: Vec<(String, Value)> = self
+            .scopes
+            .last()
+            .map(|s| {
+                s.vars
+                    .iter()
+                    .filter(|(k, _)| !k.starts_with('@'))
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        vars.into_iter()
+            .map(|(n, v)| (format!("${n}"), self.to_str(&v)))
+            .collect()
     }
 
     // ── arrays ─────────────────────────────────────────────────────────────
@@ -500,6 +554,17 @@ pub fn reset_host() {
 
 // ── execution ─────────────────────────────────────────────────────────────
 
+thread_local! {
+    static DEBUG_MODE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Enable/disable DAP debug execution. When on, `run_chunk_on` installs the
+/// extension-handler seam and skips the tracing JIT (which would compile hot
+/// loops and step over the `DBG_LINE` markers the debugger relies on).
+pub fn set_debug_mode(on: bool) {
+    DEBUG_MODE.with(|d| d.set(on));
+}
+
 /// Register every phplang builtin + the strict numeric hook on a VM, then run it.
 fn run_chunk_on(chunk: Chunk) -> Result<Value, String> {
     let mut vm = VM::new(chunk);
@@ -507,7 +572,13 @@ fn run_chunk_on(chunk: Chunk) -> Result<Value, String> {
     vm.set_numeric_hook(std::sync::Arc::new(|op, a, b| {
         crate::builtins::numeric_hook(op, a, b)
     }));
-    vm.enable_tracing_jit();
+    if DEBUG_MODE.with(|d| d.get()) {
+        vm.set_extension_handler(Box::new(|vm, id, _| {
+            crate::dap::on_ext(vm, id);
+        }));
+    } else {
+        vm.enable_tracing_jit();
+    }
     let outcome = vm.run();
     if let Some(e) = with_host(|h| h.take_error()) {
         return Err(e);
@@ -534,7 +605,10 @@ pub fn call_function(name: &str, args: Vec<Value>) -> Result<Value, String> {
     let def = with_host(|h| h.functions.get(&name.to_ascii_lowercase()).cloned());
     if let Some(def) = def {
         with_host(|h| {
-            let mut scope = Scope::default();
+            let mut scope = Scope {
+                name: Some(name.to_string()),
+                ..Scope::default()
+            };
             for (i, p) in def.params.iter().enumerate() {
                 scope
                     .vars

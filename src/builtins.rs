@@ -45,6 +45,7 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::SHR, b_shr);
     vm.register_builtin(ops::BITNOT, b_bitnot);
     vm.register_builtin(ops::SPACESHIP, b_spaceship);
+    vm.register_builtin(ops::DBG_LINE, b_dbg_line);
 }
 
 /// Pop two operands as PHP integers (bitwise ops cast their operands to int).
@@ -102,6 +103,16 @@ fn b_spaceship(vm: &mut VM, _: u8) -> Value {
     let b = vm.pop();
     let a = vm.pop();
     Value::int(with_host(|h| php_compare(h, &a, &b)) as i64)
+}
+
+/// Per-statement DAP line marker (emitted only under `php --dap`). Pops the line
+/// argument and hands control to the debugger, which pauses here at a breakpoint
+/// or step target. A normal (non-`--dap`) build never emits this op, so the hook
+/// costs nothing outside the debugger.
+fn b_dbg_line(vm: &mut VM, _: u8) -> Value {
+    let _line = vm.pop();
+    crate::dap::on_debug_line(vm);
+    Value::Undef
 }
 
 // ── stack helpers ──────────────────────────────────────────────────────────

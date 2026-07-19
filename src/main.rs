@@ -9,6 +9,19 @@ use std::process::ExitCode;
 fn main() -> ExitCode {
     let cli = phplang::cli::parse();
 
+    if cli.lsp {
+        return match phplang::lsp::run() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => fail(&e),
+        };
+    }
+    if cli.dap {
+        return match phplang::dap::run() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => fail(&e),
+        };
+    }
+
     if let Some(code) = cli.run {
         // `php -r` code carries no opening tag; it is raw PHP. Prepend `<?php`
         // so the lexer starts in PHP mode instead of echoing it as inline HTML.
