@@ -32,6 +32,18 @@ pub struct Cli {
     #[arg(long = "dump-bytecode")]
     pub dump_bytecode: bool,
 
+    /// Print the lexer token stream for the script and exit.
+    #[arg(long = "dump-tokens")]
+    pub dump_tokens: bool,
+
+    /// Print the parsed AST for the script and exit.
+    #[arg(long = "dump-ast")]
+    pub dump_ast: bool,
+
+    /// Print a fusevm bytecode disassembly listing for the script and exit.
+    #[arg(long = "disasm")]
+    pub disasm: bool,
+
     /// The `.php` script to run (omit with -a / -r / --lsp / --dap).
     #[arg(value_name = "FILE")]
     pub file: Option<String>,

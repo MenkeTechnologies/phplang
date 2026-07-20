@@ -18,6 +18,7 @@ pub mod lexer;
 pub mod lsp;
 pub mod parser;
 pub mod repl;
+pub mod rust_ffi;
 
 pub use fusevm::Value;
 

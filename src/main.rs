@@ -31,10 +31,16 @@ fn main() -> ExitCode {
 
     if let Some(file) = cli.file {
         if cli.dump_bytecode {
-            return match dump(&file) {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(e) => fail(&e),
-            };
+            return finish(dump(&file));
+        }
+        if cli.dump_tokens {
+            return finish(dump_tokens(&file));
+        }
+        if cli.dump_ast {
+            return finish(dump_ast(&file));
+        }
+        if cli.disasm {
+            return finish(disasm(&file));
         }
         return match phplang::eval_file(&file) {
             Ok(_) => ExitCode::SUCCESS,
@@ -72,6 +78,48 @@ fn dump(file: &str) -> Result<(), String> {
         );
     }
     Ok(())
+}
+
+/// `--dump-tokens`: print the lexer token stream (after `rust { }` desugaring),
+/// one `line:col  Tok` per line.
+fn dump_tokens(file: &str) -> Result<(), String> {
+    let src = std::fs::read_to_string(file).map_err(|e| format!("cannot read {file}: {e}"))?;
+    let src = phplang::rust_ffi::desugar(&src);
+    for t in phplang::lexer::lex(&src)? {
+        println!("{}\t{:?}", t.line, t.tok);
+    }
+    Ok(())
+}
+
+/// `--dump-ast`: print the parsed PHP AST.
+fn dump_ast(file: &str) -> Result<(), String> {
+    let src = std::fs::read_to_string(file).map_err(|e| format!("cannot read {file}: {e}"))?;
+    let stmts = phplang::parser::parse(&src)?;
+    println!("{stmts:#?}");
+    Ok(())
+}
+
+/// `--disasm`: print a fusevm bytecode disassembly of the main chunk and every
+/// compiled function, via the shared `fusevm::Chunk::disassemble`.
+fn disasm(file: &str) -> Result<(), String> {
+    let src = std::fs::read_to_string(file).map_err(|e| format!("cannot read {file}: {e}"))?;
+    let prog = phplang::compile(&src)?;
+    println!("; php fusevm — main\n{}", prog.main.disassemble());
+    for (name, f) in &prog.functions {
+        println!(
+            "; php fusevm — function {name}({})\n{}",
+            f.params.join(", "),
+            f.chunk.disassemble()
+        );
+    }
+    Ok(())
+}
+
+fn finish(r: Result<(), String>) -> ExitCode {
+    match r {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => fail(&e),
+    }
 }
 
 fn atty_stdin() -> bool {

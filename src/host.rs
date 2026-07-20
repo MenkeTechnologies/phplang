@@ -602,7 +602,22 @@ pub fn run_main(chunk: Chunk) -> Result<Value, String> {
 /// Pushes a fresh scope, binds positional parameters, runs the body chunk, and
 /// returns the `return` value (or null if the body fell off the end).
 pub fn call_function(name: &str, args: Vec<Value>) -> Result<Value, String> {
+    // Inline Rust FFI: the `rust { ... }` desugar emits `__rust_compile(b64,
+    // line)`; compile + register the block's exported functions.
+    if name == "__rust_compile" {
+        let b64 = args.first().map(|v| v.to_str()).unwrap_or_default();
+        return fusevm::ffi::compile_and_register(&b64).map(|_| Value::Undef);
+    }
+    // A `rust { ... }` block's exported functions are callable by bareword.
+    // User-defined PHP functions still win (resolved below); the registry is
+    // consulted before the PHP standard library so an exported name is
+    // reachable, and the membership check keeps this off the hot path.
     let def = with_host(|h| h.functions.get(&name.to_ascii_lowercase()).cloned());
+    if def.is_none() && fusevm::ffi::is_registered(name) {
+        if let Some(r) = fusevm::ffi::try_call(name, &args) {
+            return r;
+        }
+    }
     if let Some(def) = def {
         with_host(|h| {
             let mut scope = Scope {

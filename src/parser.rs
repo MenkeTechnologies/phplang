@@ -15,9 +15,11 @@ fn cast_fn(t: &str) -> Option<&'static str> {
     }
 }
 
-/// Parse a PHP source string into a statement list.
+/// Parse a PHP source string into a statement list. Inline `rust { ... }` FFI
+/// blocks are desugared to `__rust_compile(...)` calls before lexing.
 pub fn parse(src: &str) -> Result<Vec<Stmt>, String> {
-    let toks = lexer::lex(src)?;
+    let src = crate::rust_ffi::desugar(src);
+    let toks = lexer::lex(&src)?;
     let mut p = Parser { toks, pos: 0 };
     let mut stmts = Vec::new();
     while !p.at_end() {
