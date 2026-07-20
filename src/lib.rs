@@ -37,8 +37,15 @@ pub fn compile_debug(src: &str) -> Result<compiler::Program, String> {
 /// Merge an already-compiled program onto the current host (install its user
 /// functions) and return the main chunk for the caller to run.
 pub fn load_merged(prog: compiler::Program) -> fusevm::Chunk {
-    let compiler::Program { main, functions } = prog;
-    host::with_host(|h| h.load_program(functions));
+    let compiler::Program {
+        main,
+        functions,
+        classes,
+    } = prog;
+    host::with_host(|h| {
+        h.load_program(functions);
+        h.load_classes(classes);
+    });
     main
 }
 

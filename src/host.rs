@@ -56,8 +56,15 @@ pub mod ops {
     pub const CALL_SPREAD: u16 = 39; // [name, flag, val, ...] -> return value (arg unpacking)
     pub const MKCLOSURE: u16 = 40; // [def_name, k, v, ...] argc=1+2n -> closure handle
     pub const CALL_VALUE: u16 = 41; // [callee, args...] argc=1+n -> return value
-    // 42..47 reserved: class ops (NEW..SCONST).
+    pub const NEW: u16 = 42; // [class, args...] argc=1+n -> object handle
+    pub const PROP_GET: u16 = 43; // [recv, name] -> value ($o->p)
+    pub const PROP_SET: u16 = 44; // [recv, name, val] -> val ($o->p = v)
+    pub const MCALL: u16 = 45; // [recv, method, args...] argc=2+n -> return
+    pub const SCALL: u16 = 46; // [class, method, args...] argc=2+n -> return
+    pub const SCONST: u16 = 47; // [class, name] -> class constant value
     pub const PATH_APPEND_CHILD: u16 = 48; // [name, k1..kN] -> handle of a freshly appended child array
+    pub const PROP_ENSURE_ARRAY: u16 = 49; // [recv, name] -> handle of the array held in $o->name (vivified)
+    pub const PROP_INCDEC: u16 = 50; // [recv, name, code] -> value (++/-- on $o->p)
 }
 
 /// Sub-ops for the by-reference array mutators lowered through `ops::ARR_MUT`
@@ -93,6 +100,18 @@ pub struct FuncDef {
 /// `(name, value)` bindings it captured at creation time.
 type ClosureCall = (Vec<Param>, Chunk, Vec<(String, Value)>);
 
+/// A compiled class: its parent (for single-inheritance resolution), constant and
+/// property-default initializers (each an expression chunk that leaves its value
+/// on the stack), and its methods keyed by lowercase name. `self::`/`parent::`
+/// were resolved to concrete class names at compile time.
+#[derive(Debug, Clone)]
+pub struct ClassDef {
+    pub parent: Option<String>,
+    pub consts: Vec<(String, Chunk)>,
+    pub prop_defaults: Vec<(String, Chunk)>,
+    pub methods: FxHashMap<String, FuncDef>,
+}
+
 /// A PHP array key — always an integer or a string (bool/float/null keys are
 /// normalized to one of these on insert, as PHP does).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -127,6 +146,13 @@ pub enum PhpObj {
         chunk: Chunk,
         captured: Vec<(String, Value)>,
     },
+    /// A class instance: its class name and its properties. Referenced by a
+    /// `Value::Obj(u32)` handle, so objects have PHP reference semantics (passing
+    /// one around shares the same instance).
+    Object {
+        class: String,
+        props: IndexMap<String, Value>,
+    },
 }
 
 /// A control-flow signal that unwinds out of a function body.
@@ -151,6 +177,8 @@ pub struct PhpHost {
     objs: Vec<PhpObj>,
     scopes: Vec<Scope>,
     functions: FxHashMap<String, FuncDef>,
+    /// User-declared classes, keyed by lowercase class name.
+    classes: FxHashMap<String, ClassDef>,
     /// When `Some`, `echo` appends here instead of writing to stdout (used by
     /// `eval_capture` and the test harness).
     capture: Option<String>,
@@ -171,6 +199,7 @@ impl PhpHost {
             // Start with the global scope already open.
             scopes: vec![Scope::default()],
             functions: FxHashMap::default(),
+            classes: FxHashMap::default(),
             capture: None,
             error: None,
             signal: None,
@@ -183,6 +212,13 @@ impl PhpHost {
     pub fn load_program(&mut self, functions: Vec<(String, FuncDef)>) {
         for (name, def) in functions {
             self.functions.insert(name, def);
+        }
+    }
+
+    /// Install a compiled program's classes onto the host.
+    pub fn load_classes(&mut self, classes: Vec<(String, ClassDef)>) {
+        for (name, def) in classes {
+            self.classes.insert(name, def);
         }
     }
 
@@ -327,6 +363,103 @@ impl PhpHost {
     /// Whether `v` is a closure handle.
     pub fn is_closure(&self, v: &Value) -> bool {
         matches!(self.as_array(v), Some(PhpObj::Closure { .. }))
+    }
+
+    // ── objects / classes ──────────────────────────────────────────────────
+
+    pub fn is_object(&self, v: &Value) -> bool {
+        matches!(self.as_array(v), Some(PhpObj::Object { .. }))
+    }
+
+    /// The class name of an object handle, or `None` if `v` is not an object.
+    pub fn object_class(&self, v: &Value) -> Option<String> {
+        match self.as_array(v) {
+            Some(PhpObj::Object { class, .. }) => Some(class.clone()),
+            _ => None,
+        }
+    }
+
+    /// `$obj->name` read (`Undef` if the object lacks the property).
+    pub fn prop_get(&self, recv: &Value, name: &str) -> Value {
+        match self.as_array(recv) {
+            Some(PhpObj::Object { props, .. }) => props.get(name).cloned().unwrap_or(Value::Undef),
+            _ => Value::Undef,
+        }
+    }
+
+    /// `$obj->name = val` — mutates the shared instance behind the handle.
+    pub fn prop_set(&mut self, recv: &Value, name: &str, val: Value) {
+        if let Some(PhpObj::Object { props, .. }) = self.as_array_mut(recv) {
+            props.insert(name.to_string(), val);
+        }
+    }
+
+    /// Ensure `$obj->name` holds an array and return its handle, creating an empty
+    /// array (and storing it back on the object) if the property is unset or not an
+    /// array. The pivot for indexing/appending into an array-valued property
+    /// (`$this->items[] = x`, `$this->map[$k] = v`).
+    pub fn prop_ensure_array(&mut self, recv: &Value, name: &str) -> Value {
+        let cur = self.prop_get(recv, name);
+        if self.is_array(&cur) {
+            return cur;
+        }
+        let arr = self.new_array();
+        self.prop_set(recv, name, arr.clone());
+        arr
+    }
+
+    /// Resolve a method by walking the class up its parent chain; returns the
+    /// defining class name plus the method definition.
+    fn resolve_method(&self, class: &str, method: &str) -> Option<(String, FuncDef)> {
+        let mut cur = Some(class.to_ascii_lowercase());
+        while let Some(c) = cur {
+            let def = self.classes.get(&c)?;
+            if let Some(m) = def.methods.get(method) {
+                return Some((c, m.clone()));
+            }
+            cur = def.parent.as_ref().map(|p| p.to_ascii_lowercase());
+        }
+        None
+    }
+
+    /// The ordered property-default initializer chunks for a class, parent props
+    /// first and child declarations overriding by name. `None` if unknown class.
+    fn class_prop_default_chunks(&self, class: &str) -> Option<Vec<(String, Chunk)>> {
+        let cl = class.to_ascii_lowercase();
+        if !self.classes.contains_key(&cl) {
+            return None;
+        }
+        // Build the chain child → root, then apply root → child so a child's
+        // redeclared default wins while parent props keep their leading position.
+        let mut chain: Vec<&ClassDef> = Vec::new();
+        let mut cur = Some(cl);
+        while let Some(c) = cur {
+            let Some(def) = self.classes.get(&c) else {
+                break;
+            };
+            chain.push(def);
+            cur = def.parent.as_ref().map(|p| p.to_ascii_lowercase());
+        }
+        let mut map: IndexMap<String, Chunk> = IndexMap::new();
+        for def in chain.into_iter().rev() {
+            for (name, chunk) in &def.prop_defaults {
+                map.insert(name.clone(), chunk.clone());
+            }
+        }
+        Some(map.into_iter().collect())
+    }
+
+    /// The initializer chunk for `Class::name`, walking the parent chain.
+    fn resolve_const_chunk(&self, class: &str, name: &str) -> Option<Chunk> {
+        let mut cur = Some(class.to_ascii_lowercase());
+        while let Some(c) = cur {
+            let def = self.classes.get(&c)?;
+            if let Some((_, chunk)) = def.consts.iter().find(|(n, _)| n == name) {
+                return Some(chunk.clone());
+            }
+            cur = def.parent.as_ref().map(|p| p.to_ascii_lowercase());
+        }
+        None
     }
 
     fn as_array_mut(&mut self, v: &Value) -> Option<&mut PhpObj> {
@@ -1011,6 +1144,65 @@ pub fn call_value(callee: Value, args: Vec<Value>) -> Result<Value, String> {
         Value::Str(s) => call_function(&s, args),
         _ => Err("value is not callable".to_string()),
     }
+}
+
+// ── objects (new / method dispatch / constants) ─────────────────────────────
+
+/// `new Class(args)`: allocate an object seeded with its (inherited) property
+/// defaults, then run its constructor. Property-default and constructor code run
+/// on fresh VMs, so no host borrow is held across them.
+pub fn new_object(class: &str, args: Vec<Value>) -> Result<Value, String> {
+    let cl = class.to_ascii_lowercase();
+    let Some(defaults) = with_host(|h| h.class_prop_default_chunks(&cl)) else {
+        return Err(format!("class \"{class}\" not found"));
+    };
+    // Evaluate each property default (a constant expression chunk).
+    let mut props: IndexMap<String, Value> = IndexMap::new();
+    for (name, chunk) in defaults {
+        let v = run_chunk_on(chunk)?;
+        props.insert(name, v);
+    }
+    // Allocate the instance.
+    let obj = with_host(|h| {
+        h.objs.push(PhpObj::Object {
+            class: cl.clone(),
+            props,
+        });
+        Value::Obj((h.objs.len() - 1) as u32)
+    });
+    // Run the constructor if one exists anywhere in the chain.
+    if with_host(|h| h.resolve_method(&cl, "__construct").is_some()) {
+        call_method(&cl, "__construct", Some(obj.clone()), args)?;
+    }
+    Ok(obj)
+}
+
+/// Invoke `Class::method` (resolved up the parent chain) with `this` bound to
+/// `$this` when present. Reuses the shared `invoke` frame handling, so methods
+/// honor default and variadic parameters.
+pub fn call_method(
+    class: &str,
+    method: &str,
+    this: Option<Value>,
+    args: Vec<Value>,
+) -> Result<Value, String> {
+    let method_l = method.to_ascii_lowercase();
+    let Some((def_class, def)) = with_host(|h| h.resolve_method(class, &method_l)) else {
+        return Err(format!("call to undefined method {class}::{method}()"));
+    };
+    let pre = match this {
+        Some(t) => vec![("this".to_string(), t)],
+        None => Vec::new(),
+    };
+    invoke(&format!("{def_class}::{method}"), &def.params, def.chunk, pre, args)
+}
+
+/// `Class::CONST` — evaluate the (inherited) constant initializer.
+pub fn class_const(class: &str, name: &str) -> Result<Value, String> {
+    let Some(chunk) = with_host(|h| h.resolve_const_chunk(class, name)) else {
+        return Err(format!("undefined constant {class}::{name}"));
+    };
+    run_chunk_on(chunk)
 }
 
 /// Record a pending `return` value for the enclosing function frame.

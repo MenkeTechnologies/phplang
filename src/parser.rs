@@ -148,6 +148,13 @@ impl Parser {
             _ if self.at_kw("for") => self.for_stmt()?,
             _ if self.at_kw("foreach") => self.foreach_stmt()?,
             _ if self.at_kw("function") => self.function_stmt()?,
+            _ if self.at_kw("class")
+                || ((self.at_kw("abstract") || self.at_kw("final"))
+                    && matches!(self.toks.get(self.pos + 1).map(|s| &s.tok),
+                        Some(Tok::Ident(s)) if s.eq_ignore_ascii_case("class"))) =>
+            {
+                self.class_stmt()?
+            }
             _ if self.at_kw("return") => {
                 self.pos += 1;
                 let e = if self.at_punct(";") {
@@ -367,6 +374,17 @@ impl Parser {
         })
     }
 
+    /// A property / method / constant name after `->` or `::` (a bare identifier).
+    fn member_name(&mut self) -> Result<String, String> {
+        match self.next() {
+            Some(Tok::Ident(n)) => Ok(n),
+            other => Err(format!(
+                "expected a member name but found {other:?} (line {})",
+                self.line()
+            )),
+        }
+    }
+
     fn expect_var(&mut self) -> Result<String, String> {
         match self.next() {
             Some(Tok::Var(n)) => Ok(n),
@@ -414,7 +432,9 @@ impl Parser {
         let mut params = Vec::new();
         if !self.at_punct(")") {
             loop {
-                // Skip a leading modifier/type-hint chain up to `...` or `$var`.
+                // Skip a leading modifier/type-hint chain up to `...` or `$var`. A
+                // visibility/readonly keyword marks a promoted constructor property.
+                let mut promoted = false;
                 loop {
                     if self.eat_punct("?") || self.eat_punct("&") {
                         continue;
@@ -422,7 +442,13 @@ impl Parser {
                     if self.at_punct("...") || matches!(self.peek(), Some(Tok::Var(_))) {
                         break;
                     }
-                    if let Some(Tok::Ident(_)) = self.peek() {
+                    if let Some(Tok::Ident(kw)) = self.peek() {
+                        if matches!(
+                            kw.to_ascii_lowercase().as_str(),
+                            "public" | "private" | "protected" | "readonly"
+                        ) {
+                            promoted = true;
+                        }
                         self.pos += 1;
                         continue;
                     }
@@ -441,6 +467,7 @@ impl Parser {
                     name,
                     default,
                     variadic,
+                    promoted,
                 });
                 if !self.eat_punct(",") {
                     break;
@@ -469,6 +496,148 @@ impl Parser {
         }
         self.expect_punct(")")?;
         Ok(args)
+    }
+
+    /// `class Name [extends Parent] [implements ...] { members }`. Members are
+    /// consts, properties (with visibility/static/type modifiers), and methods.
+    /// A leading `abstract`/`final` class modifier is accepted but not enforced.
+    fn class_stmt(&mut self) -> Result<StmtKind, String> {
+        if !self.at_kw("class") {
+            self.pos += 1; // abstract / final
+        }
+        self.pos += 1; // class
+        let name = match self.next() {
+            Some(Tok::Ident(n)) => n,
+            other => {
+                return Err(format!(
+                    "expected class name but found {other:?} (line {})",
+                    self.line()
+                ))
+            }
+        };
+        let parent = if self.eat_kw("extends") {
+            match self.next() {
+                Some(Tok::Ident(n)) => Some(n),
+                other => {
+                    return Err(format!(
+                        "expected parent class name but found {other:?} (line {})",
+                        self.line()
+                    ))
+                }
+            }
+        } else {
+            None
+        };
+        // `implements Iface, ...` — parsed and discarded (no interfaces here).
+        if self.eat_kw("implements") {
+            loop {
+                if let Some(Tok::Ident(_)) = self.peek() {
+                    self.pos += 1;
+                }
+                if !self.eat_punct(",") {
+                    break;
+                }
+            }
+        }
+        self.expect_punct("{")?;
+        let mut consts = Vec::new();
+        let mut props = Vec::new();
+        let mut methods = Vec::new();
+        while !self.at_punct("}") && !self.at_end() {
+            // Member modifiers; only `static` is retained, the rest are accepted
+            // (visibility is parsed but not enforced in this wave).
+            let mut is_static = false;
+            loop {
+                if self.eat_kw("static") {
+                    is_static = true;
+                } else if self.at_kw("public")
+                    || self.at_kw("private")
+                    || self.at_kw("protected")
+                    || self.at_kw("abstract")
+                    || self.at_kw("final")
+                    || self.at_kw("readonly")
+                    || self.at_kw("var")
+                {
+                    self.pos += 1;
+                } else {
+                    break;
+                }
+            }
+            if self.eat_kw("const") {
+                loop {
+                    let cname = match self.next() {
+                        Some(Tok::Ident(n)) => n,
+                        other => {
+                            return Err(format!(
+                                "expected constant name but found {other:?} (line {})",
+                                self.line()
+                            ))
+                        }
+                    };
+                    self.expect_punct("=")?;
+                    consts.push((cname, self.expression()?));
+                    if !self.eat_punct(",") {
+                        break;
+                    }
+                }
+                self.expect_punct(";")?;
+            } else if self.at_kw("function") {
+                self.pos += 1; // function
+                self.eat_punct("&"); // return-by-ref marker
+                let mname = match self.next() {
+                    Some(Tok::Ident(n)) => n,
+                    other => {
+                        return Err(format!(
+                            "expected method name but found {other:?} (line {})",
+                            self.line()
+                        ))
+                    }
+                };
+                let params = self.param_list()?;
+                self.skip_return_type();
+                // An abstract/interface method has no body, just `;`.
+                let body = if self.eat_punct(";") {
+                    Vec::new()
+                } else {
+                    self.block()?
+                };
+                methods.push(Method {
+                    name: mname,
+                    params,
+                    body,
+                    is_static,
+                });
+            } else {
+                // Property declaration(s): an optional type hint precedes the $var.
+                if !matches!(self.peek(), Some(Tok::Var(_))) {
+                    self.eat_punct("?");
+                    if let Some(Tok::Ident(_)) = self.peek() {
+                        self.pos += 1;
+                    }
+                }
+                loop {
+                    let pname = self.expect_var()?;
+                    let default = if self.eat_punct("=") {
+                        Some(self.expression()?)
+                    } else {
+                        None
+                    };
+                    props.push((pname, default));
+                    if !self.eat_punct(",") {
+                        break;
+                    }
+                }
+                self.expect_punct(";")?;
+            }
+        }
+        self.expect_punct("}")?;
+        Ok(StmtKind::Class(ClassDecl {
+            name,
+            parent,
+            consts,
+            props,
+            methods,
+        }))
     }
 
     // ── expressions (precedence climbing) ──────────────────────────────────
@@ -680,6 +849,29 @@ impl Parser {
                     self.expect_punct("]")?;
                     e = Expr::Index(Box::new(e), Box::new(idx));
                 }
+            } else if self.eat_punct("->") {
+                // Instance member: `$o->prop` or `$o->method(args)`.
+                let member = self.member_name()?;
+                if self.eat_punct("(") {
+                    e = Expr::MethodCall(Box::new(e), member, self.arg_list()?);
+                } else {
+                    e = Expr::PropGet(Box::new(e), member);
+                }
+            } else if self.eat_punct("::") {
+                // Static / scope-resolution access: the left must be a class name
+                // (a bareword, surfacing here as `Expr::Str`).
+                let Expr::Str(class) = e else {
+                    return Err(format!(
+                        "expected a class name before '::' (line {})",
+                        self.line()
+                    ));
+                };
+                let member = self.member_name()?;
+                if self.eat_punct("(") {
+                    e = Expr::StaticCall(class, member, self.arg_list()?);
+                } else {
+                    e = Expr::StaticGet(class, member);
+                }
             } else if self.at_punct("(") {
                 // A `( args )` applied to any primary value is a dynamic call: a
                 // closure held in `$f`, or an immediately-invoked `foo()(…)` /
@@ -728,6 +920,25 @@ impl Parser {
             Some(Tok::Ident(kw)) if kw.eq_ignore_ascii_case("array") => {
                 self.expect_punct("(")?;
                 self.array_literal(")")
+            }
+            // `new Class(args)` — the class name is a bareword (or `self`/`parent`/
+            // `static`); parentheses are optional when there are no arguments.
+            Some(Tok::Ident(kw)) if kw.eq_ignore_ascii_case("new") => {
+                let class = match self.next() {
+                    Some(Tok::Ident(n)) => n,
+                    other => {
+                        return Err(format!(
+                            "expected a class name after 'new' but found {other:?} (line {})",
+                            self.line()
+                        ))
+                    }
+                };
+                let args = if self.eat_punct("(") {
+                    self.arg_list()?
+                } else {
+                    Vec::new()
+                };
+                Ok(Expr::New(class, args))
             }
             // `match (subj) { ... }` — only when followed by `(`, so a plain
             // bareword `match` still parses as a name.

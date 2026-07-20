@@ -9,13 +9,15 @@
 //! differs from fusevm's default numeric truthiness.
 
 use crate::ast::*;
-use crate::host::{self, ops, FuncDef};
+use crate::host::{self, ops, ClassDef, FuncDef};
 use fusevm::{Chunk, ChunkBuilder, Op, Value};
+use rustc_hash::FxHashMap;
 
 /// The full output of compiling a program.
 pub struct Program {
     pub main: Chunk,
     pub functions: Vec<(String, FuncDef)>,
+    pub classes: Vec<(String, ClassDef)>,
 }
 
 /// Break/continue jump fixups for the innermost loop.
@@ -49,6 +51,11 @@ fn array_mutator_subop(name: &str) -> Option<i64> {
 #[derive(Default)]
 pub struct Compiler {
     functions: Vec<(String, FuncDef)>,
+    classes: Vec<(String, ClassDef)>,
+    /// The class currently being compiled, and its parent — used to resolve
+    /// `self::`/`parent::`/`static::` to concrete class names.
+    current_class: Option<String>,
+    current_parent: Option<String>,
     loops: Vec<LoopCtx>,
     /// Monotonic counter for compiler-generated temporary variable names
     /// (`foreach` desugaring), kept out of the PHP identifier space with a `@`.
@@ -69,6 +76,7 @@ pub fn compile(stmts: &[Stmt], debug: bool) -> Result<Program, String> {
     Ok(Program {
         main: b.build(),
         functions: c.functions,
+        classes: c.classes,
     })
 }
 
@@ -180,6 +188,7 @@ impl Compiler {
                     },
                 ));
             }
+            StmtKind::Class(decl) => self.compile_class(decl)?,
             StmtKind::If {
                 cond,
                 then,
@@ -484,6 +493,100 @@ impl Compiler {
         Ok(())
     }
 
+    /// Lower a class declaration to a `ClassDef`: constant and property-default
+    /// initializers become standalone expression chunks (each leaving its value
+    /// on the stack), and each method body compiles like a free function. A
+    /// constructor with promoted parameters (`public int $x`) gets a synthetic
+    /// `$this->x = $x;` prepended for each promoted parameter.
+    fn compile_class(&mut self, decl: &ClassDecl) -> Result<(), String> {
+        let prev_class = self.current_class.take();
+        let prev_parent = self.current_parent.take();
+        self.current_class = Some(decl.name.clone());
+        self.current_parent = decl.parent.clone();
+
+        let mut consts = Vec::with_capacity(decl.consts.len());
+        for (name, expr) in &decl.consts {
+            let mut cb = ChunkBuilder::new();
+            self.compile_expr(&mut cb, expr)?;
+            consts.push((name.clone(), cb.build()));
+        }
+
+        let mut prop_defaults = Vec::with_capacity(decl.props.len());
+        for (name, default) in &decl.props {
+            let mut pb = ChunkBuilder::new();
+            match default {
+                Some(e) => self.compile_expr(&mut pb, e)?,
+                None => {
+                    pb.emit(Op::LoadUndef, 0);
+                }
+            }
+            prop_defaults.push((name.clone(), pb.build()));
+        }
+
+        let mut methods = FxHashMap::default();
+        for m in &decl.methods {
+            let cparams = self.compile_params(&m.params)?;
+            let mut mb = ChunkBuilder::new();
+            // A method body has its own loop scope (as free functions do).
+            let saved = std::mem::take(&mut self.loops);
+            // Constructor property promotion: `public int $x` also assigns
+            // `$this->x = $x` before the body runs.
+            if m.name.eq_ignore_ascii_case("__construct") {
+                for p in m.params.iter().filter(|p| p.promoted) {
+                    let assign = Expr::Assign(
+                        Box::new(Expr::PropGet(
+                            Box::new(Expr::Var("this".to_string())),
+                            p.name.clone(),
+                        )),
+                        None,
+                        Box::new(Expr::Var(p.name.clone())),
+                    );
+                    self.compile_expr(&mut mb, &assign)?;
+                    mb.emit(Op::Pop, 0);
+                }
+            }
+            self.compile_seq(&mut mb, &m.body)?;
+            self.loops = saved;
+            methods.insert(
+                m.name.to_ascii_lowercase(),
+                FuncDef {
+                    params: cparams,
+                    chunk: mb.build(),
+                },
+            );
+        }
+
+        self.classes.push((
+            decl.name.to_ascii_lowercase(),
+            ClassDef {
+                parent: decl.parent.clone(),
+                consts,
+                prop_defaults,
+                methods,
+            },
+        ));
+
+        self.current_class = prev_class;
+        self.current_parent = prev_parent;
+        Ok(())
+    }
+
+    /// Resolve a class reference to a concrete name, expanding the `self`,
+    /// `parent`, and `static` keywords against the class being compiled.
+    fn resolve_class_name(&self, name: &str) -> Result<String, String> {
+        match name.to_ascii_lowercase().as_str() {
+            "self" | "static" => self
+                .current_class
+                .clone()
+                .ok_or_else(|| format!("'{name}' used outside of a class")),
+            "parent" => self
+                .current_parent
+                .clone()
+                .ok_or_else(|| "'parent' used in a class with no parent".to_string()),
+            _ => Ok(name.to_string()),
+        }
+    }
+
     // ── expressions ────────────────────────────────────────────────────────
 
     fn compile_expr(&mut self, b: &mut ChunkBuilder, e: &Expr) -> Result<(), String> {
@@ -618,6 +721,56 @@ impl Compiler {
                 collect_free_vars(body, &mut captures);
                 captures.retain(|n| !params.iter().any(|p| p.name == *n));
                 self.compile_closure(b, params, &captures, &ret)?;
+            }
+            Expr::New(class, args) => {
+                let cname = self.resolve_class_name(class)?;
+                let idx = b.add_constant(Value::str(cname));
+                b.emit(Op::LoadConst(idx), 0);
+                for a in args {
+                    self.compile_expr(b, a)?;
+                }
+                b.emit(Op::CallBuiltin(ops::NEW, (args.len() + 1) as u8), 0);
+            }
+            Expr::PropGet(recv, name) => {
+                self.compile_expr(b, recv)?;
+                let idx = b.add_constant(Value::str(name.clone()));
+                b.emit(Op::LoadConst(idx), 0);
+                b.emit(Op::CallBuiltin(ops::PROP_GET, 2), 0);
+            }
+            Expr::MethodCall(recv, name, args) => {
+                self.compile_expr(b, recv)?;
+                let idx = b.add_constant(Value::str(name.clone()));
+                b.emit(Op::LoadConst(idx), 0);
+                for a in args {
+                    self.compile_expr(b, a)?;
+                }
+                b.emit(Op::CallBuiltin(ops::MCALL, (args.len() + 2) as u8), 0);
+            }
+            Expr::StaticGet(class, name) => {
+                let cname = self.resolve_class_name(class)?;
+                // `Class::class` / `self::class` yields the resolved class-name
+                // string, not a class constant.
+                if name.eq_ignore_ascii_case("class") {
+                    let idx = b.add_constant(Value::str(cname));
+                    b.emit(Op::LoadConst(idx), 0);
+                } else {
+                    let cidx = b.add_constant(Value::str(cname));
+                    b.emit(Op::LoadConst(cidx), 0);
+                    let nidx = b.add_constant(Value::str(name.clone()));
+                    b.emit(Op::LoadConst(nidx), 0);
+                    b.emit(Op::CallBuiltin(ops::SCONST, 2), 0);
+                }
+            }
+            Expr::StaticCall(class, name, args) => {
+                let cname = self.resolve_class_name(class)?;
+                let cidx = b.add_constant(Value::str(cname));
+                b.emit(Op::LoadConst(cidx), 0);
+                let nidx = b.add_constant(Value::str(name.clone()));
+                b.emit(Op::LoadConst(nidx), 0);
+                for a in args {
+                    self.compile_expr(b, a)?;
+                }
+                b.emit(Op::CallBuiltin(ops::SCALL, (args.len() + 2) as u8), 0);
             }
             Expr::Ternary(c, t, f) => {
                 self.compile_truthy(b, c)?;
@@ -872,9 +1025,56 @@ impl Compiler {
                 }
                 b.emit(Op::CallBuiltin(ops::SETVAR, 2), 0);
             }
+            Expr::PropGet(recv, name) => {
+                // `$o->p = rhs` and its compound form `$o->p op= rhs`. For a
+                // compound op the receiver is evaluated ONCE into a temporary
+                // (shared by the read and the write).
+                match op {
+                    None => {
+                        self.compile_expr(b, recv)?;
+                        let nidx = b.add_constant(Value::str(name.clone()));
+                        b.emit(Op::LoadConst(nidx), 0);
+                        self.compile_expr(b, rhs)?;
+                        b.emit(Op::CallBuiltin(ops::PROP_SET, 3), 0);
+                    }
+                    Some(cop) => {
+                        let r = self.tmp_name("pr");
+                        self.emit_set_var(b, &r, |c, b| c.compile_expr(b, recv))?;
+                        self.emit_get_var(b, &r);
+                        let nidx = b.add_constant(Value::str(name.clone()));
+                        b.emit(Op::LoadConst(nidx), 0);
+                        // value = @r->name op rhs
+                        self.emit_get_var(b, &r);
+                        let gidx = b.add_constant(Value::str(name.clone()));
+                        b.emit(Op::LoadConst(gidx), 0);
+                        b.emit(Op::CallBuiltin(ops::PROP_GET, 2), 0);
+                        self.compile_expr(b, rhs)?;
+                        self.emit_binop(b, cop);
+                        b.emit(Op::CallBuiltin(ops::PROP_SET, 3), 0);
+                    }
+                }
+            }
             Expr::Index(..) | Expr::Append(..) => {
-                let (name, segs) = Self::flatten_segments(lhs)?;
-                self.compile_lvalue_assign(b, name, &segs, op, rhs)?;
+                let (root, segs) = Self::flatten_segments(lhs)?;
+                match root {
+                    Expr::Var(name) => self.compile_lvalue_assign(b, name, &segs, op, rhs)?,
+                    Expr::PropGet(recv, prop) => {
+                        // Index/append into an array-valued property: vivify the
+                        // property into an array, hold its handle in a temp, and
+                        // write through it (arrays are reference handles, so the
+                        // mutation lands on the object).
+                        let t = self.tmp_name("po");
+                        self.emit_set_var(b, &t, |c, b| {
+                            c.compile_expr(b, recv)?;
+                            let idx = b.add_constant(Value::str(prop.clone()));
+                            b.emit(Op::LoadConst(idx), 0);
+                            b.emit(Op::CallBuiltin(ops::PROP_ENSURE_ARRAY, 2), 0);
+                            Ok(())
+                        })?;
+                        self.compile_lvalue_assign(b, &t, &segs, op, rhs)?;
+                    }
+                    _ => return Err("unsupported assignment target".into()),
+                }
             }
             _ => return Err("invalid assignment target".into()),
         }
@@ -882,8 +1082,9 @@ impl Compiler {
     }
 
     /// Flatten a nested array lvalue (`$a[k1][k2]...`, with any `[]` appends) into
-    /// its root variable name and the ordered chain of segments (source order).
-    fn flatten_segments(lhs: &Expr) -> Result<(&str, Vec<LvSeg<'_>>), String> {
+    /// its root expression (a `$var` or an `$o->prop`) and the ordered chain of
+    /// segments (source order).
+    fn flatten_segments(lhs: &Expr) -> Result<(&Expr, Vec<LvSeg<'_>>), String> {
         let mut cur = lhs;
         let mut segs: Vec<LvSeg> = Vec::new();
         loop {
@@ -896,11 +1097,10 @@ impl Compiler {
                     segs.push(LvSeg::Append);
                     cur = inner;
                 }
-                Expr::Var(name) => {
+                other => {
                     segs.reverse();
-                    return Ok((name, segs));
+                    return Ok((other, segs));
                 }
-                _ => return Err("invalid assignment target".into()),
             }
         }
     }
@@ -1091,19 +1291,41 @@ impl Compiler {
                 b.emit(Op::LoadInt(code), 0);
                 b.emit(Op::CallBuiltin(ops::INCDEC, 2), 0);
             }
+            Expr::PropGet(recv, name) => {
+                // `$o->p++` — read-modify-write a scalar property.
+                self.compile_expr(b, recv)?;
+                let nidx = b.add_constant(Value::str(name.clone()));
+                b.emit(Op::LoadConst(nidx), 0);
+                b.emit(Op::LoadInt(code), 0);
+                b.emit(Op::CallBuiltin(ops::PROP_INCDEC, 3), 0);
+            }
             Expr::Index(..) => {
-                // `++$a[k1]..[kN]` — read-modify-write the deepest element.
-                let (name, segs) = Self::flatten_segments(target)?;
+                // `++$a[k1]..[kN]` — read-modify-write the deepest element. Roots
+                // at a `$var` or an array-valued `$o->prop` (vivified into a temp).
+                let (root, segs) = Self::flatten_segments(target)?;
                 let mut keys: Vec<&Expr> = Vec::with_capacity(segs.len());
                 for s in &segs {
                     match s {
                         LvSeg::Key(k) => keys.push(k),
-                        LvSeg::Append => {
-                            return Err("cannot ++/-- an `[]` append target".into())
-                        }
+                        LvSeg::Append => return Err("cannot ++/-- an `[]` append target".into()),
                     }
                 }
-                let nidx = b.add_constant(Value::str(name.to_string()));
+                let name: String = match root {
+                    Expr::Var(name) => name.clone(),
+                    Expr::PropGet(recv, prop) => {
+                        let t = self.tmp_name("po");
+                        self.emit_set_var(b, &t, |c, b| {
+                            c.compile_expr(b, recv)?;
+                            let idx = b.add_constant(Value::str(prop.clone()));
+                            b.emit(Op::LoadConst(idx), 0);
+                            b.emit(Op::CallBuiltin(ops::PROP_ENSURE_ARRAY, 2), 0);
+                            Ok(())
+                        })?;
+                        t
+                    }
+                    _ => return Err("unsupported ++/-- target".into()),
+                };
+                let nidx = b.add_constant(Value::str(name));
                 b.emit(Op::LoadConst(nidx), 0);
                 for k in &keys {
                     self.compile_expr(b, k)?;
@@ -1111,7 +1333,12 @@ impl Compiler {
                 b.emit(Op::LoadInt(code), 0);
                 b.emit(Op::CallBuiltin(ops::INCDEC_PATH, (keys.len() + 2) as u8), 0);
             }
-            _ => return Err("scaffold supports ++/-- only on variables and array elements".into()),
+            _ => {
+                return Err(
+                    "scaffold supports ++/-- only on variables, array elements, and properties"
+                        .into(),
+                )
+            }
         }
         Ok(())
     }
@@ -1273,6 +1500,19 @@ fn collect_free_vars(e: &Expr, out: &mut Vec<String>) {
                 push(u, out);
             }
         }
+        Expr::New(_, args) | Expr::StaticCall(_, _, args) => {
+            for a in args {
+                collect_free_vars(a, out);
+            }
+        }
+        Expr::PropGet(recv, _) => collect_free_vars(recv, out),
+        Expr::MethodCall(recv, _, args) => {
+            collect_free_vars(recv, out);
+            for a in args {
+                collect_free_vars(a, out);
+            }
+        }
+        Expr::StaticGet(_, _) => {}
         Expr::Null | Expr::Bool(_) | Expr::Int(_) | Expr::Float(_) | Expr::Str(_) => {}
     }
 }

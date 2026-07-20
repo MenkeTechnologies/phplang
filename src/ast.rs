@@ -106,6 +106,17 @@ pub enum Expr {
         params: Vec<Param>,
         body: Box<Expr>,
     },
+    /// `new Class(args)` — instantiate an object (class name literal, or the
+    /// `self`/`parent`/`static` keyword resolved at compile time).
+    New(String, Vec<Expr>),
+    /// `$obj->prop` — instance property read.
+    PropGet(Box<Expr>, String),
+    /// `$obj->method(args)` — instance method call.
+    MethodCall(Box<Expr>, String, Vec<Expr>),
+    /// `Class::CONST` / `Class::class` — class constant read (also `self::`/`parent::`).
+    StaticGet(String, String),
+    /// `Class::method(args)` — static / scope-resolution method call.
+    StaticCall(String, String, Vec<Expr>),
     /// Ternary `cond ? then : els`.
     Ternary(Box<Expr>, Box<Expr>, Box<Expr>),
     /// Short ternary / elvis `a ?: b` — `a` if truthy, else `b` (evaluates `a`
@@ -187,6 +198,8 @@ pub enum StmtKind {
         params: Vec<Param>,
         body: Vec<Stmt>,
     },
+    /// `class Name [extends Parent] { ... }`.
+    Class(ClassDecl),
     Return(Option<Expr>),
     Break,
     Continue,
@@ -195,13 +208,40 @@ pub enum StmtKind {
 }
 
 /// One formal parameter of a function definition: its name, an optional default
-/// value expression (used when the caller omits the argument), and whether it is
-/// variadic (`...$rest`, collecting all trailing arguments into an array).
+/// value expression (used when the caller omits the argument), whether it is
+/// variadic (`...$rest`, collecting all trailing arguments into an array), and
+/// whether it is a promoted constructor property (`public int $x`), which makes
+/// `__construct` also assign `$this->name = $name`.
 #[derive(Debug, Clone)]
 pub struct Param {
     pub name: String,
     pub default: Option<Expr>,
     pub variadic: bool,
+    pub promoted: bool,
+}
+
+/// A parsed class declaration. Single inheritance only; interfaces/traits are
+/// parsed-and-discarded in the scaffold. Visibility modifiers are dropped (only
+/// `static` on a method is retained); enforcement is not part of this wave.
+#[derive(Debug, Clone)]
+pub struct ClassDecl {
+    pub name: String,
+    pub parent: Option<String>,
+    /// `const NAME = expr;` entries, in source order.
+    pub consts: Vec<(String, Expr)>,
+    /// Instance property declarations `(name, default)`; `None` default is null.
+    pub props: Vec<(String, Option<Expr>)>,
+    pub methods: Vec<Method>,
+}
+
+/// A method of a class. `is_static` is retained but not enforced (a static call
+/// still binds `$this` when made from an object context, as PHP does).
+#[derive(Debug, Clone)]
+pub struct Method {
+    pub name: String,
+    pub params: Vec<Param>,
+    pub body: Vec<Stmt>,
+    pub is_static: bool,
 }
 
 /// One `case`/`default` label of a `switch` plus its (fall-through) body. `test`

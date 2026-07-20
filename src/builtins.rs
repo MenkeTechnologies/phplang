@@ -55,6 +55,14 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::ARR_MUT, b_arr_mut);
     vm.register_builtin(ops::MKCLOSURE, b_mkclosure);
     vm.register_builtin(ops::CALL_VALUE, b_call_value);
+    vm.register_builtin(ops::NEW, b_new);
+    vm.register_builtin(ops::PROP_GET, b_prop_get);
+    vm.register_builtin(ops::PROP_SET, b_prop_set);
+    vm.register_builtin(ops::PROP_ENSURE_ARRAY, b_prop_ensure_array);
+    vm.register_builtin(ops::PROP_INCDEC, b_prop_incdec);
+    vm.register_builtin(ops::MCALL, b_mcall);
+    vm.register_builtin(ops::SCALL, b_scall);
+    vm.register_builtin(ops::SCONST, b_sconst);
 }
 
 /// Pop two operands as PHP integers (bitwise ops cast their operands to int).
@@ -411,6 +419,103 @@ fn b_arr_mut(vm: &mut VM, argc: u8) -> Value {
         arrmut::SPLICE => h.arr_splice_var(&name, &extra),
         _ => Value::Undef,
     })
+}
+
+// ── object builtins (classes / OOP) ──────────────────────────────────────────
+
+fn b_new(vm: &mut VM, argc: u8) -> Value {
+    let mut args = pop_args(vm, argc as usize);
+    let class = with_host(|h| h.to_str(&args.remove(0)));
+    match host::new_object(&class, args) {
+        Ok(v) => v,
+        Err(e) => fail(vm, e),
+    }
+}
+
+fn b_prop_get(vm: &mut VM, _: u8) -> Value {
+    let name = pop_name(vm);
+    let recv = vm.pop();
+    with_host(|h| h.prop_get(&recv, &name))
+}
+
+fn b_prop_set(vm: &mut VM, _: u8) -> Value {
+    let val = vm.pop();
+    let name = pop_name(vm);
+    let recv = vm.pop();
+    with_host(|h| h.prop_set(&recv, &name, val.clone()));
+    val
+}
+
+/// Vivify `$o->name` into an array and leave its handle on the stack — the pivot
+/// for indexing/appending into an array-valued property. Stack `[recv, name]`.
+fn b_prop_ensure_array(vm: &mut VM, _: u8) -> Value {
+    let name = pop_name(vm);
+    let recv = vm.pop();
+    with_host(|h| h.prop_ensure_array(&recv, &name))
+}
+
+/// `++`/`--` on `$o->name` — stack `[recv, name, code]`. The `code` bits match
+/// `b_incdec` (bit0 = increment, bit1 = prefix).
+fn b_prop_incdec(vm: &mut VM, _: u8) -> Value {
+    let code = vm.pop().to_int();
+    let name = pop_name(vm);
+    let recv = vm.pop();
+    let inc = code & 1 != 0;
+    let prefix = code & 2 != 0;
+    with_host(|h| {
+        let old = h.prop_get(&recv, &name);
+        let delta = if inc { 1 } else { -1 };
+        let newv = match h.to_number(&old) {
+            Value::Int(n) => Value::int(n + delta),
+            Value::Float(f) => Value::float(f + delta as f64),
+            _ => Value::int(delta),
+        };
+        h.prop_set(&recv, &name, newv.clone());
+        if prefix {
+            newv
+        } else {
+            old
+        }
+    })
+}
+
+fn b_mcall(vm: &mut VM, argc: u8) -> Value {
+    let mut args = pop_args(vm, argc as usize);
+    let recv = args.remove(0);
+    let method = with_host(|h| h.to_str(&args.remove(0)));
+    let class = with_host(|h| h.object_class(&recv));
+    match class {
+        Some(c) => match host::call_method(&c, &method, Some(recv), args) {
+            Ok(v) => v,
+            Err(e) => fail(vm, e),
+        },
+        None => fail(vm, format!("call to a member function {method}() on a non-object")),
+    }
+}
+
+fn b_scall(vm: &mut VM, argc: u8) -> Value {
+    let mut args = pop_args(vm, argc as usize);
+    let class = with_host(|h| h.to_str(&args.remove(0)));
+    let method = with_host(|h| h.to_str(&args.remove(0)));
+    // Forward `$this` when the call is made from an object context (so
+    // `parent::m()` / `self::m()` inside a method keep the current instance).
+    let this = with_host(|h| {
+        let t = h.get_var("this");
+        matches!(t, Value::Obj(_)).then_some(t)
+    });
+    match host::call_method(&class, &method, this, args) {
+        Ok(v) => v,
+        Err(e) => fail(vm, e),
+    }
+}
+
+fn b_sconst(vm: &mut VM, _: u8) -> Value {
+    let name = pop_name(vm);
+    let class = pop_name(vm);
+    match host::class_const(&class, &name) {
+        Ok(v) => v,
+        Err(e) => fail(vm, e),
+    }
 }
 
 // ── arithmetic builtins (PHP semantics) ──────────────────────────────────────
