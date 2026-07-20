@@ -71,6 +71,23 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::CONST_FETCH, b_const_fetch);
     vm.register_builtin(ops::UNSET_VAR, b_unset_var);
     vm.register_builtin(ops::UNSET_PATH, b_unset_path);
+    vm.register_builtin(ops::FOREACH_PREP, b_foreach_prep);
+}
+
+/// Normalize a `foreach` subject to an iterable array (objects are iterated).
+fn b_foreach_prep(vm: &mut VM, _: u8) -> Value {
+    let v = vm.pop();
+    match host::foreach_prep(v) {
+        Ok(a) => {
+            // A throw inside an iterator method must unwind the caller too.
+            if bubble_throw(vm) {
+                Value::Undef
+            } else {
+                a
+            }
+        }
+        Err(e) => fail(vm, e),
+    }
 }
 
 /// Resolve a bare constant reference to its value (or the bare name as a string

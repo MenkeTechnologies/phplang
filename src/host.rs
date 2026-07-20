@@ -73,6 +73,7 @@ pub mod ops {
     pub const CONST_FETCH: u16 = 56; // [name] -> constant value (or the bare name)
     pub const UNSET_VAR: u16 = 57; // [name] -> Undef (remove the scope variable)
     pub const UNSET_PATH: u16 = 58; // [name, k1..kN] -> Undef (remove $a[k1]..[kN])
+    pub const FOREACH_PREP: u16 = 59; // [v] -> an iterable array (object -> iterated)
 }
 
 /// Sub-ops for the by-reference array mutators lowered through `ops::ARR_MUT`
@@ -1942,6 +1943,63 @@ pub fn class_const(class: &str, name: &str) -> Result<Value, String> {
         return Err(format!("undefined constant {class}::{name}"));
     };
     run_chunk_on(chunk)
+}
+
+/// Normalize a `foreach` subject to an iterable array. Arrays pass through; an
+/// object is iterated eagerly into a `(key, value)` array: `IteratorAggregate`
+/// via `getIterator()`, the `Iterator` protocol (`rewind`/`valid`/`current`/
+/// `key`/`next`), or — as a fallthrough — its public properties. Eager
+/// materialization is fine for the finite iterators phplang supports; an infinite
+/// iterator would not terminate (documented). A non-iterable yields an empty array.
+pub fn foreach_prep(v: Value) -> Result<Value, String> {
+    if with_host(|h| h.is_array(&v)) {
+        return Ok(v);
+    }
+    let Some(class) = with_host(|h| h.object_class(&v)) else {
+        return Ok(with_host(|h| h.new_array()));
+    };
+    // IteratorAggregate: `getIterator()` returns the real iterator (or a backing
+    // array, for the SPL preludes) — recurse on it.
+    if with_host(|h| h.class_has_method(&class, "getIterator")) {
+        let it = call_method(&class, "getIterator", Some(v.clone()), Vec::new())?;
+        return foreach_prep(it);
+    }
+    // Iterator protocol.
+    if with_host(|h| h.class_has_method(&class, "valid") && h.class_has_method(&class, "current")) {
+        let arr = with_host(|h| h.new_array());
+        if with_host(|h| h.class_has_method(&class, "rewind")) {
+            call_method(&class, "rewind", Some(v.clone()), Vec::new())?;
+        }
+        let has_key = with_host(|h| h.class_has_method(&class, "key"));
+        // Bound the walk so a broken `valid()` cannot hang the interpreter.
+        for _ in 0..100_000_000u64 {
+            let valid = call_method(&class, "valid", Some(v.clone()), Vec::new())?;
+            if !with_host(|h| h.is_truthy(&valid)) {
+                break;
+            }
+            let cur = call_method(&class, "current", Some(v.clone()), Vec::new())?;
+            let key = if has_key {
+                call_method(&class, "key", Some(v.clone()), Vec::new())?
+            } else {
+                Value::Undef
+            };
+            with_host(|h| match key {
+                Value::Undef => h.arr_push_auto(&arr, cur),
+                k => h.arr_set_key(&arr, &k, cur),
+            });
+            call_method(&class, "next", Some(v.clone()), Vec::new())?;
+        }
+        return Ok(arr);
+    }
+    // Plain object: iterate its public properties (name => value).
+    let props = with_host(|h| h.object_props(&v));
+    Ok(with_host(|h| {
+        let a = h.new_array();
+        for (k, val) in props {
+            h.arr_set_key(&a, &Value::str(k), val);
+        }
+        a
+    }))
 }
 
 /// Record a pending `return` value for the enclosing function frame.

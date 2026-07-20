@@ -228,6 +228,7 @@ class SplDoublyLinkedList {
     public function offsetSet($i, $v) { $a = $this->dll; if ($i === null) { $a[] = $v; } else { $a[$i] = $v; } }
     public function offsetExists($i) { return isset($this->dll[$i]); }
     public function offsetUnset($i) { $a = $this->dll; unset($a[$i]); }
+    public function getIterator() { return $this->dll; }
 }
 class SplStack extends SplDoublyLinkedList {}
 class SplQueue extends SplDoublyLinkedList {
@@ -249,6 +250,7 @@ class SplFixedArray {
     public function setSize($size) { $this->sz = $size; }
     public function count() { return $this->sz; }
     public function toArray() { return $this->data; }
+    public function getIterator() { return $this->data; }
 }
 class ArrayObject {
     public $storage = [];
@@ -260,6 +262,7 @@ class ArrayObject {
     public function append($v) { $a = $this->storage; $a[] = $v; }
     public function count() { return count($this->storage); }
     public function getArrayCopy() { return $this->storage; }
+    public function getIterator() { return $this->storage; }
 }
 class ArrayIterator extends ArrayObject {}
 class SplObjectStorage {

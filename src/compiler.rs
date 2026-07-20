@@ -448,8 +448,14 @@ impl Compiler {
         let keys_t = self.tmp_name("keys");
         let i_t = self.tmp_name("i");
 
-        // @arr = <arr>;  @keys = array_keys(@arr);  @i = 0;
-        self.emit_set_var(b, &arr_t, |c, b| c.compile_expr(b, arr))?;
+        // @arr = foreach_prep(<arr>);  @keys = array_keys(@arr);  @i = 0;
+        // FOREACH_PREP passes arrays through and materializes an iterable object
+        // (Iterator / IteratorAggregate / public properties) into an array.
+        self.emit_set_var(b, &arr_t, |c, b| {
+            c.compile_expr(b, arr)?;
+            b.emit(Op::CallBuiltin(ops::FOREACH_PREP, 1), 0);
+            Ok(())
+        })?;
         self.emit_set_var(b, &keys_t, |c, b| {
             c.emit_get_var(b, &arr_t);
             b.emit(Op::CallBuiltin(ops::ARRAYKEYS, 1), 0);

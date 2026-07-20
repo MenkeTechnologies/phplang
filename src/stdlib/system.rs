@@ -85,6 +85,67 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
                 .map(Value::str)
                 .collect(),
         ),
+        // Iterator helpers — materialize any Traversable to an array via the
+        // host's foreach normalization.
+        "iterator_to_array" => {
+            let arr = match crate::host::foreach_prep(arg(args, 0)) {
+                Ok(a) => a,
+                Err(e) => return Some(Err(e)),
+            };
+            // $preserve_keys defaults to true; false re-indexes 0..n.
+            let preserve = args.len() < 2 || with_host(|h| h.is_truthy(&arg(args, 1)));
+            if preserve {
+                arr
+            } else {
+                let vals = with_host(|h| {
+                    h.array_pairs(&arr)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|(_, v)| v)
+                        .collect::<Vec<_>>()
+                });
+                make_list(vals)
+            }
+        }
+        "iterator_count" => {
+            let arr = match crate::host::foreach_prep(arg(args, 0)) {
+                Ok(a) => a,
+                Err(e) => return Some(Err(e)),
+            };
+            Value::int(with_host(|h| h.array_len(&arr)))
+        }
+        "iterator_apply" => {
+            let arr = match crate::host::foreach_prep(arg(args, 0)) {
+                Ok(a) => a,
+                Err(e) => return Some(Err(e)),
+            };
+            let cb = arg(args, 1);
+            let extra = args.get(2).cloned().unwrap_or(Value::Undef);
+            let cb_args = with_host(|h| {
+                if h.is_array(&extra) {
+                    h.array_pairs(&extra)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|(_, v)| v)
+                        .collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                }
+            });
+            let n = with_host(|h| h.array_len(&arr));
+            let mut count = 0i64;
+            for _ in 0..n {
+                let r = match crate::host::call_value(cb.clone(), cb_args.clone()) {
+                    Ok(r) => r,
+                    Err(e) => return Some(Err(e)),
+                };
+                count += 1;
+                if !with_host(|h| h.is_truthy(&r)) {
+                    break;
+                }
+            }
+            Value::int(count)
+        }
         // Object identity (spl).
         "spl_object_id" => {
             Value::int(with_host(|h| h.object_id(&arg(args, 0))).unwrap_or(0))
