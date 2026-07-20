@@ -46,6 +46,7 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::BITNOT, b_bitnot);
     vm.register_builtin(ops::SPACESHIP, b_spaceship);
     vm.register_builtin(ops::DBG_LINE, b_dbg_line);
+    vm.register_builtin(ops::ARR_MUT, b_arr_mut);
 }
 
 /// Pop two operands as PHP integers (bitwise ops cast their operands to int).
@@ -262,6 +263,27 @@ fn b_arraykeys(vm: &mut VM, _: u8) -> Value {
 fn b_arraylen(vm: &mut VM, _: u8) -> Value {
     let recv = vm.pop();
     Value::int(with_host(|h| h.array_len(&recv)))
+}
+
+/// The by-reference array mutators (`array_push`/`array_pop`/`array_shift`/
+/// `array_unshift`/`array_splice`). The compiler lowers a call whose first
+/// argument is a plain `$var` to `[name, subop, args...]` so the host can rewrite
+/// the bound array in place (PHP passes the array by reference here).
+fn b_arr_mut(vm: &mut VM, argc: u8) -> Value {
+    use host::arrmut;
+    let mut args = pop_args(vm, argc as usize);
+    // args[0] = variable name, args[1] = sub-op; args[2..] = the call arguments.
+    let name = with_host(|h| h.to_str(&args[0]));
+    let sub = args[1].to_int();
+    let extra: Vec<Value> = args.split_off(2);
+    with_host(|h| match sub {
+        arrmut::PUSH => h.arr_push_var(&name, extra),
+        arrmut::POP => h.arr_pop_var(&name),
+        arrmut::SHIFT => h.arr_shift_var(&name),
+        arrmut::UNSHIFT => h.arr_unshift_var(&name, extra),
+        arrmut::SPLICE => h.arr_splice_var(&name, &extra),
+        _ => Value::Undef,
+    })
 }
 
 // ── arithmetic builtins (PHP semantics) ──────────────────────────────────────

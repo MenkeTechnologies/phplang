@@ -48,6 +48,19 @@ pub mod ops {
     pub const BITNOT: u16 = 31; // [a] -> ~a
     pub const SPACESHIP: u16 = 32; // [a, b] -> -1 | 0 | 1
     pub const DBG_LINE: u16 = 33; // [line] -> DAP statement marker (debug only)
+    pub const ARR_MUT: u16 = 34; // [name, subop, args...] -> by-reference array mutator
+}
+
+/// Sub-ops for the by-reference array mutators lowered through `ops::ARR_MUT`
+/// (`array_push`/`array_pop`/`array_shift`/`array_unshift`/`array_splice`). These
+/// take the array by variable name so the host can rewrite the bound array (and
+/// auto-vivify an unset variable) the way PHP's by-reference parameter does.
+pub mod arrmut {
+    pub const PUSH: i64 = 0;
+    pub const POP: i64 = 1;
+    pub const SHIFT: i64 = 2;
+    pub const UNSHIFT: i64 = 3;
+    pub const SPLICE: i64 = 4;
 }
 
 /// A compiled user function: its parameter names plus the lowered body chunk.
@@ -429,13 +442,154 @@ impl PhpHost {
         }
     }
 
-    /// Remove and return the last element of `$var` (for `array_pop`).
+    /// Rebuild an array handle's entries from an ordered `(key, value)` list,
+    /// renumbering integer keys `0..` while preserving string keys — the shared
+    /// core of `array_shift`/`array_unshift`/`array_splice`. No-op if `arr` is not
+    /// an array.
+    fn arr_rebuild_reindexed(&mut self, arr: &Value, pairs: Vec<(Value, Value)>) {
+        // Normalize keys under `&self` first, then take the `&mut self` borrow.
+        let normed: Vec<(ArrayKey, Value)> = pairs
+            .into_iter()
+            .map(|(k, v)| (self.norm_key(&k), v))
+            .collect();
+        if let Some(PhpObj::Array {
+            entries,
+            next_index,
+        }) = self.as_array_mut(arr)
+        {
+            entries.clear();
+            *next_index = 0;
+            for (k, v) in normed {
+                match k {
+                    // Integer keys are renumbered sequentially; string keys stay.
+                    ArrayKey::Int(_) => {
+                        let nk = ArrayKey::Int(*next_index);
+                        *next_index += 1;
+                        entries.insert(nk, v);
+                    }
+                    ArrayKey::Str(_) => {
+                        entries.insert(k, v);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Remove and return the last element of `$var` (`array_pop`). Remaining keys
+    /// are left untouched. PHP resets the next-append index only when the popped
+    /// element held the top of the current append run (its key was `next_index-1`);
+    /// a sparse/gapped array (e.g. `[5=>a, 10=>b]`) keeps its `next_index`.
     pub fn arr_pop_var(&mut self, name: &str) -> Value {
         let arr = self.get_var(name);
-        if let Some(PhpObj::Array { entries, .. }) = self.as_array_mut(&arr) {
-            return entries.pop().map(|(_, v)| v).unwrap_or(Value::Undef);
+        if let Some(PhpObj::Array {
+            entries,
+            next_index,
+        }) = self.as_array_mut(&arr)
+        {
+            let before = *next_index;
+            let popped = entries.pop();
+            if let Some((ArrayKey::Int(n), _)) = &popped {
+                if *n == before - 1 {
+                    *next_index = *n;
+                }
+            }
+            return popped.map(|(_, v)| v).unwrap_or(Value::Undef);
         }
         Value::Undef
+    }
+
+    /// Remove and return the first element of `$var` (`array_shift`), reindexing
+    /// integer keys from `0` while preserving string keys. Returns null if the
+    /// variable is unset/empty or not an array.
+    pub fn arr_shift_var(&mut self, name: &str) -> Value {
+        let arr = self.get_var(name);
+        let Some(mut pairs) = self.array_pairs(&arr) else {
+            return Value::Undef;
+        };
+        if pairs.is_empty() {
+            return Value::Undef;
+        }
+        let (_, first) = pairs.remove(0);
+        self.arr_rebuild_reindexed(&arr, pairs);
+        first
+    }
+
+    /// Append each value to `$var` (`array_push`), auto-vivifying an array;
+    /// returns the new element count.
+    pub fn arr_push_var(&mut self, name: &str, vals: Vec<Value>) -> Value {
+        let arr = self.ensure_array_var(name);
+        for v in vals {
+            self.arr_push_auto(&arr, v);
+        }
+        Value::int(self.array_len(&arr))
+    }
+
+    /// Prepend `vals` to `$var` (`array_unshift`) as a fresh `0`-based run,
+    /// reindexing the existing integer keys after them (string keys preserved);
+    /// returns the new element count.
+    pub fn arr_unshift_var(&mut self, name: &str, vals: Vec<Value>) -> Value {
+        let arr = self.ensure_array_var(name);
+        let existing = self.array_pairs(&arr).unwrap_or_default();
+        let mut combined: Vec<(Value, Value)> = Vec::with_capacity(vals.len() + existing.len());
+        // A placeholder integer key marks each new value for renumbering; the
+        // rebuild renumbers all integer keys, so the placeholder value is unused.
+        for v in vals {
+            combined.push((Value::int(0), v));
+        }
+        combined.extend(existing);
+        self.arr_rebuild_reindexed(&arr, combined);
+        Value::int(self.array_len(&arr))
+    }
+
+    /// `array_splice($var, offset, length?, replacement?)` — remove `length`
+    /// elements at `offset` (negatives count from the end; omitted length runs to
+    /// the end) and splice `replacement` (an array or a single value) in their
+    /// place, reindexing integer keys. Returns a new array of the removed
+    /// elements.
+    pub fn arr_splice_var(&mut self, name: &str, args: &[Value]) -> Value {
+        let arr = self.ensure_array_var(name);
+        let pairs = self.array_pairs(&arr).unwrap_or_default();
+        let n = pairs.len() as i64;
+        let mut off = args.first().map(|v| v.to_int()).unwrap_or(0);
+        if off < 0 {
+            off = (n + off).max(0);
+        }
+        let off = off.min(n).max(0) as usize;
+        let len = match args.get(1) {
+            Some(v) if !matches!(v, Value::Undef) => {
+                let l = v.to_int();
+                if l < 0 {
+                    (n - off as i64 + l).max(0) as usize
+                } else {
+                    (l as usize).min(pairs.len() - off)
+                }
+            }
+            _ => pairs.len() - off,
+        };
+        let end = (off + len).min(pairs.len());
+        // The replacement flattens to a value list (an array's keys are dropped).
+        let replacement: Vec<Value> = match args.get(2) {
+            Some(v) if self.is_array(v) => self
+                .array_pairs(v)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(_, x)| x)
+                .collect(),
+            Some(v) if !matches!(v, Value::Undef) => vec![v.clone()],
+            _ => Vec::new(),
+        };
+        let removed: Vec<(Value, Value)> = pairs[off..end].to_vec();
+        // Rebuild the source: kept prefix, replacement run, kept suffix.
+        let mut rebuilt: Vec<(Value, Value)> = Vec::with_capacity(pairs.len());
+        rebuilt.extend(pairs[..off].iter().cloned());
+        for v in replacement {
+            rebuilt.push((Value::int(0), v));
+        }
+        rebuilt.extend(pairs[end..].iter().cloned());
+        self.arr_rebuild_reindexed(&arr, rebuilt);
+        let out = self.new_array();
+        self.arr_rebuild_reindexed(&out, removed);
+        out
     }
 
     pub fn array_keys(&mut self, recv: &Value) -> Value {

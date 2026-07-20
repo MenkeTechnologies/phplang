@@ -24,6 +24,21 @@ struct LoopCtx {
     continues: Vec<usize>,
 }
 
+/// The `ops::ARR_MUT` sub-op for a by-reference array mutator name, or `None` if
+/// the name isn't one. These lower specially (passing the array by variable
+/// name) rather than through the normal `CALL` value path.
+fn array_mutator_subop(name: &str) -> Option<i64> {
+    use crate::host::arrmut;
+    match name.to_ascii_lowercase().as_str() {
+        "array_push" => Some(arrmut::PUSH),
+        "array_pop" => Some(arrmut::POP),
+        "array_shift" => Some(arrmut::SHIFT),
+        "array_unshift" => Some(arrmut::UNSHIFT),
+        "array_splice" => Some(arrmut::SPLICE),
+        _ => None,
+    }
+}
+
 #[derive(Default)]
 pub struct Compiler {
     functions: Vec<(String, FuncDef)>,
@@ -502,12 +517,27 @@ impl Compiler {
                 prefix,
             } => self.compile_incdec(b, target, *inc, *prefix)?,
             Expr::Call(name, args) => {
-                let idx = b.add_constant(Value::str(name.clone()));
-                b.emit(Op::LoadConst(idx), 0);
-                for a in args {
-                    self.compile_expr(b, a)?;
+                // The by-reference array mutators take their array by variable
+                // name so the host can rewrite (and auto-vivify) it in place.
+                if let (Some(sub), Some(Expr::Var(vname))) =
+                    (array_mutator_subop(name), args.first())
+                {
+                    let nidx = b.add_constant(Value::str(vname.clone()));
+                    b.emit(Op::LoadConst(nidx), 0);
+                    b.emit(Op::LoadInt(sub), 0);
+                    for a in &args[1..] {
+                        self.compile_expr(b, a)?;
+                    }
+                    // argc = name + subop + the remaining value arguments.
+                    b.emit(Op::CallBuiltin(ops::ARR_MUT, (args.len() + 1) as u8), 0);
+                } else {
+                    let idx = b.add_constant(Value::str(name.clone()));
+                    b.emit(Op::LoadConst(idx), 0);
+                    for a in args {
+                        self.compile_expr(b, a)?;
+                    }
+                    b.emit(Op::CallBuiltin(ops::CALL, (args.len() + 1) as u8), 0);
                 }
-                b.emit(Op::CallBuiltin(ops::CALL, (args.len() + 1) as u8), 0);
             }
             Expr::Ternary(c, t, f) => {
                 self.compile_truthy(b, c)?;
