@@ -869,7 +869,7 @@ fn arith(op: NumOp, an: Value, bn: Value) -> Value {
 
 // ── PHP standard library (reached through CALL) ──────────────────────────────
 
-fn arg(args: &[Value], i: usize) -> Value {
+pub(crate) fn arg(args: &[Value], i: usize) -> Value {
     args.get(i).cloned().unwrap_or(Value::Undef)
 }
 
@@ -1102,7 +1102,12 @@ pub fn call_library(name: &str, args: Vec<Value>) -> Result<Value, String> {
         }),
         "json_encode" => with_host(|h| Value::str(php_json_encode(h, &arg(&args, 0)))),
 
-        _ => return Err(format!("call to undefined function {name}()")),
+        // Extended standard library lives in `src/stdlib/*`, one module per
+        // category, consulted only for names this core match does not handle.
+        _ => {
+            return crate::stdlib::dispatch(&lname, &args)
+                .unwrap_or_else(|| Err(format!("call to undefined function {name}()")))
+        }
     };
     Ok(v)
 }
