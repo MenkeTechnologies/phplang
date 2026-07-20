@@ -980,6 +980,9 @@ impl Parser {
     }
 
     fn primary(&mut self) -> Result<Expr, String> {
+        // A leading `\` is the global-namespace prefix. phplang has no namespaces,
+        // so `\Exception` / `\strlen(…)` are the same as the bare name — skip it.
+        self.eat_punct("\\");
         match self.next() {
             Some(Tok::Int(n)) => Ok(Expr::Int(n)),
             Some(Tok::Float(f)) => Ok(Expr::Float(f)),
@@ -1008,6 +1011,7 @@ impl Parser {
             // `new Class(args)` — the class name is a bareword (or `self`/`parent`/
             // `static`); parentheses are optional when there are no arguments.
             Some(Tok::Ident(kw)) if kw.eq_ignore_ascii_case("new") => {
+                self.eat_punct("\\"); // optional global-namespace prefix
                 let class = match self.next() {
                     Some(Tok::Ident(n)) => n,
                     other => {

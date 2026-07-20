@@ -241,3 +241,13 @@ fn user_exception_subclass_is_catchable_by_base() {
         catch (Exception $e) { echo $e->getMessage(); }"#;
     assert_eq!(run(src), "custom");
 }
+
+#[test]
+fn leading_backslash_global_namespace_prefix() {
+    // The `\` global-namespace prefix on class and function names is accepted
+    // (phplang has no namespaces, so `\Exception` == `Exception`).
+    let src = r#"<?php
+        try { throw new \Exception("boom"); }
+        catch (\Throwable $e) { echo \strlen($e->getMessage()); }"#;
+    assert_eq!(run(src), "4");
+}
