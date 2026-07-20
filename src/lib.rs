@@ -206,6 +206,124 @@ class DateTimeImmutable {
 }
 "#;
 
+/// The SPL data-structure classes, written in PHP. They store elements in an
+/// internal array property; because phplang arrays are reference-based, aliasing
+/// the property to a local (`$a = $this->items; array_pop($a);`) mutates the
+/// shared array in place. Method-driven (offsetGet/push/…); `foreach` over an SPL
+/// instance is not yet supported (no object iterators).
+const SPL_PRELUDE: &str = r#"
+class stdClass {}
+class SplDoublyLinkedList {
+    public $dll = [];
+    public function push($v) { $a = $this->dll; $a[] = $v; }
+    public function pop() { $a = $this->dll; return array_pop($a); }
+    public function shift() { $a = $this->dll; return array_shift($a); }
+    public function unshift($v) { $a = $this->dll; array_unshift($a, $v); }
+    public function top() { $n = count($this->dll); return $n > 0 ? $this->dll[$n - 1] : null; }
+    public function bottom() { return count($this->dll) > 0 ? $this->dll[0] : null; }
+    public function count() { return count($this->dll); }
+    public function isEmpty() { return count($this->dll) === 0; }
+    public function toArray() { return $this->dll; }
+    public function offsetGet($i) { return $this->dll[$i]; }
+    public function offsetSet($i, $v) { $a = $this->dll; if ($i === null) { $a[] = $v; } else { $a[$i] = $v; } }
+    public function offsetExists($i) { return isset($this->dll[$i]); }
+    public function offsetUnset($i) { $a = $this->dll; unset($a[$i]); }
+}
+class SplStack extends SplDoublyLinkedList {}
+class SplQueue extends SplDoublyLinkedList {
+    public function enqueue($v) { $a = $this->dll; $a[] = $v; }
+    public function dequeue() { $a = $this->dll; return array_shift($a); }
+}
+class SplFixedArray {
+    public $data = [];
+    public $sz = 0;
+    public function __construct($size = 0) {
+        $this->sz = $size;
+        $a = $this->data;
+        for ($i = 0; $i < $size; $i++) { $a[$i] = null; }
+    }
+    public function offsetGet($i) { return $this->data[$i]; }
+    public function offsetSet($i, $v) { $a = $this->data; $a[$i] = $v; }
+    public function offsetExists($i) { return $i >= 0 && $i < $this->sz; }
+    public function getSize() { return $this->sz; }
+    public function setSize($size) { $this->sz = $size; }
+    public function count() { return $this->sz; }
+    public function toArray() { return $this->data; }
+}
+class ArrayObject {
+    public $storage = [];
+    public function __construct($array = []) { $this->storage = $array; }
+    public function offsetGet($k) { return $this->storage[$k]; }
+    public function offsetSet($k, $v) { $a = $this->storage; if ($k === null) { $a[] = $v; } else { $a[$k] = $v; } }
+    public function offsetExists($k) { return isset($this->storage[$k]); }
+    public function offsetUnset($k) { $a = $this->storage; unset($a[$k]); }
+    public function append($v) { $a = $this->storage; $a[] = $v; }
+    public function count() { return count($this->storage); }
+    public function getArrayCopy() { return $this->storage; }
+}
+class ArrayIterator extends ArrayObject {}
+class SplObjectStorage {
+    public $store = [];
+    public function attach($obj, $data = null) { $a = $this->store; $a[spl_object_id($obj)] = $data; }
+    public function detach($obj) { $a = $this->store; unset($a[spl_object_id($obj)]); }
+    public function contains($obj) { return array_key_exists(spl_object_id($obj), $this->store); }
+    public function count() { return count($this->store); }
+}
+class SplPriorityQueue {
+    public $items = [];
+    public function insert($value, $priority) { $a = $this->items; $a[] = [$priority, $value]; }
+    public function count() { return count($this->items); }
+    public function isEmpty() { return count($this->items) === 0; }
+    public function _best() {
+        $best = -1;
+        $bp = null;
+        foreach ($this->items as $i => $pv) {
+            if ($best < 0 || $pv[0] > $bp) { $best = $i; $bp = $pv[0]; }
+        }
+        return $best;
+    }
+    public function top() { $b = $this->_best(); return $b < 0 ? null : $this->items[$b][1]; }
+    public function extract() {
+        $b = $this->_best();
+        if ($b < 0) { return null; }
+        $v = $this->items[$b][1];
+        $a = $this->items;
+        array_splice($a, $b, 1);
+        return $v;
+    }
+}
+class SplHeap {
+    public $items = [];
+    public function insert($v) { $a = $this->items; $a[] = $v; }
+    public function count() { return count($this->items); }
+    public function isEmpty() { return count($this->items) === 0; }
+    public function compare($a, $b) { return $a <=> $b; }
+    public function _best() {
+        $best = -1;
+        $bv = null;
+        foreach ($this->items as $i => $v) {
+            if ($best < 0 || $this->compare($v, $bv) > 0) { $best = $i; $bv = $v; }
+        }
+        return $best;
+    }
+    public function top() { $b = $this->_best(); return $b < 0 ? null : $this->items[$b]; }
+    public function extract() {
+        $b = $this->_best();
+        if ($b < 0) { return null; }
+        $v = $this->items[$b];
+        $a = $this->items;
+        array_splice($a, $b, 1);
+        return $v;
+    }
+}
+class SplMaxHeap extends SplHeap {
+    public function compare($a, $b) { return $a <=> $b; }
+}
+class SplMinHeap extends SplHeap {
+    public function compare($a, $b) { return $b <=> $a; }
+}
+"#;
+
 /// A compiled program's installable definitions: `(functions, classes)`.
 type PreludeDefs = (
     Vec<(String, host::FuncDef)>,
@@ -218,7 +336,7 @@ fn prelude_defs() -> &'static PreludeDefs {
     use std::sync::OnceLock;
     static CACHE: OnceLock<PreludeDefs> = OnceLock::new();
     CACHE.get_or_init(|| {
-        let src = format!("{EXCEPTION_PRELUDE}{DATETIME_PRELUDE}");
+        let src = format!("{EXCEPTION_PRELUDE}{DATETIME_PRELUDE}{SPL_PRELUDE}");
         let prog = compile(&src).expect("prelude compiles");
         (prog.functions, prog.classes)
     })

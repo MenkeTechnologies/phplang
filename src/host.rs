@@ -634,6 +634,15 @@ impl PhpHost {
         matches!(self.as_array(v), Some(PhpObj::Object { .. }))
     }
 
+    /// The heap handle of any object/array/resource value — a stable per-instance
+    /// id (`spl_object_id`). `None` for non-heap values.
+    pub fn object_id(&self, v: &Value) -> Option<i64> {
+        match v {
+            Value::Obj(h) => Some(*h as i64),
+            _ => None,
+        }
+    }
+
     /// The class name of an object handle, or `None` if `v` is not an object.
     pub fn object_class(&self, v: &Value) -> Option<String> {
         match self.as_array(v) {
