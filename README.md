@@ -127,7 +127,7 @@ end-to-end (see `tests/basic.rs`):
   `RuntimeException`, `LogicException`, `InvalidArgumentException`, `TypeError`,
   `ValueError`, `UnhandledMatchError`, `DivisionByZeroError`) that user classes
   can subclass, and `getMessage()`/`getCode()`/`__toString()`.
-- A large standard library (250+ functions), split into category modules under
+- A large standard library (330+ functions), split into category modules under
   `src/stdlib/` and consulted through a per-category dispatch chain:
   - **strings** — `str_*`, `substr*`, `strpos`/`stripos`/`strrpos`, `strstr`,
     `strtr`, `sprintf`/`vsprintf`/`sscanf`, `number_format`, `nl2br`,
@@ -147,7 +147,19 @@ end-to-end (see `tests/basic.rs`):
   - **hash** — `md5`/`sha1`/`hash`/`crc32`/`hash_hmac`. **encoding** —
     `base64_*`, `bin2hex`/`hex2bin`, quoted-printable, `utf8_*`. **url** —
     `urlencode`/`rawurlencode` (+decode), `http_build_query`, `parse_url`,
-    `parse_str`, plus `json_encode`.
+    `parse_str`.
+  - **json** — `json_encode`, `json_decode`, `json_last_error`(`_msg`). **filter**
+    — `filter_var` (`VALIDATE_INT`/`FLOAT`/`BOOLEAN`/`EMAIL`/`URL`/`IP`/`DOMAIN`/
+    `REGEXP`, `SANITIZE_*`). **mbstring** — `mb_str_split`, `mb_convert_case`,
+    `mb_strpos`/`rpos`, `mb_ord`/`chr`, `mb_convert_encoding`, `mb_detect_encoding`.
+  - **fileio** — `file_get_contents`/`put_contents`, `file`, `fopen`-free file ops
+    (`file_exists`, `is_file`/`dir`, `unlink`, `mkdir`, `scandir`, `copy`,
+    `basename`/`dirname`/`pathinfo`, `realpath`, `getcwd`, …).
+  - **reflection** — `class_exists`, `method_exists`, `property_exists`,
+    `get_class`, `get_parent_class`, `get_object_vars`, `get_class_methods`,
+    `is_a`/`is_subclass_of`. **callable** — `call_user_func`(`_array`),
+    `function_exists`. **misc** — `strnatcmp`/`strnatcasecmp`, `soundex`,
+    `str_getcsv`, `array_walk_recursive`, `array_find`/`array_any`/`array_all`.
 
 ## [0x04] NOT YET (LATER WAVES)
 
