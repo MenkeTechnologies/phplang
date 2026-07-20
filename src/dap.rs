@@ -39,6 +39,11 @@ struct DebugState {
     breakpoints: HashSet<u32>,
     /// Lines that actually carry a marker (so a breakpoint on them can fire).
     verified: HashSet<u32>,
+    /// Function names on which to break at entry (`setFunctionBreakpoints`).
+    function_breakpoints: HashSet<String>,
+    /// Frame depth seen at the previous marker; a jump upward means a call was
+    /// entered — the trigger for a function breakpoint.
+    last_depth: usize,
     mode: Mode,
     /// Real stdout, saved before the program's stdout is redirected to a pipe;
     /// all DAP protocol is written here.
@@ -57,6 +62,8 @@ thread_local! {
     static DBG: RefCell<DebugState> = RefCell::new(DebugState {
         breakpoints: HashSet::new(),
         verified: HashSet::new(),
+        function_breakpoints: HashSet::new(),
+        last_depth: 0,
         mode: Mode::Continue,
         proto_fd: 1,
         pipe_r: -1,
@@ -82,11 +89,29 @@ pub fn run() -> Result<(), String> {
                 respond(
                     req_seq,
                     command,
-                    json!({ "supportsConfigurationDoneRequest": true }),
+                    json!({
+                        "supportsConfigurationDoneRequest": true,
+                        "supportsEvaluateForHovers": true,
+                        "supportsFunctionBreakpoints": true,
+                        "supportsTerminateRequest": true,
+                    }),
                 );
                 event("initialized", json!({}));
             }
             "setBreakpoints" => set_breakpoints(&msg, req_seq),
+            "setFunctionBreakpoints" => set_function_breakpoints(&msg, req_seq),
+            "setExceptionBreakpoints" => {
+                // Accepted so clients that always send it proceed; the
+                // single-threaded adapter does not stop on exceptions (the VM has
+                // already returned control by the time one surfaces).
+                respond(req_seq, command, json!({ "breakpoints": [] }));
+            }
+            "evaluate" => {
+                // Nothing is on the stack before `launch`; ack with an empty
+                // result so a watch/hover registered up front does not error.
+                respond(req_seq, command, json!({ "result": "", "variablesReference": 0 }));
+            }
+            "pause" => respond(req_seq, command, json!({})),
             "configurationDone" => respond(req_seq, command, json!({})),
             "threads" => respond(
                 req_seq,
@@ -103,7 +128,7 @@ pub fn run() -> Result<(), String> {
                 respond(req_seq, command, json!({}));
                 launch(&program);
             }
-            "disconnect" => {
+            "disconnect" | "terminate" => {
                 respond(req_seq, command, json!({}));
                 break;
             }
@@ -156,6 +181,40 @@ fn set_breakpoints(msg: &J, req_seq: i64) {
             .collect()
     });
     respond(req_seq, "setBreakpoints", json!({ "breakpoints": bps }));
+}
+
+/// `setFunctionBreakpoints`: store the requested function names. Each is reported
+/// verified; the marker hook stops on the first marker executed inside a frame
+/// whose name matches — break-on-entry, see [`on_debug_line`].
+fn set_function_breakpoints(msg: &J, req_seq: i64) {
+    let names: Vec<String> = msg
+        .get("arguments")
+        .and_then(|a| a.get("breakpoints"))
+        .and_then(|b| b.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|b| b.get("name").and_then(|n| n.as_str()).map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    DBG.with(|d| d.borrow_mut().function_breakpoints = names.iter().cloned().collect());
+    let bps: Vec<J> = names.iter().map(|_| json!({ "verified": true })).collect();
+    respond(req_seq, "setFunctionBreakpoints", json!({ "breakpoints": bps }));
+}
+
+/// Evaluate a debugger expression. v1 resolves a bare variable name against the
+/// paused frame's locals (mirrors awkrs's snapshot lookup); anything else returns
+/// a hint rather than spawning a sub-interpreter.
+fn evaluate_expression(expr: &str) -> String {
+    if expr.is_empty() {
+        return String::new();
+    }
+    for (name, repr) in crate::host::with_host(|h| h.dbg_locals()) {
+        if name == expr {
+            return repr;
+        }
+    }
+    format!("<cannot evaluate `{expr}`>")
 }
 
 /// The set of source lines that carry a `DBG_LINE` marker in the compiled program
@@ -262,23 +321,38 @@ pub fn on_debug_line(vm: &mut VM) {
     if line == 0 {
         return;
     }
-    let depth = crate::host::with_host(|h| {
+    let (depth, fname) = crate::host::with_host(|h| {
         h.set_cur_line(line);
-        h.frame_depth()
+        (
+            h.frame_depth(),
+            h.dbg_stack().first().map(|(n, _)| n.clone()).unwrap_or_default(),
+        )
     });
-    let (stop, is_bp) = DBG.with(|d| {
-        let s = d.borrow();
+    let (stop, reason) = DBG.with(|d| {
+        let mut s = d.borrow_mut();
         if !s.active {
-            return (false, false);
+            s.last_depth = depth;
+            return (false, "");
         }
         let bp = s.breakpoints.contains(&line) && s.verified.contains(&line);
+        // A deeper frame than the previous marker means a call was just entered;
+        // stop if that frame's name matches a function breakpoint.
+        let fbp = depth > s.last_depth && s.function_breakpoints.contains(&fname);
         let step = match s.mode {
             Mode::Continue => false,
             Mode::StepIn => true,
             Mode::StepOver(d0) => depth <= d0,
             Mode::StepOut(d0) => depth < d0,
         };
-        (bp || step, bp)
+        s.last_depth = depth;
+        let reason = if bp {
+            "breakpoint"
+        } else if fbp {
+            "function breakpoint"
+        } else {
+            "step"
+        };
+        (bp || fbp || step, reason)
     });
     if !stop {
         return;
@@ -287,7 +361,7 @@ pub fn on_debug_line(vm: &mut VM) {
     event(
         "stopped",
         json!({
-            "reason": if is_bp { "breakpoint" } else { "step" },
+            "reason": reason,
             "threadId": 1,
             "allThreadsStopped": true,
         }),
@@ -367,6 +441,36 @@ fn handle_stopped(msg: &J, depth: usize) -> bool {
             set_breakpoints(msg, req_seq);
             false
         }
+        "setFunctionBreakpoints" => {
+            set_function_breakpoints(msg, req_seq);
+            false
+        }
+        "setExceptionBreakpoints" => {
+            respond(req_seq, command, json!({ "breakpoints": [] }));
+            false
+        }
+        "evaluate" => {
+            let expr = msg
+                .get("arguments")
+                .and_then(|a| a.get("expression"))
+                .and_then(|e| e.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let result = evaluate_expression(&expr);
+            respond(
+                req_seq,
+                command,
+                json!({ "result": result, "variablesReference": 0 }),
+            );
+            false
+        }
+        "pause" => {
+            // Already stopped at this marker; `pause` is a no-op ack for the
+            // single-threaded adapter.
+            respond(req_seq, command, json!({}));
+            false
+        }
         "continue" => {
             DBG.with(|d| d.borrow_mut().mode = Mode::Continue);
             respond(req_seq, command, json!({ "allThreadsContinued": true }));
@@ -387,7 +491,7 @@ fn handle_stopped(msg: &J, depth: usize) -> bool {
             respond(req_seq, command, json!({}));
             true
         }
-        "disconnect" => {
+        "disconnect" | "terminate" => {
             DBG.with(|d| d.borrow_mut().mode = Mode::Continue);
             respond(req_seq, command, json!({}));
             true
