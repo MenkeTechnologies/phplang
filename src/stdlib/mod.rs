@@ -13,9 +13,13 @@
 use fusevm::Value;
 
 pub mod arrays;
+pub mod bcmath;
 pub mod callable;
 pub mod constants;
 pub mod ctype;
+pub mod hashext;
+pub mod runtime;
+pub mod textx;
 pub mod datetime;
 pub mod encoding;
 pub mod fileio;
@@ -55,6 +59,10 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         .or_else(|| constants::dispatch(name, args))
         .or_else(|| system::dispatch(name, args))
         .or_else(|| fileres::dispatch(name, args))
+        .or_else(|| bcmath::dispatch(name, args))
+        .or_else(|| hashext::dispatch(name, args))
+        .or_else(|| textx::dispatch(name, args))
+        .or_else(|| runtime::dispatch(name, args))
 }
 
 /// Shared helpers for the category modules. Each helper is used by at least one

@@ -89,6 +89,9 @@ sha2 = "0.10"
 crc32fast = "1"
 hex = "0.4"
 urlencoding = "2"
+# Arbitrary-precision decimal arithmetic for the `bcmath` functions.
+bigdecimal = "0.4"
+num-bigint = "0.4"
 
 clap = { version = "4.5", features = ["derive", "cargo"] }
 thiserror = "2.0"
