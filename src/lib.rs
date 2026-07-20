@@ -73,6 +73,139 @@ class ValueError extends Error {}
 class UnhandledMatchError extends Error {}
 "#;
 
+/// The date/time classes, written in PHP over the `date`/`strtotime`/`mktime`
+/// standard-library functions (UTC, like those functions). Appended to the
+/// prelude source (no `<?php` tag — it is concatenated after the exceptions).
+const DATETIME_PRELUDE: &str = r#"
+class DateInterval {
+    public $y = 0;
+    public $m = 0;
+    public $d = 0;
+    public $h = 0;
+    public $i = 0;
+    public $s = 0;
+    public $f = 0;
+    public $invert = 0;
+    public $days = false;
+    public function __construct($spec = "") {
+        $len = strlen($spec);
+        $in_time = false;
+        $num = "";
+        for ($p = 0; $p < $len; $p++) {
+            $ch = $spec[$p];
+            if ($ch === "P") { continue; }
+            if ($ch === "T") { $in_time = true; continue; }
+            if (ctype_digit($ch)) { $num = $num . $ch; continue; }
+            $val = (int) $num;
+            $num = "";
+            if ($ch === "Y") { $this->y = $val; }
+            elseif ($ch === "W") { $this->d = $val * 7; }
+            elseif ($ch === "D") { $this->d = $val; }
+            elseif ($ch === "H") { $this->h = $val; }
+            elseif ($ch === "S") { $this->s = $val; }
+            elseif ($ch === "M" && $in_time) { $this->i = $val; }
+            elseif ($ch === "M") { $this->m = $val; }
+        }
+    }
+    public function _seconds() {
+        return $this->s + $this->i * 60 + $this->h * 3600 + $this->d * 86400
+            + $this->m * 2592000 + $this->y * 31536000;
+    }
+    public function format($fmt) {
+        $out = "";
+        $len = strlen($fmt);
+        for ($p = 0; $p < $len; $p++) {
+            $ch = $fmt[$p];
+            if ($ch === "%" && $p + 1 < $len) {
+                $p++;
+                $n = $fmt[$p];
+                if ($n === "y") { $out = $out . $this->y; }
+                elseif ($n === "m") { $out = $out . $this->m; }
+                elseif ($n === "d") { $out = $out . $this->d; }
+                elseif ($n === "h") { $out = $out . $this->h; }
+                elseif ($n === "i") { $out = $out . $this->i; }
+                elseif ($n === "s") { $out = $out . $this->s; }
+                elseif ($n === "a") { $out = $out . $this->days; }
+                elseif ($n === "R") { $out = $out . ($this->invert ? "-" : "+"); }
+                elseif ($n === "%") { $out = $out . "%"; }
+                else { $out = $out . $n; }
+            } else {
+                $out = $out . $ch;
+            }
+        }
+        return $out;
+    }
+}
+class DateTime {
+    public $ts = 0;
+    public function __construct($datetime = "now") {
+        if ($datetime === "now" || $datetime === "") {
+            $this->ts = time();
+        } else {
+            $this->ts = strtotime($datetime);
+        }
+    }
+    public function format($format) { return date($format, $this->ts); }
+    public function getTimestamp() { return $this->ts; }
+    public function setTimestamp($ts) { $this->ts = $ts; return $this; }
+    public function modify($modifier) { $this->ts = strtotime($modifier, $this->ts); return $this; }
+    public function setDate($y, $m, $d) {
+        $this->ts = mktime((int) date("H", $this->ts), (int) date("i", $this->ts),
+            (int) date("s", $this->ts), $m, $d, $y);
+        return $this;
+    }
+    public function setTime($h, $i, $s = 0) {
+        $this->ts = mktime($h, $i, $s, (int) date("n", $this->ts),
+            (int) date("j", $this->ts), (int) date("Y", $this->ts));
+        return $this;
+    }
+    public function add($interval) { $this->ts = $this->ts + $interval->_seconds(); return $this; }
+    public function sub($interval) { $this->ts = $this->ts - $interval->_seconds(); return $this; }
+    public function diff($other) {
+        $secs = $other->getTimestamp() - $this->ts;
+        $inv = 0;
+        if ($secs < 0) { $inv = 1; $secs = 0 - $secs; }
+        $di = new DateInterval("");
+        $di->days = intdiv($secs, 86400);
+        $di->d = intdiv($secs, 86400);
+        $rem = $secs % 86400;
+        $di->h = intdiv($rem, 3600);
+        $rem = $rem % 3600;
+        $di->i = intdiv($rem, 60);
+        $di->s = $rem % 60;
+        $di->invert = $inv;
+        return $di;
+    }
+}
+class DateTimeImmutable {
+    public $ts = 0;
+    public function __construct($datetime = "now") {
+        if ($datetime === "now" || $datetime === "") {
+            $this->ts = time();
+        } else {
+            $this->ts = strtotime($datetime);
+        }
+    }
+    public function format($format) { return date($format, $this->ts); }
+    public function getTimestamp() { return $this->ts; }
+    public function modify($modifier) {
+        $n = new DateTimeImmutable();
+        $n->ts = strtotime($modifier, $this->ts);
+        return $n;
+    }
+    public function add($interval) {
+        $n = new DateTimeImmutable();
+        $n->ts = $this->ts + $interval->_seconds();
+        return $n;
+    }
+    public function sub($interval) {
+        $n = new DateTimeImmutable();
+        $n->ts = $this->ts - $interval->_seconds();
+        return $n;
+    }
+}
+"#;
+
 /// A compiled program's installable definitions: `(functions, classes)`.
 type PreludeDefs = (
     Vec<(String, host::FuncDef)>,
@@ -85,7 +218,8 @@ fn prelude_defs() -> &'static PreludeDefs {
     use std::sync::OnceLock;
     static CACHE: OnceLock<PreludeDefs> = OnceLock::new();
     CACHE.get_or_init(|| {
-        let prog = compile(EXCEPTION_PRELUDE).expect("exception prelude compiles");
+        let src = format!("{EXCEPTION_PRELUDE}{DATETIME_PRELUDE}");
+        let prog = compile(&src).expect("prelude compiles");
         (prog.functions, prog.classes)
     })
 }
