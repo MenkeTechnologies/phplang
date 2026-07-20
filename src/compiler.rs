@@ -24,6 +24,13 @@ struct LoopCtx {
     continues: Vec<usize>,
 }
 
+/// One segment of a flattened array lvalue chain: an explicit `[key]` or an
+/// append `[]`.
+enum LvSeg<'a> {
+    Key(&'a Expr),
+    Append,
+}
+
 /// The `ops::ARR_MUT` sub-op for a by-reference array mutator name, or `None` if
 /// the name isn't one. These lower specially (passing the array by variable
 /// name) rather than through the normal `CALL` value path.
@@ -792,32 +799,163 @@ impl Compiler {
                 }
                 b.emit(Op::CallBuiltin(ops::SETVAR, 2), 0);
             }
-            Expr::Index(recv, idx) => {
-                let Expr::Var(name) = recv.as_ref() else {
-                    return Err("scaffold supports only `$var[...] = ...` index assignment".into());
-                };
-                if op.is_some() {
-                    return Err("scaffold supports only plain `=` on array elements".into());
-                }
-                let nidx = b.add_constant(Value::str(name.clone()));
-                b.emit(Op::LoadConst(nidx), 0);
-                self.compile_expr(b, idx)?;
-                self.compile_expr(b, rhs)?;
-                b.emit(Op::CallBuiltin(ops::INDEX_SET, 3), 0);
-            }
-            Expr::Append(recv) => {
-                let Expr::Var(name) = recv.as_ref() else {
-                    return Err("scaffold supports only `$var[] = ...` append".into());
-                };
-                if op.is_some() {
-                    return Err("`[]` append takes only plain `=`".into());
-                }
-                let nidx = b.add_constant(Value::str(name.clone()));
-                b.emit(Op::LoadConst(nidx), 0);
-                self.compile_expr(b, rhs)?;
-                b.emit(Op::CallBuiltin(ops::ARR_APPEND, 2), 0);
+            Expr::Index(..) | Expr::Append(..) => {
+                let (name, segs) = Self::flatten_segments(lhs)?;
+                self.compile_lvalue_assign(b, name, &segs, op, rhs)?;
             }
             _ => return Err("invalid assignment target".into()),
+        }
+        Ok(())
+    }
+
+    /// Flatten a nested array lvalue (`$a[k1][k2]...`, with any `[]` appends) into
+    /// its root variable name and the ordered chain of segments (source order).
+    fn flatten_segments(lhs: &Expr) -> Result<(&str, Vec<LvSeg<'_>>), String> {
+        let mut cur = lhs;
+        let mut segs: Vec<LvSeg> = Vec::new();
+        loop {
+            match cur {
+                Expr::Index(recv, idx) => {
+                    segs.push(LvSeg::Key(idx));
+                    cur = recv;
+                }
+                Expr::Append(inner) => {
+                    segs.push(LvSeg::Append);
+                    cur = inner;
+                }
+                Expr::Var(name) => {
+                    segs.reverse();
+                    return Ok((name, segs));
+                }
+                _ => return Err("invalid assignment target".into()),
+            }
+        }
+    }
+
+    /// Assign along a flattened lvalue chain. A `[]` that is not the outermost
+    /// segment (`$a[][k] = v`) is materialized by appending a fresh child array and
+    /// re-rooting the remaining segments on it through a temporary, so each `[]`
+    /// appends exactly one element as PHP does. Otherwise the flat name+keys(+
+    /// trailing append) fast paths are used.
+    fn compile_lvalue_assign(
+        &mut self,
+        b: &mut ChunkBuilder,
+        name: &str,
+        segs: &[LvSeg],
+        op: Option<BinOp>,
+        rhs: &Expr,
+    ) -> Result<(), String> {
+        // The first append that still has segments after it is a mid-path append.
+        let mid = segs
+            .iter()
+            .position(|s| matches!(s, LvSeg::Append))
+            .filter(|&i| i + 1 < segs.len());
+        if let Some(i) = mid {
+            // Everything before the first append is a plain key prefix.
+            let prefix: Vec<&Expr> = segs[..i]
+                .iter()
+                .map(|s| match s {
+                    LvSeg::Key(k) => *k,
+                    LvSeg::Append => unreachable!("first mid-append has no earlier append"),
+                })
+                .collect();
+            let t = self.tmp_name("ap");
+            // @t = a freshly appended child array of $name[prefix...].
+            self.emit_set_var(b, &t, |c, b| {
+                let nidx = b.add_constant(Value::str(name.to_string()));
+                b.emit(Op::LoadConst(nidx), 0);
+                for k in &prefix {
+                    c.compile_expr(b, k)?;
+                }
+                b.emit(Op::CallBuiltin(ops::PATH_APPEND_CHILD, (prefix.len() + 1) as u8), 0);
+                Ok(())
+            })?;
+            // Keep writing through $@t along the remaining segments.
+            return self.compile_lvalue_assign(b, &t, &segs[i + 1..], op, rhs);
+        }
+
+        // No mid-append: keys with an optional trailing `[]` append.
+        let append = matches!(segs.last(), Some(LvSeg::Append));
+        let key_segs = if append { &segs[..segs.len() - 1] } else { segs };
+        let keys: Vec<&Expr> = key_segs
+            .iter()
+            .map(|s| match s {
+                LvSeg::Key(k) => *k,
+                LvSeg::Append => unreachable!("only the final segment may be an append here"),
+            })
+            .collect();
+
+        if append {
+            if op.is_some() {
+                return Err("`[]` append takes only plain `=`".into());
+            }
+            let nidx = b.add_constant(Value::str(name.to_string()));
+            b.emit(Op::LoadConst(nidx), 0);
+            if keys.is_empty() {
+                // Single-level `$a[] = rhs` keeps the compact ARR_APPEND lowering.
+                self.compile_expr(b, rhs)?;
+                b.emit(Op::CallBuiltin(ops::ARR_APPEND, 2), 0);
+            } else {
+                for k in &keys {
+                    self.compile_expr(b, k)?;
+                }
+                self.compile_expr(b, rhs)?;
+                b.emit(Op::CallBuiltin(ops::APPEND_PATH, (keys.len() + 2) as u8), 0);
+            }
+        } else if keys.len() == 1 && op.is_none() {
+            // Fast path for the common single-level `$a[k] = rhs`.
+            let nidx = b.add_constant(Value::str(name.to_string()));
+            b.emit(Op::LoadConst(nidx), 0);
+            self.compile_expr(b, keys[0])?;
+            self.compile_expr(b, rhs)?;
+            b.emit(Op::CallBuiltin(ops::INDEX_SET, 3), 0);
+        } else {
+            self.compile_index_assign(b, name, &keys, op, rhs)?;
+        }
+        Ok(())
+    }
+
+    /// `$a[k1]..[kN] = rhs` (deep set) and its compound form `$a[k1]..[kN] op=
+    /// rhs`. For a compound op the key expressions are hoisted into temporaries so
+    /// they are evaluated exactly once across the read and the write.
+    fn compile_index_assign(
+        &mut self,
+        b: &mut ChunkBuilder,
+        name: &str,
+        keys: &[&Expr],
+        op: Option<BinOp>,
+        rhs: &Expr,
+    ) -> Result<(), String> {
+        let nidx = b.add_constant(Value::str(name.to_string()));
+        match op {
+            None => {
+                b.emit(Op::LoadConst(nidx), 0);
+                for k in keys {
+                    self.compile_expr(b, k)?;
+                }
+                self.compile_expr(b, rhs)?;
+                b.emit(Op::CallBuiltin(ops::SET_PATH, (keys.len() + 2) as u8), 0);
+            }
+            Some(cop) => {
+                // Evaluate each key once into a temporary, then `set = get op rhs`.
+                let key_tmps: Vec<String> = keys.iter().map(|_| self.tmp_name("lk")).collect();
+                for (t, k) in key_tmps.iter().zip(keys) {
+                    self.emit_set_var(b, t, |c, b| c.compile_expr(b, k))?;
+                }
+                b.emit(Op::LoadConst(nidx), 0);
+                for t in &key_tmps {
+                    self.emit_get_var(b, t);
+                }
+                // value = $a[keys] op rhs
+                b.emit(Op::LoadConst(nidx), 0);
+                for t in &key_tmps {
+                    self.emit_get_var(b, t);
+                }
+                b.emit(Op::CallBuiltin(ops::GET_PATH, (key_tmps.len() + 1) as u8), 0);
+                self.compile_expr(b, rhs)?;
+                self.emit_binop(b, cop);
+                b.emit(Op::CallBuiltin(ops::SET_PATH, (key_tmps.len() + 2) as u8), 0);
+            }
         }
         Ok(())
     }
@@ -829,15 +967,37 @@ impl Compiler {
         inc: bool,
         prefix: bool,
     ) -> Result<(), String> {
-        let Expr::Var(name) = target else {
-            return Err("scaffold supports ++/-- only on plain $variables".into());
-        };
-        let nidx = b.add_constant(Value::str(name.clone()));
-        b.emit(Op::LoadConst(nidx), 0);
         // code: bit0 = increment, bit1 = prefix.
         let code = (inc as i64) | ((prefix as i64) << 1);
-        b.emit(Op::LoadInt(code), 0);
-        b.emit(Op::CallBuiltin(ops::INCDEC, 2), 0);
+        match target {
+            Expr::Var(name) => {
+                let nidx = b.add_constant(Value::str(name.clone()));
+                b.emit(Op::LoadConst(nidx), 0);
+                b.emit(Op::LoadInt(code), 0);
+                b.emit(Op::CallBuiltin(ops::INCDEC, 2), 0);
+            }
+            Expr::Index(..) => {
+                // `++$a[k1]..[kN]` — read-modify-write the deepest element.
+                let (name, segs) = Self::flatten_segments(target)?;
+                let mut keys: Vec<&Expr> = Vec::with_capacity(segs.len());
+                for s in &segs {
+                    match s {
+                        LvSeg::Key(k) => keys.push(k),
+                        LvSeg::Append => {
+                            return Err("cannot ++/-- an `[]` append target".into())
+                        }
+                    }
+                }
+                let nidx = b.add_constant(Value::str(name.to_string()));
+                b.emit(Op::LoadConst(nidx), 0);
+                for k in &keys {
+                    self.compile_expr(b, k)?;
+                }
+                b.emit(Op::LoadInt(code), 0);
+                b.emit(Op::CallBuiltin(ops::INCDEC_PATH, (keys.len() + 2) as u8), 0);
+            }
+            _ => return Err("scaffold supports ++/-- only on variables and array elements".into()),
+        }
         Ok(())
     }
 

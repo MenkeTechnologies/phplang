@@ -23,6 +23,11 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::INDEX_GET, b_index_get);
     vm.register_builtin(ops::INDEX_SET, b_index_set);
     vm.register_builtin(ops::ARR_APPEND, b_arr_append);
+    vm.register_builtin(ops::SET_PATH, b_set_path);
+    vm.register_builtin(ops::APPEND_PATH, b_append_path);
+    vm.register_builtin(ops::GET_PATH, b_get_path);
+    vm.register_builtin(ops::INCDEC_PATH, b_incdec_path);
+    vm.register_builtin(ops::PATH_APPEND_CHILD, b_path_append_child);
     vm.register_builtin(ops::DIV, b_div);
     vm.register_builtin(ops::MOD, b_mod);
     vm.register_builtin(ops::POW, b_pow);
@@ -224,6 +229,68 @@ fn b_arr_append(vm: &mut VM, _: u8) -> Value {
     let name = pop_name(vm);
     with_host(|h| h.append_var(&name, val.clone()));
     val
+}
+
+/// `$a[k1]..[kN] = val` — stack `[name, k1..kN, val]`, `N = argc-2 >= 1`.
+fn b_set_path(vm: &mut VM, argc: u8) -> Value {
+    let val = vm.pop();
+    let keys = pop_args(vm, argc as usize - 2);
+    let name = pop_name(vm);
+    with_host(|h| h.index_set_path(&name, &keys, val.clone()));
+    val
+}
+
+/// `$a[k1]..[kM][] = val` — stack `[name, k1..kM, val]`, `M = argc-2 >= 0`.
+fn b_append_path(vm: &mut VM, argc: u8) -> Value {
+    let val = vm.pop();
+    let keys = pop_args(vm, argc as usize - 2);
+    let name = pop_name(vm);
+    with_host(|h| h.append_path(&name, &keys, val.clone()));
+    val
+}
+
+/// Read `$a[k1]..[kN]` — stack `[name, k1..kN]`, `N = argc-1`. Used for the read
+/// half of a compound assignment (`$a[k] += ...`).
+fn b_get_path(vm: &mut VM, argc: u8) -> Value {
+    let keys = pop_args(vm, argc as usize - 1);
+    let name = pop_name(vm);
+    with_host(|h| h.index_get_path(&name, &keys))
+}
+
+/// `++`/`--` on `$a[k1]..[kN]` — stack `[name, k1..kN, code]`, `N = argc-2`. The
+/// `code` bits match `b_incdec` (bit0 = increment, bit1 = prefix). Decrement of an
+/// unset/null element yields -1 here (consistent with `b_incdec` on a plain
+/// `$var`); real PHP leaves it null — a documented scaffold deviation.
+fn b_incdec_path(vm: &mut VM, argc: u8) -> Value {
+    let code = vm.pop().to_int();
+    let keys = pop_args(vm, argc as usize - 2);
+    let name = pop_name(vm);
+    let inc = code & 1 != 0;
+    let prefix = code & 2 != 0;
+    with_host(|h| {
+        let old = h.index_get_path(&name, &keys);
+        let delta = if inc { 1 } else { -1 };
+        let newv = match h.to_number(&old) {
+            Value::Int(n) => Value::int(n + delta),
+            Value::Float(f) => Value::float(f + delta as f64),
+            _ => Value::int(delta),
+        };
+        h.index_set_path(&name, &keys, newv.clone());
+        if prefix {
+            newv
+        } else {
+            old
+        }
+    })
+}
+
+/// Append a fresh child array to `$a[k1]..[kN]` and leave its handle on the stack
+/// — stack `[name, k1..kN]`, `N = argc-1`. Lets the compiler pivot a mid-path
+/// append (`$a[][k] = v`) onto the new child.
+fn b_path_append_child(vm: &mut VM, argc: u8) -> Value {
+    let keys = pop_args(vm, argc as usize - 1);
+    let name = pop_name(vm);
+    with_host(|h| h.path_append_child(&name, &keys))
 }
 
 fn b_sig_return(vm: &mut VM, _: u8) -> Value {

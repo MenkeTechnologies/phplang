@@ -49,6 +49,12 @@ pub mod ops {
     pub const SPACESHIP: u16 = 32; // [a, b] -> -1 | 0 | 1
     pub const DBG_LINE: u16 = 33; // [line] -> DAP statement marker (debug only)
     pub const ARR_MUT: u16 = 34; // [name, subop, args...] -> by-reference array mutator
+    pub const GET_PATH: u16 = 35; // [name, k1..kN] -> value (read $a[k1]..[kN])
+    pub const SET_PATH: u16 = 36; // [name, k1..kN, val] -> val ($a[k1]..[kN] = val, N>=1)
+    pub const APPEND_PATH: u16 = 37; // [name, k1..kM, val] -> val ($a[k1]..[kM][] = val)
+    pub const INCDEC_PATH: u16 = 38; // [name, k1..kN, code] -> value (++/-- on element)
+    // 39..47 reserved: CALL_SPREAD, MKCLOSURE/CALL_VALUE, class ops (NEW..SCONST).
+    pub const PATH_APPEND_CHILD: u16 = 48; // [name, k1..kN] -> handle of a freshly appended child array
 }
 
 /// Sub-ops for the by-reference array mutators lowered through `ops::ARR_MUT`
@@ -365,6 +371,74 @@ impl PhpHost {
         let arr = self.new_array();
         self.set_var(name, arr.clone());
         arr
+    }
+
+    /// Descend the array handle `arr` along `keys`, auto-vivifying an array at each
+    /// step, and return the handle of the array the final segment lands in. A slot
+    /// that is unset — or holds a non-array — is (re)created as an empty array,
+    /// matching PHP's auto-vivification of nested lvalues.
+    fn ensure_path_from(&mut self, mut arr: Value, keys: &[Value]) -> Value {
+        for key in keys {
+            let k = self.norm_key(key);
+            let child = match self.as_array(&arr) {
+                Some(PhpObj::Array { entries, .. }) => entries.get(&k).cloned(),
+                _ => None,
+            };
+            arr = match child {
+                Some(v) if self.is_array(&v) => v,
+                _ => {
+                    let new = self.new_array();
+                    self.arr_set_key(&arr, key, new.clone());
+                    new
+                }
+            };
+        }
+        arr
+    }
+
+    /// Like `ensure_path_from`, but rooted at the scope variable `$name`
+    /// (auto-vivifying the variable itself into an array).
+    fn ensure_path_array(&mut self, name: &str, keys: &[Value]) -> Value {
+        let root = self.ensure_array_var(name);
+        self.ensure_path_from(root, keys)
+    }
+
+    /// `$name[k1]..[kN] = val` — set the deepest element along a key path,
+    /// auto-vivifying the intermediate arrays (`N >= 1`).
+    pub fn index_set_path(&mut self, name: &str, keys: &[Value], val: Value) {
+        let Some((last, inter)) = keys.split_last() else {
+            return;
+        };
+        let arr = self.ensure_path_array(name, inter);
+        self.arr_set_key(&arr, last, val);
+    }
+
+    /// `$name[k1]..[kM][] = val` — append into the array reached along `keys`,
+    /// auto-vivifying (`M >= 0`, so `$a[] = v` is the empty-path case).
+    pub fn append_path(&mut self, name: &str, keys: &[Value], val: Value) {
+        let arr = self.ensure_path_array(name, keys);
+        self.arr_push_auto(&arr, val);
+    }
+
+    /// Read `$name[k1]..[kN]` without mutating (for read-modify-write compound
+    /// assignment and `++`/`--` on an element). Missing slots read as `Undef`.
+    pub fn index_get_path(&self, name: &str, keys: &[Value]) -> Value {
+        let mut cur = self.get_var(name);
+        for key in keys {
+            cur = self.index_get(&cur, key);
+        }
+        cur
+    }
+
+    /// Append a fresh empty array as a new element of `$name[k1]..[kN]` and return
+    /// its handle — the pivot for a mid-path append (`$a[][k] = v`): the caller
+    /// keeps writing through the returned child handle, so each `[]` in the chain
+    /// appends exactly one new element the way PHP does.
+    pub fn path_append_child(&mut self, name: &str, keys: &[Value]) -> Value {
+        let arr = self.ensure_path_array(name, keys);
+        let new = self.new_array();
+        self.arr_push_auto(&arr, new.clone());
+        new
     }
 
     /// Append `v` under the next integer key of the array `arr` (a handle).
