@@ -5,10 +5,18 @@
 //! reflection helpers (`class_exists`, `class_parent`, `is_a_class`,
 //! `class_method_names`, `class_has_method`, `class_has_prop`, `object_props`,
 //! `object_class`). The runtime has no interfaces, traits, or enums, so
-//! `interface_exists`/`trait_exists`/`enum_exists` are always `false`. There is
-//! no calling-scope context available here, so the no-argument forms of
-//! `get_class`/`get_parent_class` (which PHP resolves to the current class) are
-//! unsupported and reported as `false`.
+//! `interface_exists`/`trait_exists`/`enum_exists` are always `false`, and
+//! `class_implements`/`class_uses` return an empty array for any declared
+//! class/object. There is no calling-scope context available here, so the
+//! no-argument forms of `get_class`/`get_parent_class` (which PHP resolves to the
+//! current class) are unsupported and reported as `false`.
+//!
+//! Two PHP enumerators are limited by what the host exposes. `get_declared_classes`
+//! and `get_class_vars` cannot reach the private class table / property-default
+//! chunks, so they degrade gracefully (empty array; `false` for an unknown class)
+//! rather than fabricate data. `get_defined_constants` has no reachable constants
+//! iterator at all — the table exposes only single-name accessors — so it is not
+//! handled by this module (a call falls through as an undefined function).
 
 use crate::host::with_host;
 use fusevm::Value;
@@ -146,6 +154,76 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             })
         }
 
+        // ── ancestry / composition enumeration ──────────────────────────────
+        // `class_parents($object_or_class, $autoload = true)`: an associative
+        // array `name => name` for each ancestor, nearest first, or `false` when
+        // the subject is not a declared class/object. The autoload flag is
+        // ignored (nothing to autoload). Names carry the parent's declared
+        // casing, as PHP does.
+        "class_parents" => {
+            let a = arg(args, 0);
+            with_host(|h| {
+                let Some(start) = resolve_named_class(h, &a) else {
+                    return Value::bool(false);
+                };
+                let arr = h.new_array();
+                let mut cur = h.class_parent(&start);
+                while let Some(p) = cur {
+                    h.arr_set_key(&arr, &Value::str(p.clone()), Value::str(p.clone()));
+                    cur = h.class_parent(&p);
+                }
+                arr
+            })
+        }
+        // `class_implements($object_or_class, $autoload = true)`: PHP returns the
+        // interfaces a class implements. This runtime has no interfaces, so the
+        // result is an empty array for a valid class/object, or `false` when the
+        // subject is not a declared class/object (matching PHP's failure result).
+        "class_implements" => {
+            let a = arg(args, 0);
+            with_host(|h| match resolve_named_class(h, &a) {
+                Some(_) => h.new_array(),
+                None => Value::bool(false),
+            })
+        }
+        // `class_uses($object_or_class, $autoload = true)`: the traits a class
+        // uses. This runtime has no traits, so an empty array for a valid
+        // class/object, or `false` for a non-declared subject.
+        "class_uses" => {
+            let a = arg(args, 0);
+            with_host(|h| match resolve_named_class(h, &a) {
+                Some(_) => h.new_array(),
+                None => Value::bool(false),
+            })
+        }
+        // `get_class_vars($class_name)`: PHP returns the default property values
+        // of a class as an associative array, or `false` for an unknown class.
+        // The property-default initializers are stored as compiled expression
+        // chunks that only the (private) host instantiation path can evaluate;
+        // no public host accessor exposes them, and instantiating to read them
+        // back would run the constructor (wrong: defaults are the pre-construct
+        // values). So a declared class yields an empty array here (documented
+        // limitation) while an unknown class still returns `false`, keeping the
+        // existence semantics correct.
+        "get_class_vars" => {
+            let name = str_arg(args, 0);
+            with_host(|h| {
+                if h.class_exists(&name) {
+                    h.new_array()
+                } else {
+                    Value::bool(false)
+                }
+            })
+        }
+        // `get_declared_classes()`: PHP returns the names of every declared class.
+        // The host class table is private with no public enumeration accessor, so
+        // the names are not reachable from this module; a best-effort empty array
+        // is returned rather than a fabricated list. (`get_defined_constants` is
+        // likewise unreachable — the constants table exposes only single-name
+        // `const_fetch`/`const_defined`/`const_define`, no iteration — so it is
+        // intentionally not handled here and falls through as undefined.)
+        "get_declared_classes" => with_host(|h| h.new_array()),
+
         _ => return None,
     };
     Some(Ok(v))
@@ -153,13 +231,38 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
 
 /// Resolve the subject of `is_a`/`is_subclass_of` to a class name. Objects use
 /// their class; a string is only honored when `allow_string` is set (PHP
-/// otherwise rejects a class-name string outright).
+/// otherwise rejects a class-name string outright) AND it names a declared
+/// class. The `class_exists` guard matters: without it a bare name equals itself
+/// on the first step of the ancestry walk, so `is_a('Ghost', 'Ghost', true)`
+/// would wrongly report `true` for a class that was never declared — PHP returns
+/// `false` there.
 fn class_of(h: &crate::host::PhpHost, a: &Value, allow_string: bool) -> Option<String> {
     if let Some(c) = h.object_class(a) {
         return Some(c);
     }
     match a {
-        Value::Str(_) if allow_string => Some(h.to_str(a)),
+        Value::Str(_) if allow_string => {
+            let s = h.to_str(a);
+            h.class_exists(&s).then_some(s)
+        }
+        _ => None,
+    }
+}
+
+/// Resolve an `object|string` subject to a declared class name for the
+/// `class_parents`/`class_implements`/`class_uses`/`get_class_vars` family.
+/// Objects yield their class (always declared); a string is honored only when it
+/// names a declared class, so a bad name produces the `false` these functions
+/// return for an unknown class rather than a misleading empty result.
+fn resolve_named_class(h: &crate::host::PhpHost, a: &Value) -> Option<String> {
+    if let Some(c) = h.object_class(a) {
+        return Some(c);
+    }
+    match a {
+        Value::Str(_) => {
+            let s = h.to_str(a);
+            h.class_exists(&s).then_some(s)
+        }
         _ => None,
     }
 }

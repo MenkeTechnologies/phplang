@@ -130,3 +130,120 @@ fn function_exists_unknown() {
         "n"
     );
 }
+
+// Expanded builtin coverage: names implemented across the stdlib categories now
+// report true (previously only a small curated set did).
+#[test]
+fn function_exists_expanded_builtins() {
+    let names = [
+        "array_key_first",
+        "ctype_alpha",
+        "mb_strlen",
+        "str_word_count",
+        "hash_hmac",
+        "preg_quote",
+        "get_debug_type",
+        "filter_var",
+        "is_subclass_of",
+        "fdiv",
+    ];
+    for n in names {
+        assert_eq!(
+            run(&format!("<?php echo function_exists('{n}') ? 'y' : 'n';")),
+            "y",
+            "function_exists('{n}') should be true"
+        );
+    }
+}
+
+// HARDEN: `isset`/`empty` are PHP language constructs, not functions — real PHP
+// `function_exists` returns false for them. The curated list previously claimed
+// they existed.
+#[test]
+fn function_exists_language_constructs_are_false() {
+    assert_eq!(
+        run("<?php echo function_exists('isset') ? 'y' : 'n';"),
+        "n"
+    );
+    assert_eq!(
+        run("<?php echo function_exists('empty') ? 'y' : 'n';"),
+        "n"
+    );
+}
+
+// ── array callables ──────────────────────────────────────────────────────────
+
+const GREETER: &str = "<?php class Greeter {
+    public $name = 'world';
+    public function hello($p) { return \"hi $p from \" . $this->name; }
+    public static function shout($x) { return strtoupper($x) . '!'; }
+}";
+
+#[test]
+fn call_user_func_instance_method_array() {
+    assert_eq!(
+        run(&format!(
+            "{GREETER} $g = new Greeter(); echo call_user_func([$g, 'hello'], 'bob');"
+        )),
+        "hi bob from world"
+    );
+}
+
+#[test]
+fn call_user_func_array_instance_method_array() {
+    assert_eq!(
+        run(&format!(
+            "{GREETER} $g = new Greeter(); echo call_user_func_array([$g, 'hello'], ['ann']);"
+        )),
+        "hi ann from world"
+    );
+}
+
+#[test]
+fn call_user_func_static_method_array() {
+    assert_eq!(
+        run(&format!(
+            "{GREETER} echo call_user_func(['Greeter', 'shout'], 'hey');"
+        )),
+        "HEY!"
+    );
+}
+
+#[test]
+fn call_user_func_array_static_method_array() {
+    assert_eq!(
+        run(&format!(
+            "{GREETER} echo call_user_func_array(['Greeter', 'shout'], ['ok']);"
+        )),
+        "OK!"
+    );
+}
+
+#[test]
+fn call_user_func_static_method_string() {
+    assert_eq!(
+        run(&format!(
+            "{GREETER} echo call_user_func('Greeter::shout', 'yo');"
+        )),
+        "YO!"
+    );
+}
+
+// The instance element binds `$this`, so mutated/other instances stay distinct.
+#[test]
+fn call_user_func_instance_method_uses_correct_receiver() {
+    let src = format!(
+        "{GREETER} $a = new Greeter(); $a->name = 'A'; $b = new Greeter(); $b->name = 'B'; \
+         echo call_user_func([$a, 'hello'], 'x'), '|', call_user_func([$b, 'hello'], 'y');"
+    );
+    assert_eq!(run(&src), "hi x from A|hi y from B");
+}
+
+// An array callable [$obj, 'method'] resolves an inherited method up the chain.
+#[test]
+fn call_user_func_inherited_method_array() {
+    let src = "<?php class Base { public function tag() { return 'base'; } } \
+        class Child extends Base {} \
+        $c = new Child(); echo call_user_func([$c, 'tag']);";
+    assert_eq!(run(src), "base");
+}

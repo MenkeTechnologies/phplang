@@ -25,6 +25,67 @@ fn validate_int_basic_and_typing() {
 }
 
 #[test]
+fn validate_int_i64_min_boundary() {
+    // The magnitude of i64::MIN overflows a positive i64; parsing the full signed
+    // token (not sign-then-magnitude) keeps this valid, matching PHP.
+    assert_eq!(
+        run(r#"<?php echo filter_var("-9223372036854775808", FILTER_VALIDATE_INT);"#),
+        "-9223372036854775808"
+    );
+    // i64::MAX validates; one past it overflows to false.
+    assert_eq!(
+        run(r#"<?php echo filter_var("9223372036854775807", FILTER_VALIDATE_INT);"#),
+        "9223372036854775807"
+    );
+    assert_eq!(
+        run(r#"<?php var_export(filter_var("9223372036854775808", FILTER_VALIDATE_INT));"#),
+        "false"
+    );
+}
+
+#[test]
+fn validate_int_signed_and_zero_forms() {
+    // "0", "+0", "-0" all validate to 0 (a lone zero is not a leading-zero error).
+    assert_eq!(run(r#"<?php echo filter_var("0", FILTER_VALIDATE_INT);"#), "0");
+    assert_eq!(run(r#"<?php echo filter_var("+0", FILTER_VALIDATE_INT);"#), "0");
+    assert_eq!(run(r#"<?php echo filter_var("-0", FILTER_VALIDATE_INT);"#), "0");
+    assert_eq!(run(r#"<?php echo filter_var("+42", FILTER_VALIDATE_INT);"#), "42");
+    // A non-ASCII whitespace prefix (NBSP) is NOT trimmed by PHP and must fail.
+    assert_eq!(
+        run("<?php var_export(filter_var(\"\u{a0}42\", FILTER_VALIDATE_INT));"),
+        "false"
+    );
+}
+
+#[test]
+fn validate_int_hex_octal_flags() {
+    // ALLOW_HEX accepts an unsigned 0x prefix; a signed hex form falls through to
+    // the decimal parser and fails (PHP checks the raw first byte).
+    assert_eq!(
+        run(r#"<?php echo filter_var("0x1A", FILTER_VALIDATE_INT, FILTER_FLAG_ALLOW_HEX);"#),
+        "26"
+    );
+    assert_eq!(
+        run(r#"<?php var_export(filter_var("-0x1A", FILTER_VALIDATE_INT, FILTER_FLAG_ALLOW_HEX));"#),
+        "false"
+    );
+    // Bare "0x" has no digits.
+    assert_eq!(
+        run(r#"<?php var_export(filter_var("0x", FILTER_VALIDATE_INT, FILTER_FLAG_ALLOW_HEX));"#),
+        "false"
+    );
+    // ALLOW_OCTAL: "010" is octal 8; a digit outside 0-7 fails.
+    assert_eq!(
+        run(r#"<?php echo filter_var("010", FILTER_VALIDATE_INT, FILTER_FLAG_ALLOW_OCTAL);"#),
+        "8"
+    );
+    assert_eq!(
+        run(r#"<?php var_export(filter_var("08", FILTER_VALIDATE_INT, FILTER_FLAG_ALLOW_OCTAL));"#),
+        "false"
+    );
+}
+
+#[test]
 fn validate_int_min_max_range() {
     let ok = r#"<?php echo filter_var("5", FILTER_VALIDATE_INT, ["options"=>["min_range"=>1,"max_range"=>10]]);"#;
     assert_eq!(run(ok), "5");
@@ -56,6 +117,16 @@ fn validate_float_and_thousand_flag() {
         "false"
     );
     assert_eq!(run(r#"<?php var_export(filter_var("x", FILTER_VALIDATE_FLOAT));"#), "false");
+    // Scientific notation is always accepted (no flag needed), matching PHP.
+    assert_eq!(run(r#"<?php echo filter_var("1.5e3", FILTER_VALIDATE_FLOAT);"#), "1500");
+    // "inf"/"nan" look numeric to Rust's parser but PHP's float filter rejects them.
+    assert_eq!(run(r#"<?php var_export(filter_var("inf", FILTER_VALIDATE_FLOAT));"#), "false");
+    assert_eq!(run(r#"<?php var_export(filter_var("nan", FILTER_VALIDATE_FLOAT));"#), "false");
+    // A lone thousands separator collapses to empty and must fail, not parse "".
+    assert_eq!(
+        run(r#"<?php var_export(filter_var(",", FILTER_VALIDATE_FLOAT, FILTER_FLAG_ALLOW_THOUSAND));"#),
+        "false"
+    );
 }
 
 // ── FILTER_VALIDATE_BOOLEAN ──────────────────────────────────────────────────
@@ -114,6 +185,50 @@ fn validate_ip_families() {
         "false"
     );
     assert_eq!(run(r#"<?php var_export(filter_var("999.1.1.1", FILTER_VALIDATE_IP));"#), "false");
+    // Leading zeros in an octet are rejected (matches PHP + std::net).
+    assert_eq!(run(r#"<?php var_export(filter_var("127.0.0.01", FILTER_VALIDATE_IP));"#), "false");
+}
+
+// ── FILTER_VALIDATE_MAC ──────────────────────────────────────────────────────
+
+#[test]
+fn validate_mac_accepted_forms() {
+    assert_eq!(
+        run(r#"<?php echo filter_var("00:11:22:33:44:55", FILTER_VALIDATE_MAC);"#),
+        "00:11:22:33:44:55"
+    );
+    assert_eq!(
+        run(r#"<?php echo filter_var("aa-bb-cc-dd-ee-ff", FILTER_VALIDATE_MAC);"#),
+        "aa-bb-cc-dd-ee-ff"
+    );
+    // Cisco dotted-quad (three groups of four hex digits).
+    assert_eq!(
+        run(r#"<?php echo filter_var("0011.2233.4455", FILTER_VALIDATE_MAC);"#),
+        "0011.2233.4455"
+    );
+}
+
+#[test]
+fn validate_mac_rejects_malformed() {
+    // Mixed separators fail.
+    assert_eq!(
+        run(r#"<?php var_export(filter_var("00:11-22:33:44:55", FILTER_VALIDATE_MAC));"#),
+        "false"
+    );
+    // A non-hex digit fails.
+    assert_eq!(
+        run(r#"<?php var_export(filter_var("00:11:22:33:44:GG", FILTER_VALIDATE_MAC));"#),
+        "false"
+    );
+    // Wrong length (no separators) fails.
+    assert_eq!(
+        run(r#"<?php var_export(filter_var("001122334455", FILTER_VALIDATE_MAC));"#),
+        "false"
+    );
+    assert_eq!(
+        run(r#"<?php var_export(filter_var("", FILTER_VALIDATE_MAC));"#),
+        "false"
+    );
 }
 
 #[test]
@@ -139,6 +254,14 @@ fn validate_regexp() {
     // The `i` modifier is honored.
     let ci = r#"<?php echo filter_var("ABC", FILTER_VALIDATE_REGEXP, ["options"=>["regexp"=>"/^[a-z]+$/i"]]);"#;
     assert_eq!(run(ci), "ABC");
+}
+
+#[test]
+fn validate_regexp_multibyte_delimiter_no_panic() {
+    // A multi-byte first char is an invalid delimiter; the compiler must reject
+    // it (return false) rather than panic slicing mid-codepoint.
+    let src = r#"<?php var_export(filter_var("x", FILTER_VALIDATE_REGEXP, ["options"=>["regexp"=>"é^x$é"]]));"#;
+    assert_eq!(run(src), "false");
 }
 
 // ── sanitizers ───────────────────────────────────────────────────────────────
@@ -246,4 +369,20 @@ fn filter_var_array_config_array_spec() {
         ["n"=>["filter"=>FILTER_VALIDATE_INT,"options"=>["min_range"=>1,"max_range"=>10]]]
     ));"#;
     assert_eq!(run(src), r#"{"n":false}"#);
+}
+
+// ── filter_has_var ───────────────────────────────────────────────────────────
+
+#[test]
+fn filter_has_var_always_false() {
+    // No request superglobals exist in a standalone runtime, so nothing is ever
+    // present regardless of input type or name.
+    assert_eq!(
+        run(r#"<?php var_export(filter_has_var(INPUT_GET, "q"));"#),
+        "false"
+    );
+    assert_eq!(
+        run(r#"<?php var_export(filter_has_var(INPUT_POST, "token"));"#),
+        "false"
+    );
 }

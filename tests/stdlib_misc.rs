@@ -218,3 +218,182 @@ fn array_any_all_empty_edge_cases() {
         "false"
     );
 }
+
+// ── strnatcmp: PHP 8.5 regression fixes ──────────────────────────────────────
+// The prior implementation used the older Martin Pool variant and diverged from
+// PHP 8.5 on these inputs (all cross-checked against the `php` 8.5 CLI).
+
+#[test]
+fn strnatcmp_leading_zeros_stripped_once() {
+    // PHP strips leading zeros once at the start, so bare zero-runs are equal.
+    assert_eq!(run("<?php echo strnatcmp('0','00');"), "0");
+    assert_eq!(run("<?php echo strnatcmp('1','01');"), "0");
+    assert_eq!(run("<?php echo strnatcmp('00','000');"), "0");
+}
+
+#[test]
+fn strnatcmp_trailing_char_makes_longer_greater() {
+    // A trailing character that has nothing to compare against wins.
+    assert_eq!(run("<?php echo strnatcmp('a ','a');"), "1");
+    assert_eq!(run("<?php echo strnatcmp('a0','a');"), "1");
+    assert_eq!(run("<?php echo strnatcmp('a','ab');"), "-1");
+}
+
+#[test]
+fn strnatcmp_leading_whitespace_skipped() {
+    // Leading whitespace is skipped, so " a" and "a" compare equal.
+    assert_eq!(run("<?php echo strnatcmp(' a','a');"), "0");
+    assert_eq!(run("<?php echo strnatcmp('10',' 10');"), "0");
+}
+
+#[test]
+fn strnatcmp_fractional_vs_magnitude() {
+    // Leading-zero run → fractional (left-aligned) comparison.
+    assert_eq!(run("<?php echo strnatcmp('a01','a1');"), "-1");
+    assert_eq!(run("<?php echo strnatcmp('a1','a01');"), "1");
+    // No leading zero → magnitude comparison.
+    assert_eq!(run("<?php echo strnatcmp('100','20');"), "1");
+}
+
+// ── str_word_count ───────────────────────────────────────────────────────────
+// NOTE: the `$format`/`$characters` modes of the misc `str_word_count` are
+// currently shadowed by a core `builtins::call_library` stub (a whitespace-token
+// count) that this module is not permitted to edit, so only the count form is
+// reachable end-to-end. See the SHADOWED note on `str_word_count` in
+// `src/stdlib/misc.rs` for the full explanation.
+
+#[test]
+fn str_word_count_counts_words() {
+    assert_eq!(run("<?php echo str_word_count('Hello world foo bar');"), "4");
+    assert_eq!(run("<?php echo str_word_count('');"), "0");
+}
+
+// ── metaphone ────────────────────────────────────────────────────────────────
+
+#[test]
+fn metaphone_classic_words() {
+    assert_eq!(run("<?php echo metaphone('Thompson');"), "0MPSN");
+    assert_eq!(run("<?php echo metaphone('phone');"), "FN");
+    assert_eq!(run("<?php echo metaphone('Xavier');"), "SFR");
+    assert_eq!(run("<?php echo metaphone('Wikipedia');"), "WKPT");
+}
+
+#[test]
+fn metaphone_digraphs_and_silent() {
+    // CH→X (sh), SCH→SX, GH silent/→F, GN→N, KN→N.
+    assert_eq!(run("<?php echo metaphone('school');"), "SXL");
+    assert_eq!(run("<?php echo metaphone('Christ');"), "XRST");
+    assert_eq!(run("<?php echo metaphone('knight');"), "NFT");
+    assert_eq!(run("<?php echo metaphone('gnome');"), "NM");
+}
+
+#[test]
+fn metaphone_phoneme_limit_and_empty() {
+    // The 2nd arg caps the number of phonemes; letterless input yields "".
+    assert_eq!(run("<?php echo metaphone('Thompson', 4);"), "0MPS");
+    assert_eq!(run("<?php echo var_export(metaphone('123'), true);"), "''");
+}
+
+// ── uniqid ───────────────────────────────────────────────────────────────────
+
+#[test]
+fn uniqid_default_is_13_hex_chars() {
+    assert_eq!(run("<?php echo strlen(uniqid());"), "13");
+    // The 13 chars are all hexadecimal.
+    assert_eq!(
+        run("<?php echo (ctype_xdigit(uniqid()) ? 'hex' : 'no');"),
+        "hex"
+    );
+}
+
+#[test]
+fn uniqid_prefix_prepended() {
+    assert_eq!(run("<?php $u=uniqid('pre_'); echo substr($u,0,4),':',strlen($u);"), "pre_:17");
+}
+
+#[test]
+fn uniqid_more_entropy_appends_fraction() {
+    // more_entropy adds a '.' and 8 fractional digits (total length 23).
+    assert_eq!(run("<?php $u=uniqid('', true); echo strlen($u),':',(strpos($u,'.')!==false?'dot':'no');"), "23:dot");
+}
+
+// ── array_udiff / array_uintersect ───────────────────────────────────────────
+
+#[test]
+fn array_udiff_keeps_unmatched_and_preserves_keys() {
+    assert_eq!(
+        run("<?php $r=array_udiff([1,2,3,4],[2,4], fn($a,$b)=>$a<=>$b); echo implode(',', array_keys($r)),'|',implode(',',$r);"),
+        "0,2|1,3"
+    );
+}
+
+#[test]
+fn array_uintersect_keeps_common() {
+    assert_eq!(
+        run("<?php $r=array_uintersect([1,2,3,4],[2,4,5], fn($a,$b)=>$a<=>$b); echo implode(',', array_keys($r)),'|',implode(',',$r);"),
+        "1,3|2,4"
+    );
+}
+
+#[test]
+fn array_uintersect_three_arrays_requires_all() {
+    // 2 is in both others, 4 only in the second — only 2 survives.
+    assert_eq!(
+        run("<?php echo implode(',', array_uintersect([1,2,3,4],[2,4],[2,9], fn($a,$b)=>$a<=>$b));"),
+        "2"
+    );
+}
+
+// ── array_diff_ukey / array_intersect_ukey ───────────────────────────────────
+
+#[test]
+fn array_diff_ukey_compares_keys() {
+    assert_eq!(
+        run("<?php $r=array_diff_ukey(['a'=>1,'b'=>2,'c'=>3],['b'=>9], fn($a,$b)=>strcmp($a,$b)); echo implode(',', array_keys($r)),'|',implode(',',$r);"),
+        "a,c|1,3"
+    );
+}
+
+#[test]
+fn array_intersect_ukey_compares_keys() {
+    assert_eq!(
+        run("<?php $r=array_intersect_ukey(['a'=>1,'b'=>2,'c'=>3],['b'=>9,'c'=>8], fn($a,$b)=>strcmp($a,$b)); echo implode(',', array_keys($r)),'|',implode(',',$r);"),
+        "b,c|2,3"
+    );
+}
+
+// ── array_multisort ──────────────────────────────────────────────────────────
+
+#[test]
+fn array_multisort_single_array_ascending() {
+    assert_eq!(
+        run("<?php $a=[3,1,2]; array_multisort($a); echo implode(',',$a);"),
+        "1,2,3"
+    );
+}
+
+#[test]
+fn array_multisort_descending_flag() {
+    assert_eq!(
+        run("<?php $a=[3,1,2]; array_multisort($a, SORT_DESC); echo implode(',',$a);"),
+        "3,2,1"
+    );
+}
+
+#[test]
+fn array_multisort_parallel_columns() {
+    // The second array is reordered by the first array's sort permutation.
+    assert_eq!(
+        run("<?php $a=[3,1,2]; $b=['c','a','b']; array_multisort($a,$b); echo implode(',',$a),'|',implode(',',$b);"),
+        "1,2,3|a,b,c"
+    );
+}
+
+#[test]
+fn array_multisort_ties_broken_by_second_column() {
+    // Equal primary keys → the second column decides order.
+    assert_eq!(
+        run("<?php $a=[1,1,2]; $b=[3,1,2]; array_multisort($a,$b); echo implode(',',$a),'|',implode(',',$b);"),
+        "1,1,2|1,3,2"
+    );
+}

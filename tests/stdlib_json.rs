@@ -156,6 +156,97 @@ fn decode_depth_limit() {
 }
 
 #[test]
+fn decode_nonpositive_depth_clamps_to_one() {
+    // PHP raises a ValueError for depth <= 0; phplang clamps to 1 (the doc
+    // contract). A single container level still decodes.
+    assert_eq!(
+        run(r#"<?php var_dump(json_decode("[1]", true, 0) === null ? 0 : 1); echo json_last_error();"#),
+        "int(1)\n0"
+    );
+    // A negative depth clamps to 1 too, so a nested container exceeds it.
+    assert_eq!(
+        run(r#"<?php json_decode("[[1]]", true, -5); echo json_last_error();"#),
+        "1"
+    );
+}
+
+#[test]
+fn validate_basic() {
+    // Valid documents of each shape -> true, error reset to 0.
+    assert_eq!(
+        run(r#"<?php var_dump(json_validate('{"a":1,"b":[2,3]}')); echo json_last_error();"#),
+        "bool(true)\n0"
+    );
+    assert_eq!(run(r#"<?php var_dump(json_validate("[1,2,3]"));"#), "bool(true)\n");
+    assert_eq!(run(r#"<?php var_dump(json_validate("42"));"#), "bool(true)\n");
+    assert_eq!(run(r#"<?php var_dump(json_validate("null"));"#), "bool(true)\n");
+    assert_eq!(run(r#"<?php var_dump(json_validate("\"hi\""));"#), "bool(true)\n");
+}
+
+#[test]
+fn validate_invalid_sets_error() {
+    // Trailing comma is invalid -> false with a syntax error recorded.
+    assert_eq!(
+        run(r#"<?php var_dump(json_validate("[1,")); echo json_last_error(), "|", json_last_error_msg();"#),
+        "bool(false)\n4|Syntax error"
+    );
+    // Empty string is invalid JSON.
+    assert_eq!(run(r#"<?php var_dump(json_validate(""));"#), "bool(false)\n");
+    // Trailing garbage after a complete value.
+    assert_eq!(run(r#"<?php var_dump(json_validate("1 2"));"#), "bool(false)\n");
+    // Bad object syntax.
+    assert_eq!(run(r#"<?php var_dump(json_validate('{"a":}'));"#), "bool(false)\n");
+}
+
+#[test]
+fn validate_does_not_build_but_honors_depth() {
+    // Depth is honored just like json_decode: nested past the limit -> false,
+    // JSON_ERROR_DEPTH (1).
+    assert_eq!(
+        run(r#"<?php var_dump(json_validate("[[1]]", 1)); echo json_last_error();"#),
+        "bool(false)\n1"
+    );
+    assert_eq!(
+        run(r#"<?php var_dump(json_validate("[1]", 1));"#),
+        "bool(true)\n"
+    );
+    // A prior error state does not leak into a subsequent valid check.
+    assert_eq!(
+        run(r#"<?php json_decode("[");
+            var_dump(json_validate("[1]")); echo json_last_error();"#),
+        "bool(true)\n0"
+    );
+}
+
+#[test]
+fn decode_unpaired_surrogate_is_utf16_error() {
+    // Lone high surrogate -> null, JSON_ERROR_UTF16 (10).
+    assert_eq!(
+        run(r#"<?php var_dump(json_decode('"\uD800"')); echo json_last_error();"#),
+        "NULL\n10"
+    );
+    // Lone low surrogate is equally invalid.
+    assert_eq!(
+        run(r#"<?php json_decode('"\uDC00"'); echo json_last_error();"#),
+        "10"
+    );
+    // An escaped NUL (\u0000) is a valid one-byte string, not an error.
+    assert_eq!(
+        run(r#"<?php $s = json_decode('"\u0000"'); echo strlen($s), "|", json_last_error();"#),
+        "1|0"
+    );
+}
+
+#[test]
+fn decode_raw_control_char_error() {
+    // A raw newline byte inside a string is a control-char error (code 3).
+    assert_eq!(
+        run("<?php json_decode(\"\\\"a\nb\\\"\"); echo json_last_error();"),
+        "3"
+    );
+}
+
+#[test]
 fn round_trip_encode_decode() {
     // json_decode(json_encode($x)) preserves the structure.
     let src = r#"<?php

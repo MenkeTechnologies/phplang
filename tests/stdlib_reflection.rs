@@ -201,3 +201,100 @@ fn is_subclass_of_allows_string_by_default() {
     // String subject honored by default (allow_string defaults true).
     assert_eq!(run(src), "yn");
 }
+
+// ── HARDEN: is_a with allow_string must reject a non-declared class name ──────
+#[test]
+fn is_a_string_nonexistent_class_is_false() {
+    // A bare name equals itself, so without the class_exists guard the ancestry
+    // walk would report `true` on the first step for a class that was never
+    // declared. PHP returns false because the class does not exist.
+    let src = r#"<?php
+        echo is_a("Ghost", "Ghost", true) ? "y" : "n";
+        echo is_a("Ghost", "Other", true) ? "y" : "n";"#;
+    assert_eq!(run(src), "nn");
+}
+
+#[test]
+fn is_subclass_of_string_nonexistent_class_is_false() {
+    let src = r#"<?php
+        echo is_subclass_of("Ghost", "Base") ? "y" : "n";
+        echo is_subclass_of("Ghost", "Ghost") ? "y" : "n";"#;
+    assert_eq!(run(src), "nn");
+}
+
+// ── EXPAND: class_parents ────────────────────────────────────────────────────
+#[test]
+fn class_parents_walks_chain_assoc() {
+    let src = r#"<?php
+        class A {}
+        class B extends A {}
+        class C extends B {}
+        $p = class_parents("C");
+        echo implode(",", array_keys($p));
+        echo "|";
+        echo implode(",", array_values($p));"#;
+    // Nearest ancestor first; keys and values are both the class name.
+    assert_eq!(run(src), "B,A|B,A");
+}
+
+#[test]
+fn class_parents_on_object_and_no_parent() {
+    let src = r#"<?php
+        class Base {}
+        class Child extends Base {}
+        $p = class_parents(new Child());
+        echo implode(",", array_keys($p));
+        echo "|";
+        // A root class has an empty parents array (not false).
+        echo count(class_parents("Base"));"#;
+    assert_eq!(run(src), "Base|0");
+}
+
+#[test]
+fn class_parents_unknown_is_false() {
+    assert_eq!(
+        run(r#"<?php echo class_parents("Ghost") === false ? "y" : "n";"#),
+        "y"
+    );
+}
+
+// ── EXPAND: class_implements / class_uses (empty; false for unknown) ──────────
+#[test]
+fn class_implements_empty_for_valid_false_for_unknown() {
+    let src = r#"<?php
+        class C {}
+        echo count(class_implements("C"));
+        echo count(class_implements(new C()));
+        echo class_implements("Ghost") === false ? "F" : "?";"#;
+    assert_eq!(run(src), "00F");
+}
+
+#[test]
+fn class_uses_empty_for_valid_false_for_unknown() {
+    let src = r#"<?php
+        class C {}
+        echo count(class_uses("C"));
+        echo class_uses("Ghost") === false ? "F" : "?";"#;
+    assert_eq!(run(src), "0F");
+}
+
+// ── EXPAND: get_class_vars (false for unknown; empty for declared) ────────────
+#[test]
+fn get_class_vars_unknown_false_declared_empty() {
+    let src = r#"<?php
+        class C { public $x = 1; }
+        echo get_class_vars("Ghost") === false ? "F" : "?";
+        echo is_array(get_class_vars("C")) ? "A" : "?";"#;
+    // Property-default values are not reachable without a host accessor
+    // (documented), so a declared class yields an empty array.
+    assert_eq!(run(src), "FA");
+}
+
+// ── EXPAND: get_declared_classes (best-effort array) ─────────────────────────
+#[test]
+fn get_declared_classes_returns_array() {
+    let src = r#"<?php
+        class C {}
+        echo is_array(get_declared_classes()) ? "A" : "?";"#;
+    assert_eq!(run(src), "A");
+}

@@ -33,14 +33,22 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
     let v = match name {
         "mb_str_split" => return Some(mb_str_split(args)),
         "mb_convert_case" => Value::str(mb_convert_case(args)),
-        "mb_strpos" => mb_strpos(args, false),
-        "mb_stripos" => mb_strpos(args, true),
-        "mb_strrpos" => mb_strrpos(args, false),
-        "mb_strripos" => mb_strrpos(args, true),
+        "mb_strpos" => return Some(mb_strpos(args, false)),
+        "mb_stripos" => return Some(mb_strpos(args, true)),
+        "mb_strrpos" => return Some(mb_strrpos(args, false)),
+        "mb_strripos" => return Some(mb_strrpos(args, true)),
         "mb_substr_count" => return Some(mb_substr_count(args)),
         "mb_str_pad" => return Some(mb_str_pad(args)),
         "mb_ord" => mb_ord(args),
         "mb_chr" => mb_chr(args),
+        "mb_lcfirst" => Value::str(mb_lcfirst(&str_arg(args, 0))),
+        "mb_ucfirst" => Value::str(mb_ucfirst(&str_arg(args, 0))),
+        // phplang strings are always valid UTF-8, so there is never an ill-formed
+        // sequence to substitute; mb_scrub returns the input unchanged.
+        "mb_scrub" => Value::str(str_arg(args, 0)),
+        "mb_strcut" => Value::str(mb_strcut(args)),
+        "mb_split" => mb_split(args),
+        "mb_convert_kana" => Value::str(mb_convert_kana(args)),
         "mb_strwidth" => Value::int(mb_strwidth(&str_arg(args, 0)) as i64),
         "mb_convert_encoding" => Value::str(mb_convert_encoding(args)),
         "mb_detect_encoding" => mb_detect_encoding(args),
@@ -129,50 +137,59 @@ fn title_case(s: &str) -> String {
 
 /// `mb_strpos`/`mb_stripos($haystack, $needle, $offset = 0, $encoding = null)`:
 /// codepoint position of the first match of `$needle`, or `false`. `ci` selects
-/// the case-insensitive `mb_stripos`.
-fn mb_strpos(args: &[Value], ci: bool) -> Value {
+/// the case-insensitive `mb_stripos`. PHP 8 raises a `ValueError` when `$offset`
+/// is outside `[-len, len]` (a negative offset counts from the end).
+fn mb_strpos(args: &[Value], ci: bool) -> Result<Value, String> {
     let (hay, needle) = ci_pair(args, ci);
     let len = hay.len() as i64;
-    let mut off = int_arg(args, 2);
-    if off < 0 {
-        off = (len + off).max(0);
+    let off_raw = int_arg(args, 2);
+    if off_raw > len || off_raw < -len {
+        return Err(format!(
+            "{}(): Argument #3 ($offset) must be contained in argument #1 ($haystack)",
+            if ci { "mb_stripos" } else { "mb_strpos" }
+        ));
     }
-    let off = off.clamp(0, len) as usize;
+    let off = if off_raw < 0 { (len + off_raw) as usize } else { off_raw as usize };
     // Empty needle matches at the offset (PHP 8 semantics).
     for i in off..=hay.len().saturating_sub(needle.len()) {
         if hay[i..].starts_with(&needle[..]) {
-            return Value::int(i as i64);
+            return Ok(Value::int(i as i64));
         }
     }
-    Value::bool(false)
+    Ok(Value::bool(false))
 }
 
 /// `mb_strrpos`/`mb_strripos($haystack, $needle, $offset = 0, $encoding = null)`:
 /// codepoint position of the LAST match, or `false`. A positive `$offset` limits
 /// the search to matches starting at or after it; a negative `$offset` stops the
-/// search that many characters from the end. `ci` selects `mb_strripos`.
-fn mb_strrpos(args: &[Value], ci: bool) -> Value {
+/// search that many characters from the end. `ci` selects `mb_strripos`. PHP 8
+/// raises a `ValueError` when `$offset` is outside `[-len, len]`.
+fn mb_strrpos(args: &[Value], ci: bool) -> Result<Value, String> {
     let (hay, needle) = ci_pair(args, ci);
     let len = hay.len();
-    if needle.is_empty() {
-        return Value::int(len as i64);
-    }
+    let ilen = len as i64;
     let off = int_arg(args, 2);
+    if off > ilen || off < -ilen {
+        return Err(format!(
+            "{}(): Argument #3 ($offset) must be contained in argument #1 ($haystack)",
+            if ci { "mb_strripos" } else { "mb_strrpos" }
+        ));
+    }
+    if needle.is_empty() {
+        return Ok(Value::int(len as i64));
+    }
     let (lo, hi) = if off >= 0 {
-        (off.max(0) as usize, len.saturating_sub(needle.len()))
+        (off as usize, len.saturating_sub(needle.len()))
     } else {
-        let hi = (len as i64 + off).max(0) as usize;
+        let hi = (ilen + off).max(0) as usize;
         (0, hi.min(len.saturating_sub(needle.len())))
     };
-    if lo > len {
-        return Value::bool(false);
-    }
     match (lo..=hi)
         .rev()
         .find(|&i| i + needle.len() <= len && hay[i..].starts_with(&needle[..]))
     {
-        Some(i) => Value::int(i as i64),
-        None => Value::bool(false),
+        Some(i) => Ok(Value::int(i as i64)),
+        None => Ok(Value::bool(false)),
     }
 }
 
@@ -197,17 +214,25 @@ fn mb_substr_count(args: &[Value]) -> Result<Value, String> {
     Ok(Value::int(count))
 }
 
-/// Return `(haystack, needle)` as codepoint vectors, lowercased when `ci`.
+/// Return `(haystack, needle)` as codepoint vectors, case-folded when `ci`.
 fn ci_pair(args: &[Value], ci: bool) -> (Vec<char>, Vec<char>) {
     let (h, n) = (str_arg(args, 0), str_arg(args, 1));
     if ci {
-        (
-            h.to_lowercase().chars().collect(),
-            n.to_lowercase().chars().collect(),
-        )
+        (fold_chars(&h), fold_chars(&n))
     } else {
         (h.chars().collect(), n.chars().collect())
     }
+}
+
+/// Lowercase each character to a single representative codepoint, keeping a 1:1
+/// char mapping so a case-insensitive match index stays aligned with the original
+/// string. Full `str::to_lowercase` can expand one char into several (e.g. `İ`
+/// U+0130 → `i` + combining dot), which would shift every subsequent position and
+/// make `mb_stripos`/`mb_strripos` return a wrong index.
+fn fold_chars(s: &str) -> Vec<char> {
+    s.chars()
+        .map(|c| c.to_lowercase().next().unwrap_or(c))
+        .collect()
 }
 
 // ── padding ──────────────────────────────────────────────────────────────────
@@ -294,6 +319,149 @@ fn mb_chr(args: &[Value]) -> Value {
         Some(c) => Value::str(c.to_string()),
         None => Value::bool(false),
     }
+}
+
+// ── first-character case / cutting / splitting ───────────────────────────────
+
+/// `mb_lcfirst($string, $encoding = null)`: lowercase only the first character,
+/// leaving the rest untouched. Empty string returns empty.
+fn mb_lcfirst(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(first) => first.to_lowercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+/// `mb_ucfirst($string, $encoding = null)` (PHP 8.4): uppercase only the first
+/// character, leaving the rest untouched. Empty string returns empty.
+fn mb_ucfirst(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+/// `mb_strcut($string, $start, $length = null, $encoding = null)`: byte-offset
+/// substring that never splits a multibyte character. `$start`/`$length` count
+/// bytes; a negative `$start` counts from the end, a negative `$length` omits
+/// that many trailing bytes. Offsets landing mid-character are floored down to the
+/// nearest character boundary (matching PHP's UTF-8 behavior), so the result is
+/// always valid UTF-8.
+fn mb_strcut(args: &[Value]) -> String {
+    let s = str_arg(args, 0);
+    let blen = s.len() as i64;
+    let mut start = int_arg(args, 1);
+    if start < 0 {
+        start = (blen + start).max(0);
+    }
+    let start = start.clamp(0, blen) as usize;
+    let end = match args.get(2) {
+        Some(v) if !matches!(v, Value::Undef) => {
+            let l = with_host(|h| h.to_number(v).to_int());
+            if l < 0 {
+                (blen + l).max(0) as usize
+            } else {
+                (start as i64 + l).min(blen) as usize
+            }
+        }
+        _ => blen as usize,
+    };
+    let start = floor_char_boundary(&s, start);
+    let end = floor_char_boundary(&s, end.max(start));
+    s[start..end].to_string()
+}
+
+/// Round a byte index down to the nearest UTF-8 character boundary (or `s.len()`
+/// when at/after the end). Guarantees `s[..i]` and `s[i..]` are both valid slices.
+fn floor_char_boundary(s: &str, mut i: usize) -> usize {
+    if i >= s.len() {
+        return s.len();
+    }
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+/// `mb_split($pattern, $string, $limit = -1)`: split `$string` by the regular
+/// expression `$pattern`, returning an array of pieces (or `false` on a pattern
+/// that fails to compile). A positive `$limit` caps the number of pieces, the last
+/// holding the remainder; `0` or negative means no limit. An empty pattern returns
+/// the whole string as a single element (PHP behavior).
+fn mb_split(args: &[Value]) -> Value {
+    let pattern = str_arg(args, 0);
+    let subject = str_arg(args, 1);
+    let limit = match args.get(2) {
+        Some(v) if !matches!(v, Value::Undef) => int_arg(args, 2),
+        _ => -1,
+    };
+    if pattern.is_empty() {
+        return make_list(vec![Value::str(subject)]);
+    }
+    let re = match regex::Regex::new(&pattern) {
+        Ok(r) => r,
+        Err(_) => return Value::bool(false),
+    };
+    let parts: Vec<Value> = if limit > 0 {
+        re.splitn(&subject, limit as usize)
+            .map(|p| Value::str(p.to_string()))
+            .collect()
+    } else {
+        re.split(&subject).map(|p| Value::str(p.to_string())).collect()
+    };
+    make_list(parts)
+}
+
+/// `mb_convert_kana($string, $mode = "KV", $encoding = null)`. Implements the
+/// ASCII fullwidth<->halfwidth modes, which are fully defined by codepoint math:
+/// `r`/`R` letters, `n`/`N` digits, `a`/`A` all alphanumerics + symbols
+/// (U+FF01..U+FF5E <-> U+0021..U+007E), `s`/`S` the ideographic space
+/// (U+3000 <-> U+0020). Lowercase = fullwidth→halfwidth, uppercase = the reverse.
+/// The kana-specific modes (k/K/h/H/c/C/v/V) require Japanese kana tables that are
+/// out of scope here; characters they would touch are left unchanged.
+fn mb_convert_kana(args: &[Value]) -> String {
+    let s = str_arg(args, 0);
+    let mode = match args.get(1) {
+        Some(v) if !matches!(v, Value::Undef) => str_arg(args, 1),
+        _ => "KV".to_string(),
+    };
+    let (fw_all, fw_letter, fw_digit) =
+        (mode.contains('a'), mode.contains('r'), mode.contains('n'));
+    let (hw_all, hw_letter, hw_digit) =
+        (mode.contains('A'), mode.contains('R'), mode.contains('N'));
+    let (fw_space, hw_space) = (mode.contains('s'), mode.contains('S'));
+
+    s.chars()
+        .map(|c| {
+            let cp = c as u32;
+            if cp == 0x3000 && fw_space {
+                return ' ';
+            }
+            if cp == 0x20 && hw_space {
+                return '\u{3000}';
+            }
+            // Fullwidth ASCII variants → halfwidth.
+            if (0xFF01..=0xFF5E).contains(&cp) {
+                let is_letter =
+                    (0xFF21..=0xFF3A).contains(&cp) || (0xFF41..=0xFF5A).contains(&cp);
+                let is_digit = (0xFF10..=0xFF19).contains(&cp);
+                if fw_all || (fw_letter && is_letter) || (fw_digit && is_digit) {
+                    return char::from_u32(cp - 0xFEE0).unwrap_or(c);
+                }
+            }
+            // Halfwidth ASCII printables → fullwidth.
+            if (0x21..=0x7E).contains(&cp) {
+                let is_letter = c.is_ascii_alphabetic();
+                let is_digit = c.is_ascii_digit();
+                if hw_all || (hw_letter && is_letter) || (hw_digit && is_digit) {
+                    return char::from_u32(cp + 0xFEE0).unwrap_or(c);
+                }
+            }
+            c
+        })
+        .collect()
 }
 
 // ── display width ────────────────────────────────────────────────────────────

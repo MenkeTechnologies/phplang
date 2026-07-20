@@ -343,3 +343,259 @@ fn realpath_missing_returns_false() {
     assert_eq!(run(&src), "bool(false)\n");
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+// ── pathinfo leading-dot (HARDEN: PHP treats `.htaccess` as extension) ───────
+
+#[test]
+fn pathinfo_leading_dot_is_extension() {
+    // PHP: pathinfo('/x/.htaccess') → extension "htaccess", filename "".
+    assert_eq!(
+        run("<?php $p = pathinfo('/x/.htaccess'); echo $p['basename'], '|', $p['extension'], '|', $p['filename'], '|', strlen($p['filename']);"),
+        ".htaccess|htaccess||0"
+    );
+    // Single-component selectors agree with the array form.
+    assert_eq!(
+        run("<?php echo pathinfo('.bashrc', PATHINFO_EXTENSION), '/', pathinfo('.bashrc', PATHINFO_FILENAME);"),
+        "bashrc/"
+    );
+}
+
+// ── glob ────────────────────────────────────────────────────────────────────
+
+#[test]
+fn glob_star_matches_and_sorts() {
+    let dir = unique_dir("glob");
+    let dirs = dir.to_string_lossy().into_owned();
+    let a = child(&dir, "a.txt");
+    let b = child(&dir, "b.txt");
+    let c = child(&dir, "c.md");
+    let src = format!(
+        "<?php file_put_contents('{b}', 'x'); file_put_contents('{a}', 'x'); file_put_contents('{c}', 'x');
+         $g = glob('{dirs}/*.txt');
+         echo count($g), ':', basename($g[0]), ',', basename($g[1]);"
+    );
+    // Only the two .txt files, sorted ascending by full path.
+    assert_eq!(run(&src), "2:a.txt,b.txt");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn glob_question_and_bracket() {
+    let dir = unique_dir("globq");
+    let dirs = dir.to_string_lossy().into_owned();
+    for name in ["a1", "a2", "b1", "zz"] {
+        std::fs::write(dir.join(name), "x").unwrap();
+    }
+    // `a?` matches a1,a2; `[ab]1` matches a1,b1.
+    let src = format!(
+        "<?php echo count(glob('{dirs}/a?')), ':', count(glob('{dirs}/[ab]1'));"
+    );
+    assert_eq!(run(&src), "2:2");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn glob_only_dir_flag() {
+    let dir = unique_dir("globdir");
+    let dirs = dir.to_string_lossy().into_owned();
+    std::fs::write(dir.join("file.txt"), "x").unwrap();
+    std::fs::create_dir(dir.join("subdir")).unwrap();
+    let src = format!(
+        "<?php $g = glob('{dirs}/*', GLOB_ONLYDIR); echo count($g), ':', basename($g[0]);"
+    );
+    assert_eq!(run(&src), "1:subdir");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn glob_excludes_dotfiles_unless_pattern_starts_with_dot() {
+    let dir = unique_dir("globdot");
+    let dirs = dir.to_string_lossy().into_owned();
+    std::fs::write(dir.join(".hidden"), "x").unwrap();
+    std::fs::write(dir.join("shown.txt"), "x").unwrap();
+    // `*` skips the dotfile; `.*` includes it (and never `.`/`..`).
+    let src = format!(
+        "<?php echo count(glob('{dirs}/*')), ':', count(glob('{dirs}/.*'));"
+    );
+    assert_eq!(run(&src), "1:1");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn glob_no_match_is_empty_array() {
+    let dir = unique_dir("globempty");
+    let dirs = dir.to_string_lossy().into_owned();
+    let src = format!("<?php $g = glob('{dirs}/*.nope'); echo is_array($g) ? 'arr' : 'no', ':', count($g);");
+    assert_eq!(run(&src), "arr:0");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+// ── fnmatch ─────────────────────────────────────────────────────────────────
+
+#[test]
+fn fnmatch_wildcards() {
+    assert_eq!(run("<?php echo fnmatch('*.txt', 'foo.txt') ? '1' : '0';"), "1");
+    assert_eq!(run("<?php echo fnmatch('*.txt', 'foo.md') ? '1' : '0';"), "0");
+    assert_eq!(run("<?php echo fnmatch('f?o', 'foo') ? '1' : '0';"), "1");
+    assert_eq!(run("<?php echo fnmatch('f?o', 'fooo') ? '1' : '0';"), "0");
+    assert_eq!(run("<?php echo fnmatch('[a-c]at', 'bat') ? '1' : '0';"), "1");
+    assert_eq!(run("<?php echo fnmatch('[!a-c]at', 'bat') ? '1' : '0';"), "0");
+    assert_eq!(run("<?php echo fnmatch('[!a-c]at', 'rat') ? '1' : '0';"), "1");
+}
+
+#[test]
+fn fnmatch_casefold_flag() {
+    // Bareword FNM_CASEFOLD (unseeded → name string) folds ASCII case.
+    assert_eq!(run("<?php echo fnmatch('FOO', 'foo') ? '1' : '0';"), "0");
+    assert_eq!(run("<?php echo fnmatch('FOO', 'foo', FNM_CASEFOLD) ? '1' : '0';"), "1");
+}
+
+// ── stat / lstat / fileperms / filetype ─────────────────────────────────────
+
+#[test]
+fn stat_reports_size_under_numeric_and_named_keys() {
+    let dir = unique_dir("stat");
+    let file = child(&dir, "s.txt");
+    let src = format!(
+        "<?php file_put_contents('{file}', 'hello');
+         $s = stat('{file}');
+         echo $s['size'], ',', $s[7], ',', ($s['mtime'] > 0 ? 'mt' : 'no'), ',', ($s['ino'] === $s[1] ? 'dup' : 'x');"
+    );
+    // size==5 both keys, mtime positive, numeric/named views agree.
+    assert_eq!(run(&src), "5,5,mt,dup");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn stat_missing_returns_false() {
+    let dir = unique_dir("statmiss");
+    let file = child(&dir, "absent");
+    let src = format!("<?php var_dump(stat('{file}'));");
+    assert_eq!(run(&src), "bool(false)\n");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn lstat_and_filetype_on_symlink() {
+    let dir = unique_dir("lstat");
+    let target = dir.join("target.txt");
+    std::fs::write(&target, "x").unwrap();
+    let link = dir.join("link");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let link_s = link.to_string_lossy().into_owned();
+    let src = format!(
+        "<?php echo filetype('{link_s}'), ',', is_link('{link_s}') ? '1' : '0', ',', (stat('{link_s}') !== false ? 'follows' : 'no');"
+    );
+    // lstat-based filetype is 'link'; is_link true; stat() follows to the file.
+    assert_eq!(run(&src), "link,1,follows");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn fileperms_returns_mode_int() {
+    let dir = unique_dir("perms");
+    let file = child(&dir, "p.txt");
+    let src = format!(
+        "<?php file_put_contents('{file}', 'x');
+         $m = fileperms('{file}');
+         // Full st_mode carries the regular-file type bit: (mode & S_IFMT) ==
+         // S_IFREG, i.e. (mode & 61440) == 32768 in decimal.
+         echo is_int($m) ? '1' : '0', ':', (($m & 61440) === 32768) ? 'reg' : 'other';"
+    );
+    assert_eq!(run(&src), "1:reg");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn fileperms_missing_returns_false() {
+    let dir = unique_dir("permsmiss");
+    let file = child(&dir, "absent");
+    let src = format!("<?php var_dump(fileperms('{file}'));");
+    assert_eq!(run(&src), "bool(false)\n");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn filetype_dir_and_file() {
+    let dir = unique_dir("ftype");
+    let dirs = dir.to_string_lossy().into_owned();
+    let file = child(&dir, "f.txt");
+    let src = format!(
+        "<?php file_put_contents('{file}', 'x'); echo filetype('{dirs}'), ',', filetype('{file}');"
+    );
+    assert_eq!(run(&src), "dir,file");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+// ── is_executable ───────────────────────────────────────────────────────────
+
+#[test]
+fn is_executable_respects_mode_bits() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = unique_dir("exec");
+    let plain = dir.join("plain.txt");
+    std::fs::write(&plain, "x").unwrap();
+    std::fs::set_permissions(&plain, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let exe = dir.join("run.sh");
+    std::fs::write(&exe, "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let plain_s = plain.to_string_lossy().into_owned();
+    let exe_s = exe.to_string_lossy().into_owned();
+    let src = format!(
+        "<?php echo is_executable('{plain_s}') ? '1' : '0'; echo is_executable('{exe_s}') ? '1' : '0';"
+    );
+    // 0644 → not executable; 0755 → executable. (Linux grants X_OK to root only
+    // when an execute bit is set, so this holds under CI's root as well.)
+    assert_eq!(run(&src), "01");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+// ── disk space ──────────────────────────────────────────────────────────────
+
+#[test]
+fn disk_space_is_positive_float() {
+    let dir = unique_dir("disk");
+    let dirs = dir.to_string_lossy().into_owned();
+    let src = format!(
+        "<?php $t = disk_total_space('{dirs}'); $f = disk_free_space('{dirs}');
+         echo (is_float($t) && $t > 0) ? '1' : '0';
+         echo (is_float($f) && $f >= 0 && $f <= $t) ? '1' : '0';"
+    );
+    assert_eq!(run(&src), "11");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+// ── clearstatcache / tempnam ────────────────────────────────────────────────
+
+#[test]
+fn clearstatcache_returns_null() {
+    assert_eq!(run("<?php var_dump(clearstatcache());"), "NULL\n");
+}
+
+#[test]
+fn tempnam_creates_a_unique_writable_file() {
+    let dir = unique_dir("tempnam");
+    let dirs = dir.to_string_lossy().into_owned();
+    let src = format!(
+        "<?php $a = tempnam('{dirs}', 'pre'); $b = tempnam('{dirs}', 'pre');
+         echo (is_string($a) && file_exists($a)) ? '1' : '0';
+         echo ($a !== $b) ? '1' : '0';
+         echo (strpos(basename($a), 'pre') === 0) ? '1' : '0';
+         file_put_contents($a, 'data'); echo file_get_contents($a);"
+    );
+    // File exists, two calls differ, name carries the prefix, and it is writable.
+    assert_eq!(run(&src), "111data");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn tempnam_bad_dir_falls_back_to_temp() {
+    let dir = unique_dir("tempnamfallback");
+    let missing = child(&dir, "no_such_dir");
+    // A non-directory `dir` argument → PHP falls back to the system temp dir.
+    let src = format!(
+        "<?php $t = tempnam('{missing}', 'fb'); echo (is_string($t) && file_exists($t)) ? '1' : '0'; if (is_string($t)) unlink($t);"
+    );
+    assert_eq!(run(&src), "1");
+    std::fs::remove_dir_all(&dir).unwrap();
+}

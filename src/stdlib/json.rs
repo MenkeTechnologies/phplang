@@ -64,11 +64,25 @@ fn error_msg(code: i64) -> &'static str {
 pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
     let v = match name {
         "json_decode" => json_decode(args),
+        "json_validate" => json_validate(args),
         "json_last_error" => Value::int(get_last_error()),
         "json_last_error_msg" => Value::str(error_msg(get_last_error()).to_string()),
         _ => return None,
     };
     Some(Ok(v))
+}
+
+/// Resolve the `$depth` argument at `idx` (default 512). PHP requires depth > 0
+/// (a ValueError otherwise); phplang has no stdlib exceptions, so a non-positive
+/// depth is clamped to 1 — the smallest max that admits a single container level.
+fn decode_depth(args: &[Value], idx: usize) -> usize {
+    match args.get(idx) {
+        Some(v) => {
+            let d = crate::host::with_host(|h| h.to_number(v).to_int());
+            if d < 1 { 1 } else { d as usize }
+        }
+        None => 512,
+    }
 }
 
 /// `json_decode($json, $associative = null, $depth = 512, $flags = 0)`.
@@ -78,18 +92,12 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
 /// `$associative = true`). `$flags` beyond depth handling are ignored.
 fn json_decode(args: &[Value]) -> Value {
     let json = crate::host::with_host(|h| h.to_str(&args.first().cloned().unwrap_or(Value::Undef)));
-    // 3rd argument is depth; default 512. A non-positive depth is clamped to 1
-    // to avoid a zero/negative max (PHP raises a ValueError there; phplang has no
-    // exceptions from stdlib, so clamp instead).
-    let depth = args
-        .get(2)
-        .map(|v| crate::host::with_host(|h| h.to_number(v).to_int()))
-        .filter(|&d| d > 0)
-        .unwrap_or(512);
+    // 3rd argument is depth; default 512 (see `decode_depth`).
+    let depth = decode_depth(args, 2);
 
     set_last_error(JSON_ERROR_NONE);
     crate::host::with_host(|h| {
-        let mut p = Parser::new(json.as_bytes(), depth as usize, h);
+        let mut p = Parser::new(json.as_bytes(), depth, h);
         match p.parse_document() {
             Ok(v) => v,
             Err(code) => {
@@ -98,6 +106,35 @@ fn json_decode(args: &[Value]) -> Value {
             }
         }
     })
+}
+
+/// `json_validate($json, $depth = 512, $flags = 0)` (PHP 8.3). Returns `true`
+/// when `$json` is syntactically valid JSON, `false` otherwise. Like
+/// `json_decode` it records the result in `json_last_error` /
+/// `json_last_error_msg` (reset to `JSON_ERROR_NONE` on success).
+///
+/// The `$depth` argument is honored; `$flags` (only `JSON_INVALID_UTF8_IGNORE`
+/// in PHP) is accepted and ignored — phplang strings are already valid UTF-8.
+///
+/// PHP validates without materializing the value; phplang runs the same parser
+/// in a non-building mode (`Parser::new_validate`) so no PHP array is allocated,
+/// matching that property while sharing the decoder's exact grammar.
+fn json_validate(args: &[Value]) -> Value {
+    let json = crate::host::with_host(|h| h.to_str(&args.first().cloned().unwrap_or(Value::Undef)));
+    let depth = decode_depth(args, 1);
+
+    set_last_error(JSON_ERROR_NONE);
+    let ok = crate::host::with_host(|h| {
+        let mut p = Parser::new_validate(json.as_bytes(), depth, h);
+        match p.parse_document() {
+            Ok(_) => true,
+            Err(code) => {
+                set_last_error(code);
+                false
+            }
+        }
+    });
+    Value::bool(ok)
 }
 
 // ── recursive-descent parser ────────────────────────────────────────────────
@@ -109,6 +146,10 @@ struct Parser<'a, 'h> {
     pos: usize,
     max_depth: usize,
     depth: usize,
+    /// When `false` (validate mode) the parser walks the grammar without
+    /// allocating PHP arrays; container values are placeholder `Undef`s and the
+    /// only observable result is `Ok`/`Err`.
+    build: bool,
     h: &'h mut PhpHost,
 }
 
@@ -119,7 +160,29 @@ impl<'a, 'h> Parser<'a, 'h> {
             pos: 0,
             max_depth,
             depth: 0,
+            build: true,
             h,
+        }
+    }
+
+    /// Non-building parser for `json_validate`: same grammar, no array allocation.
+    fn new_validate(b: &'a [u8], max_depth: usize, h: &'h mut PhpHost) -> Self {
+        Parser {
+            b,
+            pos: 0,
+            max_depth,
+            depth: 0,
+            build: false,
+            h,
+        }
+    }
+
+    /// A fresh empty PHP array, or `Undef` in validate mode.
+    fn make_container(&mut self) -> Value {
+        if self.build {
+            self.h.new_array()
+        } else {
+            Value::Undef
         }
     }
 
@@ -185,7 +248,7 @@ impl<'a, 'h> Parser<'a, 'h> {
     fn parse_array(&mut self) -> Result<Value, i64> {
         self.enter()?;
         self.pos += 1; // '['
-        let arr = self.h.new_array();
+        let arr = self.make_container();
         self.skip_ws();
         if self.peek() == Some(b']') {
             self.pos += 1;
@@ -195,7 +258,9 @@ impl<'a, 'h> Parser<'a, 'h> {
         loop {
             self.skip_ws();
             let v = self.parse_value()?;
-            self.h.arr_push_auto(&arr, v);
+            if self.build {
+                self.h.arr_push_auto(&arr, v);
+            }
             self.skip_ws();
             match self.peek() {
                 Some(b',') => {
@@ -215,7 +280,7 @@ impl<'a, 'h> Parser<'a, 'h> {
     fn parse_object(&mut self) -> Result<Value, i64> {
         self.enter()?;
         self.pos += 1; // '{'
-        let arr = self.h.new_array();
+        let arr = self.make_container();
         self.skip_ws();
         if self.peek() == Some(b'}') {
             self.pos += 1;
@@ -237,7 +302,9 @@ impl<'a, 'h> Parser<'a, 'h> {
             let v = self.parse_value()?;
             // arr_set_key normalizes canonical integer string keys to int keys,
             // matching PHP array-key coercion for objects like {"0":...}.
-            self.h.arr_set_key(&arr, &Value::str(key), v);
+            if self.build {
+                self.h.arr_set_key(&arr, &Value::str(key), v);
+            }
             self.skip_ws();
             match self.peek() {
                 Some(b',') => {

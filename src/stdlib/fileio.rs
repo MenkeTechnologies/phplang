@@ -14,7 +14,9 @@
 use crate::host::with_host;
 use crate::stdlib::common::*;
 use fusevm::Value;
+use std::ffi::CString;
 use std::fs;
+use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -68,16 +70,19 @@ fn php_dirname(path: &str, levels: i64) -> String {
 }
 
 /// The `(filename, extension)` split of a basename: extension is the text after
-/// the last interior `.` (a leading dot, as in `.bashrc`, is not an extension).
+/// the last `.`. PHP splits on the last dot even when it is the leading
+/// character, so `.htaccess` has extension `htaccess` and filename `""` (this
+/// mirrors `zend_memrchr` in `php_pathinfo`).
 fn split_ext(base: &str) -> (&str, Option<&str>) {
     match base.rfind('.') {
-        Some(0) | None => (base, None),
+        None => (base, None),
         Some(i) => (&base[..i], Some(&base[i + 1..])),
     }
 }
 
-/// Whether the append flag (PHP `FILE_APPEND`, integer `8`) is set. As phplang
-/// has no constant table, a bareword `FILE_APPEND` reaches us as its name.
+/// Whether the append flag (PHP `FILE_APPEND`, integer `8`) is set. The constant
+/// table is seeded, so this normally arrives as the real int `8`; an unseeded
+/// bareword `FILE_APPEND` is still accepted as its name for robustness.
 fn has_append_flag(v: &Value) -> bool {
     match v {
         Value::Int(n) => n & 8 != 0,
@@ -148,6 +153,228 @@ fn pathinfo_component(opt: &Value, dir: &str, base: &str, ext: Option<&str>, fna
         _ => String::new(),
     };
     Value::str(s)
+}
+
+// ── glob / fnmatch pattern matching ─────────────────────────────────────────
+
+/// Case-sensitive-or-folded comparison of two `char`s (ASCII fold only, matching
+/// PHP's `FNM_CASEFOLD` which is ASCII).
+fn ch_eq(a: char, b: char, casefold: bool) -> bool {
+    if casefold {
+        a.eq_ignore_ascii_case(&b)
+    } else {
+        a == b
+    }
+}
+
+/// Whether `c` falls in the inclusive `lo..=hi` range of a bracket expression.
+fn in_range(lo: char, hi: char, c: char, casefold: bool) -> bool {
+    if casefold {
+        (lo..=hi).contains(&c)
+            || (lo..=hi).contains(&c.to_ascii_lowercase())
+            || (lo..=hi).contains(&c.to_ascii_uppercase())
+    } else {
+        (lo..=hi).contains(&c)
+    }
+}
+
+/// Match a single `char` against a `[...]` bracket expression at the head of
+/// `p` (`p[0] == '['`). Returns `(chars_consumed, matched)`, or `None` when the
+/// bracket is unterminated (in which case `[` is a literal character).
+fn match_bracket(p: &[char], c: char, casefold: bool) -> Option<(usize, bool)> {
+    let mut i = 1;
+    let negate = matches!(p.get(i), Some('!') | Some('^'));
+    if negate {
+        i += 1;
+    }
+    let mut matched = false;
+    let mut closed = false;
+    let mut first = true;
+    while i < p.len() {
+        if p[i] == ']' && !first {
+            i += 1;
+            closed = true;
+            break;
+        }
+        first = false;
+        // `a-b` range, but a trailing `-` (before `]`) is a literal dash.
+        if i + 2 < p.len() && p[i + 1] == '-' && p[i + 2] != ']' {
+            if in_range(p[i], p[i + 2], c, casefold) {
+                matched = true;
+            }
+            i += 3;
+        } else {
+            if ch_eq(p[i], c, casefold) {
+                matched = true;
+            }
+            i += 1;
+        }
+    }
+    if !closed {
+        return None;
+    }
+    Some((i, if negate { !matched } else { matched }))
+}
+
+/// Glob-style wildcard match (`*`, `?`, `[...]`) over full strings. Iterative
+/// with single-star backtracking; `*` matches any run including `/` (PHP's
+/// `fnmatch` without `FNM_PATHNAME`, and glob within one directory level).
+fn wildcard_match(pattern: &str, text: &str, casefold: bool) -> bool {
+    let p: Vec<char> = pattern.chars().collect();
+    let t: Vec<char> = text.chars().collect();
+    let (mut pi, mut ti) = (0usize, 0usize);
+    let mut star: Option<(usize, usize)> = None;
+    while ti < t.len() {
+        let mut advanced = false;
+        if pi < p.len() {
+            match p[pi] {
+                '*' => {
+                    star = Some((pi, ti));
+                    pi += 1;
+                    continue;
+                }
+                '?' => {
+                    pi += 1;
+                    ti += 1;
+                    continue;
+                }
+                '[' => match match_bracket(&p[pi..], t[ti], casefold) {
+                    Some((consumed, true)) => {
+                        pi += consumed;
+                        ti += 1;
+                        advanced = true;
+                    }
+                    Some((_, false)) => {}
+                    None => {
+                        if ch_eq('[', t[ti], casefold) {
+                            pi += 1;
+                            ti += 1;
+                            advanced = true;
+                        }
+                    }
+                },
+                c => {
+                    if ch_eq(c, t[ti], casefold) {
+                        pi += 1;
+                        ti += 1;
+                        advanced = true;
+                    }
+                }
+            }
+        }
+        if advanced {
+            continue;
+        }
+        // Mismatch: backtrack to just past the last `*`, extending its match.
+        match star {
+            Some((sp, st)) => {
+                pi = sp + 1;
+                ti = st + 1;
+                star = Some((sp, st + 1));
+            }
+            None => return false,
+        }
+    }
+    while pi < p.len() && p[pi] == '*' {
+        pi += 1;
+    }
+    pi == p.len()
+}
+
+/// Whether a `glob`/`fnmatch` flag argument requests the behavior named by
+/// `name` (matched against the seeded int bit `bit` or an unseeded bareword).
+fn has_flag(v: &Value, name: &str, bit: i64) -> bool {
+    match v {
+        Value::Int(n) => n & bit != 0,
+        Value::Str(s) => s.to_ascii_uppercase().contains(name),
+        _ => false,
+    }
+}
+
+// ── stat helpers ────────────────────────────────────────────────────────────
+
+/// PHP's 26-entry `stat`/`lstat` array: the 13 fields under numeric keys `0..12`
+/// followed by the same values under their named keys, in PHP's order.
+fn stat_array(m: &fs::Metadata) -> Value {
+    let fields: [(&str, i64); 13] = [
+        ("dev", m.dev() as i64),
+        ("ino", m.ino() as i64),
+        ("mode", m.mode() as i64),
+        ("nlink", m.nlink() as i64),
+        ("uid", m.uid() as i64),
+        ("gid", m.gid() as i64),
+        ("rdev", m.rdev() as i64),
+        ("size", m.size() as i64),
+        ("atime", m.atime()),
+        ("mtime", m.mtime()),
+        ("ctime", m.ctime()),
+        ("blksize", m.blksize() as i64),
+        ("blocks", m.blocks() as i64),
+    ];
+    let mut pairs: Vec<(Value, Value)> = Vec::with_capacity(26);
+    for (i, (_, val)) in fields.iter().enumerate() {
+        pairs.push((Value::int(i as i64), Value::int(*val)));
+    }
+    for (key, val) in fields.iter() {
+        pairs.push((Value::str(*key), Value::int(*val)));
+    }
+    make_map(pairs)
+}
+
+/// PHP `filetype` name for a `FileType`. Uses the type as observed (callers pass
+/// `symlink_metadata`, so a symlink reports `"link"`, matching PHP's `lstat`).
+fn filetype_str(ft: fs::FileType) -> &'static str {
+    if ft.is_dir() {
+        "dir"
+    } else if ft.is_file() {
+        "file"
+    } else if ft.is_symlink() {
+        "link"
+    } else if ft.is_fifo() {
+        "fifo"
+    } else if ft.is_char_device() {
+        "char"
+    } else if ft.is_block_device() {
+        "block"
+    } else if ft.is_socket() {
+        "socket"
+    } else {
+        "unknown"
+    }
+}
+
+/// `access(2)` check (`R_OK`/`W_OK`/`X_OK`) — the honest "can the current user do
+/// this" test PHP's `is_executable` etc. rely on. `false` for a missing path or
+/// a path containing an interior NUL.
+fn access_ok(path: &str, mode: libc::c_int) -> bool {
+    match CString::new(path) {
+        Ok(c) => unsafe { libc::access(c.as_ptr(), mode) == 0 },
+        Err(_) => false,
+    }
+}
+
+/// `statvfs(2)` of `path`, or `None` on failure.
+fn statvfs_of(path: &str) -> Option<libc::statvfs> {
+    let c = CString::new(path).ok()?;
+    // SAFETY: `buf` is fully written by `statvfs` on success (rc == 0); we only
+    // read it in that case.
+    let mut buf: libc::statvfs = unsafe { std::mem::zeroed() };
+    let rc = unsafe { libc::statvfs(c.as_ptr(), &mut buf) };
+    if rc == 0 {
+        Some(buf)
+    } else {
+        None
+    }
+}
+
+/// Fundamental block size for disk-space math: `f_frsize`, falling back to
+/// `f_bsize` when the kernel reports `f_frsize == 0`.
+fn frsize(s: &libc::statvfs) -> f64 {
+    if s.f_frsize != 0 {
+        s.f_frsize as f64
+    } else {
+        s.f_bsize as f64
+    }
 }
 
 /// Dispatch a `fileio`-category PHP function by lowercased name.
@@ -227,6 +454,18 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
                 .map(|m| !m.permissions().readonly())
                 .unwrap_or(false),
         ),
+        // Executable per `access(X_OK)` for the current user (false if missing).
+        "is_executable" => Value::bool(access_ok(&str_arg(args, 0), libc::X_OK)),
+        // A symlink? `lstat`-based, so it does not follow the link.
+        "is_link" => Value::bool(
+            fs::symlink_metadata(str_arg(args, 0))
+                .map(|m| m.file_type().is_symlink())
+                .unwrap_or(false),
+        ),
+        "filetype" => match fs::symlink_metadata(str_arg(args, 0)) {
+            Ok(m) => Value::str(filetype_str(m.file_type())),
+            Err(_) => f(),
+        },
 
         // ── mutating filesystem operations ─────────────────────────────────
         "unlink" => Value::bool(fs::remove_file(str_arg(args, 0)).is_ok()),
@@ -289,6 +528,59 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
                 Err(_) => f(),
             }
         }
+        // Single-level shell glob: the last path component is the wildcard, the
+        // rest is a literal directory. Dotfiles are excluded unless the pattern
+        // itself starts with a dot (matching libc glob / PHP). No match → empty
+        // array (PHP only returns false on a read error, rare here).
+        "glob" => {
+            let pattern = str_arg(args, 0);
+            let flags = arg(args, 1);
+            let only_dir = has_flag(&flags, "ONLYDIR", 0x2000);
+            let mark = has_flag(&flags, "MARK", 8);
+            let no_sort = has_flag(&flags, "NOSORT", 4);
+            let (dir_read, prefix, name_pat) = match pattern.rfind('/') {
+                Some(i) => {
+                    let dir = &pattern[..i];
+                    let read = if dir.is_empty() { "/" } else { dir };
+                    (read.to_string(), pattern[..=i].to_string(), pattern[i + 1..].to_string())
+                }
+                None => (".".to_string(), String::new(), pattern.clone()),
+            };
+            let pat_dot = name_pat.starts_with('.');
+            let mut out: Vec<String> = Vec::new();
+            if let Ok(rd) = fs::read_dir(&dir_read) {
+                for entry in rd.flatten() {
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    if !pat_dot && name.starts_with('.') {
+                        continue;
+                    }
+                    if !wildcard_match(&name_pat, &name, false) {
+                        continue;
+                    }
+                    let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                    if only_dir && !is_dir {
+                        continue;
+                    }
+                    let mut full = format!("{prefix}{name}");
+                    if mark && is_dir {
+                        full.push('/');
+                    }
+                    out.push(full);
+                }
+            }
+            if !no_sort {
+                out.sort();
+            }
+            make_list(out.into_iter().map(Value::str).collect())
+        }
+        // fnmatch(pattern, string, flags): FNM_CASEFOLD (0x10) honored; the other
+        // flags do not change single-string matching here.
+        "fnmatch" => {
+            let pattern = str_arg(args, 0);
+            let subject = str_arg(args, 1);
+            let casefold = has_flag(&arg(args, 2), "CASEFOLD", 0x10);
+            Value::bool(wildcard_match(&pattern, &subject, casefold))
+        }
 
         // ── stat ───────────────────────────────────────────────────────────
         "filesize" => match fs::metadata(str_arg(args, 0)) {
@@ -299,6 +591,31 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             Some(secs) => Value::int(secs),
             None => f(),
         },
+        // Full `st_mode` (permission bits AND file-type bits), matching PHP.
+        "fileperms" => match fs::metadata(str_arg(args, 0)) {
+            Ok(m) => Value::int(m.mode() as i64),
+            Err(_) => f(),
+        },
+        // `stat` follows symlinks; `lstat` reports on the link itself.
+        "stat" => match fs::metadata(str_arg(args, 0)) {
+            Ok(m) => stat_array(&m),
+            Err(_) => f(),
+        },
+        "lstat" => match fs::symlink_metadata(str_arg(args, 0)) {
+            Ok(m) => stat_array(&m),
+            Err(_) => f(),
+        },
+        // Bytes available to an unprivileged process (`f_bavail`).
+        "disk_free_space" | "diskfreespace" => match statvfs_of(&str_arg(args, 0)) {
+            Some(s) => Value::float(s.f_bavail as f64 * frsize(&s)),
+            None => f(),
+        },
+        "disk_total_space" => match statvfs_of(&str_arg(args, 0)) {
+            Some(s) => Value::float(s.f_blocks as f64 * frsize(&s)),
+            None => f(),
+        },
+        // No stat cache exists here, so invalidation is a no-op returning null.
+        "clearstatcache" => Value::Undef,
 
         // ── path string operations (no filesystem access) ──────────────────
         "basename" => {
@@ -349,6 +666,44 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             let s = p.to_string_lossy();
             // PHP returns the temp dir without a trailing separator.
             Value::str(s.trim_end_matches('/').to_string())
+        }
+        // Create a unique file in `dir` (falling back to the system temp dir when
+        // `dir` is not a usable directory, as PHP does) and return its path, or
+        // false on failure. The file is created (0600 by `create_new`) so callers
+        // can write to it immediately, matching PHP's `tempnam`.
+        "tempnam" => {
+            let dir = str_arg(args, 0);
+            let base_dir = if Path::new(&dir).is_dir() {
+                dir
+            } else {
+                std::env::temp_dir().to_string_lossy().into_owned()
+            };
+            // PHP uses only the basename of the prefix and caps its length.
+            let prefix = php_basename(&str_arg(args, 1), "");
+            let prefix: String = prefix.chars().take(60).collect();
+            let pid = std::process::id();
+            let mut result = f();
+            for attempt in 0u128..10_000 {
+                let nanos = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0)
+                    .wrapping_add(attempt);
+                let candidate = Path::new(&base_dir).join(format!("{prefix}{pid:x}{nanos:x}"));
+                match fs::OpenOptions::new()
+                    .create_new(true)
+                    .write(true)
+                    .open(&candidate)
+                {
+                    Ok(_) => {
+                        result = Value::str(candidate.to_string_lossy().into_owned());
+                        break;
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                    Err(_) => break,
+                }
+            }
+            result
         }
 
         _ => return None,

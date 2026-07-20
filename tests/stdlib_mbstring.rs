@@ -104,6 +104,88 @@ fn convert_and_detect_encoding() {
 }
 
 #[test]
+fn strpos_offset_out_of_range_is_valueerror() {
+    // PHP 8: an offset outside [-len, len] raises a ValueError (not `false`).
+    assert!(eval_capture(r#"<?php mb_strpos("abc", "b", 10);"#).is_err());
+    assert!(eval_capture(r#"<?php mb_strpos("abc", "a", -4);"#).is_err());
+    assert!(eval_capture(r#"<?php mb_strrpos("abc", "a", 10);"#).is_err());
+    assert!(eval_capture(r#"<?php mb_strrpos("abc", "a", -10);"#).is_err());
+    // Boundary offsets (== len, == -len) are valid, not errors.
+    assert_eq!(run(r#"<?php echo mb_strpos("abc", "", 3);"#), "3");
+    assert_eq!(run(r#"<?php echo mb_strpos("abc", "a", -3);"#), "0");
+    assert_eq!(run(r#"<?php var_dump(mb_strpos("abc", "c", 3));"#), "bool(false)\n");
+}
+
+#[test]
+fn stripos_position_preserving_case_fold() {
+    // U+0130 'İ' full-lowercases to two codepoints ('i' + combining dot); a naive
+    // to_lowercase() would shift the reported index. mb_stripos must return 1.
+    assert_eq!(run(r#"<?php echo mb_stripos("İa", "a");"#), "1");
+    assert_eq!(run(r#"<?php echo mb_strripos("İaa", "a");"#), "2");
+}
+
+#[test]
+fn strrpos_offset_semantics() {
+    // Positive offset: only matches at or after it.
+    assert_eq!(run(r#"<?php echo mb_strrpos("abcabc", "a", 3);"#), "3");
+    // Negative offset: stop that many chars from the end.
+    assert_eq!(run(r#"<?php echo mb_strrpos("abcabc", "bc", -2);"#), "4");
+}
+
+#[test]
+fn lcfirst_ucfirst() {
+    assert_eq!(run(r#"<?php echo mb_lcfirst("HÉLLO");"#), "hÉLLO");
+    assert_eq!(run(r#"<?php echo mb_ucfirst("éllo");"#), "Éllo");
+    // Multibyte first char is handled without breaking the rest.
+    assert_eq!(run(r#"<?php echo mb_ucfirst("ärger");"#), "Ärger");
+    assert_eq!(run(r#"<?php echo mb_lcfirst("");"#), "");
+    assert_eq!(run(r#"<?php echo mb_ucfirst("");"#), "");
+}
+
+#[test]
+fn scrub_passthrough() {
+    // phplang strings are valid UTF-8: mb_scrub returns them unchanged.
+    assert_eq!(run(r#"<?php echo mb_scrub("héllo");"#), "héllo");
+}
+
+#[test]
+fn strcut_byte_offsets_no_split() {
+    // 3 bytes from 0: "hé" (h=1 byte, é=2 bytes), never a partial char.
+    assert_eq!(run(r#"<?php echo mb_strcut("héllo", 0, 3);"#), "hé");
+    assert_eq!(run(r#"<?php echo mb_strcut("héllo", 1, 3);"#), "él");
+    // Start landing mid-'é' (byte 2) floors down to the char start.
+    assert_eq!(run(r#"<?php echo mb_strcut("héllo", 2);"#), "éllo");
+    // Negative start counts from the end (in bytes).
+    assert_eq!(run(r#"<?php echo mb_strcut("héllo", -2);"#), "lo");
+    // Negative length omits trailing bytes.
+    assert_eq!(run(r#"<?php echo mb_strcut("hello", 1, -1);"#), "ell");
+}
+
+#[test]
+fn split_regex() {
+    assert_eq!(run(r#"<?php echo implode("|", mb_split(",", "a,b,c"));"#), "a|b|c");
+    assert_eq!(run(r#"<?php echo implode("|", mb_split("\s+", "a  b   c"));"#), "a|b|c");
+    // Limit caps the pieces; the last holds the remainder.
+    assert_eq!(run(r#"<?php echo implode("|", mb_split(",", "a,b,c,d", 2));"#), "a|b,c,d");
+    // Empty pattern returns the whole string as one element.
+    assert_eq!(run(r#"<?php $a = mb_split("", "abc"); echo count($a), "|", $a[0];"#), "1|abc");
+    // Invalid regex returns false.
+    assert_eq!(run(r#"<?php var_dump(mb_split("(", "abc"));"#), "bool(false)\n");
+}
+
+#[test]
+fn convert_kana_ascii_widths() {
+    // Fullwidth alphanumerics + ideographic space -> halfwidth (mode "as").
+    assert_eq!(run("<?php echo mb_convert_kana(\"ＡＢＣ１２３　\", \"as\");"), "ABC123 ");
+    // Halfwidth -> fullwidth (mode "AS").
+    assert_eq!(run(r#"<?php echo mb_convert_kana("ABC123", "AS");"#), "ＡＢＣ１２３");
+    // Letters only: 'r' converts fullwidth letters, leaves digits alone.
+    assert_eq!(run("<?php echo mb_convert_kana(\"ＡＢ１２\", \"r\");"), "AB１２");
+    // Digits only: 'n' converts fullwidth digits, leaves letters alone.
+    assert_eq!(run("<?php echo mb_convert_kana(\"ＡＢ１２\", \"n\");"), "ＡＢ12");
+}
+
+#[test]
 fn check_and_internal_encoding() {
     assert_eq!(run(r#"<?php var_dump(mb_check_encoding("hello", "ASCII"));"#), "bool(true)\n");
     assert_eq!(run(r#"<?php var_dump(mb_check_encoding("héllo", "ASCII"));"#), "bool(false)\n");

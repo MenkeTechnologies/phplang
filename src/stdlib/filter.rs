@@ -1,16 +1,18 @@
 //! PHP standard-library `filter` functions. Part of the `stdlib` chain; see
 //! `src/stdlib/mod.rs`. `dispatch` returns `None` for names it does not handle.
 //!
-//! Implements `filter_var($value, $filter, $options)` and `filter_var_array`.
-//! Validation filters return the (typed) value on success and `false` on
-//! failure (or `null` when `FILTER_NULL_ON_FAILURE` is set); sanitization
-//! filters return the cleaned string. Email/URL/domain validation uses the
-//! `regex` crate; IP validation uses `std::net`.
+//! Implements `filter_var($value, $filter, $options)`, `filter_var_array` and
+//! `filter_has_var`. Validation filters return the (typed) value on success and
+//! `false` on failure (or `null` when `FILTER_NULL_ON_FAILURE` is set);
+//! sanitization filters return the cleaned string. Email/URL/domain validation
+//! uses the `regex` crate; IP validation uses `std::net`; MAC validation follows
+//! ext/filter's three accepted separator forms.
 //!
-//! CONSTANTS: phplang has no constant table, so a bareword filter/flag constant
-//! reaches this module as its *name* string (`Value::Str("FILTER_VALIDATE_INT")`)
-//! rather than its integer. Every resolver therefore matches BOTH the canonical
-//! PHP integer AND the uppercase constant-name string.
+//! CONSTANTS: the FILTER_* / FILTER_FLAG_* names are seeded in the host constant
+//! table, so a filter/flag constant normally reaches this module as its real
+//! integer. For robustness the resolvers ALSO accept the uppercase
+//! constant-name string (`Value::Str("FILTER_VALIDATE_INT")`) in case an
+//! unseeded bareword slips through.
 //!
 //! LIMITATIONS: an array `$value` is rejected as `false` (the `FILTER_REQUIRE_ARRAY`
 //! /`FILTER_FORCE_ARRAY` flags that would change this need scalar-vs-array flag
@@ -32,6 +34,7 @@ const FILTER_VALIDATE_REGEXP: i64 = 272;
 const FILTER_VALIDATE_URL: i64 = 273;
 const FILTER_VALIDATE_EMAIL: i64 = 274;
 const FILTER_VALIDATE_IP: i64 = 275;
+const FILTER_VALIDATE_MAC: i64 = 276;
 const FILTER_VALIDATE_DOMAIN: i64 = 277;
 const FILTER_SANITIZE_STRING: i64 = 513; // == FILTER_SANITIZE_STRIPPED
 const FILTER_SANITIZE_SPECIAL_CHARS: i64 = 515;
@@ -59,6 +62,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
     let v = match name {
         "filter_var" => filter_var(args),
         "filter_var_array" => filter_var_array(args),
+        "filter_has_var" => filter_has_var(args),
         _ => return None,
     };
     Some(Ok(v))
@@ -176,6 +180,7 @@ fn resolve_filter_id(v: &Value) -> i64 {
             "FILTER_VALIDATE_URL" => FILTER_VALIDATE_URL,
             "FILTER_VALIDATE_EMAIL" => FILTER_VALIDATE_EMAIL,
             "FILTER_VALIDATE_IP" => FILTER_VALIDATE_IP,
+            "FILTER_VALIDATE_MAC" => FILTER_VALIDATE_MAC,
             "FILTER_VALIDATE_DOMAIN" => FILTER_VALIDATE_DOMAIN,
             "FILTER_SANITIZE_STRING" | "FILTER_SANITIZE_STRIPPED" => FILTER_SANITIZE_STRING,
             "FILTER_SANITIZE_SPECIAL_CHARS" => FILTER_SANITIZE_SPECIAL_CHARS,
@@ -238,6 +243,7 @@ fn apply_filter(input: &Value, filter_id: i64, flags: i64, options: &Option<Valu
         FILTER_VALIDATE_EMAIL => pass_or_fail(&s, validate_email(&s), flags),
         FILTER_VALIDATE_URL => pass_or_fail(&s, validate_url(&s), flags),
         FILTER_VALIDATE_IP => pass_or_fail(&s, validate_ip(&s, flags), flags),
+        FILTER_VALIDATE_MAC => pass_or_fail(&s, validate_mac(&s), flags),
         FILTER_VALIDATE_DOMAIN => pass_or_fail(&s, validate_domain(&s, flags), flags),
         FILTER_VALIDATE_REGEXP => pass_or_fail(&s, validate_regexp(&s, options), flags),
         FILTER_SANITIZE_STRING => Value::str(sanitize_string(&s)),
@@ -276,34 +282,43 @@ fn pass_or_fail(s: &str, ok: bool, flags: i64) -> Value {
 /// `FILTER_VALIDATE_INT`: optional surrounding whitespace, optional sign, no
 /// leading zeros (unless `ALLOW_OCTAL`/`ALLOW_HEX`), within `min_range`/`max_range`.
 fn validate_int(s: &str, flags: i64, options: &Option<Value>) -> Option<i64> {
-    let t = s.trim();
+    let t = php_trim(s);
     if t.is_empty() {
         return None;
     }
 
-    let (neg, digits) = match t.strip_prefix('-') {
-        Some(rest) => (true, rest),
-        None => (false, t.strip_prefix('+').unwrap_or(t)),
-    };
-
-    let magnitude: i64 = if flags & FLAG_ALLOW_HEX != 0
-        && (digits.starts_with("0x") || digits.starts_with("0X"))
+    // Hex and octal are recognized only on an unsigned prefix: PHP's int filter
+    // checks the raw first byte, so "-0x1A"/"+0x1A" fall through to the decimal
+    // parser (which rejects the `x`) and validate to false, matching PHP 8.
+    let value: i64 = if flags & FLAG_ALLOW_HEX != 0 && (t.starts_with("0x") || t.starts_with("0X"))
     {
-        i64::from_str_radix(&digits[2..], 16).ok()?
-    } else if flags & FLAG_ALLOW_OCTAL != 0 && digits.starts_with('0') && digits.len() > 1 {
-        i64::from_str_radix(&digits[1..], 8).ok()?
+        if t.len() <= 2 {
+            return None; // bare "0x" has no digits
+        }
+        i64::from_str_radix(&t[2..], 16).ok()?
+    } else if flags & FLAG_ALLOW_OCTAL != 0
+        && t.len() > 1
+        && t.starts_with('0')
+        && t.bytes().all(|b| b.is_ascii_digit())
+    {
+        i64::from_str_radix(&t[1..], 8).ok()?
     } else {
+        // Decimal: optional sign, then digits with no leading zeros (PHP rejects
+        // "007" but accepts a lone "0"/"+0"/"-0").
+        let digits = t
+            .strip_prefix('-')
+            .or_else(|| t.strip_prefix('+'))
+            .unwrap_or(t);
         if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
             return None;
         }
-        // No leading zeros in decimal form (PHP rejects "007").
         if digits.len() > 1 && digits.starts_with('0') {
             return None;
         }
-        digits.parse().ok()?
+        // Parse the full signed token so `i64::MIN` (whose magnitude overflows a
+        // positive i64) validates correctly, matching PHP.
+        t.parse::<i64>().ok()?
     };
-
-    let value = if neg { magnitude.checked_neg()? } else { magnitude };
 
     if let Some(min) = opt_get(options, "min_range") {
         if value < min.to_int() {
@@ -321,12 +336,17 @@ fn validate_int(s: &str, flags: i64, options: &Option<Value>) -> Option<i64> {
 /// `FILTER_VALIDATE_FLOAT`: optional surrounding whitespace, optional thousands
 /// separators (with `ALLOW_THOUSAND`), within `min_range`/`max_range`.
 fn validate_float(s: &str, flags: i64, options: &Option<Value>) -> Option<f64> {
-    let mut t = s.trim().to_string();
+    let mut t = php_trim(s).to_string();
     if t.is_empty() {
         return None;
     }
     if flags & FLAG_ALLOW_THOUSAND != 0 {
         t = t.replace(',', "");
+        // Stripping every thousands separator can leave an empty string ("," or
+        // ",,"); reject rather than fall through to a parse of "".
+        if t.is_empty() {
+            return None;
+        }
     }
     // Rust's f64 parser accepts "inf"/"nan"/"1e3"; PHP's float filter rejects the
     // former two, so require the string to look numeric first.
@@ -356,7 +376,7 @@ fn validate_float(s: &str, flags: i64, options: &Option<Value>) -> Option<f64> {
 /// `FILTER_VALIDATE_BOOLEAN`: `1/true/on/yes` → true, `0/false/off/no/""` → false,
 /// anything else → `None` (the caller maps `None` to `false`/`null`).
 fn validate_bool(s: &str) -> Option<bool> {
-    match s.trim().to_ascii_lowercase().as_str() {
+    match php_trim(s).to_ascii_lowercase().as_str() {
         "1" | "true" | "on" | "yes" => Some(true),
         "0" | "false" | "off" | "no" | "" => Some(false),
         _ => None,
@@ -402,6 +422,48 @@ fn validate_ip(s: &str, flags: i64) -> bool {
     }
 }
 
+/// `FILTER_VALIDATE_MAC`: a 48-bit MAC address in one of PHP's three accepted
+/// forms with a single consistent separator — `xx:xx:xx:xx:xx:xx` (colon) or
+/// `xx-xx-xx-xx-xx-xx` (hyphen), both 17 chars, or `xxxx.xxxx.xxxx` (dot / Cisco
+/// style), 14 chars. Every group is case-insensitive hex; any other length or a
+/// mixed separator fails. Mirrors ext/filter's `php_filter_validate_mac`.
+fn validate_mac(s: &str) -> bool {
+    let b = s.as_bytes();
+    match b.len() {
+        17 => {
+            let sep = b[2];
+            if sep != b':' && sep != b'-' {
+                return false;
+            }
+            // Six groups of two hex digits; separators sit at indices 2,5,8,11,14.
+            for i in 0..6 {
+                let base = i * 3;
+                if !b[base].is_ascii_hexdigit() || !b[base + 1].is_ascii_hexdigit() {
+                    return false;
+                }
+                if i < 5 && b[base + 2] != sep {
+                    return false;
+                }
+            }
+            true
+        }
+        14 => {
+            // Three groups of four hex digits; dots sit at indices 4 and 9.
+            for (i, &c) in b.iter().enumerate() {
+                if i == 4 || i == 9 {
+                    if c != b'.' {
+                        return false;
+                    }
+                } else if !c.is_ascii_hexdigit() {
+                    return false;
+                }
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
 static HOSTNAME_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(
         r"(?i)^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$",
@@ -441,6 +503,11 @@ fn validate_regexp(s: &str, options: &Option<Value>) -> bool {
 fn compile_delimited(pattern: &str) -> Option<regex::Regex> {
     let bytes = pattern.as_bytes();
     if bytes.len() < 2 {
+        return None;
+    }
+    // PHP regex delimiters are single ASCII punctuation chars. Guard against a
+    // multi-byte first char so `pattern[1..]` never slices mid-codepoint (panic).
+    if !pattern.is_char_boundary(1) {
         return None;
     }
     let delim = bytes[0] as char;
@@ -633,7 +700,28 @@ fn strip_tags(s: &str) -> String {
     out
 }
 
+// ── filter_has_var ───────────────────────────────────────────────────────────
+
+/// `filter_has_var(int $input_type, string $var_name): bool`.
+///
+/// PHP answers from the request superglobals (`$_GET`, `$_POST`, `$_COOKIE`,
+/// `$_SERVER`, `$_ENV`) selected by `$input_type`. phplang is a standalone
+/// runtime with no HTTP request context and no populated INPUT_* superglobals,
+/// so no variable can ever be present: this always returns `false`, which is the
+/// same answer PHP gives for an input source the SAPI did not populate.
+fn filter_has_var(_args: &[Value]) -> Value {
+    Value::bool(false)
+}
+
 // ── small helpers ────────────────────────────────────────────────────────────
+
+/// Trim only the ASCII whitespace bytes PHP's numeric filters strip (space, tab,
+/// newline, carriage return, vertical tab, form feed). Rust's `str::trim` also
+/// strips Unicode whitespace (e.g. NBSP), which PHP does NOT — so a value like
+/// `"\u{a0}42"` must stay invalid.
+fn php_trim(s: &str) -> &str {
+    s.trim_matches(|c: char| matches!(c, ' ' | '\t' | '\n' | '\r' | '\u{0b}' | '\u{0c}'))
+}
 
 /// Build a PHP array from `(key, value)` pairs, preserving keys.
 fn make_map(pairs: Vec<(Value, Value)>) -> Value {
