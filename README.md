@@ -127,7 +127,12 @@ end-to-end (see `tests/basic.rs`):
   `RuntimeException`, `LogicException`, `InvalidArgumentException`, `TypeError`,
   `ValueError`, `UnhandledMatchError`, `DivisionByZeroError`) that user classes
   can subclass, and `getMessage()`/`getCode()`/`__toString()`.
-- A large standard library (330+ functions), split into category modules under
+- Integer literals in every base (`0xFF` hex, `0755`/`0o17` octal, `0b101` binary,
+  `1_000` separators); predefined constants (`PHP_INT_MAX`, `PHP_EOL`, `M_PI`, the
+  `SORT_*`/`FILTER_*`/`JSON_*`/… flag families) plus `define`/`defined`/`constant`;
+  and superglobals (`$_SERVER`, `$_ENV`, `$_GET`/`$_POST`/…, `$GLOBALS`, `$argv`/
+  `$argc`) auto-global across every scope.
+- A large standard library (370+ functions), split into category modules under
   `src/stdlib/` and consulted through a per-category dispatch chain:
   - **strings** — `str_*`, `substr*`, `strpos`/`stripos`/`strrpos`, `strstr`,
     `strtr`, `sprintf`/`vsprintf`/`sscanf`, `number_format`, `nl2br`,
@@ -157,21 +162,26 @@ end-to-end (see `tests/basic.rs`):
     `basename`/`dirname`/`pathinfo`, `realpath`, `getcwd`, …).
   - **reflection** — `class_exists`, `method_exists`, `property_exists`,
     `get_class`, `get_parent_class`, `get_object_vars`, `get_class_methods`,
-    `is_a`/`is_subclass_of`. **callable** — `call_user_func`(`_array`),
-    `function_exists`. **misc** — `strnatcmp`/`strnatcasecmp`, `soundex`,
-    `str_getcsv`, `array_walk_recursive`, `array_find`/`array_any`/`array_all`.
+    `class_parents`, `is_a`/`is_subclass_of`. **callable** — `call_user_func`(`_array`)
+    (incl. array/`Class::method` callables), `function_exists`. **misc** —
+    `strnatcmp`/`strnatcasecmp`, `soundex`, `str_getcsv`, `array_walk_recursive`,
+    `array_find`/`array_any`/`array_all`, `array_udiff`/`array_multisort`.
+  - **system** — `getenv`/`putenv`, `phpversion`, `php_sapi_name`, `php_uname`,
+    `getmypid`, `extension_loaded`, `get_defined_constants`, `get_declared_classes`.
 
 ## [0x04] NOT YET (LATER WAVES)
 
-Interfaces, traits, namespaces, references (`&`), superglobals, and typed-parameter
-enforcement. **Generators (`yield`)** are blocked on the shared VM: phplang runs each
-function to completion on a fresh `fusevm` VM, and `fusevm` exposes no frame
-suspend/resume primitive, so a faithful lazy generator cannot be built in the
+Interfaces, traits, namespaces, references (`&`), typed-parameter enforcement,
+`fopen`-style resource handles, output buffering (`ob_*`), `func_get_args`, and the
+`DateTime` classes. **Generators (`yield`)** are blocked on the shared VM: phplang
+runs each function to completion on a fresh `fusevm` VM, and `fusevm` exposes no
+frame suspend/resume primitive, so a faithful lazy generator cannot be built in the
 frontend alone (it needs VM-level support). Closures and arrow functions do not yet
 capture by reference (`use (&$v)` is rejected). A few current deviations, documented
 in-code: array semantics are reference-based rather than PHP's copy-on-write; loose
 comparison follows a simplified model; default parameter values are not restricted to
-constant expressions. Persistent bytecode caching and AOT (`--build`) —
+constant expressions; functions with a by-reference OUT parameter (`parse_str`,
+`preg_match`'s `$matches`) return the value instead. Persistent bytecode caching and AOT (`--build`) —
 present in the sibling frontends — are not wired yet; an LSP server (`--lsp`) and
 a DAP debug adapter (`--dap`, with source-line and function breakpoints, stepping,
 call stack, locals, and expression `evaluate`) are.
