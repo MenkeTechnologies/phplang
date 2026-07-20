@@ -176,6 +176,40 @@ impl<'a> Lexer<'a> {
     }
 
     fn lex_number(&mut self) {
+        // Radix-prefixed integer literals: `0x`/`0X` hex, `0b`/`0B` binary,
+        // `0o`/`0O` octal (PHP 8.1). Underscores are permitted as separators.
+        if self.src[self.pos] == b'0' {
+            if let Some(radix) = match self.peek(1) {
+                Some(b'x') | Some(b'X') => Some(16u32),
+                Some(b'b') | Some(b'B') => Some(2),
+                Some(b'o') | Some(b'O') => Some(8),
+                _ => None,
+            } {
+                self.advance(2);
+                let ds = self.pos;
+                while self.pos < self.src.len() {
+                    let c = self.src[self.pos];
+                    let ok = c == b'_'
+                        || match radix {
+                            16 => c.is_ascii_hexdigit(),
+                            8 => (b'0'..=b'7').contains(&c),
+                            _ => c == b'0' || c == b'1',
+                        };
+                    if ok {
+                        self.pos += 1;
+                    } else {
+                        break;
+                    }
+                }
+                let digits: String = String::from_utf8_lossy(&self.src[ds..self.pos])
+                    .chars()
+                    .filter(|c| *c != '_')
+                    .collect();
+                self.push(parse_radix(&digits, radix));
+                return;
+            }
+        }
+
         let start = self.pos;
         let mut is_float = false;
         while self.pos < self.src.len() {
@@ -203,12 +237,18 @@ impl<'a> Lexer<'a> {
             .collect();
         if is_float {
             self.push(Tok::Float(raw.parse().unwrap_or(0.0)));
-        } else {
-            match raw.parse::<i64>() {
-                Ok(n) => self.push(Tok::Int(n)),
-                // Integer literal that overflows i64 becomes a float, as PHP does.
-                Err(_) => self.push(Tok::Float(raw.parse().unwrap_or(0.0))),
-            }
+            return;
+        }
+        // A leading-zero integer with all-octal digits is an octal literal
+        // (`0755`), the classic PHP form; a `0` alone stays decimal zero.
+        if raw.len() > 1 && raw.starts_with('0') && raw.bytes().all(|b| (b'0'..=b'7').contains(&b)) {
+            self.push(parse_radix(&raw[1..], 8));
+            return;
+        }
+        match raw.parse::<i64>() {
+            Ok(n) => self.push(Tok::Int(n)),
+            // Integer literal that overflows i64 becomes a float, as PHP does.
+            Err(_) => self.push(Tok::Float(raw.parse().unwrap_or(0.0))),
         }
     }
 
@@ -349,6 +389,19 @@ impl<'a> Lexer<'a> {
             }
             self.pos += 1;
         }
+    }
+}
+
+/// Parse `digits` in the given radix into an integer token, falling back to a
+/// float when the value overflows `i64` (as PHP does for large literals).
+fn parse_radix(digits: &str, radix: u32) -> Tok {
+    match i64::from_str_radix(digits, radix) {
+        Ok(n) => Tok::Int(n),
+        Err(_) => Tok::Float(
+            u128::from_str_radix(digits, radix)
+                .map(|u| u as f64)
+                .unwrap_or(0.0),
+        ),
     }
 }
 
