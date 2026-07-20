@@ -1106,6 +1106,10 @@ impl Parser {
                         }
                         return Ok(expr);
                     }
+                    // `unset($a, $b[$k], …)` — a construct, not a function call.
+                    if name.eq_ignore_ascii_case("unset") {
+                        return Ok(Expr::Unset(args));
+                    }
                     Ok(Expr::Call(name, args))
                 } else {
                     // A bare constant reference — resolved against the constant

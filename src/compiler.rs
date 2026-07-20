@@ -961,6 +961,44 @@ impl Compiler {
                 b.emit(Op::LoadConst(idx), 0);
                 b.emit(Op::CallBuiltin(ops::CONST_FETCH, 1), 0);
             }
+            Expr::Unset(targets) => {
+                for t in targets {
+                    self.compile_unset_target(b, t)?;
+                }
+                // `unset(...)` is a statement construct; it evaluates to null.
+                b.emit(Op::LoadUndef, 0);
+            }
+        }
+        Ok(())
+    }
+
+    /// Compile one `unset()` target: a plain `$var` (remove the scope variable) or
+    /// an array element `$a[k1]..[kN]` (remove the deepest key).
+    fn compile_unset_target(&mut self, b: &mut ChunkBuilder, t: &Expr) -> Result<(), String> {
+        match t {
+            Expr::Var(name) => {
+                let idx = b.add_constant(Value::str(name.clone()));
+                b.emit(Op::LoadConst(idx), 0);
+                b.emit(Op::CallBuiltin(ops::UNSET_VAR, 1), 0);
+                b.emit(Op::Pop, 0);
+            }
+            Expr::Index(..) => {
+                let (root, segs) = Self::flatten_segments(t)?;
+                let Expr::Var(name) = root else {
+                    return Err("unset() supports only `$var` and `$var[...]` targets".into());
+                };
+                let nidx = b.add_constant(Value::str(name.clone()));
+                b.emit(Op::LoadConst(nidx), 0);
+                for seg in &segs {
+                    match seg {
+                        LvSeg::Key(k) => self.compile_expr(b, k)?,
+                        LvSeg::Append => return Err("cannot unset an `[]` append target".into()),
+                    }
+                }
+                b.emit(Op::CallBuiltin(ops::UNSET_PATH, (segs.len() + 1) as u8), 0);
+                b.emit(Op::Pop, 0);
+            }
+            _ => return Err("unset() target must be a variable or an array element".into()),
         }
         Ok(())
     }
@@ -1666,6 +1704,11 @@ fn collect_free_vars(e: &Expr, out: &mut Vec<String>) {
         Expr::StaticGet(_, _) => {}
         Expr::Throw(inner) => collect_free_vars(inner, out),
         Expr::ConstFetch(_) => {}
+        Expr::Unset(targets) => {
+            for t in targets {
+                collect_free_vars(t, out);
+            }
+        }
         Expr::Null | Expr::Bool(_) | Expr::Int(_) | Expr::Float(_) | Expr::Str(_) => {}
     }
 }

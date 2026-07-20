@@ -138,6 +138,9 @@ pub enum Expr {
     /// runtime it resolves against the constant table, falling back to the bare
     /// name as a string when undefined (PHP 7 leniency, minus the notice).
     ConstFetch(String),
+    /// `unset($a, $b[$k], …)` — remove each variable or array element. Evaluates
+    /// to null (a statement-level construct in PHP).
+    Unset(Vec<Expr>),
 }
 
 /// One arm of a `match` expression. `conds` is `None` for the `default` arm;

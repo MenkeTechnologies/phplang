@@ -71,6 +71,8 @@ pub mod ops {
     pub const SIG_BREAK: u16 = 54; // [] -> signal `break`, halt chunk
     pub const SIG_CONTINUE: u16 = 55; // [] -> signal `continue`, halt chunk
     pub const CONST_FETCH: u16 = 56; // [name] -> constant value (or the bare name)
+    pub const UNSET_VAR: u16 = 57; // [name] -> Undef (remove the scope variable)
+    pub const UNSET_PATH: u16 = 58; // [name, k1..kN] -> Undef (remove $a[k1]..[kN])
 }
 
 /// Sub-ops for the by-reference array mutators lowered through `ops::ARR_MUT`
@@ -500,6 +502,36 @@ impl PhpHost {
         };
         if let Some(scope) = self.scopes.get_mut(idx) {
             scope.vars.insert(name.to_string(), val);
+        }
+    }
+
+    /// `unset($name)` — remove the scope variable.
+    pub fn unset_var(&mut self, name: &str) {
+        let idx = if is_superglobal(name) {
+            0
+        } else {
+            self.scopes.len().saturating_sub(1)
+        };
+        if let Some(scope) = self.scopes.get_mut(idx) {
+            scope.vars.remove(name);
+        }
+    }
+
+    /// `unset($name[k1]..[kN])` — remove the deepest array element along the key
+    /// path. The key is removed without renumbering the remaining keys (PHP
+    /// leaves a hole), matching `unset` on an array element.
+    pub fn unset_path(&mut self, name: &str, keys: &[Value]) {
+        let Some((last, inter)) = keys.split_last() else {
+            return;
+        };
+        // Navigate (read-only, no vivification) to the array holding `last`.
+        let mut arr = self.get_var(name);
+        for k in inter {
+            arr = self.index_get(&arr, k);
+        }
+        let nk = self.norm_key(last);
+        if let Some(PhpObj::Array { entries, .. }) = self.as_array_mut(&arr) {
+            entries.shift_remove(&nk);
         }
     }
 

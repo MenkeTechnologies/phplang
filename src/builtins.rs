@@ -69,6 +69,8 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::SIG_BREAK, b_sig_break);
     vm.register_builtin(ops::SIG_CONTINUE, b_sig_continue);
     vm.register_builtin(ops::CONST_FETCH, b_const_fetch);
+    vm.register_builtin(ops::UNSET_VAR, b_unset_var);
+    vm.register_builtin(ops::UNSET_PATH, b_unset_path);
 }
 
 /// Resolve a bare constant reference to its value (or the bare name as a string
@@ -76,6 +78,22 @@ pub fn install(vm: &mut VM) {
 fn b_const_fetch(vm: &mut VM, _: u8) -> Value {
     let name = pop_name(vm);
     with_host(|h| h.const_fetch(&name))
+}
+
+/// `unset($var)` — remove the scope variable.
+fn b_unset_var(vm: &mut VM, _: u8) -> Value {
+    let name = pop_name(vm);
+    with_host(|h| h.unset_var(&name));
+    Value::Undef
+}
+
+/// `unset($name[k1]..[kN])` — remove the deepest array element. Stack:
+/// `[name, k1..kN]`, `N = argc-1`.
+fn b_unset_path(vm: &mut VM, argc: u8) -> Value {
+    let keys = pop_args(vm, argc as usize - 1);
+    let name = pop_name(vm);
+    with_host(|h| h.unset_path(&name, &keys));
+    Value::Undef
 }
 
 /// Halt the current chunk if an exception is now in flight, so a `throw` raised
