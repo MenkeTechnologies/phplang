@@ -210,6 +210,9 @@ pub struct PhpHost {
     /// When `Some`, `echo` appends here instead of writing to stdout (used by
     /// `eval_capture` and the test harness).
     capture: Option<String>,
+    /// Output-buffering stack (`ob_start`/`ob_get_clean`/…). When non-empty,
+    /// `echo` appends to the top buffer instead of the capture buffer / stdout.
+    ob_stack: Vec<String>,
     error: Option<String>,
     signal: Option<Signal>,
     /// The in-flight exception object, if a `throw` has fired and not yet been
@@ -244,6 +247,7 @@ impl PhpHost {
             pending_throw: None,
             try_defs: Vec::new(),
             constants: predefined_constants(),
+            ob_stack: Vec::new(),
         };
         h.init_superglobals();
         h
@@ -380,17 +384,74 @@ impl PhpHost {
         self.capture.take().unwrap_or_default()
     }
 
-    /// Emit a rendered string via `echo`: to the capture buffer if active, else
-    /// to stdout (no trailing newline — PHP `echo` writes exactly its argument).
+    /// Emit a rendered string via `echo`: to the top output-buffering level if
+    /// any, else the capture buffer if active, else stdout (no trailing newline —
+    /// PHP `echo` writes exactly its argument).
     pub fn write_out(&mut self, s: &str) {
-        match &mut self.capture {
-            Some(buf) => buf.push_str(s),
-            None => {
-                use std::io::Write;
-                let mut out = std::io::stdout();
-                let _ = out.write_all(s.as_bytes());
-            }
+        if let Some(top) = self.ob_stack.last_mut() {
+            top.push_str(s);
+        } else if let Some(buf) = &mut self.capture {
+            buf.push_str(s);
+        } else {
+            use std::io::Write;
+            let mut out = std::io::stdout();
+            let _ = out.write_all(s.as_bytes());
         }
+    }
+
+    // ── output buffering (ob_*) ──────────────────────────────────────────────
+
+    /// `ob_start()` — push a new output-buffering level.
+    pub fn ob_start(&mut self) {
+        self.ob_stack.push(String::new());
+    }
+
+    /// The current buffering nesting level (`ob_get_level`).
+    pub fn ob_level(&self) -> i64 {
+        self.ob_stack.len() as i64
+    }
+
+    /// `ob_get_contents()` — the top buffer's contents, or `None` if inactive.
+    pub fn ob_contents(&self) -> Option<String> {
+        self.ob_stack.last().cloned()
+    }
+
+    /// `ob_get_clean()` — pop the top buffer and return its contents (`None` if
+    /// none active).
+    pub fn ob_get_clean(&mut self) -> Option<String> {
+        self.ob_stack.pop()
+    }
+
+    /// `ob_end_clean()` — discard and pop the top buffer; `false` if none active.
+    pub fn ob_end_clean(&mut self) -> bool {
+        self.ob_stack.pop().is_some()
+    }
+
+    /// `ob_end_flush()` — pop the top buffer and write its contents down one level
+    /// (the next buffer, the capture buffer, or stdout); `false` if none active.
+    pub fn ob_end_flush(&mut self) -> bool {
+        match self.ob_stack.pop() {
+            Some(s) => {
+                self.write_out(&s);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// `ob_flush()` — send the top buffer's contents down one level but keep the
+    /// buffer active (cleared); `false` if none active.
+    pub fn ob_flush(&mut self) -> bool {
+        if self.ob_stack.is_empty() {
+            return false;
+        }
+        let s = std::mem::take(self.ob_stack.last_mut().unwrap());
+        // Write down a level: temporarily drop this (now empty) buffer so the
+        // content lands one level below, then restore the empty buffer on top.
+        let empty = self.ob_stack.pop().unwrap();
+        self.write_out(&s);
+        self.ob_stack.push(empty);
+        true
     }
 
     // ── errors ─────────────────────────────────────────────────────────────
@@ -1541,6 +1602,13 @@ fn invoke(
             ..Scope::default()
         };
         h.scopes.push(scope);
+        // Stash the full call argument list (hidden `@args`) for func_get_args /
+        // func_num_args / func_get_arg, which read the current frame.
+        let argsarr = h.new_array();
+        for a in &args {
+            h.arr_push_auto(&argsarr, a.clone());
+        }
+        h.set_var("@args", argsarr);
         // Captured bindings first, then parameters (a parameter of the same name
         // as a capture shadows it, as PHP does).
         for (k, v) in pre {

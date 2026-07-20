@@ -90,6 +90,57 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         "error_reporting" => Value::int(32767), // E_ALL
         "ini_get" => Value::bool(false),
         "ini_set" => Value::bool(false),
+
+        // ── output buffering ──────────────────────────────────────────────
+        "ob_start" => {
+            with_host(|h| h.ob_start());
+            Value::bool(true)
+        }
+        "ob_get_contents" => with_host(|h| match h.ob_contents() {
+            Some(s) => Value::str(s),
+            None => Value::bool(false),
+        }),
+        "ob_get_clean" => with_host(|h| match h.ob_get_clean() {
+            Some(s) => Value::str(s),
+            None => Value::bool(false),
+        }),
+        "ob_end_clean" => Value::bool(with_host(|h| h.ob_end_clean())),
+        "ob_end_flush" => Value::bool(with_host(|h| h.ob_end_flush())),
+        "ob_get_flush" => with_host(|h| {
+            let c = h.ob_contents();
+            h.ob_end_flush();
+            match c {
+                Some(s) => Value::str(s),
+                None => Value::bool(false),
+            }
+        }),
+        "ob_flush" => {
+            with_host(|h| h.ob_flush());
+            Value::Undef
+        }
+        "flush" => Value::Undef,
+        "ob_get_level" => Value::int(with_host(|h| h.ob_level())),
+        "ob_get_length" => with_host(|h| match h.ob_contents() {
+            Some(s) => Value::int(s.len() as i64),
+            None => Value::bool(false),
+        }),
+
+        // ── variadic call introspection ───────────────────────────────────
+        // These read the enclosing frame's hidden `@args` list (set by `invoke`).
+        "func_get_args" => with_host(|h| {
+            let a = h.get_var("@args");
+            if h.is_array(&a) {
+                a
+            } else {
+                h.new_array()
+            }
+        }),
+        "func_num_args" => with_host(|h| Value::int(h.array_len(&h.get_var("@args")))),
+        "func_get_arg" => {
+            let i = int_arg(args, 0);
+            with_host(|h| h.index_get(&h.get_var("@args"), &Value::int(i)))
+        }
+
         _ => return None,
     };
     Some(Ok(v))
