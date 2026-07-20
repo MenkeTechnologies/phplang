@@ -28,6 +28,7 @@ pub mod misc;
 pub mod preg;
 pub mod reflection;
 pub mod strings;
+pub mod system;
 pub mod types;
 pub mod url;
 
@@ -51,6 +52,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         .or_else(|| mbstring::dispatch(name, args))
         .or_else(|| misc::dispatch(name, args))
         .or_else(|| constants::dispatch(name, args))
+        .or_else(|| system::dispatch(name, args))
 }
 
 /// Shared helpers for the category modules. Each helper is used by at least one

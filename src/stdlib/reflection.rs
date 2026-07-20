@@ -215,14 +215,16 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
                 }
             })
         }
-        // `get_declared_classes()`: PHP returns the names of every declared class.
-        // The host class table is private with no public enumeration accessor, so
-        // the names are not reachable from this module; a best-effort empty array
-        // is returned rather than a fabricated list. (`get_defined_constants` is
-        // likewise unreachable — the constants table exposes only single-name
-        // `const_fetch`/`const_defined`/`const_define`, no iteration — so it is
-        // intentionally not handled here and falls through as undefined.)
-        "get_declared_classes" => with_host(|h| h.new_array()),
+        // `get_declared_classes()`: the names of every declared class (lowercased,
+        // as the host stores them), via the host enumerator.
+        "get_declared_classes" => with_host(|h| {
+            let names: Vec<Value> = h.all_class_names().into_iter().map(Value::str).collect();
+            let arr = h.new_array();
+            for n in names {
+                h.arr_push_auto(&arr, n);
+            }
+            arr
+        }),
 
         _ => return None,
     };

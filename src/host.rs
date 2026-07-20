@@ -232,7 +232,7 @@ impl Default for PhpHost {
 
 impl PhpHost {
     pub fn new() -> Self {
-        PhpHost {
+        let mut h = PhpHost {
             objs: Vec::new(),
             // Start with the global scope already open.
             scopes: vec![Scope::default()],
@@ -244,7 +244,54 @@ impl PhpHost {
             pending_throw: None,
             try_defs: Vec::new(),
             constants: predefined_constants(),
+        };
+        h.init_superglobals();
+        h
+    }
+
+    /// Seed the superglobal arrays in the global scope: `$_ENV`/`$_SERVER` from
+    /// the real process environment, empty `$_GET`/`$_POST`/… request arrays, and
+    /// `$argv`/`$argc`. Visible from every scope via `is_superglobal` resolution.
+    fn init_superglobals(&mut self) {
+        let env: Vec<(String, String)> = std::env::vars().collect();
+        let mkenv = |h: &mut PhpHost| -> Value {
+            let a = h.new_array();
+            for (k, v) in &env {
+                h.arr_set_key(&a, &Value::str(k.clone()), Value::str(v.clone()));
+            }
+            a
+        };
+        let e = mkenv(self);
+        self.set_var("_ENV", e);
+        let s = mkenv(self);
+        // A few conventional `$_SERVER` entries on top of the environment.
+        self.arr_set_key(&s, &Value::str("PHP_SELF"), Value::str(String::new()));
+        self.arr_set_key(&s, &Value::str("SCRIPT_NAME"), Value::str(String::new()));
+        self.arr_set_key(&s, &Value::str("REQUEST_TIME"), Value::int(0));
+        self.set_var("_SERVER", s);
+        for name in ["_GET", "_POST", "_REQUEST", "_COOKIE", "_FILES", "_SESSION", "GLOBALS"] {
+            let empty = self.new_array();
+            self.set_var(name, empty);
         }
+        let argv = self.new_array();
+        self.arr_push_auto(&argv, Value::str(String::new()));
+        self.set_var("argv", argv);
+        self.set_var("argc", Value::int(1));
+    }
+
+    /// A snapshot of all defined constants as `(name, value)` pairs — for
+    /// `get_defined_constants`.
+    pub fn all_constants(&self) -> Vec<(String, Value)> {
+        self.constants
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    }
+
+    /// The names of all declared classes (lowercased, as stored) — for
+    /// `get_declared_classes`.
+    pub fn all_class_names(&self) -> Vec<String> {
+        self.classes.keys().cloned().collect()
     }
 
     // ── constants ───────────────────────────────────────────────────────────
@@ -361,14 +408,25 @@ impl PhpHost {
     // ── variables ──────────────────────────────────────────────────────────
 
     pub fn get_var(&self, name: &str) -> Value {
-        self.scopes
-            .last()
+        // Superglobals (`$_SERVER`, `$_ENV`, `$GLOBALS`, `$argv`, …) live in the
+        // global scope and are visible from every function frame.
+        let scope = if is_superglobal(name) {
+            self.scopes.first()
+        } else {
+            self.scopes.last()
+        };
+        scope
             .and_then(|s| s.vars.get(name).cloned())
             .unwrap_or(Value::Undef)
     }
 
     pub fn set_var(&mut self, name: &str, val: Value) {
-        if let Some(scope) = self.scopes.last_mut() {
+        let idx = if is_superglobal(name) {
+            0
+        } else {
+            self.scopes.len().saturating_sub(1)
+        };
+        if let Some(scope) = self.scopes.get_mut(idx) {
             scope.vars.insert(name.to_string(), val);
         }
     }
@@ -1149,6 +1207,25 @@ impl PhpHost {
 /// json/filter/mbstring/file/pathinfo/entities/error-level families), so a
 /// program that writes `SORT_STRING` or `FILTER_VALIDATE_EMAIL` gets the real
 /// integer rather than the bare name.
+/// Whether a variable name (sans `$`) is a PHP superglobal — auto-global across
+/// every scope, resolved against the global frame.
+fn is_superglobal(name: &str) -> bool {
+    matches!(
+        name,
+        "_SERVER"
+            | "_GET"
+            | "_POST"
+            | "_REQUEST"
+            | "_COOKIE"
+            | "_FILES"
+            | "_ENV"
+            | "_SESSION"
+            | "GLOBALS"
+            | "argv"
+            | "argc"
+    )
+}
+
 fn predefined_constants() -> FxHashMap<String, Value> {
     let mut m = FxHashMap::default();
     let mut si = |k: &str, v: i64| {
