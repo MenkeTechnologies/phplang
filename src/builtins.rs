@@ -63,6 +63,61 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::MCALL, b_mcall);
     vm.register_builtin(ops::SCALL, b_scall);
     vm.register_builtin(ops::SCONST, b_sconst);
+    vm.register_builtin(ops::THROW, b_throw);
+    vm.register_builtin(ops::RUN_TRY, b_run_try);
+    vm.register_builtin(ops::SIG_HALT, b_sig_halt);
+    vm.register_builtin(ops::SIG_BREAK, b_sig_break);
+    vm.register_builtin(ops::SIG_CONTINUE, b_sig_continue);
+}
+
+/// Halt the current chunk if an exception is now in flight, so a `throw` raised
+/// by a nested call bubbles up through the caller's VM too. Returns `true` when
+/// it halted (the caller should return immediately).
+fn bubble_throw(vm: &mut VM) -> bool {
+    if host::has_pending_throw() {
+        vm.ip = vm.chunk.ops.len();
+        true
+    } else {
+        false
+    }
+}
+
+// ── exceptions / try-catch ───────────────────────────────────────────────────
+
+/// `throw e` — record the exception object as pending and halt this chunk.
+fn b_throw(vm: &mut VM, _: u8) -> Value {
+    let exc = vm.pop();
+    host::set_pending_throw(exc);
+    vm.ip = vm.chunk.ops.len();
+    Value::Undef
+}
+
+/// Run a `try`/`catch`/`finally` construct by id; leaves its control status int.
+fn b_run_try(vm: &mut VM, _: u8) -> Value {
+    let id = vm.pop().to_int();
+    match host::run_try_orchestrator(id) {
+        Ok(status) => Value::int(status),
+        Err(e) => fail(vm, e),
+    }
+}
+
+/// Halt the current chunk, leaving whatever signal `run_try` already stashed (a
+/// pending return or throw) for the enclosing frame to pick up.
+fn b_sig_halt(vm: &mut VM, _: u8) -> Value {
+    vm.ip = vm.chunk.ops.len();
+    Value::Undef
+}
+
+fn b_sig_break(vm: &mut VM, _: u8) -> Value {
+    host::set_break();
+    vm.ip = vm.chunk.ops.len();
+    Value::Undef
+}
+
+fn b_sig_continue(vm: &mut VM, _: u8) -> Value {
+    host::set_continue();
+    vm.ip = vm.chunk.ops.len();
+    Value::Undef
 }
 
 /// Pop two operands as PHP integers (bitwise ops cast their operands to int).
@@ -200,8 +255,18 @@ fn b_call(vm: &mut VM, argc: u8) -> Value {
     let args = pop_args(vm, argc as usize - 1);
     let name = pop_name(vm);
     match host::call_function(&name, args) {
-        Ok(v) => v,
+        Ok(v) => bubbled(vm, v),
         Err(e) => fail(vm, e),
+    }
+}
+
+/// Return the call result, or `Undef` if a throw raised inside the callee is now
+/// unwinding the caller too (see `bubble_throw`).
+fn bubbled(vm: &mut VM, v: Value) -> Value {
+    if bubble_throw(vm) {
+        Value::Undef
+    } else {
+        v
     }
 }
 
@@ -229,7 +294,7 @@ fn b_call_spread(vm: &mut VM, argc: u8) -> Value {
         }
     });
     match host::call_function(&name, args) {
-        Ok(v) => v,
+        Ok(v) => bubbled(vm, v),
         Err(e) => fail(vm, e),
     }
 }
@@ -257,7 +322,7 @@ fn b_call_value(vm: &mut VM, argc: u8) -> Value {
     let args = pop_args(vm, argc as usize - 1);
     let callee = vm.pop();
     match host::call_value(callee, args) {
-        Ok(v) => v,
+        Ok(v) => bubbled(vm, v),
         Err(e) => fail(vm, e),
     }
 }
@@ -427,7 +492,7 @@ fn b_new(vm: &mut VM, argc: u8) -> Value {
     let mut args = pop_args(vm, argc as usize);
     let class = with_host(|h| h.to_str(&args.remove(0)));
     match host::new_object(&class, args) {
-        Ok(v) => v,
+        Ok(v) => bubbled(vm, v),
         Err(e) => fail(vm, e),
     }
 }
@@ -486,7 +551,7 @@ fn b_mcall(vm: &mut VM, argc: u8) -> Value {
     let class = with_host(|h| h.object_class(&recv));
     match class {
         Some(c) => match host::call_method(&c, &method, Some(recv), args) {
-            Ok(v) => v,
+            Ok(v) => bubbled(vm, v),
             Err(e) => fail(vm, e),
         },
         None => fail(vm, format!("call to a member function {method}() on a non-object")),
@@ -504,7 +569,7 @@ fn b_scall(vm: &mut VM, argc: u8) -> Value {
         matches!(t, Value::Obj(_)).then_some(t)
     });
     match host::call_method(&class, &method, this, args) {
-        Ok(v) => v,
+        Ok(v) => bubbled(vm, v),
         Err(e) => fail(vm, e),
     }
 }
@@ -1758,6 +1823,11 @@ fn php_array_map(args: &[Value]) -> Result<Value, String> {
         } else {
             v
         };
+        // A callback that threw stops the walk; the pending exception unwinds
+        // through the `array_map(...)` call site.
+        if host::has_pending_throw() {
+            return Ok(Value::Undef);
+        }
         mapped.push((k, out));
     }
     Ok(with_host(|h| {
@@ -1778,6 +1848,9 @@ fn php_array_filter(args: &[Value]) -> Result<Value, String> {
     for (k, v) in pairs {
         let keep = if callable {
             let r = host::call_value(cb.clone(), vec![v.clone()])?;
+            if host::has_pending_throw() {
+                return Ok(Value::Undef);
+            }
             with_host(|h| h.is_truthy(&r))
         } else {
             with_host(|h| h.is_truthy(&v))
@@ -1806,6 +1879,9 @@ fn php_array_reduce(args: &[Value]) -> Result<Value, String> {
     let mut acc = init;
     for (_, v) in pairs {
         acc = host::call_value(cb.clone(), vec![acc, v])?;
+        if host::has_pending_throw() {
+            return Ok(Value::Undef);
+        }
     }
     Ok(acc)
 }

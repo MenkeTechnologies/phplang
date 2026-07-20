@@ -130,6 +130,10 @@ pub enum Expr {
         subj: Box<Expr>,
         arms: Vec<MatchArm>,
     },
+    /// `throw e` as a PHP 8 expression (also reached from a `throw e;` statement).
+    /// Evaluates `e` to an exception object, records it as the pending throw, and
+    /// unwinds the current chunk.
+    Throw(Box<Expr>),
 }
 
 /// One arm of a `match` expression. `conds` is `None` for the `default` arm;
@@ -203,8 +207,23 @@ pub enum StmtKind {
     Return(Option<Expr>),
     Break,
     Continue,
+    /// `try { body } catch (T1 | T2 $e) { ... } ... [finally { ... }]`.
+    Try {
+        body: Vec<Stmt>,
+        catches: Vec<CatchArm>,
+        finally: Option<Vec<Stmt>>,
+    },
     /// An empty `;` or a `{ }` block.
     Block(Vec<Stmt>),
+}
+
+/// One `catch (T1 | T2 [$var]) { body }` clause. `types` is the union of caught
+/// class names; `var` is the optional bound variable (PHP 8 allows `catch (T)`).
+#[derive(Debug, Clone)]
+pub struct CatchArm {
+    pub types: Vec<String>,
+    pub var: Option<String>,
+    pub body: Vec<Stmt>,
 }
 
 /// One formal parameter of a function definition: its name, an optional default

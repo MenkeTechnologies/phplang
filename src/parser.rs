@@ -155,6 +155,7 @@ impl Parser {
             {
                 self.class_stmt()?
             }
+            _ if self.at_kw("try") => self.try_stmt()?,
             _ if self.at_kw("return") => {
                 self.pos += 1;
                 let e = if self.at_punct(";") {
@@ -410,6 +411,73 @@ impl Parser {
         self.skip_return_type();
         let body = self.block()?;
         Ok(StmtKind::Function { name, params, body })
+    }
+
+    /// `try { body } catch (T1 | T2 [$e]) { ... } ... [finally { ... }]` — at
+    /// least one `catch` or a `finally` is required (PHP rule).
+    fn try_stmt(&mut self) -> Result<StmtKind, String> {
+        self.pos += 1; // try
+        let body = self.block()?;
+        let mut catches = Vec::new();
+        while self.at_kw("catch") {
+            self.pos += 1;
+            self.expect_punct("(")?;
+            // A `|`-separated union of class names.
+            let mut types = vec![self.expect_type_name()?];
+            while self.eat_punct("|") {
+                types.push(self.expect_type_name()?);
+            }
+            // The bound `$var` is optional (PHP 8 allows `catch (T) { }`).
+            let var = match self.peek() {
+                Some(Tok::Var(_)) => Some(self.expect_var()?),
+                _ => None,
+            };
+            self.expect_punct(")")?;
+            let cbody = self.block()?;
+            catches.push(CatchArm {
+                types,
+                var,
+                body: cbody,
+            });
+        }
+        let finally = if self.eat_kw("finally") {
+            Some(self.block()?)
+        } else {
+            None
+        };
+        if catches.is_empty() && finally.is_none() {
+            return Err(format!(
+                "'try' must be followed by 'catch' or 'finally' (line {})",
+                self.line()
+            ));
+        }
+        Ok(StmtKind::Try {
+            body,
+            catches,
+            finally,
+        })
+    }
+
+    /// A (possibly namespaced) class name in a `catch`. A leading `\` and any
+    /// `Ns\Name` segments are folded to the trailing bare name — the scaffold has
+    /// no namespaces, and the built-in exception classes are unqualified.
+    fn expect_type_name(&mut self) -> Result<String, String> {
+        self.eat_punct("\\");
+        let mut name = match self.next() {
+            Some(Tok::Ident(n)) => n,
+            other => {
+                return Err(format!(
+                    "expected a class name but found {other:?} (line {})",
+                    self.line()
+                ))
+            }
+        };
+        while self.eat_punct("\\") {
+            if let Some(Tok::Ident(n)) = self.next() {
+                name = n;
+            }
+        }
+        Ok(name)
     }
 
     /// Skip an optional return-type hint (`: [?]type`).
@@ -920,6 +988,12 @@ impl Parser {
             Some(Tok::Ident(kw)) if kw.eq_ignore_ascii_case("array") => {
                 self.expect_punct("(")?;
                 self.array_literal(")")
+            }
+            // `throw e` as a PHP 8 expression, so `$x ?? throw …` and
+            // `cond ? throw … : …` work; a `throw e;` statement reaches here too.
+            Some(Tok::Ident(kw)) if kw.eq_ignore_ascii_case("throw") => {
+                let e = self.expression()?;
+                Ok(Expr::Throw(Box::new(e)))
             }
             // `new Class(args)` — the class name is a bareword (or `self`/`parent`/
             // `static`); parentheses are optional when there are no arguments.

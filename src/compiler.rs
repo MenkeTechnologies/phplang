@@ -9,7 +9,7 @@
 //! differs from fusevm's default numeric truthiness.
 
 use crate::ast::*;
-use crate::host::{self, ops, ClassDef, FuncDef};
+use crate::host::{self, ops, CatchClause, ClassDef, FuncDef, TryDef};
 use fusevm::{Chunk, ChunkBuilder, Op, Value};
 use rustc_hash::FxHashMap;
 
@@ -18,6 +18,9 @@ pub struct Program {
     pub main: Chunk,
     pub functions: Vec<(String, FuncDef)>,
     pub classes: Vec<(String, ClassDef)>,
+    /// `try`/`catch`/`finally` constructs, indexed by the id baked into each
+    /// `RUN_TRY` call.
+    pub try_defs: Vec<TryDef>,
 }
 
 /// Break/continue jump fixups for the innermost loop.
@@ -57,6 +60,13 @@ pub struct Compiler {
     current_class: Option<String>,
     current_parent: Option<String>,
     loops: Vec<LoopCtx>,
+    /// Compiled `try`/`catch`/`finally` bodies; a `RUN_TRY` call references an
+    /// entry by its index here.
+    try_defs: Vec<TryDef>,
+    /// Nesting depth of `try`/`catch`/`finally` bodies currently being lowered.
+    /// While `> 0` with no loop in the same detached chunk, `break`/`continue`
+    /// lower to control signals the orchestrator relays, not in-chunk jumps.
+    in_try: usize,
     /// Monotonic counter for compiler-generated temporary variable names
     /// (`foreach` desugaring), kept out of the PHP identifier space with a `@`.
     tmp: usize,
@@ -77,6 +87,7 @@ pub fn compile(stmts: &[Stmt], debug: bool) -> Result<Program, String> {
         main: b.build(),
         functions: c.functions,
         classes: c.classes,
+        try_defs: c.try_defs,
     })
 }
 
@@ -155,21 +166,35 @@ impl Compiler {
                 b.emit(Op::Pop, line);
             }
             StmtKind::Break => {
-                let j = b.emit(Op::Jump(0), line);
-                self.loops
-                    .last_mut()
-                    .ok_or("'break' outside of a loop")?
-                    .breaks
-                    .push(j);
+                // Inside a loop in this chunk → an in-chunk jump. Inside a `try`
+                // body with no such loop → a control signal the orchestrator
+                // relays to the enclosing loop.
+                if let Some(ctx) = self.loops.last_mut() {
+                    let j = b.emit(Op::Jump(0), line);
+                    ctx.breaks.push(j);
+                } else if self.in_try > 0 {
+                    b.emit(Op::CallBuiltin(ops::SIG_BREAK, 0), line);
+                    b.emit(Op::Pop, line);
+                } else {
+                    return Err("'break' outside of a loop".into());
+                }
             }
             StmtKind::Continue => {
-                let j = b.emit(Op::Jump(0), line);
-                self.loops
-                    .last_mut()
-                    .ok_or("'continue' outside of a loop")?
-                    .continues
-                    .push(j);
+                if let Some(ctx) = self.loops.last_mut() {
+                    let j = b.emit(Op::Jump(0), line);
+                    ctx.continues.push(j);
+                } else if self.in_try > 0 {
+                    b.emit(Op::CallBuiltin(ops::SIG_CONTINUE, 0), line);
+                    b.emit(Op::Pop, line);
+                } else {
+                    return Err("'continue' outside of a loop".into());
+                }
             }
+            StmtKind::Try {
+                body,
+                catches,
+                finally,
+            } => self.compile_try(b, body, catches, finally.as_deref(), line)?,
             StmtKind::Function { name, params, body } => {
                 // Each default-value expression is lowered to its own tiny chunk,
                 // run in the callee frame when the argument is omitted (host).
@@ -587,6 +612,116 @@ impl Compiler {
         }
     }
 
+    /// Compile a `body` into its own detached chunk (its own loop scope, and a
+    /// `try`-body context so a bare `break`/`continue` becomes a control signal
+    /// relayed by the orchestrator to the enclosing loop).
+    fn compile_detached(&mut self, body: &[Stmt]) -> Result<Chunk, String> {
+        let mut fb = ChunkBuilder::new();
+        // A detached body must not see the enclosing loop's break/continue
+        // fixups — those live in the parent chunk, unreachable from here.
+        let saved = std::mem::take(&mut self.loops);
+        self.in_try += 1;
+        let r = self.compile_seq(&mut fb, body);
+        self.in_try -= 1;
+        self.loops = saved;
+        r?;
+        Ok(fb.build())
+    }
+
+    /// `try { } catch (T|U $e) { } finally { }` — each body is a detached chunk
+    /// run by the `RUN_TRY` orchestrator, which returns a control status. The
+    /// parent branches on that status: normal falls through; a pending
+    /// return/throw re-halts this chunk to propagate it to the enclosing frame;
+    /// break/continue jump to the enclosing loop's fixups.
+    fn compile_try(
+        &mut self,
+        b: &mut ChunkBuilder,
+        body: &[Stmt],
+        catches: &[CatchArm],
+        finally: Option<&[Stmt]>,
+        line: u32,
+    ) -> Result<(), String> {
+        let try_chunk = self.compile_detached(body)?;
+        let mut cc = Vec::with_capacity(catches.len());
+        for c in catches {
+            cc.push(CatchClause {
+                classes: c.types.clone(),
+                var: c.var.clone(),
+                chunk: self.compile_detached(&c.body)?,
+            });
+        }
+        let finally_chunk = match finally {
+            Some(f) => Some(self.compile_detached(f)?),
+            None => None,
+        };
+        let id = self.try_defs.len() as i64;
+        self.try_defs.push(TryDef {
+            try_chunk,
+            catches: cc,
+            finally_chunk,
+        });
+
+        // RUN_TRY leaves the control status int on the stack.
+        b.emit(Op::LoadInt(id), line);
+        b.emit(Op::CallBuiltin(ops::RUN_TRY, 1), line);
+
+        // Dispatch on the status: 1 return, 2 throw, 3 break, 4 continue, 0 normal.
+        let j_ret = self.branch_if_status(b, 1, line);
+        let j_throw = self.branch_if_status(b, 2, line);
+        let j_break = self.branch_if_status(b, 3, line);
+        let j_cont = self.branch_if_status(b, 4, line);
+        // Normal: discard the status and continue past the construct.
+        b.emit(Op::Pop, line);
+        let j_end = b.emit(Op::Jump(0), line);
+
+        // Return/throw: the value is already stashed in the host signal; drop the
+        // status int and halt this chunk so the enclosing frame propagates it.
+        let ret_pos = b.current_pos();
+        b.patch_jump(j_ret, ret_pos);
+        b.emit(Op::Pop, line);
+        b.emit(Op::CallBuiltin(ops::SIG_HALT, 0), line);
+        b.emit(Op::Pop, line);
+
+        let throw_pos = b.current_pos();
+        b.patch_jump(j_throw, throw_pos);
+        b.emit(Op::Pop, line);
+        b.emit(Op::CallBuiltin(ops::SIG_HALT, 0), line);
+        b.emit(Op::Pop, line);
+
+        // Break/continue: jump to the enclosing loop's fixups (registered here so
+        // a `break` inside a try-in-loop reaches the right loop). With no loop
+        // present the status is simply discarded (PHP would reject it earlier).
+        let break_pos = b.current_pos();
+        b.patch_jump(j_break, break_pos);
+        b.emit(Op::Pop, line);
+        if self.loops.last().is_some() {
+            let j = b.emit(Op::Jump(0), line);
+            self.loops.last_mut().unwrap().breaks.push(j);
+        }
+
+        let cont_pos = b.current_pos();
+        b.patch_jump(j_cont, cont_pos);
+        b.emit(Op::Pop, line);
+        if self.loops.last().is_some() {
+            let j = b.emit(Op::Jump(0), line);
+            self.loops.last_mut().unwrap().continues.push(j);
+        }
+
+        let end = b.current_pos();
+        b.patch_jump(j_end, end);
+        Ok(())
+    }
+
+    /// Emit `Dup; status === code; if true jump`, returning the pending jump idx.
+    /// Leaves the status int on the stack on the fall-through path.
+    fn branch_if_status(&mut self, b: &mut ChunkBuilder, code: i64, line: u32) -> usize {
+        b.emit(Op::Dup, line);
+        b.emit(Op::LoadInt(code), line);
+        b.emit(Op::CallBuiltin(ops::STRICT_EQ, 2), line);
+        b.emit(Op::CallBuiltin(ops::TRUTHY, 1), line);
+        b.emit(Op::JumpIfTrue(0), line)
+    }
+
     // ── expressions ────────────────────────────────────────────────────────
 
     fn compile_expr(&mut self, b: &mut ChunkBuilder, e: &Expr) -> Result<(), String> {
@@ -814,6 +949,13 @@ impl Compiler {
                 b.patch_jump(jend, end);
             }
             Expr::Match { subj, arms } => self.compile_match(b, subj, arms)?,
+            Expr::Throw(inner) => {
+                // Evaluate the exception object, record it as pending, and unwind
+                // the current chunk. As an expression it produces no value, but
+                // the THROW builtin leaves an Undef the surrounding context pops.
+                self.compile_expr(b, inner)?;
+                b.emit(Op::CallBuiltin(ops::THROW, 1), 0);
+            }
         }
         Ok(())
     }
@@ -849,14 +991,21 @@ impl Compiler {
                 None => default_index = Some(i),
             }
         }
-        // No arm matched: jump to the default body, or — SCAFFOLD DEVIATION —
-        // yield null. Real PHP throws \UnhandledMatchError here; adding that
-        // needs a host op this wave does not introduce, so null is used instead.
-        let (default_jump, no_match_jump) = if default_index.is_some() {
-            (Some(b.emit(Op::Jump(0), 0)), None)
+        // No arm matched: jump to the default body, or throw \UnhandledMatchError
+        // with the unhandled subject in the message (PHP 8 semantics). The throw
+        // halts this chunk, so there is no fall-through jump to the end.
+        let default_jump = if default_index.is_some() {
+            Some(b.emit(Op::Jump(0), 0))
         } else {
-            b.emit(Op::LoadUndef, 0);
-            (None, Some(b.emit(Op::Jump(0), 0)))
+            let cls = b.add_constant(Value::str("UnhandledMatchError".to_string()));
+            b.emit(Op::LoadConst(cls), 0);
+            let pfx = b.add_constant(Value::str("Unhandled match case ".to_string()));
+            b.emit(Op::LoadConst(pfx), 0);
+            self.emit_get_var(b, &m_t);
+            b.emit(Op::CallBuiltin(ops::CONCAT, 2), 0); // message string
+            b.emit(Op::CallBuiltin(ops::NEW, 2), 0); // the exception object
+            b.emit(Op::CallBuiltin(ops::THROW, 1), 0); // record + unwind
+            None
         };
 
         // Arm bodies: each leaves exactly one value, then jumps to the end.
@@ -874,9 +1023,6 @@ impl Compiler {
         }
         if let Some(di) = default_index {
             b.patch_jump(default_jump.unwrap(), body_starts[di]);
-        }
-        if let Some(nm) = no_match_jump {
-            b.patch_jump(nm, end);
         }
         for j in body_ends {
             b.patch_jump(j, end);
@@ -1513,6 +1659,7 @@ fn collect_free_vars(e: &Expr, out: &mut Vec<String>) {
             }
         }
         Expr::StaticGet(_, _) => {}
+        Expr::Throw(inner) => collect_free_vars(inner, out),
         Expr::Null | Expr::Bool(_) | Expr::Int(_) | Expr::Float(_) | Expr::Str(_) => {}
     }
 }

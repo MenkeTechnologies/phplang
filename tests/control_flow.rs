@@ -145,12 +145,15 @@ fn match_uses_strict_comparison() {
 }
 
 #[test]
-fn match_no_match_without_default_yields_null() {
-    // Scaffold deviation: real PHP throws UnhandledMatchError; here it is null,
-    // which echoes as the empty string.
+fn match_no_match_without_default_throws() {
+    // PHP 8: a `match` with no matching arm and no `default` throws
+    // \UnhandledMatchError (the exceptions wave made this faithful; it used to be
+    // a scaffold deviation that yielded null). The throw unwinds before the
+    // surrounding `echo` runs, so it is caught here.
     let src = r#"<?php $x = 9;
-        echo "[", match ($x) { 1 => "a", 2 => "b", }, "]";"#;
-    assert_eq!(run(src), "[]");
+        try { echo "[", match ($x) { 1 => "a", 2 => "b", }, "]"; }
+        catch (UnhandledMatchError $e) { echo $e->getMessage(); }"#;
+    assert_eq!(run(src), "Unhandled match case 9");
 }
 
 #[test]

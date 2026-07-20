@@ -34,17 +34,79 @@ pub fn compile_debug(src: &str) -> Result<compiler::Program, String> {
     compiler::compile(&stmts, true)
 }
 
-/// Merge an already-compiled program onto the current host (install its user
-/// functions) and return the main chunk for the caller to run.
+/// The built-in exception class hierarchy, written in PHP so it flows through the
+/// real class system: `throw`/`catch` resolve these as ordinary classes, and user
+/// code can subclass them. `Exception` and `Error` are the two disjoint roots
+/// (`catch (Throwable)` — handled in the host — matches either); the rest inherit
+/// their `__construct`/`getMessage`/`getCode`/`__toString`.
+const EXCEPTION_PRELUDE: &str = r#"<?php
+class Exception {
+    protected $message = "";
+    protected $code = 0;
+    public function __construct($message = "", $code = 0) {
+        $this->message = $message;
+        $this->code = $code;
+    }
+    public function getMessage() { return $this->message; }
+    public function getCode() { return $this->code; }
+    public function __toString() { return $this->message; }
+}
+class Error {
+    protected $message = "";
+    protected $code = 0;
+    public function __construct($message = "", $code = 0) {
+        $this->message = $message;
+        $this->code = $code;
+    }
+    public function getMessage() { return $this->message; }
+    public function getCode() { return $this->code; }
+    public function __toString() { return $this->message; }
+}
+class RuntimeException extends Exception {}
+class LogicException extends Exception {}
+class InvalidArgumentException extends LogicException {}
+class ArithmeticError extends Error {}
+class DivisionByZeroError extends ArithmeticError {}
+class TypeError extends Error {}
+class ValueError extends Error {}
+class UnhandledMatchError extends Error {}
+"#;
+
+/// A compiled program's installable definitions: `(functions, classes)`.
+type PreludeDefs = (
+    Vec<(String, host::FuncDef)>,
+    Vec<(String, host::ClassDef)>,
+);
+
+/// The compiled prelude's functions and classes, built once and merged onto every
+/// fresh host before the user program (so user declarations of the same name win).
+fn prelude_defs() -> &'static PreludeDefs {
+    use std::sync::OnceLock;
+    static CACHE: OnceLock<PreludeDefs> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        let prog = compile(EXCEPTION_PRELUDE).expect("exception prelude compiles");
+        (prog.functions, prog.classes)
+    })
+}
+
+/// Merge an already-compiled program onto the current host (install the exception
+/// prelude, then the program's user functions/classes/try-defs) and return the
+/// main chunk for the caller to run.
 pub fn load_merged(prog: compiler::Program) -> fusevm::Chunk {
     let compiler::Program {
         main,
         functions,
         classes,
+        try_defs,
     } = prog;
+    let (prelude_fns, prelude_classes) = prelude_defs();
     host::with_host(|h| {
+        // Prelude first, then the user program — a user redeclaration wins.
+        h.load_program(prelude_fns.clone());
+        h.load_classes(prelude_classes.clone());
         h.load_program(functions);
         h.load_classes(classes);
+        h.load_try_defs(try_defs);
     });
     main
 }

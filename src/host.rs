@@ -65,6 +65,11 @@ pub mod ops {
     pub const PATH_APPEND_CHILD: u16 = 48; // [name, k1..kN] -> handle of a freshly appended child array
     pub const PROP_ENSURE_ARRAY: u16 = 49; // [recv, name] -> handle of the array held in $o->name (vivified)
     pub const PROP_INCDEC: u16 = 50; // [recv, name, code] -> value (++/-- on $o->p)
+    pub const THROW: u16 = 51; // [exc] -> record pending exception, halt chunk
+    pub const RUN_TRY: u16 = 52; // [try-def id] -> control status int (see run_try)
+    pub const SIG_HALT: u16 = 53; // [] -> halt chunk (propagate an already-set signal)
+    pub const SIG_BREAK: u16 = 54; // [] -> signal `break`, halt chunk
+    pub const SIG_CONTINUE: u16 = 55; // [] -> signal `continue`, halt chunk
 }
 
 /// Sub-ops for the by-reference array mutators lowered through `ops::ARR_MUT`
@@ -112,6 +117,24 @@ pub struct ClassDef {
     pub methods: FxHashMap<String, FuncDef>,
 }
 
+/// One compiled `catch (T1 | T2 [$var]) { body }` clause of a `try`.
+#[derive(Debug, Clone)]
+pub struct CatchClause {
+    pub classes: Vec<String>,
+    pub var: Option<String>,
+    pub chunk: Chunk,
+}
+
+/// A compiled `try`/`catch`/`finally` construct: each body is its own detached
+/// chunk, run by the `run_try` orchestrator on the *current* scope (no new frame),
+/// so variables are shared with the enclosing code.
+#[derive(Debug, Clone)]
+pub struct TryDef {
+    pub try_chunk: Chunk,
+    pub catches: Vec<CatchClause>,
+    pub finally_chunk: Option<Chunk>,
+}
+
 /// A PHP array key — always an integer or a string (bool/float/null keys are
 /// normalized to one of these on insert, as PHP does).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -155,9 +178,13 @@ pub enum PhpObj {
     },
 }
 
-/// A control-flow signal that unwinds out of a function body.
+/// A control-flow signal that unwinds out of a function body. `Throw` rides a
+/// separate `pending_throw` field (not this enum) so an in-flight exception is
+/// never confused with a `return`/`break`/`continue` and survives frame unwinding.
 enum Signal {
     Return(Value),
+    Break,
+    Continue,
 }
 
 /// One variable scope (the global scope, or a function-call frame).
@@ -184,6 +211,13 @@ pub struct PhpHost {
     capture: Option<String>,
     error: Option<String>,
     signal: Option<Signal>,
+    /// The in-flight exception object, if a `throw` has fired and not yet been
+    /// caught. Kept apart from `signal` so it survives function-frame unwinding
+    /// and bubbles through nested VMs on its own.
+    pending_throw: Option<Value>,
+    /// Compiled `try`/`catch`/`finally` constructs, indexed by the id the
+    /// compiler bakes into each `RUN_TRY` call.
+    try_defs: Vec<TryDef>,
 }
 
 impl Default for PhpHost {
@@ -203,6 +237,8 @@ impl PhpHost {
             capture: None,
             error: None,
             signal: None,
+            pending_throw: None,
+            try_defs: Vec::new(),
         }
     }
 
@@ -220,6 +256,40 @@ impl PhpHost {
         for (name, def) in classes {
             self.classes.insert(name, def);
         }
+    }
+
+    /// Install a program's compiled `try`/`catch`/`finally` table. The `RUN_TRY`
+    /// ids the main chunk carries are offsets into this vector.
+    pub fn load_try_defs(&mut self, defs: Vec<TryDef>) {
+        self.try_defs = defs;
+    }
+
+    /// Whether the object class `class` is caught by `catch (target)`: the same
+    /// class, a subclass (walking the parent chain), or `target == Throwable`
+    /// (the interface both exception roots implement). Names are compared
+    /// case-insensitively, matching PHP and the lowercased class table.
+    pub fn catch_matches(&self, class: &str, target: &str) -> bool {
+        let target = target.to_ascii_lowercase();
+        if target == "throwable" {
+            return self.class_is_a(class, "exception") || self.class_is_a(class, "error");
+        }
+        self.class_is_a(class, &target)
+    }
+
+    /// Whether `class` is `ancestor` or descends from it, walking the compiled
+    /// class table's parent chain. `ancestor` must already be lowercased.
+    fn class_is_a(&self, class: &str, ancestor: &str) -> bool {
+        let mut cur = Some(class.to_ascii_lowercase());
+        while let Some(c) = cur {
+            if c == ancestor {
+                return true;
+            }
+            cur = self
+                .classes
+                .get(&c)
+                .and_then(|d| d.parent.as_ref().map(|p| p.to_ascii_lowercase()));
+        }
+        false
     }
 
     // ── output capture ─────────────────────────────────────────────────────
@@ -1028,6 +1098,16 @@ pub fn run_main(chunk: Chunk) -> Result<Value, String> {
     let r = run_chunk_on(chunk);
     // A top-level `return` just ends the program; clear any leftover signal.
     with_host(|h| h.signal.take());
+    // An exception that reached the top uncaught is a fatal error, shaped like
+    // the PHP CLI's `PHP Fatal error:  Uncaught <Class>: <message>`.
+    if let Some(exc) = with_host(|h| h.pending_throw.take()) {
+        let (class, msg) = with_host(|h| {
+            let class = h.object_class(&exc).unwrap_or_else(|| "Exception".to_string());
+            let msg = h.to_str(&h.prop_get(&exc, "message"));
+            (class, msg)
+        });
+        return Err(format!("PHP Fatal error:  Uncaught {class}: {msg}"));
+    }
     r
 }
 
@@ -1127,9 +1207,14 @@ fn invoke(
         h.scopes.pop();
         h.signal.take()
     });
+    // A pending exception (set by `throw`, kept in its own field) survives the
+    // scope pop and takes precedence — the caller's dispatcher checks
+    // `has_pending_throw` and re-halts to keep it bubbling.
     match sig {
         Some(Signal::Return(v)) => Ok(v),
-        None => r.map(|_| Value::Undef),
+        // A `break`/`continue` that escapes a function body has no loop to
+        // target; PHP treats it as falling off the end (null result).
+        Some(Signal::Break) | Some(Signal::Continue) | None => r.map(|_| Value::Undef),
     }
 }
 
@@ -1162,10 +1247,12 @@ pub fn new_object(class: &str, args: Vec<Value>) -> Result<Value, String> {
         let v = run_chunk_on(chunk)?;
         props.insert(name, v);
     }
-    // Allocate the instance.
+    // Allocate the instance. The class name is stored with its original casing
+    // for display (`get_class`, an uncaught-exception fatal); all lookups
+    // (`resolve_method`, `catch_matches`, …) lowercase internally.
     let obj = with_host(|h| {
         h.objs.push(PhpObj::Object {
-            class: cl.clone(),
+            class: class.to_string(),
             props,
         });
         Value::Obj((h.objs.len() - 1) as u32)
@@ -1208,6 +1295,117 @@ pub fn class_const(class: &str, name: &str) -> Result<Value, String> {
 /// Record a pending `return` value for the enclosing function frame.
 pub fn set_return(v: Value) {
     with_host(|h| h.signal = Some(Signal::Return(v)));
+}
+
+/// Record a `break`/`continue` control signal for the enclosing `try` body (the
+/// orchestrator relays it to the loop the `try` sits inside).
+pub fn set_break() {
+    with_host(|h| h.signal = Some(Signal::Break));
+}
+
+pub fn set_continue() {
+    with_host(|h| h.signal = Some(Signal::Continue));
+}
+
+/// Record a thrown exception object; the caller's dispatcher then unwinds.
+pub fn set_pending_throw(v: Value) {
+    with_host(|h| h.pending_throw = Some(v));
+}
+
+/// Whether an exception is in flight (checked by call dispatchers after every
+/// nested call so a throw halts the caller too).
+pub fn has_pending_throw() -> bool {
+    with_host(|h| h.pending_throw.is_some())
+}
+
+/// The control status of running one `try`/`catch`/`finally` sub-body.
+enum TryStatus {
+    Normal,
+    Return(Value),
+    Throw(Value),
+    Break,
+    Continue,
+    /// A non-catchable Rust-level fatal (e.g. an undefined function) — carried so
+    /// `finally` still runs before it surfaces.
+    Fatal(String),
+}
+
+/// Run one detached `try`/`catch`/`finally` body on the current scope, then read
+/// back whichever control signal it raised (throw > return/break/continue >
+/// normal). Signals are *taken* here so the next body runs clean — the value is
+/// re-stashed only at the final propagation moment (see `run_try_orchestrator`).
+fn run_body(chunk: Chunk) -> TryStatus {
+    match run_chunk_on(chunk) {
+        Err(e) => TryStatus::Fatal(e),
+        Ok(_) => with_host(|h| {
+            if let Some(exc) = h.pending_throw.take() {
+                return TryStatus::Throw(exc);
+            }
+            match h.signal.take() {
+                Some(Signal::Return(v)) => TryStatus::Return(v),
+                Some(Signal::Break) => TryStatus::Break,
+                Some(Signal::Continue) => TryStatus::Continue,
+                None => TryStatus::Normal,
+            }
+        }),
+    }
+}
+
+/// Orchestrate a `try`/`catch`/`finally` by id (baked into the `RUN_TRY` call).
+/// Returns a status code the compiler branches on: `0` normal, `1` return,
+/// `2` throw, `3` break, `4` continue. The propagated value is stashed into the
+/// matching host signal just before returning, so the parent chunk consumes it
+/// immediately. `finally` runs unconditionally and its own non-normal status
+/// overrides whatever the `try`/`catch` produced. The whole thing lives on the
+/// Rust stack, so nested `try`s recurse cleanly and no signal leaks across
+/// unrelated constructs.
+pub fn run_try_orchestrator(id: i64) -> Result<i64, String> {
+    let Some(def) = with_host(|h| h.try_defs.get(id as usize).cloned()) else {
+        return Err(format!("internal: no try-def #{id}"));
+    };
+
+    let mut status = run_body(def.try_chunk);
+
+    // A thrown exception: try each catch clause in order; the first whose union
+    // of class names matches the thrown object's class wins.
+    if let TryStatus::Throw(exc) = &status {
+        if let Some(class) = with_host(|h| h.object_class(exc)) {
+            let exc = exc.clone();
+            for c in &def.catches {
+                let matched = with_host(|h| c.classes.iter().any(|t| h.catch_matches(&class, t)));
+                if matched {
+                    if let Some(var) = &c.var {
+                        with_host(|h| h.set_var(var, exc.clone()));
+                    }
+                    status = run_body(c.chunk.clone());
+                    break;
+                }
+            }
+        }
+    }
+
+    // `finally` always runs; a non-normal status from it replaces the pending one.
+    if let Some(fin) = def.finally_chunk {
+        match run_body(fin) {
+            TryStatus::Normal => {}
+            other => status = other,
+        }
+    }
+
+    Ok(match status {
+        TryStatus::Normal => 0,
+        TryStatus::Return(v) => {
+            with_host(|h| h.signal = Some(Signal::Return(v)));
+            1
+        }
+        TryStatus::Throw(v) => {
+            with_host(|h| h.pending_throw = Some(v));
+            2
+        }
+        TryStatus::Break => 3,
+        TryStatus::Continue => 4,
+        TryStatus::Fatal(e) => return Err(e),
+    })
 }
 
 // ── numeric formatting / parsing helpers ──────────────────────────────────
