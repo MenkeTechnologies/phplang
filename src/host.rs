@@ -449,6 +449,79 @@ impl PhpHost {
         }
     }
 
+    // ── reflection support (for the `reflection` stdlib module) ──────────────
+
+    /// Whether a class of the given name is declared (case-insensitive).
+    pub fn class_exists(&self, name: &str) -> bool {
+        self.classes.contains_key(&name.to_ascii_lowercase())
+    }
+
+    /// Whether a user function of the given name is defined (case-insensitive).
+    pub fn function_defined(&self, name: &str) -> bool {
+        self.functions.contains_key(&name.to_ascii_lowercase())
+    }
+
+    /// The declared parent-class name of `name`, or `None` (no parent / unknown).
+    pub fn class_parent(&self, name: &str) -> Option<String> {
+        self.classes
+            .get(&name.to_ascii_lowercase())
+            .and_then(|d| d.parent.clone())
+    }
+
+    /// Whether `class` is `target` or descends from it (case-insensitive);
+    /// `target == "Throwable"` matches either exception root. The public form of
+    /// the catch-matching walk, for `is_a`/`is_subclass_of`/`instanceof`.
+    pub fn is_a_class(&self, class: &str, target: &str) -> bool {
+        self.catch_matches(class, target)
+    }
+
+    /// Method names visible on `class`, walking the parent chain (lowercased, as
+    /// stored). For `get_class_methods`.
+    pub fn class_method_names(&self, class: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut cur = Some(class.to_ascii_lowercase());
+        while let Some(c) = cur {
+            let Some(def) = self.classes.get(&c) else { break };
+            for m in def.methods.keys() {
+                if !out.contains(m) {
+                    out.push(m.clone());
+                }
+            }
+            cur = def.parent.as_ref().map(|p| p.to_ascii_lowercase());
+        }
+        out
+    }
+
+    /// Whether `class` (or an ancestor) defines `method` (case-insensitive).
+    pub fn class_has_method(&self, class: &str, method: &str) -> bool {
+        self.resolve_method(class, &method.to_ascii_lowercase())
+            .is_some()
+    }
+
+    /// Whether `class` (or an ancestor) declares the property `name`.
+    pub fn class_has_prop(&self, class: &str, name: &str) -> bool {
+        let mut cur = Some(class.to_ascii_lowercase());
+        while let Some(c) = cur {
+            let Some(def) = self.classes.get(&c) else { break };
+            if def.prop_defaults.iter().any(|(n, _)| n == name) {
+                return true;
+            }
+            cur = def.parent.as_ref().map(|p| p.to_ascii_lowercase());
+        }
+        false
+    }
+
+    /// An object's `(name, value)` properties in insertion order. For
+    /// `get_object_vars`; empty if `v` is not an object.
+    pub fn object_props(&self, v: &Value) -> Vec<(String, Value)> {
+        match self.as_array(v) {
+            Some(PhpObj::Object { props, .. }) => {
+                props.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+            }
+            _ => Vec::new(),
+        }
+    }
+
     /// `$obj->name` read (`Undef` if the object lacks the property).
     pub fn prop_get(&self, recv: &Value, name: &str) -> Value {
         match self.as_array(recv) {

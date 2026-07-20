@@ -13,12 +13,19 @@
 use fusevm::Value;
 
 pub mod arrays;
+pub mod callable;
 pub mod ctype;
 pub mod datetime;
 pub mod encoding;
+pub mod fileio;
+pub mod filter;
 pub mod hash;
+pub mod json;
 pub mod math;
+pub mod mbstring;
+pub mod misc;
 pub mod preg;
+pub mod reflection;
 pub mod strings;
 pub mod types;
 pub mod url;
@@ -35,6 +42,13 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         .or_else(|| hash::dispatch(name, args))
         .or_else(|| encoding::dispatch(name, args))
         .or_else(|| url::dispatch(name, args))
+        .or_else(|| json::dispatch(name, args))
+        .or_else(|| fileio::dispatch(name, args))
+        .or_else(|| reflection::dispatch(name, args))
+        .or_else(|| callable::dispatch(name, args))
+        .or_else(|| filter::dispatch(name, args))
+        .or_else(|| mbstring::dispatch(name, args))
+        .or_else(|| misc::dispatch(name, args))
 }
 
 /// Shared helpers for the category modules. Each helper is used by at least one
