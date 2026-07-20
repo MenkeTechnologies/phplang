@@ -127,12 +127,27 @@ end-to-end (see `tests/basic.rs`):
   `RuntimeException`, `LogicException`, `InvalidArgumentException`, `TypeError`,
   `ValueError`, `UnhandledMatchError`, `DivisionByZeroError`) that user classes
   can subclass, and `getMessage()`/`getCode()`/`__toString()`.
-- A ~90-function standard library across strings (`str_*`, `substr`, `trim`,
-  `sprintf`, `number_format`, `htmlspecialchars`, `chr`/`ord`, …), arrays
-  (`array_map`/`filter`/`reduce`/`merge`/`slice`/`keys`/`values`, `sort` family,
-  `in_array`, `array_sum`, `range`, …), math (`abs`/`floor`/`ceil`/`round`/`sqrt`,
-  trig, `intdiv`, `fmod`), type/util (`is_*`, `gettype`, `json_encode`,
-  `var_dump`, `print_r`, `var_export`).
+- A large standard library (250+ functions), split into category modules under
+  `src/stdlib/` and consulted through a per-category dispatch chain:
+  - **strings** — `str_*`, `substr*`, `strpos`/`stripos`/`strrpos`, `strstr`,
+    `strtr`, `sprintf`/`vsprintf`/`sscanf`, `number_format`, `nl2br`,
+    `addslashes`, `str_rot13`, `similar_text`, `levenshtein`, `mb_*`, …
+  - **arrays** — `array_map`/`filter`/`reduce`/`merge`/`slice`/`column`/`chunk`,
+    the `sort`/`usort`/`natsort` families, `array_diff`/`intersect` (+`_key`/
+    `_assoc`), `compact`/`extract`, the internal-pointer family, …
+  - **math** — `abs`/`floor`/`ceil`/`round`/`sqrt`, full trig + hyperbolic +
+    inverse, `hypot`/`fdiv`/`fmod`, base conversions (`dec*`/`*dec`/`base_convert`),
+    `rand`/`mt_rand`/`random_int`.
+  - **ctype** — the `ctype_*` predicates. **types** — `is_*`, `gettype`,
+    `get_debug_type`, `serialize`/`unserialize`, `var_dump`/`print_r`/`var_export`.
+  - **preg** — `preg_match`/`match_all`/`replace`/`replace_callback`/`split`/
+    `quote`/`grep` (byte-mode by default, Unicode with `/u`; PCRE subset — no
+    backreferences/lookaround).
+  - **datetime** — `time`/`mktime`/`date`/`gmdate`/`checkdate`/`strtotime` (UTC).
+  - **hash** — `md5`/`sha1`/`hash`/`crc32`/`hash_hmac`. **encoding** —
+    `base64_*`, `bin2hex`/`hex2bin`, quoted-printable, `utf8_*`. **url** —
+    `urlencode`/`rawurlencode` (+decode), `http_build_query`, `parse_url`,
+    `parse_str`, plus `json_encode`.
 
 ## [0x04] NOT YET (LATER WAVES)
 
