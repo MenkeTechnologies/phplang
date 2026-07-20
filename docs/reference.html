@@ -179,6 +179,51 @@
           <p>the null literal; the absent / unset value</p>
           <pre><code class="lang-php">echo null ?? "fallback";   // =&gt; fallback</code></pre>
         </article>
+        <article class="doc-entry" id="doc-keyword-23">
+          <h3><a class="doc-anchor" href="#doc-keyword-23">#</a> <code>class</code></h3>
+          <p>declare a class: properties, methods, constants, and `__construct`</p>
+          <pre><code class="lang-php">class C { public $x = 1; } $o = new C; echo $o-&gt;x;   // =&gt; 1</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-keyword-24">
+          <h3><a class="doc-anchor" href="#doc-keyword-24">#</a> <code>extends</code></h3>
+          <p>single inheritance; a child inherits its parent's methods and properties</p>
+          <pre><code class="lang-php">class A { function f() { return 1; } } class B extends A {} echo (new B)-&gt;f();   // =&gt; 1</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-keyword-25">
+          <h3><a class="doc-anchor" href="#doc-keyword-25">#</a> <code>new</code></h3>
+          <p>instantiate a class, passing constructor arguments</p>
+          <pre><code class="lang-php">class C { function __construct($x) { $this-&gt;x = $x; } } echo (new C(5))-&gt;x;   // =&gt; 5</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-keyword-26">
+          <h3><a class="doc-anchor" href="#doc-keyword-26">#</a> <code>fn</code></h3>
+          <p>arrow function: single-expression body, auto-captures free variables</p>
+          <pre><code class="lang-php">$d = fn($x) =&gt; $x * 2; echo $d(4);   // =&gt; 8</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-keyword-27">
+          <h3><a class="doc-anchor" href="#doc-keyword-27">#</a> <code>use</code></h3>
+          <p>capture enclosing variables (by value) into an anonymous `function`</p>
+          <pre><code class="lang-php">$n = 10; $f = function () use ($n) { return $n; }; echo $f();   // =&gt; 10</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-keyword-28">
+          <h3><a class="doc-anchor" href="#doc-keyword-28">#</a> <code>throw</code></h3>
+          <p>raise an exception; usable as a statement and a PHP 8 expression</p>
+          <pre><code class="lang-php">try { throw new Exception("boom"); } catch (Exception $e) { echo $e-&gt;getMessage(); }   // =&gt; boom</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-keyword-29">
+          <h3><a class="doc-anchor" href="#doc-keyword-29">#</a> <code>try</code></h3>
+          <p>guard a block; `catch` handles a thrown exception, `finally` always runs</p>
+          <pre><code class="lang-php">try { echo "a"; } finally { echo "b"; }   // =&gt; ab</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-keyword-30">
+          <h3><a class="doc-anchor" href="#doc-keyword-30">#</a> <code>catch</code></h3>
+          <p>handle a matching exception type (`catch (A | B $e)`); binds the object</p>
+          <pre><code class="lang-php">try { throw new Exception("x"); } catch (Exception $e) { echo $e-&gt;getMessage(); }   // =&gt; x</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-keyword-31">
+          <h3><a class="doc-anchor" href="#doc-keyword-31">#</a> <code>finally</code></h3>
+          <p>runs after `try`/`catch` on every exit — return, throw, break, continue</p>
+          <pre><code class="lang-php">try { echo "t"; } finally { echo "f"; }   // =&gt; tf</code></pre>
+        </article>
       </section>
 
       <section class="tutorial-section" id="ch-construct">

@@ -171,6 +171,60 @@ const CORPUS: &[(&str, &str, &str, &str)] = &[
         "the null literal; the absent / unset value",
         "echo null ?? \"fallback\";   // => fallback",
     ),
+    (
+        "class",
+        "Keyword",
+        "declare a class: properties, methods, constants, and `__construct`",
+        "class C { public $x = 1; } $o = new C; echo $o->x;   // => 1",
+    ),
+    (
+        "extends",
+        "Keyword",
+        "single inheritance; a child inherits its parent's methods and properties",
+        "class A { function f() { return 1; } } class B extends A {} echo (new B)->f();   // => 1",
+    ),
+    (
+        "new",
+        "Keyword",
+        "instantiate a class, passing constructor arguments",
+        "class C { function __construct($x) { $this->x = $x; } } echo (new C(5))->x;   // => 5",
+    ),
+    (
+        "fn",
+        "Keyword",
+        "arrow function: single-expression body, auto-captures free variables",
+        "$d = fn($x) => $x * 2; echo $d(4);   // => 8",
+    ),
+    (
+        "use",
+        "Keyword",
+        "capture enclosing variables (by value) into an anonymous `function`",
+        "$n = 10; $f = function () use ($n) { return $n; }; echo $f();   // => 10",
+    ),
+    (
+        "throw",
+        "Keyword",
+        "raise an exception; usable as a statement and a PHP 8 expression",
+        "try { throw new Exception(\"boom\"); } catch (Exception $e) { echo $e->getMessage(); }   // => boom",
+    ),
+    (
+        "try",
+        "Keyword",
+        "guard a block; `catch` handles a thrown exception, `finally` always runs",
+        "try { echo \"a\"; } finally { echo \"b\"; }   // => ab",
+    ),
+    (
+        "catch",
+        "Keyword",
+        "handle a matching exception type (`catch (A | B $e)`); binds the object",
+        "try { throw new Exception(\"x\"); } catch (Exception $e) { echo $e->getMessage(); }   // => x",
+    ),
+    (
+        "finally",
+        "Keyword",
+        "runs after `try`/`catch` on every exit — return, throw, break, continue",
+        "try { echo \"t\"; } finally { echo \"f\"; }   // => tf",
+    ),
     // ── Construct (language constructs, not functions) ──
     (
         "echo",

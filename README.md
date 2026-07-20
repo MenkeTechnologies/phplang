@@ -105,11 +105,28 @@ end-to-end (see `tests/basic.rs`):
 - Loose/strict comparison (`== != === !== < > <= >=`, PHP-8 string↔number
   ordering), short-circuit `&& || and or`, ternary `?:` (incl. the elvis short
   form), null-coalesce `??`, `!`, and `(int)`/`(float)`/`(string)`/`(bool)` casts.
-- Indexed, associative, and appended (`$a[] =`) arrays; index read/write.
+- Indexed, associative, and appended (`$a[] =`) arrays; index read/write; deep
+  and nested lvalues (`$a[b][c] =`, `$a[b][] =`, compound and `++`/`--` on
+  elements); the by-reference array mutators (`array_push`/`pop`/`shift`/
+  `unshift`/`splice`).
 - `if` / `elseif` / `else`, `while`, `do … while`, `for`,
   `foreach ($a as [$k =>] $v)`, `switch` (with fall-through), `break`,
-  `continue`, `return`; `match` expressions.
-- User `function`s with positional parameters and recursion.
+  `continue`, `return`; `match` expressions (a no-arm/no-`default` match throws
+  `\UnhandledMatchError`, as PHP 8 does).
+- User `function`s with positional, default (`$x = 1`) and variadic (`...$rest`)
+  parameters, recursion, and call-site argument unpacking (`f(...$args)`);
+  anonymous `function () use (...) { … }` closures and `fn (…) => …` arrow
+  functions as first-class callables (`$f(...)`).
+- Classes/OOP: `new`, instance properties and methods, `$this`, constructors
+  (with property promotion), class constants, `::class`, static methods/constants,
+  `self::`/`parent::`, and single inheritance.
+- Exceptions: `throw` as a statement and a PHP-8 expression (`$x ?? throw …`),
+  `try` / `catch (A | B $e)` / `finally` with `finally`-always semantics (it runs
+  on return, throw, break, and continue out of the guarded body), a built-in
+  exception hierarchy (`Exception`/`Error` disjoint roots under `Throwable`, plus
+  `RuntimeException`, `LogicException`, `InvalidArgumentException`, `TypeError`,
+  `ValueError`, `UnhandledMatchError`, `DivisionByZeroError`) that user classes
+  can subclass, and `getMessage()`/`getCode()`/`__toString()`.
 - A ~90-function standard library across strings (`str_*`, `substr`, `trim`,
   `sprintf`, `number_format`, `htmlspecialchars`, `chr`/`ord`, …), arrays
   (`array_map`/`filter`/`reduce`/`merge`/`slice`/`keys`/`values`, `sort` family,
@@ -119,14 +136,18 @@ end-to-end (see `tests/basic.rs`):
 
 ## [0x04] NOT YET (LATER WAVES)
 
-Classes, interfaces, traits, namespaces, closures/arrow functions, references,
-`try`/`catch`, generators, superglobals, default/variadic/typed parameters, and
-deep (`$a[b][c]`) lvalues. A few current deviations, documented in-code: array
-semantics are reference-based rather than PHP's copy-on-write; `array_pop`/`shift`
-are omitted pending a host by-reference delete; `match` with no arm and no
-`default` yields null instead of throwing `\UnhandledMatchError`; loose comparison
-follows a simplified model. Persistent bytecode caching, AOT (`--build`), LSP, and
-DAP — present in the sibling frontends — are not wired yet.
+Interfaces, traits, namespaces, references (`&`), superglobals, and typed-parameter
+enforcement. **Generators (`yield`)** are blocked on the shared VM: phplang runs each
+function to completion on a fresh `fusevm` VM, and `fusevm` exposes no frame
+suspend/resume primitive, so a faithful lazy generator cannot be built in the
+frontend alone (it needs VM-level support). Closures and arrow functions do not yet
+capture by reference (`use (&$v)` is rejected). A few current deviations, documented
+in-code: array semantics are reference-based rather than PHP's copy-on-write; loose
+comparison follows a simplified model; default parameter values are not restricted to
+constant expressions. Persistent bytecode caching and AOT (`--build`) —
+present in the sibling frontends — are not wired yet; an LSP server (`--lsp`) and
+a DAP debug adapter (`--dap`, with source-line and function breakpoints, stepping,
+call stack, locals, and expression `evaluate`) are.
 
 ## [0x05] PARITY FUZZER
 
