@@ -862,6 +862,12 @@ impl Parser {
                 }
             }
         }
+        // `@expr` — the error-suppression operator. phplang already returns
+        // false/null quietly where PHP would emit a warning/notice, so `@` is a
+        // pass-through: it evaluates its operand and discards the marker.
+        if self.eat_punct("@") {
+            return self.unary();
+        }
         if self.eat_punct("!") {
             return Ok(Expr::Unary(UnOp::Not, Box::new(self.unary()?)));
         }

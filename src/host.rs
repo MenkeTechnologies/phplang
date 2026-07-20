@@ -177,6 +177,17 @@ pub enum PhpObj {
         class: String,
         props: IndexMap<String, Value>,
     },
+    /// An open file stream (`fopen`). Content is buffered in memory: read modes
+    /// load the file up front; write/append modes accumulate and flush to `path`
+    /// on `fclose`/`fflush`. `Value::Obj` handle, so the position is shared.
+    Resource {
+        path: String,
+        buf: Vec<u8>,
+        pos: usize,
+        writable: bool,
+        dirty: bool,
+        closed: bool,
+    },
 }
 
 /// A control-flow signal that unwinds out of a function body. `Throw` rides a
@@ -670,6 +681,151 @@ impl PhpHost {
             }
             _ => Vec::new(),
         }
+    }
+
+    // ── file resources (fopen family) ────────────────────────────────────────
+
+    /// Allocate a file-stream resource. `buf`/`pos` seed the in-memory content
+    /// and cursor; `writable` marks write/append modes (flushed on close).
+    pub fn new_resource(&mut self, path: &str, buf: Vec<u8>, pos: usize, writable: bool) -> Value {
+        self.objs.push(PhpObj::Resource {
+            path: path.to_string(),
+            buf,
+            pos,
+            writable,
+            dirty: false,
+            closed: false,
+        });
+        Value::Obj((self.objs.len() - 1) as u32)
+    }
+
+    pub fn is_resource(&self, v: &Value) -> bool {
+        matches!(self.as_array(v), Some(PhpObj::Resource { closed: false, .. }))
+    }
+
+    /// At-or-past end of the stream (`feof`).
+    pub fn res_eof(&self, v: &Value) -> bool {
+        match self.as_array(v) {
+            Some(PhpObj::Resource { buf, pos, .. }) => *pos >= buf.len(),
+            _ => true,
+        }
+    }
+
+    /// The current cursor (`ftell`), or `None` if `v` is not an open resource.
+    pub fn res_tell(&self, v: &Value) -> Option<i64> {
+        match self.as_array(v) {
+            Some(PhpObj::Resource { pos, closed: false, .. }) => Some(*pos as i64),
+            _ => None,
+        }
+    }
+
+    /// Read up to `n` bytes from the cursor, advancing it (`fread`).
+    pub fn res_read(&mut self, v: &Value, n: usize) -> Option<String> {
+        if let Some(PhpObj::Resource { buf, pos, .. }) = self.as_array_mut(v) {
+            let end = (*pos + n).min(buf.len());
+            let out = String::from_utf8_lossy(&buf[*pos..end]).into_owned();
+            *pos = end;
+            Some(out)
+        } else {
+            None
+        }
+    }
+
+    /// Read one line (through the next `\n`, or `max` bytes) from the cursor
+    /// (`fgets`); `None` at EOF or on a non-resource.
+    pub fn res_gets(&mut self, v: &Value, max: Option<usize>) -> Option<String> {
+        if let Some(PhpObj::Resource { buf, pos, .. }) = self.as_array_mut(v) {
+            if *pos >= buf.len() {
+                return None;
+            }
+            let cap = max.map(|m| (*pos + m).min(buf.len())).unwrap_or(buf.len());
+            let mut end = *pos;
+            while end < cap && buf[end] != b'\n' {
+                end += 1;
+            }
+            if end < cap && buf[end] == b'\n' {
+                end += 1; // include the newline, as fgets does
+            }
+            let out = String::from_utf8_lossy(&buf[*pos..end]).into_owned();
+            *pos = end;
+            Some(out)
+        } else {
+            None
+        }
+    }
+
+    /// Write bytes at the cursor, extending the buffer (`fwrite`); returns the
+    /// number of bytes written, or `None` for a non-writable/closed resource.
+    pub fn res_write(&mut self, v: &Value, bytes: &[u8]) -> Option<usize> {
+        if let Some(PhpObj::Resource {
+            buf,
+            pos,
+            writable: true,
+            dirty,
+            closed: false,
+            ..
+        }) = self.as_array_mut(v)
+        {
+            if *pos > buf.len() {
+                buf.resize(*pos, 0);
+            }
+            for (i, b) in bytes.iter().enumerate() {
+                if *pos + i < buf.len() {
+                    buf[*pos + i] = *b;
+                } else {
+                    buf.push(*b);
+                }
+            }
+            *pos += bytes.len();
+            *dirty = true;
+            Some(bytes.len())
+        } else {
+            None
+        }
+    }
+
+    /// Reposition the cursor (`fseek`/`rewind`). `whence`: 0 SEEK_SET, 1 SEEK_CUR,
+    /// 2 SEEK_END. Returns `true` on a valid resource.
+    pub fn res_seek(&mut self, v: &Value, offset: i64, whence: i64) -> bool {
+        if let Some(PhpObj::Resource { buf, pos, .. }) = self.as_array_mut(v) {
+            let base = match whence {
+                1 => *pos as i64,
+                2 => buf.len() as i64,
+                _ => 0,
+            };
+            *pos = (base + offset).clamp(0, buf.len() as i64) as usize;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// The data to flush to disk for a dirty resource, clearing the dirty flag —
+    /// the `fileio` module performs the actual write (keeping `fs` out of the
+    /// host). `None` when there is nothing to flush.
+    pub fn res_flush_data(&mut self, v: &Value) -> Option<(String, Vec<u8>)> {
+        if let Some(PhpObj::Resource {
+            path, buf, dirty, ..
+        }) = self.as_array_mut(v)
+        {
+            if *dirty {
+                *dirty = false;
+                return Some((path.clone(), buf.clone()));
+            }
+        }
+        None
+    }
+
+    /// Mark a resource closed (`fclose`); returns `false` if it was not an open
+    /// resource.
+    pub fn res_close(&mut self, v: &Value) -> bool {
+        if let Some(PhpObj::Resource { closed, .. }) = self.as_array_mut(v) {
+            if !*closed {
+                *closed = true;
+                return true;
+            }
+        }
+        false
     }
 
     /// `$obj->name` read (`Undef` if the object lacks the property).
@@ -1253,6 +1409,8 @@ impl PhpHost {
             Value::Obj(_) => {
                 if self.is_array(v) {
                     "array"
+                } else if self.is_resource(v) {
+                    "resource"
                 } else {
                     "object"
                 }
