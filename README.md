@@ -33,7 +33,7 @@ front end; execution and codegen live in `fusevm` — the same engine behind
 It is, to our knowledge, the first compiled standalone PHP runtime. The binary
 is `php`.
 
-### [`Read the Docs`](https://menketechnologies.github.io/phplang/) &middot; [`Engineering Report`](https://menketechnologies.github.io/phplang/report.html) &middot; [`fusevm`](https://github.com/MenkeTechnologies/fusevm)
+### [`Read the Docs`](https://menketechnologies.github.io/phplang/) &middot; [`Engineering Report`](https://menketechnologies.github.io/phplang/report.html) &middot; [`Builtin Reference`](https://menketechnologies.github.io/phplang/reference.html) &middot; [`fusevm`](https://github.com/MenkeTechnologies/fusevm)
 
 ---
 
@@ -183,6 +183,7 @@ feature.
 ## [0x07] DOCUMENTATION
 
 - **Docs hub** — <https://menketechnologies.github.io/phplang/>
+- **Builtin reference** — <https://menketechnologies.github.io/phplang/reference.html>
 - **Engineering report** — <https://menketechnologies.github.io/phplang/report.html>
 - **fusevm** — <https://github.com/MenkeTechnologies/fusevm> (the shared VM)
 - **Source** — <https://github.com/MenkeTechnologies/phplang>
