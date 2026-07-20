@@ -1019,9 +1019,9 @@ pub fn call_library(name: &str, args: Vec<Value>) -> Result<Value, String> {
             Value::int(sign(ab[..n.min(ab.len())].cmp(&bb[..n.min(bb.len())])))
         }),
         "substr_compare" => with_host(|h| php_substr_compare(h, &args)),
-        "str_word_count" => {
-            with_host(|h| Value::int(h.to_str(&arg(&args, 0)).split_whitespace().count() as i64))
-        }
+        // `str_word_count` is served by `stdlib::misc`, which implements the
+        // `$format`/`$characters` arguments; it is intentionally not handled here
+        // so the full version wins (this core arm was a count-only stub).
         "chr" => with_host(|h| {
             let n = (h.to_number(&arg(&args, 0)).to_int().rem_euclid(256)) as u8;
             Value::str((n as char).to_string())
