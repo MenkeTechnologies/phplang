@@ -9,7 +9,7 @@
 
 use crate::host::with_host;
 use crate::stdlib::common::*;
-use chrono::{DateTime, Datelike, Duration, Months, NaiveDate, TimeZone, Timelike, Utc};
+use chrono::{DateTime, Datelike, Duration, NaiveDate, TimeZone, Timelike, Utc};
 use fusevm::Value;
 use std::cell::RefCell;
 
@@ -28,6 +28,11 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         "microtime" => php_microtime(args),
         "strtotime" => php_strtotime(args),
         "getdate" => php_getdate(args),
+        // Records the configured name and always returns true. LIMITATION: without
+        // a `chrono-tz` database, unknown timezone names are NOT rejected (PHP
+        // returns false for those) and setting a non-UTC zone does NOT shift
+        // subsequent `date()` output (every calculation here runs in UTC). Low
+        // priority; documented deviation.
         "date_default_timezone_set" => {
             let tz = str_arg(args, 0);
             TZ.with(|t| *t.borrow_mut() = tz);
@@ -122,6 +127,28 @@ fn format_php(fmt: &str, dt: DateTime<Utc>) -> String {
             'i' => out.push_str(&format!("{:02}", dt.minute())),
             's' => out.push_str(&format!("{:02}", dt.second())),
             'U' => out.push_str(&dt.timestamp().to_string()),
+            // ISO-8601 week-numbering year (differs from `Y` near Jan 1 / Dec 31).
+            'o' => out.push_str(&dt.iso_week().year().to_string()),
+            // Microseconds / milliseconds. Timestamps here carry no sub-second
+            // component, so these render as zeros, matching PHP integer-second input.
+            'u' => out.push_str(&format!("{:06}", dt.timestamp_subsec_micros())),
+            'v' => out.push_str(&format!("{:03}", dt.timestamp_subsec_millis())),
+            // ISO 8601 date, e.g. "2004-02-12T15:19:21+00:00" (UTC only here).
+            'c' => out.push_str(&format!(
+                "{:04}-{month:02}-{day:02}T{hour24:02}:{:02}:{:02}+00:00",
+                dt.year(),
+                dt.minute(),
+                dt.second()
+            )),
+            // RFC 2822 date, e.g. "Thu, 21 Dec 2000 16:01:07 +0000" (UTC only here).
+            'r' => out.push_str(&format!(
+                "{}, {day:02} {} {} {hour24:02}:{:02}:{:02} +0000",
+                &DAYS[dow_sun][..3],
+                &MONTHS[month as usize][..3],
+                dt.year(),
+                dt.minute(),
+                dt.second()
+            )),
             other => out.push(other),
         }
     }
@@ -159,7 +186,10 @@ fn days_in_month(year: i32, month: u32) -> u32 {
 /// `(hour, minute, second, month, day, year)`, each defaulting to the current
 /// UTC component. Out-of-range fields normalize as PHP's do (month 13 → next
 /// January, day 0 → prior month's last day), via signed arithmetic on a base
-/// date-time. Returns `false` when the result falls outside chrono's range.
+/// date-time. Returns `false` when the result falls outside chrono's range —
+/// e.g. `mktime(0,0,0,1,999999999999,2020)` yields `false` (a non-crashing
+/// deviation from PHP, which would produce a far-future timestamp). Every add is
+/// checked so huge field values can never panic.
 fn php_mktime(args: &[Value]) -> Value {
     let now = Utc::now();
     let comp = |i: usize, default: i64| -> i64 {
@@ -176,8 +206,11 @@ fn php_mktime(args: &[Value]) -> Value {
     let day = comp(4, now.day() as i64);
     let year = normalize_year(comp(5, now.year() as i64));
 
-    // Fold the (possibly out-of-range) month into a year/month pair.
-    let months_total = year * 12 + (month - 1);
+    // Fold the (possibly out-of-range) month into a year/month pair, guarding
+    // every step so absurd inputs return false instead of panicking.
+    let Some(months_total) = year.checked_mul(12).and_then(|x| month.checked_sub(1).and_then(|mm| x.checked_add(mm))) else {
+        return Value::bool(false);
+    };
     let y = months_total.div_euclid(12);
     let m = (months_total.rem_euclid(12) + 1) as u32;
     let Ok(y) = i32::try_from(y) else {
@@ -186,10 +219,26 @@ fn php_mktime(args: &[Value]) -> Value {
     let Some(base) = NaiveDate::from_ymd_opt(y, m, 1).and_then(|d| d.and_hms_opt(0, 0, 0)) else {
         return Value::bool(false);
     };
-    let dt = base + Duration::days(day - 1)
-        + Duration::hours(hour)
-        + Duration::minutes(minute)
-        + Duration::seconds(second);
+    // Checked signed arithmetic: `Duration::try_*` reject out-of-range spans and
+    // `checked_add`/`checked_add_signed` reject overflow of the running total.
+    let (Some(dd), Some(dh), Some(dmin), Some(ds)) = (
+        day.checked_sub(1).and_then(Duration::try_days),
+        Duration::try_hours(hour),
+        Duration::try_minutes(minute),
+        Duration::try_seconds(second),
+    ) else {
+        return Value::bool(false);
+    };
+    let Some(delta) = dd
+        .checked_add(&dh)
+        .and_then(|x| x.checked_add(&dmin))
+        .and_then(|x| x.checked_add(&ds))
+    else {
+        return Value::bool(false);
+    };
+    let Some(dt) = base.checked_add_signed(delta) else {
+        return Value::bool(false);
+    };
     Value::int(Utc.from_utc_datetime(&dt).timestamp())
 }
 
@@ -249,9 +298,13 @@ fn php_strtotime(args: &[Value]) -> Value {
 
 /// Core of `strtotime`; `None` signals an unparseable string.
 fn parse_strtotime(input: &str, base: i64) -> Option<i64> {
+    // PHP 8: an empty string is a parse failure, not the base timestamp.
+    if input.is_empty() {
+        return None;
+    }
     let low = input.to_ascii_lowercase();
     match low.as_str() {
-        "" | "now" => return Some(base),
+        "now" => return Some(base),
         "today" | "midnight" => return Some(start_of_day(base)),
         "yesterday" => return Some(start_of_day(base) - 86_400),
         "tomorrow" => return Some(start_of_day(base) + 86_400),
@@ -313,25 +366,38 @@ fn parse_relative(low: &str, base: i64) -> Option<i64> {
 }
 
 /// Shift `dt` by `n` of the named unit; month/year use calendar arithmetic.
+/// Every add is checked, so huge `n` yields `None` (→ `false`) instead of a panic.
 fn apply_unit(dt: DateTime<Utc>, unit: &str, n: i64) -> Option<DateTime<Utc>> {
-    let add_months = |months: u32| {
-        let mag = Months::new(months);
-        if n >= 0 {
-            dt.checked_add_months(mag)
-        } else {
-            dt.checked_sub_months(mag)
-        }
+    let dur = match unit {
+        "sec" | "second" => Duration::try_seconds(n)?,
+        "min" | "minute" => Duration::try_minutes(n)?,
+        "hour" => Duration::try_hours(n)?,
+        "day" => Duration::try_days(n)?,
+        "week" => Duration::try_weeks(n)?,
+        "month" => return add_months_overflow(dt, n),
+        "year" => return add_months_overflow(dt, n.checked_mul(12)?),
+        _ => return None,
     };
-    match unit {
-        "sec" | "second" => Some(dt + Duration::seconds(n)),
-        "min" | "minute" => Some(dt + Duration::minutes(n)),
-        "hour" => Some(dt + Duration::hours(n)),
-        "day" => Some(dt + Duration::days(n)),
-        "week" => Some(dt + Duration::weeks(n)),
-        "month" => add_months(n.unsigned_abs() as u32),
-        "year" => add_months((n.unsigned_abs() as u32).saturating_mul(12)),
-        _ => None,
-    }
+    dt.checked_add_signed(dur)
+}
+
+/// Add `months` (may be negative) to `dt`, matching PHP's **overflowing** month
+/// arithmetic rather than chrono's clamping `checked_add_months`. PHP keeps the
+/// day-of-month and lets it spill into the following month when the target month
+/// is shorter: `2011-01-31 +1 month` → `2011-03-03`, not `2011-02-28`. Achieved
+/// by landing on the first of the target month and adding `(day-1)` days.
+/// Returns `None` on year/day overflow (→ `false`).
+fn add_months_overflow(dt: DateTime<Utc>, months: i64) -> Option<DateTime<Utc>> {
+    let total = (dt.year() as i64)
+        .checked_mul(12)?
+        .checked_add(dt.month0() as i64)?
+        .checked_add(months)?;
+    let ny = i32::try_from(total.div_euclid(12)).ok()?;
+    let nm = (total.rem_euclid(12) + 1) as u32;
+    let day_off = Duration::try_days(dt.day() as i64 - 1)?;
+    let first = NaiveDate::from_ymd_opt(ny, nm, 1)?.and_time(dt.time());
+    let shifted = first.checked_add_signed(day_off)?;
+    Some(Utc.from_utc_datetime(&shifted))
 }
 
 /// `getdate(timestamp=now)`: the associative/indexed array of date components.

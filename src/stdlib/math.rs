@@ -65,17 +65,13 @@ fn next_u64() -> u64 {
     })
 }
 
-/// Map a random `u64` into the inclusive range `[min, max]`, erroring when the
-/// bounds are inverted (PHP 8 raises `ValueError`).
-fn to_range(bits: u64, min: i64, max: i64, name: &str) -> Result<Value, String> {
-    if min > max {
-        return Err(format!(
-            "{name}(): Argument #1 ($min) must be less than or equal to argument #2 ($max)"
-        ));
-    }
+/// Map a random `u64` into the inclusive range `[min, max]`. The caller must
+/// guarantee `min <= max`: `rand()` swaps inverted bounds first, while
+/// `mt_rand()`/`random_int()` reject them (each with its own PHP 8 message).
+fn to_range(bits: u64, min: i64, max: i64) -> Value {
     let span = (max as i128 - min as i128) as u128 + 1;
     let off = (bits as u128 % span) as i128;
-    Ok(Value::int((min as i128 + off) as i64))
+    Value::int((min as i128 + off) as i64)
 }
 
 /// Parse the two-argument `(min, max)` bounds, defaulting to `[0, RAND_MAX]` when
@@ -142,7 +138,9 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
     let a0 = || float_arg(args, 0);
     Some(match name {
         // ── logs / exp ──────────────────────────────────────────────────────
-        "log2" => return f(a0().log2()),
+        // NOTE: PHP has no `log2()` (use `log($x, 2)`); `function_exists("log2")`
+        // is false, so we deliberately do NOT dispatch it — it must fall through
+        // to "call to undefined function".
         "expm1" => return f(a0().exp_m1()),
         "log1p" => return f(a0().ln_1p()),
 
@@ -181,14 +179,16 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             let from = int_arg(args, 1);
             let to = int_arg(args, 2);
             if !(2..=36).contains(&from) {
-                return Some(Err(format!(
-                    "base_convert(): Argument #2 ($from_base) must be between 2 and 36 ({from} given)"
-                )));
+                return Some(Err(
+                    "base_convert(): Argument #2 ($from_base) must be between 2 and 36 (inclusive)"
+                        .to_string(),
+                ));
             }
             if !(2..=36).contains(&to) {
-                return Some(Err(format!(
-                    "base_convert(): Argument #3 ($to_base) must be between 2 and 36 ({to} given)"
-                )));
+                return Some(Err(
+                    "base_convert(): Argument #3 ($to_base) must be between 2 and 36 (inclusive)"
+                        .to_string(),
+                ));
             }
             let v = parse_base(&num, from as u32);
             Ok(Value::str(to_base(v, to as u32)))
@@ -204,14 +204,35 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             }
             Ok(Value::Undef)
         }
-        "rand" | "mt_rand" => {
+        "rand" => {
+            // PHP's `rand()` SWAPS inverted bounds instead of erroring: with
+            // min > max it returns a value in [max, min].
+            let (mut min, mut max) = rand_bounds(args);
+            if min > max {
+                std::mem::swap(&mut min, &mut max);
+            }
+            return Some(Ok(to_range(next_u64(), min, max)));
+        }
+        "mt_rand" => {
             let (min, max) = rand_bounds(args);
-            return Some(to_range(next_u64(), min, max, name));
+            if min > max {
+                return Some(Err(
+                    "mt_rand(): Argument #2 ($max) must be greater than or equal to argument #1 ($min)"
+                        .to_string(),
+                ));
+            }
+            return Some(Ok(to_range(next_u64(), min, max)));
         }
         "random_int" => {
             let min = int_arg(args, 0);
             let max = int_arg(args, 1);
-            return Some(to_range(os_entropy(), min, max, "random_int"));
+            if min > max {
+                return Some(Err(
+                    "random_int(): Argument #1 ($min) must be less than or equal to argument #2 ($max)"
+                        .to_string(),
+                ));
+            }
+            return Some(Ok(to_range(os_entropy(), min, max)));
         }
 
         _ => return None,

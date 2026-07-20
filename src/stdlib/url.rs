@@ -147,11 +147,13 @@ fn http_build_query(args: &[Value]) -> Value {
             .map(|v| h.to_str(v))
             .filter(|s| !s.is_empty())
             .unwrap_or_default();
+        // Only a missing (or explicit `null`) separator falls back to "&". An
+        // explicit empty string is honored, so `http_build_query($d, "", "")`
+        // concatenates pairs with no delimiter (matches PHP).
         let sep = args
             .get(2)
             .filter(|v| !matches!(v, Value::Undef))
             .map(|v| h.to_str(v))
-            .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "&".into());
         let raw = args.get(3).map(|v| h.to_number(v).to_int()).unwrap_or(1) == 2;
 
@@ -189,10 +191,17 @@ fn build_query_pair(h: &mut PhpHost, key: &str, val: &Value, raw: bool, out: &mu
 
 // ── parse_str ──────────────────────────────────────────────────────────────
 
-/// `parse_str($string)` — parse a query string into an array. PHP fills a
-/// by-reference variable; here the array is returned directly. Handles `key[]`
-/// appends, `key[sub]` nesting, `+`/`%XX` decoding, and the top-level key
-/// mangling that turns `.` and ` ` into `_`.
+/// `parse_str($string, &$result)` — parse a query string into an array.
+///
+/// LIMITATION: PHP writes the parsed pairs into the caller's second by-reference
+/// argument and returns `void`. phplang passes all arguments by value and has no
+/// VM-level by-ref OUT parameter, so this cannot populate the caller's variable;
+/// it returns the array directly instead. Callers must use the return value
+/// (`$r = parse_str($s)`) rather than the PHP `parse_str($s, $r)` form.
+///
+/// Handles `key[]` appends, `key[sub]` nesting, `+`/`%XX` decoding, stripping of
+/// leading spaces (a leading `+` decodes to a space) from the base key, and the
+/// top-level key mangling that turns interior `.` and ` ` into `_`.
 fn parse_str(args: &[Value]) -> Value {
     crate::host::with_host(|h| {
         let s = h.to_str(&args.first().cloned().unwrap_or(Value::Undef));
@@ -210,6 +219,10 @@ fn parse_str(args: &[Value]) -> Value {
 
             // Split base name from any `[...]` segments.
             let (base_raw, segments) = split_key(&name);
+            // PHP's php_register_variable_ex skips leading spaces in the variable
+            // name before mangling interior ' '/'.' to '_'. A leading '+' decoded
+            // to a space above, so this also drops it: "+a" -> "a", not "_a".
+            let base_raw = base_raw.trim_start_matches(' ');
             if base_raw.is_empty() {
                 continue;
             }
@@ -401,6 +414,23 @@ fn parse_digits(slice: &[u8]) -> Option<i64> {
     std::str::from_utf8(slice).ok()?.parse().ok()
 }
 
+/// `strtol`-style leading-digit parse: accumulate leading ASCII digits into an
+/// `i64` and stop at the first non-digit byte, matching PHP's port scan (which
+/// runs `ZEND_STRTOL` over the `:`-delimited authority tail). So `80abc` yields
+/// `Some(80)`. Returns `None` when there is no leading digit.
+fn strtol_leading(slice: &[u8]) -> Option<i64> {
+    let mut val: i64 = 0;
+    let mut seen = false;
+    for &c in slice {
+        if !c.is_ascii_digit() {
+            break;
+        }
+        val = val.saturating_mul(10).saturating_add((c - b'0') as i64);
+        seen = true;
+    }
+    seen.then_some(val)
+}
+
 /// Stages of the port. Mirrors the `parse_port`/`parse_host`/`just_path` labels
 /// in PHP's `php_url_parse_ex2`.
 enum Stage {
@@ -558,7 +588,9 @@ fn php_url_parse(input: &str) -> Option<UrlParts> {
                         if e.saturating_sub(pidx) > 5 {
                             return None;
                         } else if e > pidx {
-                            match parse_digits(&b[pidx..e]) {
+                            // strtol semantics: leading digits win, trailing junk
+                            // is ignored ("host:80abc" -> port 80).
+                            match strtol_leading(&b[pidx..e]) {
                                 Some(port) if (0..=65535).contains(&port) => r.port = Some(port),
                                 _ => return None,
                             }

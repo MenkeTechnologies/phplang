@@ -39,6 +39,15 @@ fn bool_arg(args: &[Value], i: usize) -> bool {
 
 /// Wrap raw digest bytes into a PHP `Value`: lowercase hex, or a Latin-1
 /// binary string when `raw` is set.
+///
+/// String-model limitation: phplang strings are UTF-8 `String`s, so a
+/// `raw_output = true` digest is mapped byte→codepoint (Latin-1). Any digest
+/// byte >= 0x80 becomes a multi-byte UTF-8 codepoint, so `strlen()` on a raw
+/// digest counts UTF-8 bytes, not digest bytes — e.g. `strlen(md5("", true))`
+/// is not 16 whenever the digest contains a high byte (the raw md5 of "" starts
+/// with 0xd4). A faithful fix needs a byte-string type at the VM level, which
+/// phplang does not have; the hex path (default) is fully faithful. `ord`/`chr`
+/// round-trip per byte because they share this same Latin-1 model.
 fn wrap(bytes: Vec<u8>, raw: bool) -> Value {
     if raw {
         Value::str(bytes.iter().map(|&b| char::from(b)).collect::<String>())
@@ -59,25 +68,52 @@ fn php_hash(args: &[Value]) -> Result<Value, String> {
     let raw = bool_arg(args, 2);
     match digest_bytes(&algo, &data) {
         Some(b) => Ok(wrap(b, raw)),
-        None => Err(format!("hash(): Unknown hashing algorithm: {algo}")),
+        // PHP 8 throws a ValueError with this exact message for an unknown algo
+        // (replacing the PHP 7 "Unknown hashing algorithm" wording).
+        None => Err("hash(): Argument #1 ($algo) must be a valid hashing algorithm".to_string()),
     }
 }
 
-/// `hash_hmac(algo, data, key, binary = false)` for md5/sha1/sha256.
+/// `hash_hmac(algo, data, key, binary = false)` for md5/sha1/sha256/sha384/sha512.
 fn php_hash_hmac(args: &[Value]) -> Result<Value, String> {
     let algo = str_arg(args, 0).to_ascii_lowercase();
     let data = input_bytes(args, 1);
     let key = input_bytes(args, 2);
     let raw = bool_arg(args, 3);
-    // HMAC block size is 64 for md5/sha1/sha256; sha512 (128) is intentionally
-    // unsupported here to match the required set.
-    let f: fn(&[u8]) -> Vec<u8> = match algo.as_str() {
-        "md5" => md5_bytes,
-        "sha1" => sha1_bytes,
-        "sha256" => sha256_bytes,
-        _ => return Err(format!("hash_hmac(): Unknown hashing algorithm: {algo}")),
+    // HMAC block size is the algorithm's internal block size: 64 bytes for
+    // md5/sha1/sha256, 128 bytes for sha384/sha512. Using the wrong block size
+    // yields wrong digests for the SHA-384/512 family, so it is paired per algo.
+    let f: fn(&[u8]) -> Vec<u8>;
+    let block_size = match algo.as_str() {
+        "md5" => {
+            f = md5_bytes;
+            64
+        }
+        "sha1" => {
+            f = sha1_bytes;
+            64
+        }
+        "sha256" => {
+            f = sha256_bytes;
+            64
+        }
+        "sha384" => {
+            f = sha384_bytes;
+            128
+        }
+        "sha512" => {
+            f = sha512_bytes;
+            128
+        }
+        // PHP 8 throws a ValueError with this exact message for an unknown algo.
+        _ => {
+            return Err(
+                "hash_hmac(): Argument #1 ($algo) must be a valid cryptographic hashing algorithm"
+                    .to_string(),
+            );
+        }
     };
-    Ok(wrap(hmac(64, f, &key, &data), raw))
+    Ok(wrap(hmac(block_size, f, &key, &data), raw))
 }
 
 /// Digest by algorithm name; `None` for an unknown algorithm.
@@ -126,6 +162,13 @@ fn sha1_bytes(data: &[u8]) -> Vec<u8> {
 fn sha256_bytes(data: &[u8]) -> Vec<u8> {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
+    h.update(data);
+    h.finalize().to_vec()
+}
+
+fn sha384_bytes(data: &[u8]) -> Vec<u8> {
+    use sha2::{Digest, Sha384};
+    let mut h = Sha384::new();
     h.update(data);
     h.finalize().to_vec()
 }

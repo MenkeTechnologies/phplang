@@ -533,17 +533,23 @@ fn nat_cmp(a: &str, b: &str, fold_case: bool) -> Ordering {
             while j2 < cb.len() && cb[j2].is_ascii_digit() {
                 j2 += 1;
             }
-            // Compare the digit runs numerically: strip leading zeros, then the
-            // longer run (more significant digits) — or lexical order at equal
-            // length — decides.
-            let na: String = ca[i..i2].iter().collect();
-            let nb: String = cb[j..j2].iter().collect();
-            let ta = na.trim_start_matches('0');
-            let tb = nb.trim_start_matches('0');
-            let cmp = if ta.len() != tb.len() {
-                ta.len().cmp(&tb.len())
+            // Compare the digit runs the way PHP `strnatcmp` does (Martin Pool's
+            // algorithm). If either run has a leading zero the comparison is
+            // "fractional": the runs are compared left-aligned, character by
+            // character, so the first differing digit decides and a shorter run
+            // that is a prefix of the other sorts first. That makes "010" < "10"
+            // ('0' < '1') instead of folding both to 10. Otherwise (neither run
+            // has a leading zero) the runs compare by magnitude: the longer run
+            // wins, and at equal length the lexical order of the digits decides.
+            let na: &[char] = &ca[i..i2];
+            let nb: &[char] = &cb[j..j2];
+            let fractional = na.first() == Some(&'0') || nb.first() == Some(&'0');
+            let cmp = if fractional {
+                na.cmp(nb)
+            } else if na.len() != nb.len() {
+                na.len().cmp(&nb.len())
             } else {
-                ta.cmp(tb)
+                na.cmp(nb)
             };
             if cmp != Ordering::Equal {
                 return cmp;
@@ -658,10 +664,16 @@ fn php_array_rand(h: &mut host::PhpHost, args: &[Value]) -> Result<Value, String
 // ── array_walk ───────────────────────────────────────────────────────────────
 
 /// `array_walk($array, $callback, $extra = null)` — call `$callback($value, $key
-/// [, $extra])` for every element; always returns `true`. NOTE: the callback's
-/// first parameter is by-reference in PHP; parameters are by-value here, so a
-/// scalar mutated inside the callback does not propagate back (array/object
-/// values do, since those are shared handles).
+/// [, $extra])` for every element; always returns `true`.
+///
+/// LIMITATION (documented, not a bug we can fix here): in PHP the callback's
+/// first parameter is by-reference (`function(&$value, $key)`), so the callback
+/// can modify each element in place. phplang has **no by-reference parameters** —
+/// every argument is passed by value — so a *scalar* mutated inside the callback
+/// does NOT propagate back into the array, unlike PHP. Fixing this faithfully
+/// would require VM-level by-reference OUT-parameters, which the VM does not
+/// provide and which live outside this module. Array/object elements still
+/// reflect mutations, because those are shared heap handles rather than scalars.
 fn php_array_walk(args: &[Value]) -> Result<Value, String> {
     let arr = arg(args, 0);
     let cb = arg(args, 1);
@@ -747,6 +759,24 @@ fn is_var_name(s: &str) -> bool {
 // same low handles), the fingerprint no longer matches and the cursor resets to
 // the first element — so no stale cursor leaks across independent runs.
 //
+// The fingerprint is deliberately **append-invariant**: it hashes only the first
+// element (its key and value), NOT the length or the last key. PHP keeps the
+// internal pointer where it is when you append (`$a[] = x`), so a fingerprint
+// that changed on append would wrongly rewind the cursor to the start after
+// every push. Hashing the first element leaves the cursor untouched across
+// appends (they never alter element 0) while still distinguishing an unrelated
+// array that reuses the same handle after `reset_host`, as long as that array's
+// first element differs.
+//
+// LIMITATION (documented, not fully fixable here): because the fingerprint is
+// content-based, two *different* arrays that happen to share an identical first
+// element and land on the same reused handle across a `reset_host` boundary
+// could inherit a stale cursor. A fully correct fix needs a real per-array
+// cursor field stored in the VM heap alongside the array (so identity is by the
+// handle's lifetime, not by content) — that lives in `host.rs`, which is off
+// limits for this change. The heuristic below is the closest correct-for-PHP
+// behavior (append preserves the pointer) achievable without a VM change.
+//
 // Positions: `0..len` index the elements; `-1` is the single "invalid" state PHP
 // uses once the pointer falls off either end (sticky — `prev`/`next` from it stay
 // invalid and return false until `reset`/`end` re-anchors it).
@@ -755,16 +785,22 @@ thread_local! {
     static CURSORS: RefCell<HashMap<u32, (u64, i64)>> = RefCell::new(HashMap::new());
 }
 
-/// A cheap identity fingerprint for an array (length plus first/last key), enough
-/// to tell a reused handle's new array apart from the one a cursor was set on.
+/// An append-invariant identity fingerprint for an array: it hashes only the
+/// first element's key and value (plus whether the array is empty). Appending to
+/// the array never touches element 0, so the fingerprint — and therefore the
+/// stored cursor — survives an append, matching PHP (the internal pointer stays
+/// put across `$a[] = x`). It still changes when an unrelated array reuses the
+/// same handle after `reset_host`, provided that array's first element differs.
+/// See the module-level LIMITATION note for the residual same-first-element case.
 fn fingerprint(h: &host::PhpHost, pairs: &[(Value, Value)]) -> u64 {
     let mut hasher = DefaultHasher::new();
-    pairs.len().hash(&mut hasher);
-    if let Some((k, _)) = pairs.first() {
-        h.to_str(k).hash(&mut hasher);
-    }
-    if let Some((k, _)) = pairs.last() {
-        h.to_str(k).hash(&mut hasher);
+    match pairs.first() {
+        Some((k, v)) => {
+            1u8.hash(&mut hasher);
+            h.to_str(k).hash(&mut hasher);
+            h.to_str(v).hash(&mut hasher);
+        }
+        None => 0u8.hash(&mut hasher),
     }
     hasher.finish()
 }

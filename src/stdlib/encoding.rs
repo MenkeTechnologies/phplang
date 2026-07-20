@@ -152,13 +152,18 @@ fn hex_val(b: u8) -> Option<u8> {
 }
 
 /// Decode quoted-printable: `=XX` -> byte, `=`+CRLF/LF soft break -> removed,
-/// otherwise literal (PHP keeps a malformed `=` verbatim).
+/// a trailing bare `=` as the final byte -> dropped (PHP), otherwise literal
+/// (PHP keeps a malformed `=` verbatim).
 fn qp_decode(input: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(input.len());
     let n = input.len();
     let mut i = 0;
     while i < n {
         let c = input[i];
+        if c == b'=' && i + 1 >= n {
+            // PHP drops a trailing bare '=' that is the final byte of input.
+            break;
+        }
         if c == b'=' && i + 1 < n {
             let n1 = input[i + 1];
             if n1 == b'\r' {
@@ -228,49 +233,73 @@ fn uu_dec(c: u8) -> i32 {
     (c as i32 - 0x20) & 0x3f
 }
 
-/// Inverse of [`uuencode`]. A length-0 line (backtick) terminates.
-fn uudecode(src: &[u8]) -> Vec<u8> {
-    let n = src.len();
+/// Inverse of [`uuencode`]; port of PHP's `php_uudecode`. A length-0 line
+/// (backtick) terminates. Returns `None` (PHP `false`) on empty input or on
+/// malformed data: a line whose declared length overruns the buffer, or input
+/// that decodes to nothing (no valid length/terminator structure).
+fn uudecode(src: &[u8]) -> Option<Vec<u8>> {
+    let src_len = src.len();
+    if src_len == 0 {
+        return None;
+    }
+    let n = src_len;
     let mut out = Vec::new();
+    let mut total_len: usize = 0;
     let mut i = 0;
     while i < n {
-        let line_len = uu_dec(src[i]);
+        let line_len = uu_dec(src[i]) as usize;
         i += 1;
         if line_len == 0 {
             break;
         }
-        let mut produced = 0;
-        while produced < line_len && i < n {
-            let c0 = src[i];
-            if c0 == b'\n' || c0 == b'\r' {
-                break;
+        // Sanity checks ported from php_uudecode: a declared length larger than
+        // the whole buffer, or a line whose encoded span overruns the input, is
+        // malformed. `ee = s + (len == 45 ? 60 : floor(len * 1.37))`.
+        if line_len > src_len {
+            return None;
+        }
+        total_len += line_len;
+        let span = if line_len == 45 {
+            60
+        } else {
+            (line_len as f64 * 1.37).floor() as usize
+        };
+        if i + span > n {
+            return None;
+        }
+        let mut remaining = line_len;
+        while remaining > 0 {
+            let d0 = uu_dec(*src.get(i).unwrap_or(&0));
+            let d1 = uu_dec(*src.get(i + 1).unwrap_or(&0));
+            let d2 = uu_dec(*src.get(i + 2).unwrap_or(&0));
+            let d3 = uu_dec(*src.get(i + 3).unwrap_or(&0));
+            if remaining > 0 {
+                out.push(((d0 << 2) | (d1 >> 4)) as u8);
+                remaining -= 1;
             }
-            let d0 = uu_dec(c0);
-            let d1 = if i + 1 < n { uu_dec(src[i + 1]) } else { 0 };
-            let d2 = if i + 2 < n { uu_dec(src[i + 2]) } else { 0 };
-            let d3 = if i + 3 < n { uu_dec(src[i + 3]) } else { 0 };
-            let group = [
-                ((d0 << 2) | (d1 >> 4)) as u8,
-                ((d1 << 4) | (d2 >> 2)) as u8,
-                ((d2 << 6) | d3) as u8,
-            ];
-            for &b in &group {
-                if produced < line_len {
-                    out.push(b);
-                    produced += 1;
-                }
+            if remaining > 0 {
+                out.push(((d1 << 4) | (d2 >> 2)) as u8);
+                remaining -= 1;
+            }
+            if remaining > 0 {
+                out.push(((d2 << 6) | d3) as u8);
+                remaining -= 1;
             }
             i += 4;
         }
-        // advance to and consume the line terminator
-        while i < n && src[i] != b'\n' {
-            i += 1;
-        }
-        if i < n {
+        // skip the line terminator (\r and/or \n)
+        if i < n && (src[i] == b'\r' || src[i] == b'\n') {
             i += 1;
         }
     }
-    out
+    if out.is_empty() {
+        return None;
+    }
+    // PHP caps the result at the summed declared lengths.
+    if out.len() > total_len {
+        out.truncate(total_len);
+    }
+    Some(out)
 }
 
 /// Dispatch an `encoding`-category PHP function by lowercased name.
@@ -296,7 +325,10 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             Value::str(bytes_to_str(&qp_decode(str_arg(args, 0).as_bytes())))
         }
         "convert_uuencode" => Value::str(bytes_to_str(&uuencode(str_arg(args, 0).as_bytes()))),
-        "convert_uudecode" => Value::str(bytes_to_str(&uudecode(str_arg(args, 0).as_bytes()))),
+        "convert_uudecode" => match uudecode(str_arg(args, 0).as_bytes()) {
+            Some(bytes) => Value::str(bytes_to_str(&bytes)),
+            None => Value::bool(false),
+        },
         // Deprecated Latin-1<->UTF-8 shims. In this UTF-8 runtime they operate on
         // the string's bytes: encode widens each byte to a code point, decode
         // narrows each code point back to a byte (>0xFF -> '?'). Exact for ASCII.

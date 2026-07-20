@@ -13,13 +13,19 @@ fn run(src: &str) -> String {
 // ── logs / exp ───────────────────────────────────────────────────────────────
 
 #[test]
-fn log2_and_log1p_expm1() {
-    assert_eq!(run("<?php echo log2(8);"), "3");
-    assert_eq!(run("<?php echo log2(1024);"), "10");
+fn log1p_expm1() {
     assert_eq!(run("<?php echo expm1(0);"), "0");
     assert_eq!(run("<?php echo log1p(0);"), "0");
     // expm1/log1p round-trip near zero with full precision.
     assert_eq!(run("<?php echo round(log1p(expm1(0.5)), 10);"), "0.5");
+}
+
+// Regression (fix 1): PHP has no `log2()` — `function_exists("log2")` is false,
+// so calling it must raise "call to undefined function", not compute log base 2.
+#[test]
+fn log2_is_undefined() {
+    let e = eval_capture("<?php echo log2(8);").unwrap_err();
+    assert!(e.contains("undefined function log2"), "got: {e}");
 }
 
 // ── hyperbolic + inverses ────────────────────────────────────────────────────
@@ -116,6 +122,22 @@ fn base_convert_out_of_range_errors() {
     assert!(eval_capture("<?php echo base_convert('1', 10, 37);").is_err());
 }
 
+// Regression (fix 4): the out-of-range message ends with "(inclusive)" to match
+// PHP 8 exactly, for both the $from_base and $to_base arguments.
+#[test]
+fn base_convert_out_of_range_message() {
+    let e = eval_capture("<?php echo base_convert('1', 1, 10);").unwrap_err();
+    assert_eq!(
+        e,
+        "base_convert(): Argument #2 ($from_base) must be between 2 and 36 (inclusive)"
+    );
+    let e = eval_capture("<?php echo base_convert('1', 10, 37);").unwrap_err();
+    assert_eq!(
+        e,
+        "base_convert(): Argument #3 ($to_base) must be between 2 and 36 (inclusive)"
+    );
+}
+
 // ── pseudo-random ────────────────────────────────────────────────────────────
 
 #[test]
@@ -157,8 +179,34 @@ fn random_int_bounds() {
     );
 }
 
+// Regression (fix 2): `rand()` with min > max SWAPS the bounds (PHP does not
+// error), so the result stays within [max, min].
+#[test]
+fn rand_swaps_inverted_bounds() {
+    // Degenerate inverted range [5,5] still yields 5.
+    assert_eq!(run("<?php echo rand(5, 5);"), "5");
+    assert_eq!(
+        run("<?php srand(7); $ok = true; for ($i = 0; $i < 200; $i++) { $r = rand(10, 3); if ($r < 3 || $r > 10) $ok = false; } echo $ok ? 'ok' : 'bad';"),
+        "ok"
+    );
+}
+
 #[test]
 fn inverted_bounds_error() {
     assert!(eval_capture("<?php echo mt_rand(10, 1);").is_err());
     assert!(eval_capture("<?php echo random_int(10, 1);").is_err());
+}
+
+// Regression (fix 3): mt_rand and random_int each emit their own PHP 8 message
+// on inverted bounds (and rand does NOT error — covered above).
+#[test]
+fn inverted_bounds_error_messages() {
+    assert_eq!(
+        eval_capture("<?php echo mt_rand(10, 1);").unwrap_err(),
+        "mt_rand(): Argument #2 ($max) must be greater than or equal to argument #1 ($min)"
+    );
+    assert_eq!(
+        eval_capture("<?php echo random_int(10, 1);").unwrap_err(),
+        "random_int(): Argument #1 ($min) must be less than or equal to argument #2 ($max)"
+    );
 }

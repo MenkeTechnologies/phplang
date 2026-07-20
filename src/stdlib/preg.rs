@@ -15,6 +15,13 @@
 //! non-empty text at interleaved positions (`/x*/`, `/\d*/`); ordinary delimiter
 //! patterns and the fully-empty `//` pattern split identically to PCRE.
 //!
+//! Matching runs on **bytes** by default (`regex::bytes::Regex`), mirroring PCRE
+//! without the `/u` flag: `.` matches one byte, `\d\w\s` are ASCII, and all
+//! offsets are byte offsets. The `/u` modifier switches the engine to Unicode
+//! mode, where `.` matches a whole codepoint and the classes become Unicode-aware
+//! — e.g. `preg_match("/^.$/", "é")` is `0` (2 bytes) without `/u` but `1` with
+//! it. Subjects are UTF-8; byte slices are decoded back with lossy UTF-8.
+//!
 //! `$matches` by-reference out-parameter (`preg_match`, `preg_match_all`): the
 //! stdlib dispatch chain receives call arguments *by value*, and the by-ref
 //! lowering the compiler performs for `array_push` & friends is keyed on the
@@ -29,7 +36,15 @@
 use crate::host::with_host;
 use fusevm::Value;
 
-use regex::{Regex, RegexBuilder};
+// PCRE (PHP without `/u`) matches BYTES, not Unicode codepoints. The bytes
+// engine is the default; the `/u` flag re-enables Unicode on the builder.
+use regex::bytes::{Captures, Regex, RegexBuilder};
+
+/// Decode a matched byte slice back to a `String`. Subjects are UTF-8, but a
+/// byte-mode match may land mid-codepoint, so decode lossily.
+fn bstr(b: &[u8]) -> String {
+    String::from_utf8_lossy(b).into_owned()
+}
 
 // PHP preg_split flag bits.
 const SPLIT_NO_EMPTY: i64 = 1;
@@ -96,6 +111,8 @@ fn compile(pattern: &str) -> Result<Regex, String> {
     let flags: String = chars[close_idx + 1..].iter().collect();
 
     let mut b = RegexBuilder::new(&body);
+    // Default (no `/u`) is byte matching, as PCRE. `/u` opts into Unicode.
+    let mut unicode = false;
     for f in flags.chars() {
         match f {
             'i' => {
@@ -113,12 +130,17 @@ fn compile(pattern: &str) -> Result<Regex, String> {
             'U' => {
                 b.swap_greed(true);
             }
-            // `u` (unicode) is the Rust default; `D`, `A`, `X`, `S` have no
-            // Rust-engine analogue and are accepted as no-ops.
-            'u' | 'D' | 'A' | 'X' | 'S' => {}
+            'u' => {
+                unicode = true;
+            }
+            // `D`, `A`, `X`, `S` have no Rust-engine analogue → accepted no-ops.
+            'D' | 'A' | 'X' | 'S' => {}
+            // PHP tolerates trailing whitespace/newlines after the pattern.
+            c if c.is_whitespace() => {}
             other => return Err(format!("unknown modifier `{other}`")),
         }
     }
+    b.unicode(unicode);
     b.build().map_err(|e| e.to_string())
 }
 
@@ -127,35 +149,41 @@ fn compile(pattern: &str) -> Result<Regex, String> {
 /// Full capture list for one match: index 0 is the whole match, 1.. are the
 /// numbered groups, unmatched groups render as the empty string. Fixed width —
 /// used by `preg_match_all` where every set must line up by group index.
-fn caps_full(caps: &regex::Captures) -> Vec<Value> {
+fn caps_full(caps: &Captures) -> Vec<Value> {
     (0..caps.len())
-        .map(|i| Value::str(caps.get(i).map(|m| m.as_str()).unwrap_or("")))
+        .map(|i| Value::str(caps.get(i).map(|m| bstr(m.as_bytes())).unwrap_or_default()))
         .collect()
 }
 
 /// Capture list with trailing unmatched groups dropped — PHP's `preg_match` /
 /// `preg_replace_callback` behaviour. A group that did not participate but is
 /// followed by one that did is still emitted as the empty string.
-fn caps_trimmed(caps: &regex::Captures) -> Vec<Value> {
+fn caps_trimmed(caps: &Captures) -> Vec<Value> {
     let last = (0..caps.len())
         .rfind(|&i| caps.get(i).is_some())
         .unwrap_or(0);
     (0..=last)
-        .map(|i| Value::str(caps.get(i).map(|m| m.as_str()).unwrap_or("")))
+        .map(|i| Value::str(caps.get(i).map(|m| bstr(m.as_bytes())).unwrap_or_default()))
         .collect()
 }
 
 /// Populate a caller-supplied array handle in place with `rows` (each a list of
 /// values). Only works when `target` is already an array (shared handle); a
-/// no-op otherwise. Existing integer-keyed slots are overwritten by position.
+/// no-op otherwise. The array is fully cleared and re-indexed `0..n`, so a
+/// no-match (empty `rows`) resets `$matches` to `[]` rather than leaving stale
+/// captures from a prior call.
+///
+/// By-ref limitation: the stdlib dispatch chain receives arguments by value and
+/// phplang has no VM-level by-reference OUT-parameters, so this can only write
+/// back when the caller pre-initialised the variable as an array (`$m = []`),
+/// giving a shared handle. An uninitialised variable cannot be bound; the return
+/// value (match count) is always correct regardless.
 fn fill_out(target: &Value, rows: Vec<Value>) {
     with_host(|h| {
         if !h.is_array(target) {
             return;
         }
-        for (i, row) in rows.into_iter().enumerate() {
-            h.arr_set_key(target, &Value::int(i as i64), row);
-        }
+        h.arr_set_reindexed(target, rows);
     });
 }
 
@@ -166,7 +194,7 @@ fn preg_match(args: &[Value]) -> Result<Value, String> {
         Ok(r) => r,
         Err(_) => return Ok(Value::bool(false)),
     };
-    match re.captures(&subject) {
+    match re.captures(subject.as_bytes()) {
         Some(caps) => {
             if args.len() > 2 {
                 fill_out(&args[2], caps_trimmed(&caps));
@@ -190,7 +218,10 @@ fn preg_match_all(args: &[Value]) -> Result<Value, String> {
         Ok(r) => r,
         Err(_) => return Ok(Value::bool(false)),
     };
-    let all: Vec<Vec<Value>> = re.captures_iter(&subject).map(|c| caps_full(&c)).collect();
+    let all: Vec<Vec<Value>> = re
+        .captures_iter(subject.as_bytes())
+        .map(|c| caps_full(&c))
+        .collect();
     let count = all.len();
 
     if args.len() > 2 {
@@ -273,9 +304,9 @@ fn translate_replacement(s: &str) -> String {
     out
 }
 
-/// Apply one (compiled pattern, translated replacement) over `subject` up to
-/// `limit` times (`limit < 0` = unlimited).
-fn replace_one(re: &Regex, repl: &str, subject: &str, limit: i64) -> String {
+/// Apply one (compiled pattern, translated replacement) over `subject` bytes up
+/// to `limit` times (`limit < 0` = unlimited).
+fn replace_one(re: &Regex, repl: &[u8], subject: &[u8], limit: i64) -> Vec<u8> {
     if limit < 0 {
         re.replace_all(subject, repl).into_owned()
     } else {
@@ -324,11 +355,11 @@ fn preg_replace(args: &[Value]) -> Result<Value, String> {
 
     let subj = arg(args, 2);
     let apply = |s: &str| -> String {
-        let mut cur = s.to_string();
+        let mut cur: Vec<u8> = s.as_bytes().to_vec();
         for (re, repl) in &compiled {
-            cur = replace_one(re, repl, &cur, limit);
+            cur = replace_one(re, repl.as_bytes(), &cur, limit);
         }
-        cur
+        bstr(&cur)
     };
 
     if with_host(|h| h.is_array(&subj)) {
@@ -383,24 +414,25 @@ fn preg_replace_callback(args: &[Value]) -> Result<Value, String> {
 /// Replace every (up to `limit`) match of `re` in `s`, calling `cb($matches)`
 /// for each and substituting its string return. Propagates a thrown exception.
 fn replace_all_cb(re: &Regex, s: &str, cb: &Value, limit: i64) -> Result<String, String> {
-    let mut out = String::new();
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::new();
     let mut last = 0;
-    for (n, caps) in re.captures_iter(s).enumerate() {
+    for (n, caps) in re.captures_iter(bytes).enumerate() {
         if limit >= 0 && n as i64 >= limit {
             break;
         }
         let whole = caps.get(0).unwrap();
-        out.push_str(&s[last..whole.start()]);
+        out.extend_from_slice(&bytes[last..whole.start()]);
         let matches = make_list(caps_trimmed(&caps));
         let ret = crate::host::call_value(cb.clone(), vec![matches])?;
         if crate::host::has_pending_throw() {
             return Ok(String::new());
         }
-        out.push_str(&with_host(|h| h.to_str(&ret)));
+        out.extend_from_slice(with_host(|h| h.to_str(&ret)).as_bytes());
         last = whole.end();
     }
-    out.push_str(&s[last..]);
-    Ok(out)
+    out.extend_from_slice(&bytes[last..]);
+    Ok(bstr(&out))
 }
 
 // ── preg_split ───────────────────────────────────────────────────────────────
@@ -422,29 +454,41 @@ fn preg_split(args: &[Value]) -> Result<Value, String> {
     // whole string unsplit.
     let cap: usize = if limit <= 0 { usize::MAX } else { limit as usize };
 
-    let mut pieces: Vec<(String, usize)> = Vec::new();
-    let mut last = 0;
+    let bytes = subject.as_bytes();
+    // `(text, offset)`. Offset is `-1` for a non-participating captured
+    // delimiter (PHP's PREG_SPLIT_OFFSET_CAPTURE convention).
+    let mut pieces: Vec<(String, i64)> = Vec::new();
+    let mut last = 0usize;
     // `captures_iter` yields non-overlapping matches and self-advances past a
     // zero-width match, so an empty pattern (`//`) still splits between every
-    // character exactly as PCRE does — no manual loop guard needed.
-    for caps in re.captures_iter(&subject) {
+    // character exactly as PCRE does — no manual loop guard needed. The
+    // enumerate index `n` counts split PIECES only (one text segment per match);
+    // the limit therefore ignores the captured delimiters that DELIM_CAPTURE
+    // interleaves.
+    for (n, caps) in re.captures_iter(bytes).enumerate() {
         let whole = caps.get(0).unwrap();
         // Honour the limit: once cap-1 pieces are emitted, stop splitting so the
         // final piece holds the remainder.
-        if pieces.len() + 1 >= cap {
+        if n + 1 >= cap {
             break;
         }
-        pieces.push((subject[last..whole.start()].to_string(), last));
+        pieces.push((bstr(&bytes[last..whole.start()]), last as i64));
         if delim_capture {
-            for g in 1..caps.len() {
-                if let Some(m) = caps.get(g) {
-                    pieces.push((m.as_str().to_string(), m.start()));
+            // PHP emits captured groups up to the last participating one; a
+            // non-participating group *before* a participating one is emitted as
+            // "" (trailing non-participating groups are dropped, like preg_match).
+            if let Some(last_grp) = (1..caps.len()).rfind(|&g| caps.get(g).is_some()) {
+                for g in 1..=last_grp {
+                    match caps.get(g) {
+                        Some(m) => pieces.push((bstr(m.as_bytes()), m.start() as i64)),
+                        None => pieces.push((String::new(), -1)),
+                    }
                 }
             }
         }
         last = whole.end();
     }
-    pieces.push((subject[last..].to_string(), last));
+    pieces.push((bstr(&bytes[last..]), last as i64));
 
     let mut out: Vec<Value> = Vec::with_capacity(pieces.len());
     for (piece, off) in pieces {
@@ -452,7 +496,7 @@ fn preg_split(args: &[Value]) -> Result<Value, String> {
             continue;
         }
         if offset_capture {
-            out.push(make_list(vec![Value::str(piece), Value::int(off as i64)]));
+            out.push(make_list(vec![Value::str(piece), Value::int(off)]));
         } else {
             out.push(Value::str(piece));
         }
@@ -497,7 +541,7 @@ fn preg_grep(args: &[Value]) -> Result<Value, String> {
     let mut kept: Vec<(Value, Value)> = Vec::new();
     for (k, v) in pairs {
         let s = with_host(|h| h.to_str(&v));
-        if re.is_match(&s) != invert {
+        if re.is_match(s.as_bytes()) != invert {
             kept.push((k, v));
         }
     }

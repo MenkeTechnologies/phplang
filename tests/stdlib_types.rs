@@ -130,6 +130,64 @@ fn unserialize_array_and_roundtrip() {
 }
 
 #[test]
+fn serialize_float_e_notation() {
+    // serialize_precision = -1: shortest round-trip digits with %G-style switching
+    // to E-notation for large/small magnitudes. Expected strings cross-checked
+    // against reference php (`serialize(1e17)` = `d:1.0E+17;`, `1e16` stays fixed).
+    assert_eq!(run(r#"<?php echo serialize(1e20);"#), "d:1.0E+20;");
+    assert_eq!(run(r#"<?php echo serialize(1e-10);"#), "d:1.0E-10;");
+    assert_eq!(run(r#"<?php echo serialize(1.5);"#), "d:1.5;");
+    assert_eq!(run(r#"<?php echo serialize(0.1);"#), "d:0.1;");
+    // Threshold: decpt > 17 flips to E-notation; 1e16 is right below it.
+    assert_eq!(run(r#"<?php echo serialize(1e16);"#), "d:10000000000000000;");
+    assert_eq!(run(r#"<?php echo serialize(1e17);"#), "d:1.0E+17;");
+    assert_eq!(run(r#"<?php echo serialize(0.0001);"#), "d:0.0001;");
+    assert_eq!(run(r#"<?php echo serialize(0.00001);"#), "d:1.0E-5;");
+    // Full-precision mantissa in E-notation.
+    assert_eq!(
+        run(r#"<?php echo serialize(1.844674407371E19);"#),
+        "d:1.844674407371E+19;"
+    );
+    // Round-trips through unserialize.
+    assert_eq!(
+        run(r#"<?php var_dump(unserialize(serialize(1e20)) === 1e20 ? 1 : 0);"#),
+        "int(1)\n"
+    );
+    assert_eq!(
+        run(r#"<?php var_dump(unserialize(serialize(1e-10)) === 1e-10 ? 1 : 0);"#),
+        "int(1)\n"
+    );
+}
+
+#[test]
+fn unserialize_integer_overflow_saturates() {
+    // PHP clamps an out-of-range `i:` literal to PHP_INT_MAX / PHP_INT_MIN
+    // (with a warning) instead of returning false.
+    assert_eq!(
+        run(r#"<?php var_dump(unserialize("i:99999999999999999999;"));"#),
+        "int(9223372036854775807)\n"
+    );
+    assert_eq!(
+        run(r#"<?php var_dump(unserialize("i:-99999999999999999999;"));"#),
+        "int(-9223372036854775808)\n"
+    );
+    // A non-numeric integer body still fails.
+    assert_eq!(
+        run(r#"<?php var_dump(unserialize("i:12abc;"));"#),
+        "bool(false)\n"
+    );
+}
+
+#[test]
+fn unserialize_negative_array_count_fails() {
+    // A negative element count is malformed and yields false, not an empty array.
+    assert_eq!(
+        run(r#"<?php var_dump(unserialize("a:-1:{}"));"#),
+        "bool(false)\n"
+    );
+}
+
+#[test]
 fn serialize_float_special_values() {
     // Non-finite floats round-trip through their PHP spellings.
     // Parse the PHP spellings back to floats, then re-serialize: exercises both

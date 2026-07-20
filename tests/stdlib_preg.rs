@@ -200,6 +200,60 @@ fn multiline_and_dotall_flags() {
 }
 
 #[test]
+fn byte_matching_is_default_unicode_needs_u_flag() {
+    // Bug 1: PCRE without `/u` matches BYTES. `é` is 2 bytes (0xC3 0xA9), so a
+    // single-char pattern must NOT match, but a two-char one must.
+    assert_eq!(run(r#"<?php echo preg_match('/^.$/', 'é');"#), "0");
+    assert_eq!(run(r#"<?php echo preg_match('/^.{2}$/', 'é');"#), "1");
+    // The `/u` flag switches to Unicode: `é` is a single codepoint, so the
+    // reverse holds.
+    assert_eq!(run(r#"<?php echo preg_match('/^.$/u', 'é');"#), "1");
+    assert_eq!(run(r#"<?php echo preg_match('/^.{2}$/u', 'é');"#), "0");
+}
+
+#[test]
+fn split_delim_capture_emits_empty_for_leading_nonparticipating_group() {
+    // Bug 2: a non-participating capture group that precedes a participating one
+    // in the same match must emit "" (trailing non-participating groups drop).
+    // Flag 2 == PREG_SPLIT_DELIM_CAPTURE (literal, matching the other tests here).
+    let src = r#"<?php
+        echo implode("|", preg_split('/(a)|(b)/', 'xaybz', -1, 2));"#;
+    // xaybz → [x, a, y, "", b, z]
+    assert_eq!(run(src), "x|a|y||b|z");
+}
+
+#[test]
+fn split_limit_counts_pieces_not_captured_delimiters() {
+    // Bug 3: with DELIM_CAPTURE the limit counts only real split pieces, so the
+    // interleaved delimiters do not consume the budget.
+    let src = r#"<?php
+        $r = preg_split('/(,)/', 'a,b,c,d', 3, 2);
+        echo count($r), ":", implode("|", $r);"#;
+    // 3 real pieces (a, b, c,d) with two captured commas interleaved → 5 total.
+    assert_eq!(run(src), "5:a|,|b|,|c,d");
+}
+
+#[test]
+fn trailing_whitespace_in_flags_region_is_tolerated() {
+    // Bug 4: PHP allows whitespace after the closing delimiter / in the flags.
+    assert_eq!(run(r#"<?php echo preg_match('/a/ ', 'a');"#), "1");
+    assert_eq!(run("<?php echo preg_match(\"/a/\\n\", 'a');"), "1");
+}
+
+#[test]
+fn no_match_resets_out_array_to_empty() {
+    // Bug 5: a subsequent no-match must reset $matches to [], not leave stale
+    // captures from the prior successful match.
+    let src = r#"<?php
+        $m = [];
+        preg_match('/(\d+)/', 'x99y', $m);
+        echo count($m), ";";
+        preg_match('/(\d+)/', 'nodigits', $m);
+        echo count($m);"#;
+    assert_eq!(run(src), "2;0");
+}
+
+#[test]
 fn unsupported_pcre_features_return_error_sentinel() {
     // The Rust engine rejects backreferences and look-around; preg_match then
     // returns PHP's `false` (echoes as the empty string). This pins the

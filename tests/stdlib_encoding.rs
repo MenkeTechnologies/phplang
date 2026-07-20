@@ -114,6 +114,25 @@ fn convert_uu_roundtrip() {
 }
 
 #[test]
+fn quoted_printable_decode_trailing_bare_equals_dropped() {
+    // PHP drops a trailing bare '=' that is the final byte of input.
+    assert_eq!(run(r#"<?php echo quoted_printable_decode("a=");"#), "a");
+    assert_eq!(run(r#"<?php echo quoted_printable_decode("=");"#), "");
+    assert_eq!(run(r#"<?php echo quoted_printable_decode("=41=");"#), "A");
+}
+
+#[test]
+fn convert_uudecode_invalid_returns_false() {
+    // empty input -> false
+    assert_eq!(run(r#"<?php var_dump(convert_uudecode(""));"#), "bool(false)\n");
+    // a single length char declaring a 45-byte line with no data overruns the
+    // buffer -> malformed -> false ('M' == chr(45 + 0x20))
+    assert_eq!(run(r#"<?php var_dump(convert_uudecode("M"));"#), "bool(false)\n");
+    // valid data still decodes (guard against over-rejection)
+    assert_eq!(run(r#"<?php echo convert_uudecode(convert_uuencode("ok"));"#), "ok");
+}
+
+#[test]
 fn utf8_shims_ascii_identity() {
     assert_eq!(run(r#"<?php echo utf8_encode("plain ascii");"#), "plain ascii");
     assert_eq!(run(r#"<?php echo utf8_decode("plain ascii");"#), "plain ascii");

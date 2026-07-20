@@ -272,6 +272,27 @@ fn natcasesort_ignores_case() {
     );
 }
 
+#[test]
+fn natsort_leading_zero_run_orders_by_original_chars() {
+    // Regression: PHP strnatcmp("a010","a10") == -1. A digit run with a leading
+    // zero compares left-aligned char-by-char ('0' < '1'), so "a010" sorts before
+    // "a10" instead of folding both to the value 10 and comparing Equal.
+    assert_eq!(
+        run("<?php $a=['a10','a010']; natsort($a); echo implode(',',$a);"),
+        "a010,a10"
+    );
+}
+
+#[test]
+fn natsort_leading_zero_vs_more_digits() {
+    // "007" (leading zero, fractional compare) vs "10" (no leading zero). Element
+    // 0: '0' < '1' under the left-aligned rule, so "007" precedes "10".
+    assert_eq!(
+        run("<?php $a=['10','007','08']; natsort($a); echo implode(',',$a);"),
+        "007,08,10"
+    );
+}
+
 // ── shuffle / array_rand (membership/count only) ─────────────────────────────
 
 #[test]
@@ -328,6 +349,17 @@ fn array_walk_passes_extra() {
     assert_eq!(
         run("<?php $a=[1,2]; array_walk($a, function($v,$k,$e){ echo $v+$e,';'; }, 10);"),
         "11;12;"
+    );
+}
+
+#[test]
+fn array_walk_scalar_mutation_does_not_propagate() {
+    // Documents the VM limitation: phplang has no by-reference parameters, so a
+    // scalar reassigned inside the callback does NOT write back into the array
+    // (PHP's `function(&$v, $k)` could). The array is left untouched.
+    assert_eq!(
+        run("<?php $a=[1,2,3]; array_walk($a, function($v,$k){ $v = $v * 10; }); echo implode(',',$a);"),
+        "1,2,3"
     );
 }
 
@@ -399,6 +431,17 @@ fn pointer_empty_array() {
     assert_eq!(
         run("<?php $a=[]; var_dump(current($a)); var_dump(key($a));"),
         "bool(false)\nNULL\n"
+    );
+}
+
+#[test]
+fn pointer_append_keeps_cursor() {
+    // Regression: appending to the array must NOT rewind the internal pointer.
+    // PHP keeps the cursor where it was across `$a[] = x`; here the cursor sits on
+    // index 1 (value 20) and stays there after the push, so current() is 20.
+    assert_eq!(
+        run("<?php $a=[10,20,30]; next($a); $a[]=40; echo current($a);"),
+        "20"
     );
 }
 

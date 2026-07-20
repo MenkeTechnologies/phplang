@@ -33,7 +33,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         "stripos" => strpos_ci(args),
         "strrpos" => strrpos(args, false),
         "strripos" => strrpos(args, true),
-        "strncasecmp" => strncasecmp(args),
+        "strncasecmp" => return Some(strncasecmp(args)),
         "str_ireplace" => str_ireplace(args),
         "nl2br" => Value::str(nl2br(&str_arg(args, 0))),
         "chunk_split" => return Some(chunk_split(args)),
@@ -89,8 +89,21 @@ fn substr_count(args: &[Value]) -> Result<Value, String> {
         }
         _ => bytes.len(),
     };
-    let slice = &hay[start..end];
-    Ok(Value::int(slice.matches(&needle).count() as i64))
+    // PHP strings are byte-oriented; count non-overlapping needle matches over
+    // the byte window so multibyte haystacks never slice mid-UTF-8-char.
+    let slice = &bytes[start..end];
+    let nb = needle.as_bytes();
+    let mut count = 0i64;
+    let mut i = 0;
+    while i + nb.len() <= slice.len() {
+        if &slice[i..i + nb.len()] == nb {
+            count += 1;
+            i += nb.len();
+        } else {
+            i += 1;
+        }
+    }
+    Ok(Value::int(count))
 }
 
 /// `strstr`/`stristr`: portion of haystack from the first match of needle. When
@@ -99,9 +112,9 @@ fn substr_count(args: &[Value]) -> Result<Value, String> {
 fn strstr(args: &[Value], ci: bool) -> Value {
     let hay = str_arg(args, 0);
     let needle = str_arg(args, 1);
-    if needle.is_empty() {
-        return Value::bool(false);
-    }
+    // PHP 8: an empty needle matches at position 0, so strstr returns the whole
+    // haystack (and the empty string when $before_needle is set). `find("")` and
+    // `ci_find` both yield `Some(0)` here, so no special-case is needed.
     let before = args.get(2).map(is_truthy).unwrap_or(false);
     let found = if ci {
         ci_find(&hay, &needle)
@@ -181,7 +194,8 @@ fn strpos_ci(args: &[Value]) -> Value {
         off = (len + off).max(0);
     }
     let off = off.clamp(0, len) as usize;
-    match ci_find(&hay[off..], &needle) {
+    // Byte-oriented search: slice the byte view so a multibyte offset can't panic.
+    match ci_find_bytes(&hay.as_bytes()[off..], needle.as_bytes()) {
         Some(i) => Value::int((off + i) as i64),
         None => Value::bool(false),
     }
@@ -194,17 +208,19 @@ fn strpos_ci(args: &[Value]) -> Value {
 fn strrpos(args: &[Value], ci: bool) -> Value {
     let hay = str_arg(args, 0);
     let needle = str_arg(args, 1);
-    if needle.is_empty() {
-        return Value::bool(false);
-    }
     let len = hay.len();
+    // PHP 8: an empty needle yields strlen($haystack), not false.
+    if needle.is_empty() {
+        return Value::int(len as i64);
+    }
     let off = int_arg(args, 2);
     // Determine the inclusive window [lo, hi] where a match may START.
     let (lo, hi) = if off >= 0 {
         (off as usize, len.saturating_sub(needle.len()))
     } else {
-        // Search only within the first len+off bytes of the tail region.
-        let hi = (len as i64 + off + needle.len() as i64 - 1).max(0) as usize;
+        // Negative offset: the match may start no later than len+off (PHP's
+        // stop-this-many-bytes-from-the-end semantics), independent of needle len.
+        let hi = (len as i64 + off).max(0) as usize;
         (0, hi.min(len.saturating_sub(needle.len())))
     };
     if lo > len {
@@ -227,19 +243,26 @@ fn strrpos(args: &[Value], ci: bool) -> Value {
 // ── comparison ───────────────────────────────────────────────────────────────
 
 /// `strncasecmp($s1, $s2, $n)`: case-insensitive compare of the first `$n` bytes.
-fn strncasecmp(args: &[Value]) -> Value {
+/// PHP 8 raises a `ValueError` when `$length` is negative rather than coercing it.
+fn strncasecmp(args: &[Value]) -> Result<Value, String> {
     let a = str_arg(args, 0);
     let b = str_arg(args, 1);
-    let n = int_arg(args, 2).max(0) as usize;
+    let n_raw = int_arg(args, 2);
+    if n_raw < 0 {
+        return Err(
+            "strncasecmp(): Argument #3 ($length) must be greater than or equal to 0".into(),
+        );
+    }
+    let n = n_raw as usize;
     let ab = &a.as_bytes()[..n.min(a.len())];
     let bb = &b.as_bytes()[..n.min(b.len())];
     let la: Vec<u8> = ab.iter().map(|c| c.to_ascii_lowercase()).collect();
     let lb: Vec<u8> = bb.iter().map(|c| c.to_ascii_lowercase()).collect();
-    Value::int(match la.cmp(&lb) {
+    Ok(Value::int(match la.cmp(&lb) {
         std::cmp::Ordering::Less => -1,
         std::cmp::Ordering::Greater => 1,
         std::cmp::Ordering::Equal => 0,
-    })
+    }))
 }
 
 // ── translation / replacement ────────────────────────────────────────────────
@@ -312,11 +335,13 @@ fn substr_replace(args: &[Value]) -> Value {
         }
         _ => s.len(),
     };
-    let mut out = String::with_capacity(start + replace.len() + (s.len() - end));
-    out.push_str(&s[..start]);
-    out.push_str(&replace);
-    out.push_str(&s[end..]);
-    Value::str(out)
+    // Byte-oriented splice so multibyte offsets never slice mid-UTF-8-char.
+    let sb = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(start + replace.len() + (sb.len() - end));
+    out.extend_from_slice(&sb[..start]);
+    out.extend_from_slice(replace.as_bytes());
+    out.extend_from_slice(&sb[end..]);
+    Value::str(String::from_utf8_lossy(&out).into_owned())
 }
 
 /// `str_ireplace($search, $replace, $subject)`: case-insensitive `str_replace`.
@@ -756,12 +781,18 @@ fn is_truthy(v: &Value) -> bool {
     with_host(|h| h.is_truthy(v))
 }
 
-/// ASCII case-insensitive byte search: index of the first match of `needle`.
+/// ASCII case-insensitive search over `&str`: index of the first match of `needle`.
 fn ci_find(hay: &str, needle: &str) -> Option<usize> {
-    if needle.is_empty() {
+    ci_find_bytes(hay.as_bytes(), needle.as_bytes())
+}
+
+/// ASCII case-insensitive byte search: index of the first match of `nb` in `hb`.
+/// Byte-oriented so callers can search multibyte haystacks without char-boundary
+/// panics (PHP's non-`mb_` string functions are all byte-oriented).
+fn ci_find_bytes(hb: &[u8], nb: &[u8]) -> Option<usize> {
+    if nb.is_empty() {
         return Some(0);
     }
-    let (hb, nb) = (hay.as_bytes(), needle.as_bytes());
     if nb.len() > hb.len() {
         return None;
     }

@@ -96,6 +96,45 @@ fn hash_hmac_vectors() {
 }
 
 #[test]
+fn hash_hmac_sha2_family() {
+    // sha256/sha384/sha512 (block sizes 64/128/128) cross-checked against
+    // `openssl dgst -<algo> -hmac key` (matches PHP hash_hmac).
+    assert_eq!(
+        run(r#"<?php echo hash_hmac("sha256", "abc", "key");"#),
+        "9c196e32dc0175f86f4b1cb89289d6619de6bee699e4c378e68309ed97a1a6ab"
+    );
+    assert_eq!(
+        run(r#"<?php echo hash_hmac("sha384", "abc", "key");"#),
+        "30ddb9c8f347cffbfb44e519d814f074cf4047a55d6f563324f1c6a33920e5ed\
+         fb2a34bac60bdc96cd33a95623d7d638"
+    );
+    assert_eq!(
+        run(r#"<?php echo hash_hmac("sha512", "abc", "key");"#),
+        "3926a207c8c42b0c41792cbd3e1a1aaaf5f7a25704f62dfc939c4987dd7ce060\
+         009c5bb1c2447355b3216f10b537e9afa7b64a4e5391b0d631172d07939e087a"
+    );
+    // Longer message exercises the 128-byte block padding for sha512.
+    assert_eq!(
+        run(r#"<?php echo hash_hmac("sha512", "The quick brown fox", "key");"#),
+        "36f44b125a8a90639dc46733039571792e081e0fd8685ff746784b02ed14aa35\
+         629d562c7117cde4a701570551faa5a5e1b7ef1eb5c3bcd4cc1fdb8923fcf14e"
+    );
+}
+
+#[test]
+fn hash_unknown_algo_php8_valueerror() {
+    // PHP 8 ValueError text (not the PHP 7 "Unknown hashing algorithm").
+    assert_eq!(
+        eval_capture(r#"<?php echo hash("bogus", "x");"#).unwrap_err(),
+        "hash(): Argument #1 ($algo) must be a valid hashing algorithm"
+    );
+    assert_eq!(
+        eval_capture(r#"<?php echo hash_hmac("bogus", "x", "k");"#).unwrap_err(),
+        "hash_hmac(): Argument #1 ($algo) must be a valid cryptographic hashing algorithm"
+    );
+}
+
+#[test]
 fn hash_hmac_long_key() {
     // Key longer than the 64-byte block is pre-hashed; verifies that path
     // against a fixed reference value from PHP.

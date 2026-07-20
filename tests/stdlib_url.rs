@@ -158,6 +158,42 @@ fn parse_str_decodes_percent_and_plus() {
 }
 
 #[test]
+fn parse_url_port_with_trailing_junk() {
+    // strtol semantics: a port with trailing non-digits keeps the leading digits
+    // ("80abc" -> 80) instead of rejecting the whole URL as false.
+    assert_eq!(
+        run(r#"<?php echo json_encode(parse_url("http://host:80abc/"));"#),
+        r#"{"scheme":"http","host":"host","port":80,"path":"/"}"#
+    );
+}
+
+#[test]
+fn http_build_query_explicit_empty_separator() {
+    // An explicit empty separator concatenates pairs with no delimiter; only a
+    // missing/null separator falls back to "&".
+    assert_eq!(
+        run(r#"<?php echo http_build_query(["a"=>1,"b"=>2], "", "");"#),
+        "a=1b=2"
+    );
+    // Default (missing) separator still uses "&".
+    assert_eq!(
+        run(r#"<?php echo http_build_query(["a"=>1,"b"=>2]);"#),
+        "a=1&b=2"
+    );
+}
+
+#[test]
+fn parse_str_strips_leading_plus_and_space() {
+    // A leading '+' (decodes to a space) is stripped from the base key, not
+    // mangled to '_': "+a" -> "a".
+    let src = r#"<?php $r = parse_str("+a=1"); echo json_encode($r);"#;
+    assert_eq!(run(src), r#"{"a":"1"}"#);
+    // A leading literal space is likewise stripped; interior space still mangles.
+    let src2 = r#"<?php $r = parse_str("%20x y=2"); echo json_encode($r);"#;
+    assert_eq!(run(src2), r#"{"x_y":"2"}"#);
+}
+
+#[test]
 fn parse_str_nested_deep() {
     let src = r#"<?php $r = parse_str("a[b][c]=1");
         echo json_encode($r);"#;

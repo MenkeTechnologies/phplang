@@ -85,6 +85,92 @@ fn mktime_and_gmmktime() {
 }
 
 #[test]
+fn mktime_huge_field_returns_false_no_panic() {
+    // Bug 1: absurd field values used to panic via chrono overflow. They must
+    // now return false (a documented non-crashing deviation from PHP).
+    assert_eq!(
+        run(r#"<?php echo mktime(0,0,0,1,999999999999,2020) === false ? "F":"?";"#),
+        "F"
+    );
+    assert_eq!(
+        run(r#"<?php echo gmmktime(0,0,0,999999999999,1,2020) === false ? "F":"?";"#),
+        "F"
+    );
+    // A relative strtotime offset large enough to overflow must also return false.
+    assert_eq!(
+        run(r#"<?php echo strtotime("+999999999999 days", 0) === false ? "F":"?";"#),
+        "F"
+    );
+    assert_eq!(
+        run(r#"<?php echo strtotime("+999999999999 months", 0) === false ? "F":"?";"#),
+        "F"
+    );
+}
+
+#[test]
+fn strtotime_empty_string_is_false() {
+    // Bug 2: PHP 8 treats an empty (or whitespace-only) string as a parse failure.
+    assert_eq!(run(r#"<?php echo strtotime("") === false ? "F":"?";"#), "F");
+    assert_eq!(run(r#"<?php echo strtotime("   ") === false ? "F":"?";"#), "F");
+    // "now" still resolves to the base timestamp.
+    assert_eq!(run(r#"<?php echo strtotime("now", 42);"#), "42");
+}
+
+#[test]
+fn strtotime_month_year_overflow_matches_php() {
+    // Bug 3: PHP overflows the day rather than clamping to the last valid day.
+    // 2011-01-31 (mktime -> 1296432000) + 1 month => 2011-03-03, not 2011-02-28.
+    assert_eq!(
+        run(r#"<?php echo date("Y-m-d", strtotime("+1 month", 1296432000));"#),
+        "2011-03-03"
+    );
+    // Exact timestamp PHP produces for the above.
+    assert_eq!(
+        run(r#"<?php echo strtotime("+1 month", 1296432000);"#),
+        "1299110400"
+    );
+    // Year overflow: 2000-02-29 (leap) + 1 year => 2001-03-01.
+    // mktime(0,0,0,2,29,2000) = 951782400.
+    assert_eq!(
+        run(r#"<?php echo date("Y-m-d", strtotime("+1 year", 951782400));"#),
+        "2001-03-01"
+    );
+}
+
+#[test]
+fn date_iso_rfc_and_subsecond_formats() {
+    // Bug 4: c, r, o, u, v were previously emitted as literals.
+    assert_eq!(run(r#"<?php echo date("c", 0);"#), "1970-01-01T00:00:00+00:00");
+    assert_eq!(
+        run(r#"<?php echo date("r", 0);"#),
+        "Thu, 01 Jan 1970 00:00:00 +0000"
+    );
+    // Integer-second timestamps carry no sub-second part -> zeros.
+    assert_eq!(run(r#"<?php echo date("u", 0);"#), "000000");
+    assert_eq!(run(r#"<?php echo date("v", 0);"#), "000");
+    // ISO-8601 week-numbering year: 2005-01-01 belongs to ISO week 53 of 2004.
+    // 2005-01-01 00:00:00 UTC = 1104537600.
+    assert_eq!(run(r#"<?php echo date("o", 1104537600);"#), "2004");
+    assert_eq!(run(r#"<?php echo date("Y", 1104537600);"#), "2005");
+    // gmdate honors the same additions.
+    assert_eq!(run(r#"<?php echo gmdate("c", 0);"#), "1970-01-01T00:00:00+00:00");
+}
+
+#[test]
+fn timezone_set_accepts_unknown_name() {
+    // Bug 5 (documented-only): without chrono-tz, unknown names are NOT rejected
+    // (PHP returns false); this impl always returns true and only records the name.
+    assert_eq!(
+        run(r#"<?php echo date_default_timezone_set("Not/AZone") ? "y":"n";"#),
+        "y"
+    );
+    assert_eq!(
+        run(r#"<?php date_default_timezone_set("Not/AZone"); echo date_default_timezone_get();"#),
+        "Not/AZone"
+    );
+}
+
+#[test]
 fn checkdate_validity() {
     assert_eq!(run(r#"<?php echo checkdate(2,29,2000) ? "y":"n";"#), "y"); // leap
     assert_eq!(run(r#"<?php echo checkdate(2,29,2001) ? "y":"n";"#), "n"); // non-leap

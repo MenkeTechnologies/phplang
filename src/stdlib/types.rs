@@ -109,17 +109,54 @@ fn php_serialize(h: &crate::host::PhpHost, v: &Value) -> String {
     }
 }
 
-/// Format a float the way PHP's `serialize` does (serialize_precision = -1: the
-/// shortest string that round-trips). Rust's `{}` yields that; only the non-finite
-/// spellings differ.
+/// Format a float the way PHP's `serialize` does with `serialize_precision = -1`.
+///
+/// PHP calls `zend_gcvt` on the shortest round-tripping digit string (`zend_dtoa`
+/// mode 0) and switches to E-notation when the decimal point position `decpt`
+/// (= exponent + 1) exceeds 17 or drops below -3 — i.e. large or small magnitudes
+/// render as `1.0E+20` / `1.0E-10`, everything in between stays fixed. Rust's
+/// `{:e}` already produces the shortest round-tripping mantissa (Ryu), so parse
+/// that and reformat PHP-style. Verified against reference PHP 8:
+/// `serialize(1e17)` = `d:1.0E+17;` but `serialize(1e16)` = `d:10000000000000000;`.
 fn serialize_float(f: f64) -> String {
     if f.is_nan() {
-        "NAN".to_string()
-    } else if f.is_infinite() {
-        if f < 0.0 { "-INF" } else { "INF" }.to_string()
-    } else {
-        format!("{f}")
+        return "NAN".to_string();
     }
+    if f.is_infinite() {
+        return if f < 0.0 { "-INF" } else { "INF" }.to_string();
+    }
+    if f == 0.0 {
+        // PHP renders negative zero as "-0".
+        return if f.is_sign_negative() { "-0" } else { "0" }.to_string();
+    }
+    let neg = f < 0.0;
+    let a = f.abs();
+    // `{:e}` yields e.g. "1.5e0", "1e20", "1.844674407371e19".
+    let sci = format!("{a:e}");
+    let (mant, exp_s) = sci.split_once('e').expect("`{:e}` always contains 'e'");
+    let exp: i32 = exp_s.parse().expect("`{:e}` exponent is an integer");
+    let digits: String = mant.chars().filter(|c| *c != '.').collect();
+    // `decpt`: position of the decimal point relative to the digit string, the
+    // same quantity `zend_dtoa` reports.
+    let decpt = exp + 1;
+    let body = if !(-3..=17).contains(&decpt) {
+        // Exponential: one leading digit, then the rest (or ".0"), signed exponent.
+        let (first, rest) = digits.split_at(1);
+        let frac = if rest.is_empty() { "0" } else { rest };
+        let e = decpt - 1;
+        format!("{first}.{frac}E{}{}", if e < 0 { "-" } else { "+" }, e.abs())
+    } else if decpt <= 0 {
+        // 0.00…digits — leading zeros equal to -decpt.
+        format!("0.{}{}", "0".repeat((-decpt) as usize), digits)
+    } else if decpt as usize >= digits.len() {
+        // Integer-valued: pad trailing zeros out to the decimal point.
+        format!("{digits}{}", "0".repeat(decpt as usize - digits.len()))
+    } else {
+        // Decimal point falls inside the digit string.
+        let (int_part, frac) = digits.split_at(decpt as usize);
+        format!("{int_part}.{frac}")
+    };
+    if neg { format!("-{body}") } else { body }
 }
 
 // ── unserialize ──────────────────────────────────────────────────────────────
@@ -169,9 +206,33 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse the decimal integer that runs up to `delim`, consuming the delimiter.
+    /// Strict: overflow or non-numeric input fails. Used for lengths and counts.
     fn int_until(&mut self, delim: u8) -> Option<i64> {
         let s = std::str::from_utf8(self.read_until(delim)?).ok()?;
         s.parse().ok()
+    }
+
+    /// Parse a serialized integer *value* up to `delim`. Unlike `int_until`, a
+    /// magnitude beyond `i64` saturates to `PHP_INT_MAX`/`PHP_INT_MIN` rather than
+    /// failing — PHP's `unserialize` clamps an out-of-range `i:` literal (emitting
+    /// a warning) instead of returning `false`.
+    fn int_value(&mut self, delim: u8) -> Option<i64> {
+        let s = std::str::from_utf8(self.read_until(delim)?).ok()?;
+        match s.parse::<i64>() {
+            Ok(n) => Some(n),
+            Err(_) => {
+                // Saturate only genuine numeric overflow; reject anything else.
+                let (neg, body) = match s.strip_prefix('-') {
+                    Some(rest) => (true, rest),
+                    None => (false, s),
+                };
+                if !body.is_empty() && body.bytes().all(|c| c.is_ascii_digit()) {
+                    Some(if neg { i64::MIN } else { i64::MAX })
+                } else {
+                    None
+                }
+            }
+        }
     }
 
     /// Parse one serialized value at the cursor.
@@ -195,7 +256,7 @@ impl<'a> Parser<'a> {
             }
             b'i' => {
                 self.eat(b"i:")?;
-                let n = self.int_until(b';')?;
+                let n = self.int_value(b';')?;
                 Some(Value::int(n))
             }
             b'd' => {
@@ -225,6 +286,11 @@ impl<'a> Parser<'a> {
             b'a' => {
                 self.eat(b"a:")?;
                 let count = self.int_until(b':')?;
+                // A negative element count is malformed; PHP rejects it (returns
+                // `false`) rather than treating it as an empty array.
+                if count < 0 {
+                    return None;
+                }
                 self.eat(b"{")?;
                 let mut pairs: Vec<(Value, Value)> = Vec::new();
                 for _ in 0..count {

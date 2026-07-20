@@ -105,6 +105,53 @@ fn sprintf_family_and_scan() {
     assert_eq!(run(r#"<?php $r = sscanf("x 3.5", "%s %f"); echo $r[0], "|", $r[1];"#), "x|3.5");
 }
 
+// ── regression tests for reviewed PHP-8-semantics bugs ───────────────────────
+
+#[test]
+fn multibyte_byte_slices_do_not_panic() {
+    // Bug 1: these all sliced a &str at a raw byte offset that landed mid-UTF-8
+    // char ("é" is two bytes) and panicked "byte index N is not a char boundary".
+    // PHP strings are byte-oriented, so byte-length results are expected.
+    // "héllo" bytes: h é(2) l l o. Splicing at byte offset 2 lands inside "é":
+    // PHP emits the raw bytes 68 c3 78; phplang stores results in a Rust `String`,
+    // so the dangling 0xC3 lead byte surfaces as U+FFFD via from_utf8_lossy. The
+    // load-bearing assertion is "no panic" — old code crashed here.
+    assert_eq!(run(r#"<?php echo substr_replace("héllo", "x", 2);"#), "h\u{FFFD}x");
+    assert_eq!(run(r#"<?php echo substr_count("héllo héllo", "l");"#), "4");
+    // stripos with an offset that falls mid-char must not panic.
+    assert_eq!(run(r#"<?php echo stripos("héllo", "L", 2);"#), "3");
+    // strspn/strcspn are byte-oriented and count the leading 2-byte "é" as bytes.
+    assert_eq!(run(r#"<?php echo strcspn("héllo", "l");"#), "3");
+}
+
+#[test]
+fn empty_needle_php8_semantics() {
+    // Bug 2: empty needle must return the whole haystack (PHP 8), not false.
+    assert_eq!(run(r#"<?php echo strstr("hello", "");"#), "hello");
+    assert_eq!(run(r#"<?php echo stristr("hello", "");"#), "hello");
+    // before_needle => the (empty) portion before position 0.
+    assert_eq!(run(r#"<?php var_dump(strstr("hello", "", true));"#), "string(0) \"\"\n");
+    // Bug 3: empty needle must return strlen(haystack), not false.
+    assert_eq!(run(r#"<?php echo strrpos("hello", "");"#), "5");
+    assert_eq!(run(r#"<?php echo strripos("hello", "");"#), "5");
+}
+
+#[test]
+fn strrpos_negative_offset_window() {
+    // Bug 3: the multi-char-needle negative-offset window must cap the start at
+    // len+off (not len+off+needle_len-1). strrpos("ababab","ab",-3) == 2.
+    assert_eq!(run(r#"<?php echo strrpos("ababab", "ab", -3);"#), "2");
+    assert_eq!(run(r#"<?php echo strrpos("ababab", "ab", -1);"#), "4");
+}
+
+#[test]
+fn strncasecmp_negative_length_is_valueerror() {
+    // Bug 4: a negative $length raises a PHP-8 ValueError, not a coerced compare.
+    assert!(eval_capture(r#"<?php echo strncasecmp("a", "b", -1);"#).is_err());
+    // Zero length still compares equal (no bytes compared).
+    assert_eq!(run(r#"<?php echo strncasecmp("abc", "xyz", 0);"#), "0");
+}
+
 #[test]
 fn multibyte() {
     assert_eq!(run(r#"<?php echo mb_strlen("héllo");"#), "5");
