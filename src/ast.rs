@@ -134,6 +134,10 @@ pub enum Expr {
     /// Evaluates `e` to an exception object, records it as the pending throw, and
     /// unwinds the current chunk.
     Throw(Box<Expr>),
+    /// A bare constant reference (`PHP_EOL`, `M_PI`, a user `define`d name). At
+    /// runtime it resolves against the constant table, falling back to the bare
+    /// name as a string when undefined (PHP 7 leniency, minus the notice).
+    ConstFetch(String),
 }
 
 /// One arm of a `match` expression. `conds` is `None` for the `default` arm;

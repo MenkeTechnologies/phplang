@@ -956,6 +956,11 @@ impl Compiler {
                 self.compile_expr(b, inner)?;
                 b.emit(Op::CallBuiltin(ops::THROW, 1), 0);
             }
+            Expr::ConstFetch(name) => {
+                let idx = b.add_constant(Value::str(name.clone()));
+                b.emit(Op::LoadConst(idx), 0);
+                b.emit(Op::CallBuiltin(ops::CONST_FETCH, 1), 0);
+            }
         }
         Ok(())
     }
@@ -1660,6 +1665,7 @@ fn collect_free_vars(e: &Expr, out: &mut Vec<String>) {
         }
         Expr::StaticGet(_, _) => {}
         Expr::Throw(inner) => collect_free_vars(inner, out),
+        Expr::ConstFetch(_) => {}
         Expr::Null | Expr::Bool(_) | Expr::Int(_) | Expr::Float(_) | Expr::Str(_) => {}
     }
 }

@@ -927,12 +927,16 @@ impl Parser {
                 }
             } else if self.eat_punct("::") {
                 // Static / scope-resolution access: the left must be a class name
-                // (a bareword, surfacing here as `Expr::Str`).
-                let Expr::Str(class) = e else {
-                    return Err(format!(
-                        "expected a class name before '::' (line {})",
-                        self.line()
-                    ));
+                // — a bareword, which surfaces here as `Expr::ConstFetch` (or a
+                // legacy `Expr::Str`).
+                let class = match e {
+                    Expr::ConstFetch(name) | Expr::Str(name) => name,
+                    _ => {
+                        return Err(format!(
+                            "expected a class name before '::' (line {})",
+                            self.line()
+                        ))
+                    }
                 };
                 let member = self.member_name()?;
                 if self.eat_punct("(") {
@@ -1094,10 +1098,10 @@ impl Parser {
                     }
                     Ok(Expr::Call(name, args))
                 } else {
-                    // A bare constant name; the scaffold has no user constants, so
-                    // treat an unknown bareword as its string name (PHP 7 behaviour
-                    // for undefined constants, minus the notice).
-                    Ok(Expr::Str(name))
+                    // A bare constant reference — resolved against the constant
+                    // table at runtime, falling back to the bare name as a string
+                    // when undefined (PHP 7 leniency for undefined constants).
+                    Ok(Expr::ConstFetch(name))
                 }
             }
             other => Err(format!("unexpected token {other:?} (line {})", self.line())),

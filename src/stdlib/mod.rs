@@ -14,6 +14,7 @@ use fusevm::Value;
 
 pub mod arrays;
 pub mod callable;
+pub mod constants;
 pub mod ctype;
 pub mod datetime;
 pub mod encoding;
@@ -49,6 +50,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         .or_else(|| filter::dispatch(name, args))
         .or_else(|| mbstring::dispatch(name, args))
         .or_else(|| misc::dispatch(name, args))
+        .or_else(|| constants::dispatch(name, args))
 }
 
 /// Shared helpers for the category modules. Each helper is used by at least one

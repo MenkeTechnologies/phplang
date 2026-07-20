@@ -68,6 +68,14 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::SIG_HALT, b_sig_halt);
     vm.register_builtin(ops::SIG_BREAK, b_sig_break);
     vm.register_builtin(ops::SIG_CONTINUE, b_sig_continue);
+    vm.register_builtin(ops::CONST_FETCH, b_const_fetch);
+}
+
+/// Resolve a bare constant reference to its value (or the bare name as a string
+/// when undefined, matching PHP 7 leniency).
+fn b_const_fetch(vm: &mut VM, _: u8) -> Value {
+    let name = pop_name(vm);
+    with_host(|h| h.const_fetch(&name))
 }
 
 /// Halt the current chunk if an exception is now in flight, so a `throw` raised

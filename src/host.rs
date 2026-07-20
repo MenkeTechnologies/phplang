@@ -70,6 +70,7 @@ pub mod ops {
     pub const SIG_HALT: u16 = 53; // [] -> halt chunk (propagate an already-set signal)
     pub const SIG_BREAK: u16 = 54; // [] -> signal `break`, halt chunk
     pub const SIG_CONTINUE: u16 = 55; // [] -> signal `continue`, halt chunk
+    pub const CONST_FETCH: u16 = 56; // [name] -> constant value (or the bare name)
 }
 
 /// Sub-ops for the by-reference array mutators lowered through `ops::ARR_MUT`
@@ -218,6 +219,9 @@ pub struct PhpHost {
     /// Compiled `try`/`catch`/`finally` constructs, indexed by the id the
     /// compiler bakes into each `RUN_TRY` call.
     try_defs: Vec<TryDef>,
+    /// Named constants (`PHP_EOL`, `M_PI`, user `define`s), keyed case-sensitively.
+    /// Seeded with the standard predefined constants on every fresh host.
+    constants: FxHashMap<String, Value>,
 }
 
 impl Default for PhpHost {
@@ -239,7 +243,34 @@ impl PhpHost {
             signal: None,
             pending_throw: None,
             try_defs: Vec::new(),
+            constants: predefined_constants(),
         }
+    }
+
+    // ── constants ───────────────────────────────────────────────────────────
+
+    /// `constant(name)` / a bare constant reference: the defined value, or the
+    /// bare name as a string when undefined (PHP 7 leniency, minus the notice).
+    pub fn const_fetch(&self, name: &str) -> Value {
+        self.constants
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| Value::str(name.to_string()))
+    }
+
+    /// Whether a constant of this name is defined.
+    pub fn const_defined(&self, name: &str) -> bool {
+        self.constants.contains_key(name)
+    }
+
+    /// `define(name, value)` — defines a constant, returning `true` unless it was
+    /// already defined (PHP does not redefine and returns `false`).
+    pub fn const_define(&mut self, name: &str, value: Value) -> bool {
+        if self.constants.contains_key(name) {
+            return false;
+        }
+        self.constants.insert(name.to_string(), value);
+        true
     }
 
     // ── program loading ────────────────────────────────────────────────────
@@ -1110,6 +1141,210 @@ impl PhpHost {
             _ => "unknown type",
         }
     }
+}
+
+/// The standard predefined constants seeded onto every fresh host. Covers the
+/// core/version/OS constants, the `M_*` math constants, and the integer flag
+/// constants the standard library accepts (sort/count/str_pad/array_filter/preg/
+/// json/filter/mbstring/file/pathinfo/entities/error-level families), so a
+/// program that writes `SORT_STRING` or `FILTER_VALIDATE_EMAIL` gets the real
+/// integer rather than the bare name.
+fn predefined_constants() -> FxHashMap<String, Value> {
+    let mut m = FxHashMap::default();
+    let mut si = |k: &str, v: i64| {
+        m.insert(k.to_string(), Value::int(v));
+    };
+    // core / platform
+    si("PHP_INT_MAX", i64::MAX);
+    si("PHP_INT_MIN", i64::MIN);
+    si("PHP_INT_SIZE", 8);
+    si("PHP_FLOAT_DIG", 15);
+    si("PHP_MAJOR_VERSION", 8);
+    si("PHP_MINOR_VERSION", 3);
+    si("PHP_RELEASE_VERSION", 0);
+    si("PHP_VERSION_ID", 80300);
+    si("PHP_ROUND_HALF_UP", 1);
+    si("PHP_ROUND_HALF_DOWN", 2);
+    si("PHP_ROUND_HALF_EVEN", 3);
+    si("PHP_ROUND_HALF_ODD", 4);
+    si("E_ERROR", 1);
+    si("E_WARNING", 2);
+    si("E_PARSE", 4);
+    si("E_NOTICE", 8);
+    si("E_STRICT", 2048);
+    si("E_DEPRECATED", 8192);
+    si("E_ALL", 32767);
+    si("E_USER_ERROR", 256);
+    si("E_USER_WARNING", 512);
+    si("E_USER_NOTICE", 1024);
+    si("E_USER_DEPRECATED", 16384);
+    // sort / count / str_pad / array_filter
+    si("SORT_REGULAR", 0);
+    si("SORT_NUMERIC", 1);
+    si("SORT_STRING", 2);
+    si("SORT_DESC", 3);
+    si("SORT_ASC", 4);
+    si("SORT_LOCALE_STRING", 5);
+    si("SORT_NATURAL", 6);
+    si("SORT_FLAG_CASE", 8);
+    si("COUNT_NORMAL", 0);
+    si("COUNT_RECURSIVE", 1);
+    si("STR_PAD_RIGHT", 1);
+    si("STR_PAD_LEFT", 0);
+    si("STR_PAD_BOTH", 2);
+    si("ARRAY_FILTER_USE_KEY", 2);
+    si("ARRAY_FILTER_USE_BOTH", 1);
+    // preg
+    si("PREG_PATTERN_ORDER", 1);
+    si("PREG_SET_ORDER", 2);
+    si("PREG_OFFSET_CAPTURE", 256);
+    si("PREG_UNMATCHED_AS_NULL", 512);
+    si("PREG_SPLIT_NO_EMPTY", 1);
+    si("PREG_SPLIT_DELIM_CAPTURE", 2);
+    si("PREG_SPLIT_OFFSET_CAPTURE", 4);
+    // json
+    si("JSON_HEX_TAG", 1);
+    si("JSON_HEX_AMP", 2);
+    si("JSON_HEX_APOS", 4);
+    si("JSON_HEX_QUOT", 8);
+    si("JSON_FORCE_OBJECT", 16);
+    si("JSON_NUMERIC_CHECK", 32);
+    si("JSON_UNESCAPED_SLASHES", 64);
+    si("JSON_PRETTY_PRINT", 128);
+    si("JSON_UNESCAPED_UNICODE", 256);
+    si("JSON_THROW_ON_ERROR", 4194304);
+    si("JSON_OBJECT_AS_ARRAY", 1);
+    si("JSON_BIGINT_AS_STRING", 2);
+    si("JSON_ERROR_NONE", 0);
+    si("JSON_ERROR_DEPTH", 1);
+    si("JSON_ERROR_STATE_MISMATCH", 2);
+    si("JSON_ERROR_CTRL_CHAR", 3);
+    si("JSON_ERROR_SYNTAX", 4);
+    si("JSON_ERROR_UTF8", 5);
+    // filter
+    si("INPUT_GET", 1);
+    si("INPUT_POST", 0);
+    si("FILTER_DEFAULT", 516);
+    si("FILTER_UNSAFE_RAW", 516);
+    si("FILTER_VALIDATE_INT", 257);
+    si("FILTER_VALIDATE_BOOLEAN", 258);
+    si("FILTER_VALIDATE_BOOL", 258);
+    si("FILTER_VALIDATE_FLOAT", 259);
+    si("FILTER_VALIDATE_REGEXP", 272);
+    si("FILTER_VALIDATE_DOMAIN", 277);
+    si("FILTER_VALIDATE_URL", 273);
+    si("FILTER_VALIDATE_EMAIL", 274);
+    si("FILTER_VALIDATE_IP", 275);
+    si("FILTER_VALIDATE_MAC", 276);
+    si("FILTER_SANITIZE_STRING", 513);
+    si("FILTER_SANITIZE_STRIPPED", 513);
+    si("FILTER_SANITIZE_ENCODED", 514);
+    si("FILTER_SANITIZE_SPECIAL_CHARS", 515);
+    si("FILTER_SANITIZE_FULL_SPECIAL_CHARS", 522);
+    si("FILTER_SANITIZE_EMAIL", 517);
+    si("FILTER_SANITIZE_URL", 518);
+    si("FILTER_SANITIZE_NUMBER_INT", 519);
+    si("FILTER_SANITIZE_NUMBER_FLOAT", 520);
+    si("FILTER_SANITIZE_ADD_SLASHES", 523);
+    si("FILTER_FLAG_ALLOW_OCTAL", 1);
+    si("FILTER_FLAG_ALLOW_HEX", 2);
+    si("FILTER_FLAG_STRIP_LOW", 4);
+    si("FILTER_FLAG_STRIP_HIGH", 8);
+    si("FILTER_FLAG_ALLOW_FRACTION", 4096);
+    si("FILTER_FLAG_ALLOW_THOUSAND", 8192);
+    si("FILTER_FLAG_ALLOW_SCIENTIFIC", 16384);
+    si("FILTER_FLAG_IPV4", 1048576);
+    si("FILTER_FLAG_IPV6", 2097152);
+    si("FILTER_FLAG_HOSTNAME", 1048576);
+    si("FILTER_NULL_ON_FAILURE", 134217728);
+    si("FILTER_REQUIRE_SCALAR", 33554432);
+    si("FILTER_REQUIRE_ARRAY", 16777216);
+    si("FILTER_FORCE_ARRAY", 67108864);
+    // mbstring
+    si("MB_CASE_UPPER", 0);
+    si("MB_CASE_LOWER", 1);
+    si("MB_CASE_TITLE", 2);
+    // file / dir
+    si("FILE_USE_INCLUDE_PATH", 1);
+    si("FILE_APPEND", 8);
+    si("FILE_IGNORE_NEW_LINES", 2);
+    si("FILE_SKIP_EMPTY_LINES", 4);
+    si("FILE_NO_DEFAULT_CONTEXT", 16);
+    si("LOCK_SH", 1);
+    si("LOCK_EX", 2);
+    si("LOCK_UN", 3);
+    si("SCANDIR_SORT_ASCENDING", 0);
+    si("SCANDIR_SORT_DESCENDING", 1);
+    si("SCANDIR_SORT_NONE", 2);
+    si("PATHINFO_DIRNAME", 1);
+    si("PATHINFO_BASENAME", 2);
+    si("PATHINFO_EXTENSION", 4);
+    si("PATHINFO_FILENAME", 8);
+    si("PATHINFO_ALL", 15);
+    // html entities
+    si("ENT_NOQUOTES", 0);
+    si("ENT_COMPAT", 2);
+    si("ENT_QUOTES", 3);
+    si("ENT_HTML401", 0);
+    si("ENT_HTML5", 48);
+    si("ENT_XML1", 16);
+    si("ENT_XHTML", 32);
+    si("ENT_SUBSTITUTE", 8);
+    si("ENT_IGNORE", 4);
+    // string constants
+    let mut ss = |k: &str, v: &str| {
+        m.insert(k.to_string(), Value::str(v.to_string()));
+    };
+    ss("PHP_EOL", "\n");
+    ss("PHP_VERSION", "8.3.0");
+    ss(
+        "PHP_OS",
+        if cfg!(target_os = "macos") {
+            "Darwin"
+        } else if cfg!(target_os = "windows") {
+            "WINNT"
+        } else {
+            "Linux"
+        },
+    );
+    ss(
+        "PHP_OS_FAMILY",
+        if cfg!(target_os = "windows") {
+            "Windows"
+        } else if cfg!(target_os = "macos") {
+            "Darwin"
+        } else {
+            "Linux"
+        },
+    );
+    ss("DIRECTORY_SEPARATOR", if cfg!(windows) { "\\" } else { "/" });
+    ss("PATH_SEPARATOR", if cfg!(windows) { ";" } else { ":" });
+    // math constants
+    let mut sf = |k: &str, v: f64| {
+        m.insert(k.to_string(), Value::float(v));
+    };
+    sf("M_PI", std::f64::consts::PI);
+    sf("M_E", std::f64::consts::E);
+    sf("M_SQRT2", std::f64::consts::SQRT_2);
+    sf("M_SQRT1_2", std::f64::consts::FRAC_1_SQRT_2);
+    sf("M_SQRT3", 1.7320508075688772);
+    sf("M_2_SQRTPI", std::f64::consts::FRAC_2_SQRT_PI);
+    sf("M_PI_2", std::f64::consts::FRAC_PI_2);
+    sf("M_PI_4", std::f64::consts::FRAC_PI_4);
+    sf("M_1_PI", std::f64::consts::FRAC_1_PI);
+    sf("M_2_PI", std::f64::consts::FRAC_2_PI);
+    sf("M_LN2", std::f64::consts::LN_2);
+    sf("M_LN10", std::f64::consts::LN_10);
+    sf("M_LOG2E", std::f64::consts::LOG2_E);
+    sf("M_LOG10E", std::f64::consts::LOG10_E);
+    sf("M_EULER", 0.5772156649015329);
+    sf("M_SQRTPI", 1.7724538509055159);
+    sf("PHP_FLOAT_EPSILON", f64::EPSILON);
+    sf("PHP_FLOAT_MAX", f64::MAX);
+    sf("PHP_FLOAT_MIN", f64::MIN_POSITIVE);
+    sf("INF", f64::INFINITY);
+    sf("NAN", f64::NAN);
+    m
 }
 
 // ── thread-local host access ──────────────────────────────────────────────
