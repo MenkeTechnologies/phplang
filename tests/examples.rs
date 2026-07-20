@@ -70,6 +70,47 @@ fn control_example_runs_and_prints_expected() {
 }
 
 #[test]
+fn classes_example_runs_and_prints_expected() {
+    let out = run_example("classes.php");
+    assert_eq!(
+        out,
+        "Camel has 4 legs\n\
+         Rex says woof\n\
+         Rex has 4 legs\n\
+         woof\n\
+         Dog\n\
+         7\n"
+    );
+}
+
+#[test]
+fn closures_example_runs_and_prints_expected() {
+    let out = run_example("closures.php");
+    assert_eq!(
+        out,
+        "105\n\
+         12\n\
+         2,4,6\n\
+         17\n\
+         iife\n"
+    );
+}
+
+#[test]
+fn exceptions_example_runs_and_prints_expected() {
+    let out = run_example("exceptions.php");
+    assert_eq!(
+        out,
+        "caught: boom\n\
+         work + cleanup\n\
+         as error: not an int\n\
+         logic/runtime: bad arg\n\
+         required: missing\n\
+         bad config (7)\n"
+    );
+}
+
+#[test]
 fn strings_example_runs_and_prints_expected() {
     let out = run_example("strings.php");
     assert_eq!(
