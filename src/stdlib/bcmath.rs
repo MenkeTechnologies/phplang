@@ -69,11 +69,15 @@ fn parse_bd(s: &str) -> BigDecimal {
 /// be non-negative — PHP rejects a negative scale; leniently clamped here),
 /// otherwise the module default from `bcscale`.
 fn scale_arg(args: &[Value], idx: usize) -> i64 {
-    if args.len() > idx {
-        int_arg(args, idx).max(0)
+    let s = if args.len() > idx {
+        int_arg(args, idx)
     } else {
         current_scale()
-    }
+    };
+    // Clamp to a sane maximum: a pathological scale (billions) would allocate
+    // multi-GB result strings and abort the process. 2^20 fractional digits is
+    // far beyond any real use.
+    s.clamp(0, 1 << 20)
 }
 
 /// Format an exact decimal as a bcmath result string: truncate toward zero to
@@ -196,7 +200,13 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             } else {
                 i64::MAX
             });
-            Ok(Value::str(format_scaled(&bd_pow(&base, exp_i64), s)))
+            // A negative exponent takes the reciprocal — undefined (division by
+            // zero) when the base is 0; error cleanly instead of panicking.
+            if exp_i64 < 0 && base.is_zero() {
+                Err("bcpow(): Division by zero".to_string())
+            } else {
+                Ok(Value::str(format_scaled(&bd_pow(&base, exp_i64), s)))
+            }
         }
         "bcsqrt" => {
             let n = parse_bd(&str_arg(args, 0));

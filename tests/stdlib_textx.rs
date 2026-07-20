@@ -60,7 +60,9 @@ fn fscanf_parses_a_line() {
 }
 
 #[test]
-fn fscanf_returns_minus_one_at_eof() {
+fn fscanf_returns_false_at_eof() {
+    // PHP 8: the 2-arg fscanf returns bool(false) at EOF (not -1), so the
+    // idiomatic `while ($r = fscanf(...))` loop terminates.
     let p = tmp("fscanf_eof.txt");
     let ps = p.display();
     std::fs::write(&p, "").unwrap();
@@ -69,9 +71,9 @@ fn fscanf_returns_minus_one_at_eof() {
         $h = fopen("{ps}", "r");
         $r = fscanf($h, "%d");
         fclose($h);
-        echo $r;"#
+        echo var_export($r, true);"#
     );
-    assert_eq!(run(&src), "-1");
+    assert_eq!(run(&src), "false");
     let _ = std::fs::remove_file(&p);
 }
 

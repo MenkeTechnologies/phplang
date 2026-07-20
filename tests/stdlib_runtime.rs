@@ -127,13 +127,15 @@ fn set_error_handler_returns_null() {
 }
 
 #[test]
-fn restore_and_exception_handlers_return_null() {
-    assert_eq!(run("<?php echo var_export(restore_error_handler(), true);"), "NULL");
+fn set_returns_null_restore_returns_true() {
+    // set_* return the previous handler (none → null); restore_* return bool true
+    // per the PHP manual.
     assert_eq!(
         run("<?php echo var_export(set_exception_handler(function(){}), true);"),
         "NULL"
     );
-    assert_eq!(run("<?php echo var_export(restore_exception_handler(), true);"), "NULL");
+    assert_eq!(run("<?php echo var_export(restore_error_handler(), true);"), "true");
+    assert_eq!(run("<?php echo var_export(restore_exception_handler(), true);"), "true");
 }
 
 // ── shutdown / autoload registration ─────────────────────────────────────────

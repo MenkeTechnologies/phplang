@@ -72,7 +72,9 @@ fn fscanf(args: &[Value]) -> Result<Value, String> {
     let fmt = arg(args, 1);
     let line = match with_host(|h| h.res_gets(&res, None)) {
         Some(l) => l,
-        None => return Ok(Value::int(-1)),
+        // At EOF the 2-arg form returns false (not -1); returning a truthy -1
+        // would make the idiomatic `while ($r = fscanf(...))` loop spin forever.
+        None => return Ok(Value::bool(false)),
     };
     crate::builtins::call_library("sscanf", vec![Value::str(line), fmt])
 }
@@ -86,9 +88,11 @@ fn array_change_key_case(args: &[Value]) -> Value {
     let mapped = pairs
         .into_iter()
         .map(|(k, v)| {
+            // PHP folds ASCII only (locale-independent); non-ASCII bytes are left
+            // untouched, so key length never changes.
             let k = match &k {
-                Value::Str(s) if upper => Value::str(s.to_uppercase()),
-                Value::Str(s) => Value::str(s.to_lowercase()),
+                Value::Str(s) if upper => Value::str(s.to_ascii_uppercase()),
+                Value::Str(s) => Value::str(s.to_ascii_lowercase()),
                 _ => k,
             };
             (k, v)

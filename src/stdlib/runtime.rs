@@ -74,10 +74,10 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
 
         // Error/exception handler registration — documented no-ops. Nothing is
         // stored, so the "previous handler" is always null.
-        "set_error_handler"
-        | "restore_error_handler"
-        | "set_exception_handler"
-        | "restore_exception_handler" => Value::Undef,
+        // set_* return the previous handler (none here → null); restore_* always
+        // return bool true per the PHP manual.
+        "set_error_handler" | "set_exception_handler" => Value::Undef,
+        "restore_error_handler" | "restore_exception_handler" => Value::bool(true),
 
         // register_shutdown_function(): void — accepted, never invoked. Returns
         // null, matching PHP's signature.

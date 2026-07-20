@@ -168,6 +168,11 @@ fn hash_pbkdf2(args: &[Value]) -> Result<Value, String> {
             "hash_pbkdf2(): Argument #5 ($length) must be greater than or equal to 0".to_string(),
         );
     }
+    // Cap the derived-key length so a pathological request cannot abort the
+    // process on allocation.
+    if length > (1 << 24) {
+        return Err("hash_pbkdf2(): Argument #5 ($length) is too large".to_string());
+    }
 
     let hlen = f(&[]).len();
     let length = length as usize;
@@ -206,6 +211,11 @@ fn random_bytes(args: &[Value]) -> Result<Value, String> {
     if len < 1 {
         // PHP 8 ValueError text.
         return Err("random_bytes(): Argument #1 ($length) must be greater than 0".to_string());
+    }
+    // Cap the request so a pathological length cannot abort the process on
+    // allocation (16 MiB is far beyond any real key/token size).
+    if len > (1 << 24) {
+        return Err("random_bytes(): Argument #1 ($length) is too large".to_string());
     }
     let len = len as usize;
     let mut out = Vec::with_capacity(len);
