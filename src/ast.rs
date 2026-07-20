@@ -89,6 +89,23 @@ pub enum Expr {
     /// Argument unpacking at a call site: `...$arr` splats an array's values as
     /// positional arguments. Only valid inside a `Call`'s argument list.
     Spread(Box<Expr>),
+    /// A dynamic call of a callable value — `$f(args)`, `foo()(args)`,
+    /// `(function(){...})(args)`. The callee evaluates to a closure handle or a
+    /// callable string.
+    CallValue(Box<Expr>, Vec<Expr>),
+    /// An anonymous function `function(params) use(vars) { body }`. `uses` names
+    /// the enclosing variables captured by value at closure-creation time.
+    Closure {
+        params: Vec<Param>,
+        uses: Vec<String>,
+        body: Vec<Stmt>,
+    },
+    /// An arrow function `fn(params) => expr` — its body is a single expression
+    /// and every free variable is captured by value automatically.
+    ArrowFn {
+        params: Vec<Param>,
+        body: Box<Expr>,
+    },
     /// Ternary `cond ? then : els`.
     Ternary(Box<Expr>, Box<Expr>, Box<Expr>),
     /// Short ternary / elvis `a ?: b` — `a` if truthy, else `b` (evaluates `a`

@@ -53,6 +53,8 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::SPACESHIP, b_spaceship);
     vm.register_builtin(ops::DBG_LINE, b_dbg_line);
     vm.register_builtin(ops::ARR_MUT, b_arr_mut);
+    vm.register_builtin(ops::MKCLOSURE, b_mkclosure);
+    vm.register_builtin(ops::CALL_VALUE, b_call_value);
 }
 
 /// Pop two operands as PHP integers (bitwise ops cast their operands to int).
@@ -219,6 +221,34 @@ fn b_call_spread(vm: &mut VM, argc: u8) -> Value {
         }
     });
     match host::call_function(&name, args) {
+        Ok(v) => v,
+        Err(e) => fail(vm, e),
+    }
+}
+
+/// Create a closure: the first argument is the synthetic definition name, the
+/// rest are `(capture-name, captured-value)` pairs read from the current scope.
+fn b_mkclosure(vm: &mut VM, argc: u8) -> Value {
+    let raw = pop_args(vm, argc as usize);
+    let mut it = raw.into_iter();
+    let def_name = match it.next() {
+        Some(v) => with_host(|h| h.to_str(&v)),
+        None => return Value::Undef,
+    };
+    let mut captured = Vec::new();
+    while let Some(k) = it.next() {
+        let Some(v) = it.next() else { break };
+        let name = with_host(|h| h.to_str(&k));
+        captured.push((name, v));
+    }
+    with_host(|h| h.make_closure(&def_name, captured))
+}
+
+/// Call a callable value (`$f(...)`): the callee is under its arguments.
+fn b_call_value(vm: &mut VM, argc: u8) -> Value {
+    let args = pop_args(vm, argc as usize - 1);
+    let callee = vm.pop();
+    match host::call_value(callee, args) {
         Ok(v) => v,
         Err(e) => fail(vm, e),
     }
@@ -883,10 +913,13 @@ pub fn call_library(name: &str, args: Vec<Value>) -> Result<Value, String> {
         // ── type / util ──────────────────────────────────────────────────
         "boolval" => with_host(|h| Value::bool(h.is_truthy(&arg(&args, 0)))),
         "is_callable" => {
-            // Scaffold: the host exposes no function-table accessor, so a
-            // non-empty string name is treated as callable (cannot verify that
-            // a user function is actually defined).
-            Value::bool(matches!(&arg(&args, 0), Value::Str(s) if !s.is_empty()))
+            // A closure handle is always callable; otherwise the scaffold treats
+            // any non-empty string name as callable (the host exposes no
+            // function-table accessor, so it cannot verify the name resolves).
+            let a = arg(&args, 0);
+            Value::bool(
+                with_host(|h| h.is_closure(&a)) || matches!(&a, Value::Str(s) if !s.is_empty()),
+            )
         }
         "var_export" => with_host(|h| {
             let s = php_var_export(h, &arg(&args, 0), 0);
@@ -1598,19 +1631,27 @@ fn php_array_merge(h: &mut host::PhpHost, args: &[Value]) -> Value {
     out
 }
 
+/// Whether `cb` names or holds something callable — a non-empty function-name
+/// string or a closure handle. A non-callable callback drives the "identity"
+/// paths of `array_map`/`array_filter`.
+fn is_callable_arg(cb: &Value) -> bool {
+    match cb {
+        Value::Str(s) => !s.is_empty(),
+        v => with_host(|h| h.is_closure(v)),
+    }
+}
+
 fn php_array_map(args: &[Value]) -> Result<Value, String> {
     let cb = arg(args, 0);
     let arr = arg(args, 1);
     let pairs = with_host(|h| h.array_pairs(&arr)).unwrap_or_default();
-    let cb_name = match &cb {
-        Value::Str(s) if !s.is_empty() => Some(s.to_string()),
-        _ => None,
-    };
+    let callable = is_callable_arg(&cb);
     let mut mapped: Vec<(Value, Value)> = Vec::with_capacity(pairs.len());
     for (k, v) in pairs {
-        let out = match &cb_name {
-            Some(name) => host::call_function(name, vec![v])?,
-            None => v,
+        let out = if callable {
+            host::call_value(cb.clone(), vec![v])?
+        } else {
+            v
         };
         mapped.push((k, out));
     }
@@ -1627,18 +1668,14 @@ fn php_array_filter(args: &[Value]) -> Result<Value, String> {
     let arr = arg(args, 0);
     let cb = arg(args, 1);
     let pairs = with_host(|h| h.array_pairs(&arr)).unwrap_or_default();
-    let cb_name = match &cb {
-        Value::Str(s) if !s.is_empty() => Some(s.to_string()),
-        _ => None,
-    };
+    let callable = is_callable_arg(&cb);
     let mut kept: Vec<(Value, Value)> = Vec::new();
     for (k, v) in pairs {
-        let keep = match &cb_name {
-            Some(name) => {
-                let r = host::call_function(name, vec![v.clone()])?;
-                with_host(|h| h.is_truthy(&r))
-            }
-            None => with_host(|h| h.is_truthy(&v)),
+        let keep = if callable {
+            let r = host::call_value(cb.clone(), vec![v.clone()])?;
+            with_host(|h| h.is_truthy(&r))
+        } else {
+            with_host(|h| h.is_truthy(&v))
         };
         if keep {
             kept.push((k, v));
@@ -1658,13 +1695,12 @@ fn php_array_reduce(args: &[Value]) -> Result<Value, String> {
     let cb = arg(args, 1);
     let init = arg(args, 2);
     let pairs = with_host(|h| h.array_pairs(&arr)).unwrap_or_default();
-    let cb_name = match &cb {
-        Value::Str(s) if !s.is_empty() => s.to_string(),
-        _ => return Ok(init),
-    };
+    if !is_callable_arg(&cb) {
+        return Ok(init);
+    }
     let mut acc = init;
     for (_, v) in pairs {
-        acc = host::call_function(&cb_name, vec![acc, v])?;
+        acc = host::call_value(cb.clone(), vec![acc, v])?;
     }
     Ok(acc)
 }

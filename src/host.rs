@@ -54,7 +54,9 @@ pub mod ops {
     pub const APPEND_PATH: u16 = 37; // [name, k1..kM, val] -> val ($a[k1]..[kM][] = val)
     pub const INCDEC_PATH: u16 = 38; // [name, k1..kN, code] -> value (++/-- on element)
     pub const CALL_SPREAD: u16 = 39; // [name, flag, val, ...] -> return value (arg unpacking)
-    // 40..47 reserved: MKCLOSURE/CALL_VALUE, class ops (NEW..SCONST).
+    pub const MKCLOSURE: u16 = 40; // [def_name, k, v, ...] argc=1+2n -> closure handle
+    pub const CALL_VALUE: u16 = 41; // [callee, args...] argc=1+n -> return value
+    // 42..47 reserved: class ops (NEW..SCONST).
     pub const PATH_APPEND_CHILD: u16 = 48; // [name, k1..kN] -> handle of a freshly appended child array
 }
 
@@ -87,6 +89,10 @@ pub struct FuncDef {
     pub chunk: Chunk,
 }
 
+/// A closure unpacked for a call: its parameters, body chunk, and the
+/// `(name, value)` bindings it captured at creation time.
+type ClosureCall = (Vec<Param>, Chunk, Vec<(String, Value)>);
+
 /// A PHP array key — always an integer or a string (bool/float/null keys are
 /// normalized to one of these on insert, as PHP does).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -105,14 +111,21 @@ impl ArrayKey {
     }
 }
 
-/// A heap object. Only arrays live here in the scaffold; objects/closures are a
-/// later wave.
+/// A heap object. Arrays and closures live here in the scaffold; user-defined
+/// objects are a later wave.
 #[derive(Debug, Clone)]
 pub enum PhpObj {
     Array {
         entries: IndexMap<ArrayKey, Value>,
         /// The next integer key an append (`$a[] = ...`) will use.
         next_index: i64,
+    },
+    /// A first-class callable: its parameters, its lowered body chunk, and the
+    /// `(name, value)` bindings captured (by value) at creation time.
+    Closure {
+        params: Vec<Param>,
+        chunk: Chunk,
+        captured: Vec<(String, Value)>,
     },
 }
 
@@ -278,6 +291,42 @@ impl PhpHost {
             next_index: 0,
         });
         Value::Obj((self.objs.len() - 1) as u32)
+    }
+
+    // ── closures ───────────────────────────────────────────────────────────
+
+    /// Build a closure object from a compiler-registered function definition
+    /// (`def_name`, a synthetic name in the function table) plus the values
+    /// captured at creation time. Returns the new handle, or `Undef` if the
+    /// definition is missing (should never happen for compiler-emitted names).
+    pub fn make_closure(&mut self, def_name: &str, captured: Vec<(String, Value)>) -> Value {
+        let Some(def) = self.functions.get(def_name).cloned() else {
+            return Value::Undef;
+        };
+        self.objs.push(PhpObj::Closure {
+            params: def.params,
+            chunk: def.chunk,
+            captured,
+        });
+        Value::Obj((self.objs.len() - 1) as u32)
+    }
+
+    /// The closure held by `v` (a handle), cloned for a call: its parameters,
+    /// body chunk, and captured bindings. `None` if `v` is not a closure.
+    fn closure_of(&self, v: &Value) -> Option<ClosureCall> {
+        match self.as_array(v) {
+            Some(PhpObj::Closure {
+                params,
+                chunk,
+                captured,
+            }) => Some((params.clone(), chunk.clone(), captured.clone())),
+            _ => None,
+        }
+    }
+
+    /// Whether `v` is a closure handle.
+    pub fn is_closure(&self, v: &Value) -> bool {
+        matches!(self.as_array(v), Some(PhpObj::Closure { .. }))
     }
 
     fn as_array_mut(&mut self, v: &Value) -> Option<&mut PhpObj> {
@@ -723,7 +772,8 @@ impl PhpHost {
     // ── value coercions (PHP semantics) ────────────────────────────────────
 
     /// PHP truthiness: `false`, `0`, `0.0`, `""`, `"0"`, `null`, and the empty
-    /// array are falsy; everything else is truthy.
+    /// array are falsy; everything else is truthy. A closure/object handle is
+    /// always truthy (only the empty *array* is falsy among heap objects).
     pub fn is_truthy(&self, v: &Value) -> bool {
         match v {
             Value::Undef => false,
@@ -731,7 +781,7 @@ impl PhpHost {
             Value::Int(n) => *n != 0,
             Value::Float(f) => *f != 0.0,
             Value::Str(s) => !(s.is_empty() || s.as_str() == "0"),
-            Value::Obj(_) => self.array_len(v) != 0,
+            Value::Obj(_) => !self.is_array(v) || self.array_len(v) != 0,
             _ => true,
         }
     }
@@ -756,7 +806,12 @@ impl PhpHost {
             Value::Bool(b) => Value::int(*b as i64),
             Value::Undef => Value::int(0),
             Value::Str(s) => parse_php_number(s),
-            Value::Obj(_) => Value::int(if self.array_len(v) == 0 { 0 } else { 1 }),
+            // Empty array → 0, non-empty array → 1; a closure/object casts to 1.
+            Value::Obj(_) => Value::int(if self.is_array(v) && self.array_len(v) == 0 {
+                0
+            } else {
+                1
+            }),
             _ => Value::int(0),
         }
     }
@@ -769,7 +824,13 @@ impl PhpHost {
             Value::Int(_) => "integer",
             Value::Float(_) => "double",
             Value::Str(_) => "string",
-            Value::Obj(_) => "array",
+            Value::Obj(_) => {
+                if self.is_array(v) {
+                    "array"
+                } else {
+                    "object"
+                }
+            }
             _ => "unknown type",
         }
     }
@@ -858,70 +919,98 @@ pub fn call_function(name: &str, args: Vec<Value>) -> Result<Value, String> {
         }
     }
     if let Some(def) = def {
-        // Push the call frame and bind every argument that was passed. A variadic
-        // parameter (`...$rest`, always last) collects all remaining arguments
-        // into a fresh array; a missing parameter with no default is bound to
-        // null. Missing parameters that *have* a default are left unbound here and
-        // filled below by running their default chunk in this frame.
-        with_host(|h| {
-            let scope = Scope {
-                name: Some(name.to_string()),
-                ..Scope::default()
-            };
-            h.scopes.push(scope);
-            let mut ai = 0;
-            for p in &def.params {
-                if p.variadic {
-                    let arr = h.new_array();
-                    while ai < args.len() {
-                        h.arr_push_auto(&arr, args[ai].clone());
-                        ai += 1;
-                    }
-                    h.set_var(&p.name, arr);
-                } else if ai < args.len() {
-                    h.set_var(&p.name, args[ai].clone());
-                    ai += 1;
-                } else {
-                    // Omitted: a parameter without a default reads as null; one
-                    // with a default is filled below by running its chunk.
-                    if p.default.is_none() {
-                        h.set_var(&p.name, Value::Undef);
-                    }
+        return invoke(name, &def.params, def.chunk, Vec::new(), args);
+    }
+    crate::builtins::call_library(name, args)
+}
+
+/// Run a user-defined function or closure body: push a call frame named `frame`,
+/// pre-bind `pre` (a closure's captured `(name, value)` pairs, empty for a plain
+/// function), bind `args` to `params` (variadic collection, then default chunks
+/// for omitted parameters), run `body`, and return the `return` value (or null if
+/// the body fell off the end). Default chunks run OUTSIDE the binding `with_host`
+/// closure because `run_chunk_on` itself borrows the thread-local host.
+fn invoke(
+    frame: &str,
+    params: &[Param],
+    body: Chunk,
+    pre: Vec<(String, Value)>,
+    args: Vec<Value>,
+) -> Result<Value, String> {
+    with_host(|h| {
+        let scope = Scope {
+            name: Some(frame.to_string()),
+            ..Scope::default()
+        };
+        h.scopes.push(scope);
+        // Captured bindings first, then parameters (a parameter of the same name
+        // as a capture shadows it, as PHP does).
+        for (k, v) in pre {
+            h.set_var(&k, v);
+        }
+        let mut ai = 0;
+        for p in params {
+            if p.variadic {
+                // A variadic (`...$rest`, always last) collects the remaining args.
+                let arr = h.new_array();
+                while ai < args.len() {
+                    h.arr_push_auto(&arr, args[ai].clone());
                     ai += 1;
                 }
+                h.set_var(&p.name, arr);
+            } else if ai < args.len() {
+                h.set_var(&p.name, args[ai].clone());
+                ai += 1;
+            } else {
+                // Omitted: a parameter without a default reads as null; one with a
+                // default is filled below by running its chunk.
+                if p.default.is_none() {
+                    h.set_var(&p.name, Value::Undef);
+                }
+                ai += 1;
             }
-        });
-        // Evaluate defaults for the omitted parameters, left to right, so a default
-        // may reference an earlier parameter already bound in this frame. Run
-        // OUTSIDE the `with_host` closure above: `run_chunk_on` itself borrows the
-        // thread-local host, so folding this into that closure would re-enter it.
-        for (i, p) in def.params.iter().enumerate() {
-            if p.variadic || i < args.len() {
-                continue;
-            }
-            if let Some(chunk) = &p.default {
-                match run_chunk_on(chunk.clone()) {
-                    Ok(v) => with_host(|h| h.set_var(&p.name, v)),
-                    Err(e) => {
-                        with_host(|h| {
-                            h.scopes.pop();
-                        });
-                        return Err(e);
-                    }
+        }
+    });
+    // Evaluate defaults for the omitted parameters, left to right, so a default
+    // may reference an earlier parameter already bound in this frame.
+    for (i, p) in params.iter().enumerate() {
+        if p.variadic || i < args.len() {
+            continue;
+        }
+        if let Some(chunk) = &p.default {
+            match run_chunk_on(chunk.clone()) {
+                Ok(v) => with_host(|h| h.set_var(&p.name, v)),
+                Err(e) => {
+                    with_host(|h| {
+                        h.scopes.pop();
+                    });
+                    return Err(e);
                 }
             }
         }
-        let r = run_chunk_on(def.chunk.clone());
-        let sig = with_host(|h| {
-            h.scopes.pop();
-            h.signal.take()
-        });
-        return match sig {
-            Some(Signal::Return(v)) => Ok(v),
-            None => r.map(|_| Value::Undef),
-        };
     }
-    crate::builtins::call_library(name, args)
+    let r = run_chunk_on(body);
+    let sig = with_host(|h| {
+        h.scopes.pop();
+        h.signal.take()
+    });
+    match sig {
+        Some(Signal::Return(v)) => Ok(v),
+        None => r.map(|_| Value::Undef),
+    }
+}
+
+/// Invoke a callable *value*: a closure handle runs its captured-plus-bound body
+/// in a fresh scope; a string is dispatched by name through `call_function`. Used
+/// by `$f(...)` calls and callback builtins (`array_map`).
+pub fn call_value(callee: Value, args: Vec<Value>) -> Result<Value, String> {
+    if let Some((params, chunk, captured)) = with_host(|h| h.closure_of(&callee)) {
+        return invoke("{closure}", &params, chunk, captured, args);
+    }
+    match callee {
+        Value::Str(s) => call_function(&s, args),
+        _ => Err("value is not callable".to_string()),
+    }
 }
 
 /// Record a pending `return` value for the enclosing function frame.

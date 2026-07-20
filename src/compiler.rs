@@ -596,6 +596,29 @@ impl Compiler {
             Expr::Spread(_) => {
                 return Err("'...' argument unpacking is only valid in a function call".into())
             }
+            Expr::CallValue(callee, args) => {
+                self.compile_expr(b, callee)?;
+                for a in args {
+                    self.compile_expr(b, a)?;
+                }
+                b.emit(Op::CallBuiltin(ops::CALL_VALUE, (args.len() + 1) as u8), 0);
+            }
+            Expr::Closure { params, uses, body } => {
+                self.compile_closure(b, params, uses, body)?;
+            }
+            Expr::ArrowFn { params, body } => {
+                // An arrow fn desugars to a closure whose single-statement body
+                // returns the expression; it captures every free variable of the
+                // body (minus its own parameters) by value.
+                let ret = vec![Stmt {
+                    line: 0,
+                    kind: StmtKind::Return(Some((**body).clone())),
+                }];
+                let mut captures = Vec::new();
+                collect_free_vars(body, &mut captures);
+                captures.retain(|n| !params.iter().any(|p| p.name == *n));
+                self.compile_closure(b, params, &captures, &ret)?;
+            }
             Expr::Ternary(c, t, f) => {
                 self.compile_truthy(b, c)?;
                 let jf = b.emit(Op::JumpIfFalse(0), 0);
@@ -1010,6 +1033,48 @@ impl Compiler {
         Ok(())
     }
 
+    /// Lower an anonymous function / arrow function to a closure-creating
+    /// sequence: compile the body into its own chunk (registered under a synthetic
+    /// name in the function table, with its parameters so defaults/variadics bind),
+    /// then emit `MKCLOSURE` with the captured `(name, value)` pairs read from the
+    /// current scope.
+    fn compile_closure(
+        &mut self,
+        b: &mut ChunkBuilder,
+        params: &[Param],
+        captures: &[String],
+        body: &[Stmt],
+    ) -> Result<(), String> {
+        let cparams = self.compile_params(params)?;
+        let mut fb = ChunkBuilder::new();
+        // Like a named function, the body gets its own loop scope so a `break`
+        // inside it cannot target a loop at the creation site.
+        let saved = std::mem::take(&mut self.loops);
+        self.compile_seq(&mut fb, body)?;
+        self.loops = saved;
+        let def_name = self.tmp_name("closure");
+        self.functions.push((
+            def_name.clone(),
+            FuncDef {
+                params: cparams,
+                chunk: fb.build(),
+            },
+        ));
+
+        let nidx = b.add_constant(Value::str(def_name));
+        b.emit(Op::LoadConst(nidx), 0);
+        for cap in captures {
+            let cidx = b.add_constant(Value::str(cap.clone()));
+            b.emit(Op::LoadConst(cidx), 0);
+            self.emit_get_var(b, cap);
+        }
+        b.emit(
+            Op::CallBuiltin(ops::MKCLOSURE, (1 + captures.len() * 2) as u8),
+            0,
+        );
+        Ok(())
+    }
+
     fn compile_incdec(
         &mut self,
         b: &mut ChunkBuilder,
@@ -1121,5 +1186,93 @@ impl Compiler {
         // The desugared statements want no residual on the stack.
         b.emit(Op::Pop, 0);
         Ok(())
+    }
+}
+
+/// Collect the variable names referenced anywhere in `e`, de-duplicated in
+/// first-seen order — the free-variable set an arrow function captures by value.
+/// Over-capturing (e.g. a name that is only ever assigned) is harmless because
+/// capture is by value; a nested arrow fn contributes its body's free variables
+/// minus its own parameters, and a nested `use(...)` closure contributes exactly
+/// the names it captures.
+fn collect_free_vars(e: &Expr, out: &mut Vec<String>) {
+    fn push(name: &str, out: &mut Vec<String>) {
+        if !out.iter().any(|n| n == name) {
+            out.push(name.to_string());
+        }
+    }
+    match e {
+        Expr::Var(n) => push(n, out),
+        Expr::Interp(parts) => {
+            for p in parts {
+                if let StrPart::Var(n) = p {
+                    push(n, out);
+                }
+            }
+        }
+        Expr::Array(elems) => {
+            for (k, v) in elems {
+                if let Some(k) = k {
+                    collect_free_vars(k, out);
+                }
+                collect_free_vars(v, out);
+            }
+        }
+        Expr::Index(a, b) | Expr::Binary(_, a, b) | Expr::Elvis(a, b) | Expr::Coalesce(a, b) => {
+            collect_free_vars(a, out);
+            collect_free_vars(b, out);
+        }
+        Expr::Append(a) | Expr::Unary(_, a) | Expr::Spread(a) => collect_free_vars(a, out),
+        Expr::Assign(a, _, b) => {
+            collect_free_vars(a, out);
+            collect_free_vars(b, out);
+        }
+        Expr::IncDec { target, .. } => collect_free_vars(target, out),
+        Expr::Call(_, args) => {
+            for a in args {
+                collect_free_vars(a, out);
+            }
+        }
+        Expr::CallValue(callee, args) => {
+            collect_free_vars(callee, out);
+            for a in args {
+                collect_free_vars(a, out);
+            }
+        }
+        Expr::Ternary(a, b, c) => {
+            collect_free_vars(a, out);
+            collect_free_vars(b, out);
+            collect_free_vars(c, out);
+        }
+        Expr::Match { subj, arms } => {
+            collect_free_vars(subj, out);
+            for arm in arms {
+                if let Some(conds) = &arm.conds {
+                    for c in conds {
+                        collect_free_vars(c, out);
+                    }
+                }
+                collect_free_vars(&arm.body, out);
+            }
+        }
+        // A nested arrow fn captures its own body's free variables minus its
+        // parameters; those free names must in turn be captured by the enclosing
+        // arrow fn so the binding is available when the inner one runs.
+        Expr::ArrowFn { params, body } => {
+            let mut inner = Vec::new();
+            collect_free_vars(body, &mut inner);
+            for n in inner {
+                if !params.iter().any(|p| p.name == n) {
+                    push(&n, out);
+                }
+            }
+        }
+        // A nested `use(...)` closure names the enclosing variables it captures.
+        Expr::Closure { uses, .. } => {
+            for u in uses {
+                push(u, out);
+            }
+        }
+        Expr::Null | Expr::Bool(_) | Expr::Int(_) | Expr::Float(_) | Expr::Str(_) => {}
     }
 }

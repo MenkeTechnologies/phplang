@@ -389,15 +389,19 @@ impl Parser {
             }
         };
         let params = self.param_list()?;
-        // Skip an optional return-type hint (`: type` / `: ?type`).
+        self.skip_return_type();
+        let body = self.block()?;
+        Ok(StmtKind::Function { name, params, body })
+    }
+
+    /// Skip an optional return-type hint (`: [?]type`).
+    fn skip_return_type(&mut self) {
         if self.eat_punct(":") {
             self.eat_punct("?");
             if let Some(Tok::Ident(_)) = self.peek() {
                 self.pos += 1;
             }
         }
-        let body = self.block()?;
-        Ok(StmtKind::Function { name, params, body })
     }
 
     /// Parse a `( ... )` formal parameter list. Before each `$var` it skips
@@ -676,6 +680,14 @@ impl Parser {
                     self.expect_punct("]")?;
                     e = Expr::Index(Box::new(e), Box::new(idx));
                 }
+            } else if self.at_punct("(") {
+                // A `( args )` applied to any primary value is a dynamic call: a
+                // closure held in `$f`, or an immediately-invoked `foo()(…)` /
+                // `(expr)(…)`. A bareword `name(` is already consumed as
+                // `Expr::Call` in `primary`, so this only fires on a value callee.
+                self.pos += 1;
+                let args = self.arg_list()?;
+                e = Expr::CallValue(Box::new(e), args);
             } else if self.at_punct("++") {
                 self.pos += 1;
                 e = Expr::IncDec {
@@ -721,6 +733,49 @@ impl Parser {
             // bareword `match` still parses as a name.
             Some(Tok::Ident(kw)) if kw.eq_ignore_ascii_case("match") && self.at_punct("(") => {
                 self.match_expr()
+            }
+            // An anonymous function `function (params) [use (vars)] { body }`.
+            // (A *named* function is a statement, caught in `statement()`; only
+            // the expression form — `function (` — reaches here.)
+            Some(Tok::Ident(kw)) if kw.eq_ignore_ascii_case("function") && self.at_punct("(") => {
+                let params = self.param_list()?;
+                let mut uses = Vec::new();
+                if self.eat_kw("use") {
+                    self.expect_punct("(")?;
+                    if !self.at_punct(")") {
+                        loop {
+                            // By-reference capture (`use (&$v)`) is not supported —
+                            // the scaffold has no reference cells, so it would
+                            // silently bind by value and break recursive/mutating
+                            // closures. Reject it loudly instead.
+                            if self.at_punct("&") {
+                                return Err(format!(
+                                    "by-reference closure capture `use (&${{…}})` is not supported (line {})",
+                                    self.line()
+                                ));
+                            }
+                            uses.push(self.expect_var()?);
+                            if !self.eat_punct(",") {
+                                break;
+                            }
+                        }
+                    }
+                    self.expect_punct(")")?;
+                }
+                self.skip_return_type();
+                let body = self.block()?;
+                Ok(Expr::Closure { params, uses, body })
+            }
+            // An arrow function `fn (params) => expr` — implicit by-value capture.
+            Some(Tok::Ident(kw)) if kw.eq_ignore_ascii_case("fn") && self.at_punct("(") => {
+                let params = self.param_list()?;
+                self.skip_return_type();
+                self.expect_punct("=>")?;
+                let body = self.expression()?;
+                Ok(Expr::ArrowFn {
+                    params,
+                    body: Box::new(body),
+                })
             }
             Some(Tok::Ident(name)) => {
                 // A bareword followed by `(` is a function call.
