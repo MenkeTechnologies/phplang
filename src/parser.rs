@@ -388,19 +388,75 @@ impl Parser {
                 ))
             }
         };
+        let params = self.param_list()?;
+        // Skip an optional return-type hint (`: type` / `: ?type`).
+        if self.eat_punct(":") {
+            self.eat_punct("?");
+            if let Some(Tok::Ident(_)) = self.peek() {
+                self.pos += 1;
+            }
+        }
+        let body = self.block()?;
+        Ok(StmtKind::Function { name, params, body })
+    }
+
+    /// Parse a `( ... )` formal parameter list. Before each `$var` it skips
+    /// modifiers and type hints — visibility keywords, `?` nullable, `&` by-ref,
+    /// and bareword type names — then reads an optional `...$rest` variadic marker,
+    /// the name, and an optional `= default` value. By-ref (`&`) and typed hints
+    /// are accepted but not enforced in the scaffold.
+    fn param_list(&mut self) -> Result<Vec<Param>, String> {
         self.expect_punct("(")?;
         let mut params = Vec::new();
         if !self.at_punct(")") {
             loop {
-                // Skip an optional type hint (a bare identifier before the $var).
-                if let Some(Tok::Ident(_)) = self.peek() {
-                    self.pos += 1;
+                // Skip a leading modifier/type-hint chain up to `...` or `$var`.
+                loop {
+                    if self.eat_punct("?") || self.eat_punct("&") {
+                        continue;
+                    }
+                    if self.at_punct("...") || matches!(self.peek(), Some(Tok::Var(_))) {
+                        break;
+                    }
+                    if let Some(Tok::Ident(_)) = self.peek() {
+                        self.pos += 1;
+                        continue;
+                    }
+                    break;
                 }
-                params.push(self.expect_var()?);
-                // A default value (`$x = expr`) is parsed and discarded in the
-                // scaffold — arity binding ignores defaults for now.
-                if self.eat_punct("=") {
-                    let _ = self.expression()?;
+                // `...$rest` collects all trailing arguments into an array.
+                let variadic = self.eat_punct("...");
+                let name = self.expect_var()?;
+                // A default value (`$x = expr`), applied when the caller omits it.
+                let default = if self.eat_punct("=") {
+                    Some(self.expression()?)
+                } else {
+                    None
+                };
+                params.push(Param {
+                    name,
+                    default,
+                    variadic,
+                });
+                if !self.eat_punct(",") {
+                    break;
+                }
+            }
+        }
+        self.expect_punct(")")?;
+        Ok(params)
+    }
+
+    /// Parse a call argument list up to and consuming the closing `)` (the opening
+    /// `(` is already eaten). Supports `...$arr` argument unpacking.
+    fn arg_list(&mut self) -> Result<Vec<Expr>, String> {
+        let mut args = Vec::new();
+        if !self.at_punct(")") {
+            loop {
+                if self.eat_punct("...") {
+                    args.push(Expr::Spread(Box::new(self.expression()?)));
+                } else {
+                    args.push(self.expression()?);
                 }
                 if !self.eat_punct(",") {
                     break;
@@ -408,14 +464,7 @@ impl Parser {
             }
         }
         self.expect_punct(")")?;
-        // Skip an optional return-type hint (`: type`).
-        if self.eat_punct(":") {
-            if let Some(Tok::Ident(_)) = self.peek() {
-                self.pos += 1;
-            }
-        }
-        let body = self.block()?;
-        Ok(StmtKind::Function { name, params, body })
+        Ok(args)
     }
 
     // ── expressions (precedence climbing) ──────────────────────────────────
@@ -676,16 +725,7 @@ impl Parser {
             Some(Tok::Ident(name)) => {
                 // A bareword followed by `(` is a function call.
                 if self.eat_punct("(") {
-                    let mut args = Vec::new();
-                    if !self.at_punct(")") {
-                        loop {
-                            args.push(self.expression()?);
-                            if !self.eat_punct(",") {
-                                break;
-                            }
-                        }
-                    }
-                    self.expect_punct(")")?;
+                    let args = self.arg_list()?;
                     // `isset()`/`empty()` are language constructs, not functions:
                     // they must not error on an undefined variable/key. phplang
                     // returns `null` for a missing var/index silently, so both

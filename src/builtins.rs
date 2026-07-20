@@ -19,6 +19,7 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::CONCAT, b_concat);
     vm.register_builtin(ops::TRUTHY, b_truthy);
     vm.register_builtin(ops::CALL, b_call);
+    vm.register_builtin(ops::CALL_SPREAD, b_call_spread);
     vm.register_builtin(ops::MKARRAY, b_mkarray);
     vm.register_builtin(ops::INDEX_GET, b_index_get);
     vm.register_builtin(ops::INDEX_SET, b_index_set);
@@ -188,6 +189,35 @@ fn b_truthy(vm: &mut VM, _: u8) -> Value {
 fn b_call(vm: &mut VM, argc: u8) -> Value {
     let args = pop_args(vm, argc as usize - 1);
     let name = pop_name(vm);
+    match host::call_function(&name, args) {
+        Ok(v) => v,
+        Err(e) => fail(vm, e),
+    }
+}
+
+/// A call with `...$arr` argument unpacking. The stack holds the callee name then
+/// one `(is_spread, value)` pair per source argument; a spread pair's value is an
+/// array whose elements are flattened, in order, into the positional arguments.
+/// Unpacking a non-array is a silent no-op here — real PHP 8 raises a `TypeError`;
+/// the scaffold drops it rather than erroring. Spread arrays are flattened
+/// positionally (string keys are not turned into named arguments, which the
+/// scaffold does not support).
+fn b_call_spread(vm: &mut VM, argc: u8) -> Value {
+    let pairs = pop_args(vm, argc as usize - 1);
+    let name = pop_name(vm);
+    let mut args = Vec::with_capacity(pairs.len() / 2);
+    with_host(|h| {
+        let mut it = pairs.into_iter();
+        while let (Some(flag), Some(val)) = (it.next(), it.next()) {
+            if h.is_truthy(&flag) {
+                if let Some(entries) = h.array_pairs(&val) {
+                    args.extend(entries.into_iter().map(|(_, v)| v));
+                }
+            } else {
+                args.push(val);
+            }
+        }
+    });
     match host::call_function(&name, args) {
         Ok(v) => v,
         Err(e) => fail(vm, e),

@@ -53,7 +53,8 @@ pub mod ops {
     pub const SET_PATH: u16 = 36; // [name, k1..kN, val] -> val ($a[k1]..[kN] = val, N>=1)
     pub const APPEND_PATH: u16 = 37; // [name, k1..kM, val] -> val ($a[k1]..[kM][] = val)
     pub const INCDEC_PATH: u16 = 38; // [name, k1..kN, code] -> value (++/-- on element)
-    // 39..47 reserved: CALL_SPREAD, MKCLOSURE/CALL_VALUE, class ops (NEW..SCONST).
+    pub const CALL_SPREAD: u16 = 39; // [name, flag, val, ...] -> return value (arg unpacking)
+    // 40..47 reserved: MKCLOSURE/CALL_VALUE, class ops (NEW..SCONST).
     pub const PATH_APPEND_CHILD: u16 = 48; // [name, k1..kN] -> handle of a freshly appended child array
 }
 
@@ -69,10 +70,20 @@ pub mod arrmut {
     pub const SPLICE: i64 = 4;
 }
 
-/// A compiled user function: its parameter names plus the lowered body chunk.
+/// A compiled formal parameter: its name, an optional default-value chunk (run in
+/// the callee scope when the caller omits the argument), and whether it collects
+/// all trailing arguments into an array (`...$rest`).
+#[derive(Debug, Clone)]
+pub struct Param {
+    pub name: String,
+    pub default: Option<Chunk>,
+    pub variadic: bool,
+}
+
+/// A compiled user function: its parameters plus the lowered body chunk.
 #[derive(Debug, Clone)]
 pub struct FuncDef {
-    pub params: Vec<String>,
+    pub params: Vec<Param>,
     pub chunk: Chunk,
 }
 
@@ -847,18 +858,59 @@ pub fn call_function(name: &str, args: Vec<Value>) -> Result<Value, String> {
         }
     }
     if let Some(def) = def {
+        // Push the call frame and bind every argument that was passed. A variadic
+        // parameter (`...$rest`, always last) collects all remaining arguments
+        // into a fresh array; a missing parameter with no default is bound to
+        // null. Missing parameters that *have* a default are left unbound here and
+        // filled below by running their default chunk in this frame.
         with_host(|h| {
-            let mut scope = Scope {
+            let scope = Scope {
                 name: Some(name.to_string()),
                 ..Scope::default()
             };
-            for (i, p) in def.params.iter().enumerate() {
-                scope
-                    .vars
-                    .insert(p.clone(), args.get(i).cloned().unwrap_or(Value::Undef));
-            }
             h.scopes.push(scope);
+            let mut ai = 0;
+            for p in &def.params {
+                if p.variadic {
+                    let arr = h.new_array();
+                    while ai < args.len() {
+                        h.arr_push_auto(&arr, args[ai].clone());
+                        ai += 1;
+                    }
+                    h.set_var(&p.name, arr);
+                } else if ai < args.len() {
+                    h.set_var(&p.name, args[ai].clone());
+                    ai += 1;
+                } else {
+                    // Omitted: a parameter without a default reads as null; one
+                    // with a default is filled below by running its chunk.
+                    if p.default.is_none() {
+                        h.set_var(&p.name, Value::Undef);
+                    }
+                    ai += 1;
+                }
+            }
         });
+        // Evaluate defaults for the omitted parameters, left to right, so a default
+        // may reference an earlier parameter already bound in this frame. Run
+        // OUTSIDE the `with_host` closure above: `run_chunk_on` itself borrows the
+        // thread-local host, so folding this into that closure would re-enter it.
+        for (i, p) in def.params.iter().enumerate() {
+            if p.variadic || i < args.len() {
+                continue;
+            }
+            if let Some(chunk) = &p.default {
+                match run_chunk_on(chunk.clone()) {
+                    Ok(v) => with_host(|h| h.set_var(&p.name, v)),
+                    Err(e) => {
+                        with_host(|h| {
+                            h.scopes.pop();
+                        });
+                        return Err(e);
+                    }
+                }
+            }
+        }
         let r = run_chunk_on(def.chunk.clone());
         let sig = with_host(|h| {
             h.scopes.pop();

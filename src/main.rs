@@ -65,6 +65,20 @@ fn run_source(src: &str) -> ExitCode {
     }
 }
 
+/// Render a function's parameter list for the `--dump`/`--disasm` headers:
+/// `$name`, `...$rest` for a variadic, and a `= …` marker when a default exists.
+fn fmt_params(params: &[phplang::host::Param]) -> String {
+    params
+        .iter()
+        .map(|p| {
+            let dots = if p.variadic { "..." } else { "" };
+            let def = if p.default.is_some() { " = …" } else { "" };
+            format!("{dots}${}{def}", p.name)
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn dump(file: &str) -> Result<(), String> {
     let src = std::fs::read_to_string(file).map_err(|e| format!("cannot read {file}: {e}"))?;
     let prog = phplang::compile(&src)?;
@@ -73,7 +87,7 @@ fn dump(file: &str) -> Result<(), String> {
     for (name, f) in &prog.functions {
         println!(
             "== function {name}({}) ==\n{:#?}",
-            f.params.join(", "),
+            fmt_params(&f.params),
             f.chunk.ops
         );
     }
@@ -108,7 +122,7 @@ fn disasm(file: &str) -> Result<(), String> {
     for (name, f) in &prog.functions {
         println!(
             "; php fusevm — function {name}({})\n{}",
-            f.params.join(", "),
+            fmt_params(&f.params),
             f.chunk.disassemble()
         );
     }

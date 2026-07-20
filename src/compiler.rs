@@ -9,7 +9,7 @@
 //! differs from fusevm's default numeric truthiness.
 
 use crate::ast::*;
-use crate::host::{ops, FuncDef};
+use crate::host::{self, ops, FuncDef};
 use fusevm::{Chunk, ChunkBuilder, Op, Value};
 
 /// The full output of compiling a program.
@@ -78,6 +78,29 @@ impl Compiler {
         format!("@{tag}{}", self.tmp)
     }
 
+    /// Compile a formal parameter list, lowering each default-value expression to
+    /// its own chunk (run in the callee frame when the argument is omitted).
+    /// Shared by named functions, closures, and methods.
+    fn compile_params(&mut self, params: &[Param]) -> Result<Vec<host::Param>, String> {
+        let mut out = Vec::with_capacity(params.len());
+        for p in params {
+            let default = match &p.default {
+                Some(expr) => {
+                    let mut db = ChunkBuilder::new();
+                    self.compile_expr(&mut db, expr)?;
+                    Some(db.build())
+                }
+                None => None,
+            };
+            out.push(host::Param {
+                name: p.name.clone(),
+                default,
+                variadic: p.variadic,
+            });
+        }
+        Ok(out)
+    }
+
     fn compile_seq(&mut self, b: &mut ChunkBuilder, body: &[Stmt]) -> Result<(), String> {
         for s in body {
             self.compile_stmt(b, s)?;
@@ -140,6 +163,9 @@ impl Compiler {
                     .push(j);
             }
             StmtKind::Function { name, params, body } => {
+                // Each default-value expression is lowered to its own tiny chunk,
+                // run in the callee frame when the argument is omitted (host).
+                let cparams = self.compile_params(params)?;
                 let mut fb = ChunkBuilder::new();
                 // A function body has its own loop scope: a break inside it must
                 // not target a loop at the call site.
@@ -149,7 +175,7 @@ impl Compiler {
                 self.functions.push((
                     name.to_ascii_lowercase(),
                     FuncDef {
-                        params: params.clone(),
+                        params: cparams,
                         chunk: fb.build(),
                     },
                 ));
@@ -524,10 +550,12 @@ impl Compiler {
                 prefix,
             } => self.compile_incdec(b, target, *inc, *prefix)?,
             Expr::Call(name, args) => {
+                let has_spread = args.iter().any(|a| matches!(a, Expr::Spread(_)));
                 // The by-reference array mutators take their array by variable
-                // name so the host can rewrite (and auto-vivify) it in place.
-                if let (Some(sub), Some(Expr::Var(vname))) =
-                    (array_mutator_subop(name), args.first())
+                // name so the host can rewrite (and auto-vivify) it in place. A
+                // spread among the arguments falls through to the normal dispatch.
+                if let (false, Some(sub), Some(Expr::Var(vname))) =
+                    (has_spread, array_mutator_subop(name), args.first())
                 {
                     let nidx = b.add_constant(Value::str(vname.clone()));
                     b.emit(Op::LoadConst(nidx), 0);
@@ -537,6 +565,25 @@ impl Compiler {
                     }
                     // argc = name + subop + the remaining value arguments.
                     b.emit(Op::CallBuiltin(ops::ARR_MUT, (args.len() + 1) as u8), 0);
+                } else if has_spread {
+                    // Any `...$arr` argument switches to the spread dispatch: each
+                    // argument is pushed as a `(is_spread, value)` pair so the host
+                    // can flatten spread arrays into the positional argument list.
+                    let idx = b.add_constant(Value::str(name.clone()));
+                    b.emit(Op::LoadConst(idx), 0);
+                    for a in args {
+                        match a {
+                            Expr::Spread(inner) => {
+                                b.emit(Op::LoadTrue, 0);
+                                self.compile_expr(b, inner)?;
+                            }
+                            _ => {
+                                b.emit(Op::LoadFalse, 0);
+                                self.compile_expr(b, a)?;
+                            }
+                        }
+                    }
+                    b.emit(Op::CallBuiltin(ops::CALL_SPREAD, (args.len() * 2 + 1) as u8), 0);
                 } else {
                     let idx = b.add_constant(Value::str(name.clone()));
                     b.emit(Op::LoadConst(idx), 0);
@@ -545,6 +592,9 @@ impl Compiler {
                     }
                     b.emit(Op::CallBuiltin(ops::CALL, (args.len() + 1) as u8), 0);
                 }
+            }
+            Expr::Spread(_) => {
+                return Err("'...' argument unpacking is only valid in a function call".into())
             }
             Expr::Ternary(c, t, f) => {
                 self.compile_truthy(b, c)?;

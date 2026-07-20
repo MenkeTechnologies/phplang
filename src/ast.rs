@@ -86,6 +86,9 @@ pub enum Expr {
     },
     /// A function call `name(args)`.
     Call(String, Vec<Expr>),
+    /// Argument unpacking at a call site: `...$arr` splats an array's values as
+    /// positional arguments. Only valid inside a `Call`'s argument list.
+    Spread(Box<Expr>),
     /// Ternary `cond ? then : els`.
     Ternary(Box<Expr>, Box<Expr>, Box<Expr>),
     /// Short ternary / elvis `a ?: b` — `a` if truthy, else `b` (evaluates `a`
@@ -164,7 +167,7 @@ pub enum StmtKind {
     /// `function name($a, $b) { body }`.
     Function {
         name: String,
-        params: Vec<String>,
+        params: Vec<Param>,
         body: Vec<Stmt>,
     },
     Return(Option<Expr>),
@@ -172,6 +175,16 @@ pub enum StmtKind {
     Continue,
     /// An empty `;` or a `{ }` block.
     Block(Vec<Stmt>),
+}
+
+/// One formal parameter of a function definition: its name, an optional default
+/// value expression (used when the caller omits the argument), and whether it is
+/// variadic (`...$rest`, collecting all trailing arguments into an array).
+#[derive(Debug, Clone)]
+pub struct Param {
+    pub name: String,
+    pub default: Option<Expr>,
+    pub variadic: bool,
 }
 
 /// One `case`/`default` label of a `switch` plus its (fall-through) body. `test`
