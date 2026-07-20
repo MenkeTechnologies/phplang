@@ -1,0 +1,133 @@
+//! End-to-end tests for the `hash` stdlib category: PHP source in, captured
+//! `echo` output out. Expected values cross-checked against reference PHP 8.
+
+use phplang::eval_capture;
+
+fn run(src: &str) -> String {
+    eval_capture(src).unwrap_or_else(|e| panic!("eval error for {src:?}: {e}"))
+}
+
+#[test]
+fn md5_known_vectors() {
+    assert_eq!(run(r#"<?php echo md5("");"#), "d41d8cd98f00b204e9800998ecf8427e");
+    assert_eq!(
+        run(r#"<?php echo md5("The quick brown fox jumped over the lazy dog.");"#),
+        "5c6ffbdd40d9556b73a21e63c3e0e904"
+    );
+}
+
+#[test]
+fn sha1_known_vectors() {
+    assert_eq!(
+        run(r#"<?php echo sha1("");"#),
+        "da39a3ee5e6b4b0d3255bfef95601890afd80709"
+    );
+    assert_eq!(
+        run(r#"<?php echo sha1("abc");"#),
+        "a9993e364706816aba3e25717850c26c9cd0d89d"
+    );
+}
+
+#[test]
+fn hash_sha256_sha512() {
+    assert_eq!(
+        run(r#"<?php echo hash("sha256", "");"#),
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    );
+    assert_eq!(
+        run(r#"<?php echo hash("sha512", "");"#),
+        "cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce\
+         47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e"
+    );
+    assert_eq!(
+        run(r#"<?php echo hash("sha256", "abc");"#),
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    );
+}
+
+#[test]
+fn hash_md5_sha1_via_algo() {
+    assert_eq!(run(r#"<?php echo hash("md5", "");"#), "d41d8cd98f00b204e9800998ecf8427e");
+    assert_eq!(
+        run(r#"<?php echo hash("sha1", "abc");"#),
+        "a9993e364706816aba3e25717850c26c9cd0d89d"
+    );
+}
+
+#[test]
+fn crc32_function_value() {
+    // 64-bit PHP returns the unsigned crc as a positive int.
+    assert_eq!(
+        run(r#"<?php echo crc32("The quick brown fox jumped over the lazy dog.");"#),
+        "2191738434"
+    );
+    assert_eq!(run(r#"<?php echo crc32("");"#), "0");
+    assert_eq!(run(r#"<?php echo crc32("123456789");"#), "3421780262");
+}
+
+#[test]
+fn hash_crc32_variants() {
+    let dog = "The quick brown fox jumped over the lazy dog.";
+    // crc32b == hexdec matches crc32(); crc32 is the distinct BZIP2 variant.
+    assert_eq!(run(&format!(r#"<?php echo hash("crc32b", "{dog}");"#)), "82a34642");
+    assert_eq!(run(&format!(r#"<?php echo hash("crc32", "{dog}");"#)), "413a86af");
+    assert_eq!(run(r#"<?php echo hash("crc32b", "");"#), "00000000");
+    // Cross-check crc32() equals hexdec(hash('crc32b', …)).
+    assert_eq!(
+        run(&format!(r#"<?php echo crc32("{dog}") === hexdec(hash("crc32b","{dog}")) ? "y":"n";"#)),
+        "y"
+    );
+}
+
+#[test]
+fn hash_hmac_vectors() {
+    assert_eq!(
+        run(r#"<?php echo hash_hmac("sha256", "The quick brown fox", "key");"#),
+        "203d1e5cedd2d18f8c5a3beff0bd9c1ebcb97097dfcb288c46b00c9227fde2c0"
+    );
+    assert_eq!(
+        run(r#"<?php echo hash_hmac("md5", "data", "secret");"#),
+        "df08aef118f36b32e29d2f47cda649b6"
+    );
+    assert_eq!(
+        run(r#"<?php echo hash_hmac("sha1", "message", "key");"#),
+        "2088df74d5f2146b48146caf4965377e9d0be3a4"
+    );
+}
+
+#[test]
+fn hash_hmac_long_key() {
+    // Key longer than the 64-byte block is pre-hashed; verifies that path
+    // against a fixed reference value from PHP.
+    let long = "k".repeat(100);
+    assert_eq!(
+        run(&format!(r#"<?php echo hash_hmac("md5", "msg", "{long}");"#)),
+        "a908a4d5326a80f4b50c9a1951513b67"
+    );
+}
+
+#[test]
+fn hash_algos_list() {
+    assert_eq!(
+        run(r#"<?php echo implode(",", hash_algos());"#),
+        "md5,sha1,sha256,sha512,crc32,crc32b"
+    );
+    assert_eq!(run(r#"<?php echo in_array("sha512", hash_algos()) ? "y":"n";"#), "y");
+}
+
+#[test]
+fn raw_output_binary_string() {
+    // ASCII-safe digest (crc32b of "" is four NUL bytes) round-trips exactly
+    // through bin2hex, matching the hex form.
+    assert_eq!(
+        run(r#"<?php echo bin2hex(hash("crc32b", "", true));"#),
+        run(r#"<?php echo hash("crc32b", "");"#)
+    );
+    assert_eq!(run(r#"<?php echo strlen(hash("crc32b", "", true));"#), "4");
+    // Raw output follows the codebase's chr/ord byte model: the leading raw
+    // md5 byte (0xd4) is emitted as chr(0xd4), so ord() agrees with chr().
+    assert_eq!(
+        run(r#"<?php echo ord(md5("", true)) === ord(chr(212)) ? "y":"n";"#),
+        "y"
+    );
+}
