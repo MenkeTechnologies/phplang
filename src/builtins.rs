@@ -991,8 +991,7 @@ pub fn call_library(name: &str, args: Vec<Value>) -> Result<Value, String> {
         "round" => with_host(|h| {
             let x = h.to_number(&arg(&args, 0)).to_float();
             let p = args.get(1).map(|v| v.to_int()).unwrap_or(0);
-            let m = 10f64.powi(p as i32);
-            Value::float((x * m).round() / m)
+            Value::float(php_round(x, p as i32))
         }),
         "intval" => with_host(|h| Value::int(h.to_number(&arg(&args, 0)).to_int())),
         "floatval" | "doubleval" => {
@@ -1889,10 +1888,9 @@ fn php_number_format(h: &host::PhpHost, args: &[Value]) -> String {
         .map(|v| h.to_str(v))
         .unwrap_or_else(|| ",".to_string());
     let neg = num < 0.0;
-    // PHP rounds half away from zero; pre-round so Rust's round-half-to-even
-    // formatting can't turn 100.25 into "100.2" where PHP gives "100.3".
-    let m = 10f64.powi(dec as i32);
-    let rounded = (num.abs() * m).round() / m;
+    // PHP rounds the value with _php_math_round (half away from zero, with
+    // pre-rounding) before formatting, so 1.005 becomes "1.01".
+    let rounded = php_round(num, dec as i32).abs();
     let formatted = format!("{:.*}", dec, rounded);
     let (int_part, frac_part) = match formatted.split_once('.') {
         Some((i, f)) => (i.to_string(), f.to_string()),
@@ -1920,6 +1918,44 @@ fn php_number_format(h: &host::PhpHost, args: &[Value]) -> String {
 }
 
 // ── math helpers ─────────────────────────────────────────────────────────────
+
+/// Port of PHP's `_php_math_round` (default mode: round half away from zero).
+/// The pre-rounding step compensates for binary floating-point representation
+/// error so decimal half-way values print the way PHP prints them — e.g.
+/// `round(1.005, 2)` is `1.01`, not the `1.0` a naive `(x*100).round()/100`
+/// yields because the nearest f64 to 1.005 is slightly below it.
+pub(crate) fn php_round(value: f64, places: i32) -> f64 {
+    if !value.is_finite() || value == 0.0 {
+        return value;
+    }
+    // php_intlog10abs: floor(log10(|value|)).
+    let precision_places = 14 - value.abs().log10().floor() as i32;
+    let f1 = 10f64.powi(places.abs());
+    let tmp_value = if precision_places > places && precision_places - 15 < places {
+        let f2 = 10f64.powi(precision_places.abs());
+        let mut t = if precision_places >= 0 {
+            value * f2
+        } else {
+            value / f2
+        };
+        t = t.round();
+        let up = places - precision_places;
+        let f3 = 10f64.powi(up.abs());
+        t = if up >= 0 { t * f3 } else { t / f3 };
+        t.round()
+    } else {
+        let t = if places >= 0 { value * f1 } else { value / f1 };
+        if t.abs() >= 1e15 {
+            return value;
+        }
+        t.round()
+    };
+    if places > 0 {
+        tmp_value / f1
+    } else {
+        tmp_value * f1
+    }
+}
 
 fn php_pow(h: &host::PhpHost, args: &[Value]) -> Value {
     let an = h.to_number(&arg(args, 0));

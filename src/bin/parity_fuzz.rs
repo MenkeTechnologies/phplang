@@ -1028,6 +1028,25 @@ fn gen_arr3(seed: u64) -> Vec<String> {
     }
 }
 
+fn gen_rounding(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    // Bias toward `.xx5`-style half-way decimals where the nearest f64 sits just
+    // below the boundary — the cases naive rounding gets wrong.
+    let whole = r.below(100000);
+    let frac = r.below(1000);
+    let sign = if r.below(2) == 0 { "" } else { "-" };
+    let places = r.below(4) as i64;
+    let v = format!("{sign}{whole}.{frac:03}5");
+    match r.below(6) {
+        0 => vec![format!("echo round({v}, {places});")],
+        1 => vec![format!("echo number_format({v}, {places});")],
+        2 => vec![format!("echo number_format({v}, {places}, \".\", \",\");")],
+        3 => vec![format!("echo round({sign}{whole}.{frac:03}, {places});")],
+        4 => vec![format!("echo round({v}, {});", -(1 + r.below(3) as i64))],
+        _ => vec![format!("printf(\"%.{}f\", round({v}, {places}));", r.below(4))],
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Mode registry.
 // ---------------------------------------------------------------------------
@@ -1194,6 +1213,10 @@ const MODES: &[Mode] = &[
     Mode {
         name: "arr3",
         gen: gen_arr3,
+    },
+    Mode {
+        name: "rounding",
+        gen: gen_rounding,
     },
 ];
 
