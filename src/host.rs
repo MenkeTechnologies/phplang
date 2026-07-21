@@ -235,7 +235,9 @@ pub enum PhpObj {
     /// object and the class name whose private/protected members the body may reach.
     Closure {
         params: Vec<Param>,
-        chunk: Chunk,
+        /// Boxed to keep the `Closure` variant from dominating `PhpObj`'s size
+        /// (a `Chunk` is ~300 bytes; boxing it shrinks the enum to a handle).
+        chunk: Box<Chunk>,
         captured: Vec<(String, Value)>,
         bound_this: Option<Value>,
         scope: Option<String>,
@@ -789,7 +791,7 @@ impl PhpHost {
         let scope = self.current_class_ctx();
         self.objs.push(PhpObj::Closure {
             params: def.params,
-            chunk: def.chunk,
+            chunk: Box::new(def.chunk),
             captured,
             bound_this,
             scope,
@@ -812,7 +814,7 @@ impl PhpHost {
                 is_generator,
             }) => Some(ClosureCall {
                 params: params.clone(),
-                chunk: chunk.clone(),
+                chunk: (**chunk).clone(),
                 captured: captured.clone(),
                 bound_this: bound_this.clone(),
                 scope: scope.clone(),
