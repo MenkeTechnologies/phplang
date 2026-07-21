@@ -119,7 +119,11 @@ end-to-end (see `tests/basic.rs`):
   functions as first-class callables (`$f(...)`).
 - Classes/OOP: `new`, instance properties and methods, `$this`, constructors
   (with property promotion), class constants, `::class`, static methods/constants,
-  `self::`/`parent::`, and single inheritance.
+  `self::`/`parent::`, single inheritance, **interfaces** (`implements`, interface
+  `extends`), the **`instanceof`** operator, and **traits** (`use Trait;` member
+  merging). References — `$b = &$a`, `foreach ($a as &$v)`, and by-reference
+  parameters (`function f(&$x)`). Namespaces are accepted in a flat model
+  (`namespace X;` / `use A\B\C;`; qualified names fold to their short name).
 - Exceptions: `throw` as a statement and a PHP-8 expression (`$x ?? throw …`),
   `try` / `catch (A | B $e)` / `finally` with `finally`-always semantics (it runs
   on return, throw, break, and continue out of the guarded body), a built-in
@@ -178,8 +182,9 @@ end-to-end (see `tests/basic.rs`):
 
 ## [0x04] NOT YET (LATER WAVES)
 
-Interfaces, traits, namespaces, references (`&`), and typed-parameter enforcement.
-**Generators (`yield`)** are blocked on the shared VM: phplang
+Strict typed-parameter enforcement (type hints are parsed but not enforced —
+phplang follows PHP's coercive/weak-typing mode) and true (non-flat) namespaces
+with `as` alias remapping. **Generators (`yield`)** are blocked on the shared VM: phplang
 runs each function to completion on a fresh `fusevm` VM, and `fusevm` exposes no
 frame suspend/resume primitive, so a faithful lazy generator cannot be built in the
 frontend alone (it needs VM-level support). Closures and arrow functions do not yet
