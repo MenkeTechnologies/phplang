@@ -25,6 +25,7 @@ pub mod encoding;
 pub mod fileio;
 pub mod fileres;
 pub mod filter;
+pub mod gmp;
 pub mod hash;
 pub mod json;
 pub mod math;
@@ -59,6 +60,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         .or_else(|| constants::dispatch(name, args))
         .or_else(|| system::dispatch(name, args))
         .or_else(|| fileres::dispatch(name, args))
+        .or_else(|| gmp::dispatch(name, args))
         .or_else(|| bcmath::dispatch(name, args))
         .or_else(|| hashext::dispatch(name, args))
         .or_else(|| textx::dispatch(name, args))
