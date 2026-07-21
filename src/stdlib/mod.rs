@@ -17,6 +17,7 @@ pub mod bcmath;
 pub mod callable;
 pub mod constants;
 pub mod ctype;
+pub mod datefn;
 pub mod hashext;
 pub mod runtime;
 pub mod textx;
@@ -47,6 +48,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         .or_else(|| types::dispatch(name, args))
         .or_else(|| preg::dispatch(name, args))
         .or_else(|| datetime::dispatch(name, args))
+        .or_else(|| datefn::dispatch(name, args))
         .or_else(|| hash::dispatch(name, args))
         .or_else(|| encoding::dispatch(name, args))
         .or_else(|| url::dispatch(name, args))

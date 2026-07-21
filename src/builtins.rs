@@ -1861,27 +1861,75 @@ fn is_callable_arg(cb: &Value) -> bool {
 
 fn php_array_map(args: &[Value]) -> Result<Value, String> {
     let cb = arg(args, 0);
-    let arr = arg(args, 1);
-    let pairs = with_host(|h| h.array_pairs(&arr)).unwrap_or_default();
     let callable = is_callable_arg(&cb);
-    let mut mapped: Vec<(Value, Value)> = Vec::with_capacity(pairs.len());
-    for (k, v) in pairs {
-        let out = if callable {
-            host::call_value(cb.clone(), vec![v])?
-        } else {
-            v
-        };
-        // A callback that threw stops the walk; the pending exception unwinds
-        // through the `array_map(...)` call site.
-        if host::has_pending_throw() {
-            return Ok(Value::Undef);
+
+    // Single-array form preserves keys; the callback (or identity) maps values.
+    if args.len() <= 2 {
+        let arr = arg(args, 1);
+        let pairs = with_host(|h| h.array_pairs(&arr)).unwrap_or_default();
+        let mut mapped: Vec<(Value, Value)> = Vec::with_capacity(pairs.len());
+        for (k, v) in pairs {
+            let out = if callable {
+                host::call_value(cb.clone(), vec![v])?
+            } else {
+                v
+            };
+            // A callback that threw stops the walk; the pending exception unwinds
+            // through the `array_map(...)` call site.
+            if host::has_pending_throw() {
+                return Ok(Value::Undef);
+            }
+            mapped.push((k, out));
         }
-        mapped.push((k, out));
+        return Ok(with_host(|h| {
+            let out = h.new_array();
+            for (k, v) in mapped {
+                h.arr_set_key(&out, &k, v);
+            }
+            out
+        }));
+    }
+
+    // Multi-array form: iterate up to the longest input by position (keys are
+    // dropped, 0-based). With a null callback the rows are zipped into arrays.
+    let arrays: Vec<Vec<Value>> = args[1..]
+        .iter()
+        .map(|a| {
+            with_host(|h| h.array_pairs(a))
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(_, v)| v)
+                .collect()
+        })
+        .collect();
+    let len = arrays.iter().map(|a| a.len()).max().unwrap_or(0);
+    let mut result: Vec<Value> = Vec::with_capacity(len);
+    for i in 0..len {
+        let row: Vec<Value> = arrays
+            .iter()
+            .map(|a| a.get(i).cloned().unwrap_or(Value::Undef))
+            .collect();
+        if callable {
+            let out = host::call_value(cb.clone(), row)?;
+            if host::has_pending_throw() {
+                return Ok(Value::Undef);
+            }
+            result.push(out);
+        } else {
+            // Null callback: zip each position into a sub-array.
+            result.push(with_host(|h| {
+                let sub = h.new_array();
+                for v in row {
+                    h.arr_push_auto(&sub, v);
+                }
+                sub
+            }));
+        }
     }
     Ok(with_host(|h| {
         let out = h.new_array();
-        for (k, v) in mapped {
-            h.arr_set_key(&out, &k, v);
+        for v in result {
+            h.arr_push_auto(&out, v);
         }
         out
     }))
