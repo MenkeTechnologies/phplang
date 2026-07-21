@@ -76,6 +76,7 @@ pub mod ops {
     pub const FOREACH_PREP: u16 = 59; // [v] -> an iterable array (object -> iterated)
     pub const INSTANCEOF: u16 = 60; // [obj, class-name] -> Bool
     pub const REF_BIND: u16 = 61; // [target, source] -> value ($t = &$s)
+    pub const BYREF_OUT: u16 = 62; // [position] -> the last call's by-ref param value
 }
 
 /// Sub-ops for the by-reference array mutators lowered through `ops::ARR_MUT`
@@ -98,6 +99,8 @@ pub struct Param {
     pub name: String,
     pub default: Option<Chunk>,
     pub variadic: bool,
+    /// `&$x` — a by-reference parameter (final value copied back to the caller).
+    pub by_ref: bool,
 }
 
 /// A compiled user function: its parameters plus the lowered body chunk.
@@ -251,6 +254,9 @@ pub struct PhpHost {
     /// Shared storage cells for reference bindings (`$b = &$a`). A scope's `refs`
     /// map points names at these slots.
     ref_cells: Vec<Value>,
+    /// The most recent call's by-reference parameters' final values, indexed by
+    /// parameter position — read by the caller's post-call write-back (`BYREF_OUT`).
+    byref_out: Vec<Value>,
 }
 
 impl Default for PhpHost {
@@ -275,9 +281,16 @@ impl PhpHost {
             constants: predefined_constants(),
             ob_stack: Vec::new(),
             ref_cells: Vec::new(),
+            byref_out: Vec::new(),
         };
         h.init_superglobals();
         h
+    }
+
+    /// The last call's by-reference parameter value at `pos` (for the caller's
+    /// write-back); `Undef` if out of range.
+    pub fn byref_out_get(&self, pos: usize) -> Value {
+        self.byref_out.get(pos).cloned().unwrap_or(Value::Undef)
     }
 
     /// Seed the superglobal arrays in the global scope: `$_ENV`/`$_SERVER` from
@@ -1926,6 +1939,20 @@ fn invoke(
     }
     let r = run_chunk_on(body);
     let sig = with_host(|h| {
+        // Capture by-reference parameters' final values (read from the still-open
+        // callee frame) so the caller can write them back after the call.
+        if params.iter().any(|p| p.by_ref) {
+            h.byref_out = params
+                .iter()
+                .map(|p| {
+                    if p.by_ref {
+                        h.get_var(&p.name)
+                    } else {
+                        Value::Undef
+                    }
+                })
+                .collect();
+        }
         h.scopes.pop();
         h.signal.take()
     });

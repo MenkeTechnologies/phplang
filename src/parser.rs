@@ -509,8 +509,13 @@ impl Parser {
                 // Skip a leading modifier/type-hint chain up to `...` or `$var`. A
                 // visibility/readonly keyword marks a promoted constructor property.
                 let mut promoted = false;
+                let mut by_ref = false;
                 loop {
-                    if self.eat_punct("?") || self.eat_punct("&") {
+                    if self.eat_punct("&") {
+                        by_ref = true;
+                        continue;
+                    }
+                    if self.eat_punct("?") {
                         continue;
                     }
                     if self.at_punct("...") || matches!(self.peek(), Some(Tok::Var(_))) {
@@ -542,6 +547,7 @@ impl Parser {
                     default,
                     variadic,
                     promoted,
+                    by_ref,
                 });
                 if !self.eat_punct(",") {
                     break;

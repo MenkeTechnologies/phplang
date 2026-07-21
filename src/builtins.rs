@@ -74,6 +74,14 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::FOREACH_PREP, b_foreach_prep);
     vm.register_builtin(ops::INSTANCEOF, b_instanceof);
     vm.register_builtin(ops::REF_BIND, b_ref_bind);
+    vm.register_builtin(ops::BYREF_OUT, b_byref_out);
+}
+
+/// Read the last call's by-reference parameter value at the given position (for
+/// the caller's post-call write-back). Stack `[position]`.
+fn b_byref_out(vm: &mut VM, _: u8) -> Value {
+    let pos = vm.pop().to_int().max(0) as usize;
+    with_host(|h| h.byref_out_get(pos))
 }
 
 /// `$target = &$source` — bind the two names to a shared cell; leaves the value.

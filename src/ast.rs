@@ -251,6 +251,9 @@ pub struct Param {
     pub default: Option<Expr>,
     pub variadic: bool,
     pub promoted: bool,
+    /// `&$x` — a by-reference parameter; the caller's variable is updated to the
+    /// parameter's final value when the call returns.
+    pub by_ref: bool,
 }
 
 /// A parsed class declaration. Single inheritance only; interfaces/traits are

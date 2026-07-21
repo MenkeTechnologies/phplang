@@ -58,3 +58,38 @@ fn foreach_by_reference_continue_preserves_element() {
         echo implode(",", $a);"#;
     assert_eq!(run(src), "0,2,0,0");
 }
+
+#[test]
+fn by_reference_parameter_scalar() {
+    let src = r#"<?php
+        function inc(&$x) { $x = $x + 1; }
+        $n = 5; inc($n); inc($n);
+        echo $n;"#;
+    assert_eq!(run(src), "7");
+}
+
+#[test]
+fn by_reference_parameter_swap() {
+    let src = r#"<?php
+        function swap(&$a, &$b) { $t = $a; $a = $b; $b = $t; }
+        $x = 1; $y = 2; swap($x, $y);
+        echo $x, $y;"#;
+    assert_eq!(run(src), "21");
+}
+
+#[test]
+fn value_parameter_is_not_written_back() {
+    let src = r#"<?php
+        function noref($x) { $x = 99; }
+        $n = 5; noref($n);
+        echo $n;"#;
+    assert_eq!(run(src), "5");
+}
+
+#[test]
+fn by_reference_parameter_forward_declared() {
+    // The call precedes the definition; the pre-pass still wires the write-back.
+    let src = r#"<?php $n = 10; bump($n); echo $n;
+        function bump(&$x) { $x = $x * 2; }"#;
+    assert_eq!(run(src), "20");
+}

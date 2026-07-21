@@ -70,6 +70,10 @@ pub struct Compiler {
     /// Monotonic counter for compiler-generated temporary variable names
     /// (`foreach` desugaring), kept out of the PHP identifier space with a `@`.
     tmp: usize,
+    /// By-reference parameter positions per function (lowercased name), gathered
+    /// in a pre-pass so a call can write the callee's final by-ref values back to
+    /// the caller's variables even when the function is declared later.
+    byref_fns: FxHashMap<String, Vec<usize>>,
     /// Emit per-statement DAP line markers (`php --dap`). Off for normal runs so
     /// the compiled chunk carries zero extra ops.
     debug: bool,
@@ -81,6 +85,9 @@ pub fn compile(stmts: &[Stmt], debug: bool) -> Result<Program, String> {
         debug,
         ..Compiler::default()
     };
+    // Pre-pass: record by-reference parameter positions of every function so a
+    // call site can write the callee's finals back even for forward references.
+    c.collect_byref(stmts);
     let mut b = ChunkBuilder::new();
     c.compile_seq(&mut b, stmts)?;
     Ok(Program {
@@ -115,9 +122,67 @@ impl Compiler {
                 name: p.name.clone(),
                 default,
                 variadic: p.variadic,
+                by_ref: p.by_ref,
             });
         }
         Ok(out)
+    }
+
+    /// Pre-pass: record the by-reference parameter positions of every `function`
+    /// declaration (recursing into nested bodies) so call sites can write the
+    /// callee's finals back to the caller — even for forward references.
+    fn collect_byref(&mut self, stmts: &[Stmt]) {
+        for s in stmts {
+            match &s.kind {
+                StmtKind::Function { name, params, body } => {
+                    let positions: Vec<usize> = params
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, p)| p.by_ref)
+                        .map(|(i, _)| i)
+                        .collect();
+                    if !positions.is_empty() {
+                        self.byref_fns.insert(name.to_ascii_lowercase(), positions);
+                    }
+                    self.collect_byref(body);
+                }
+                StmtKind::If {
+                    then, elifs, els, ..
+                } => {
+                    self.collect_byref(then);
+                    for (_, body) in elifs {
+                        self.collect_byref(body);
+                    }
+                    if let Some(e) = els {
+                        self.collect_byref(e);
+                    }
+                }
+                StmtKind::While { body, .. }
+                | StmtKind::DoWhile { body, .. }
+                | StmtKind::For { body, .. }
+                | StmtKind::Foreach { body, .. }
+                | StmtKind::Block(body) => self.collect_byref(body),
+                StmtKind::Switch { cases, .. } => {
+                    for c in cases {
+                        self.collect_byref(&c.body);
+                    }
+                }
+                StmtKind::Try {
+                    body,
+                    catches,
+                    finally,
+                } => {
+                    self.collect_byref(body);
+                    for c in catches {
+                        self.collect_byref(&c.body);
+                    }
+                    if let Some(f) = finally {
+                        self.collect_byref(f);
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     fn compile_seq(&mut self, b: &mut ChunkBuilder, body: &[Stmt]) -> Result<(), String> {
@@ -869,6 +934,20 @@ impl Compiler {
                         self.compile_expr(b, a)?;
                     }
                     b.emit(Op::CallBuiltin(ops::CALL, (args.len() + 1) as u8), 0);
+                    // By-reference parameters: write the callee's final values back
+                    // to the caller's argument variables (leaving the call result).
+                    if let Some(positions) = self.byref_fns.get(&name.to_ascii_lowercase()).cloned() {
+                        for pos in positions {
+                            if let Some(Expr::Var(vname)) = args.get(pos) {
+                                let nidx = b.add_constant(Value::str(vname.clone()));
+                                b.emit(Op::LoadConst(nidx), 0);
+                                b.emit(Op::LoadInt(pos as i64), 0);
+                                b.emit(Op::CallBuiltin(ops::BYREF_OUT, 1), 0);
+                                b.emit(Op::CallBuiltin(ops::SETVAR, 2), 0);
+                                b.emit(Op::Pop, 0);
+                            }
+                        }
+                    }
                 }
             }
             Expr::Spread(_) => {
