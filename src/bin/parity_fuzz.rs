@@ -786,6 +786,249 @@ fn gen_coalesce(seed: u64) -> Vec<String> {
 }
 
 // ---------------------------------------------------------------------------
+// Extended generators: the standard-library functions and language features
+// added after the original corpus. Only functions that should match PHP 8
+// byte-for-byte are exercised (documented deviations are excluded).
+// ---------------------------------------------------------------------------
+
+/// A small pool of quote-safe words for string tests.
+const SW: &[&str] = &["hello", "World", "abcABC", "FooBar", "mixedCase", "aaabbb", "level"];
+
+fn gen_str2(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let s = *r.pick(SW);
+    match r.below(16) {
+        0 => vec![format!("echo substr_count(\"{s}xx{s}\", \"{s}\");")],
+        1 => vec![format!("echo ucwords(\"{s} and {s}\");")],
+        2 => vec![format!("echo lcfirst(\"{s}\");")],
+        3 => vec![format!("echo str_word_count(\"one two three four\");")],
+        4 => vec![format!("echo strrpos(\"{s}{s}\", \"{}\");", &s[..1])],
+        5 => vec![format!("echo stripos(\"{s}\", \"{}\");", &s[..1].to_uppercase())],
+        6 => vec![format!("echo addslashes(\"a'b\\\"c\");")],
+        7 => vec![format!("echo strtr(\"{s}\", \"lo\", \"LO\");")],
+        8 => vec![format!("echo wordwrap(\"the quick brown fox\", {}, \"|\", true);", 4 + r.below(8))],
+        9 => vec![format!("echo strncasecmp(\"{s}\", \"{}\", {}) <=> 0;", s.to_uppercase(), 1 + r.below(5))],
+        10 => vec![format!("echo str_ireplace(\"{}\", \"X\", \"{s}\");", &s[..1].to_uppercase())],
+        11 => vec![format!("echo strpbrk(\"{s}\", \"lo\");")],
+        12 => vec![format!("echo strspn(\"{s}\", \"{}\");", s)],
+        13 => vec![format!("echo levenshtein(\"{s}\", \"{}x\");", &s[..s.len().saturating_sub(1)])],
+        14 => vec![format!("echo nl2br(\"a\\nb\");")],
+        _ => vec![format!("echo quotemeta(\"a.b*c\");")],
+    }
+}
+
+fn gen_arr2(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let mut list = || {
+        let n = 3 + r.below(4);
+        (0..n).map(|_| (r.below(20)).to_string()).collect::<Vec<_>>().join(", ")
+    };
+    let l = list();
+    match r.below(15) {
+        0 => vec![format!("echo json_encode(array_chunk([{l}], {}));", 1 + r.below(3))],
+        1 => vec![format!("echo json_encode(array_pad([{l}], {}, 0));", 1 + r.below(6))],
+        2 => vec![format!("echo json_encode(array_slice([{l}], {}, {}));", r.below(3), 1 + r.below(3))],
+        3 => vec![format!("echo json_encode(array_count_values([{}]));", "1, 2, 2, 3, 3, 3")],
+        4 => vec![format!("echo json_encode(array_flip([{}]));", "\"a\", \"b\", \"c\"")],
+        5 => vec![format!("echo array_key_first([{l}]), \"|\", array_key_last([{l}]);")],
+        6 => vec![format!("echo array_is_list([{l}]) ? \"y\" : \"n\";")],
+        7 => vec![format!("echo in_array({}, [{l}]) ? \"y\" : \"n\";", r.below(20))],
+        8 => vec![format!("$a = [{l}]; echo array_search({}, $a) === false ? \"no\" : \"yes\";", r.below(20))],
+        9 => vec![format!("$a = [{l}]; sort($a); echo implode(\",\", $a);")],
+        10 => vec![format!("$a = [{l}]; rsort($a); echo implode(\",\", $a);")],
+        11 => vec![format!("$a = [{l}]; usort($a, fn($x, $y) => $x - $y); echo implode(\",\", $a);")],
+        12 => vec![format!("echo json_encode(array_fill_keys([\"a\", \"b\"], {}));", r.below(9))],
+        13 => vec![format!("echo json_encode(array_diff_key([\"a\" => 1, \"b\" => 2], [\"a\" => 9]));")],
+        _ => vec![format!("$a = [{l}]; echo array_sum($a), \"|\", array_product([1, 2, 3]);")],
+    }
+}
+
+fn gen_math2(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let n = r.below(1000);
+    let neg = r.below(200) as i64 - 100;
+    match r.below(16) {
+        0 => vec![format!("echo dechex({n}), \"|\", hexdec(dechex({n}));")],
+        1 => vec![format!("echo decbin({n}), \"|\", bindec(decbin({n}));")],
+        2 => vec![format!("echo decoct({n}), \"|\", octdec(decoct({n}));")],
+        3 => vec![format!("echo base_convert(\"{n}\", 10, 16);")],
+        4 => vec![format!("echo abs({neg}), \"|\", abs({neg}.5);")],
+        5 => vec![format!("echo intdiv({}, {});", n as i64 - 500, 1 + r.below(9))],
+        6 => vec![format!("echo {} % {};", n as i64 - 500, (r.below(9) as i64) - 4)],
+        7 => vec![format!("echo max({n}, {neg}, {}), \"|\", min({n}, {neg}, {});", r.below(1000), r.below(1000))],
+        8 => vec![format!("printf(\"%.4f\", fmod({}, {}));", n, 1 + r.below(7))],
+        9 => vec![format!("echo gmp_strval(gmp_add(\"{n}00000000000000000000\", \"{}\"));", r.below(1000))],
+        10 => vec![format!("echo gmp_strval(gmp_mul(\"{n}\", \"{}\"));", r.below(100000))],
+        11 => vec![format!("echo gmp_strval(gmp_pow(\"{}\", {}));", 2 + r.below(5), 5 + r.below(20))],
+        12 => vec![format!("echo gmp_strval(gmp_gcd(\"{}\", \"{}\"));", n * 6, n.max(1) * 4)],
+        13 => vec![format!("echo gmp_strval(gmp_mod(\"{}\", \"{}\"));", n, 1 + r.below(97))],
+        14 => vec![format!("echo str_pad(strval(round({n}.{:03}, 2)), 1);", r.below(1000))],
+        _ => vec![format!("echo ({} <=> {});", n, r.below(1000))],
+    }
+}
+
+fn gen_refs(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let x = r.below(50);
+    let y = r.below(50);
+    // Note: `$b = &$a[0]` (reference to an array element) is a documented
+    // limitation — the reference model is scope-level variable-to-variable
+    // only — so it is deliberately not generated here.
+    match r.below(5) {
+        0 => vec![format!("$a = {x}; $b = &$a; $b = {y}; echo $a, \"|\", $b;")],
+        1 => vec![format!("$a = {x}; $b = &$a; $a += {y}; echo $b;")],
+        2 => vec![format!(
+            "$a = [{}, {}, {}]; foreach ($a as &$v) {{ $v *= 2; }} unset($v); echo implode(\",\", $a);",
+            x, y, r.below(50)
+        )],
+        3 => vec![format!(
+            "function inc(&$n) {{ $n++; }} $c = {x}; inc($c); inc($c); echo $c;"
+        )],
+        _ => vec![format!(
+            "function swap(&$p, &$q) {{ $t = $p; $p = $q; $q = $t; }} $a = {x}; $b = {y}; swap($a, $b); echo $a, \"|\", $b;"
+        )],
+    }
+}
+
+fn gen_closures(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let n = r.below(20);
+    let list = format!("[{}, {}, {}, {}]", r.below(20), r.below(20), r.below(20), r.below(20));
+    match r.below(7) {
+        0 => vec![format!("$f = fn($x) => $x * {n}; echo $f({});", r.below(10))],
+        1 => vec![format!("$b = {n}; $f = function ($x) use ($b) {{ return $x + $b; }}; echo $f({});", r.below(10))],
+        2 => vec![format!("echo implode(\",\", array_map(fn($x) => $x + 1, {list}));")],
+        3 => vec![format!("echo implode(\",\", array_filter({list}, fn($x) => $x % 2 == 0));")],
+        4 => vec![format!("echo array_reduce({list}, fn($c, $x) => $c + $x, 0);")],
+        5 => vec![format!("$mk = fn($b) => fn($x) => $x + $b; $add = $mk({n}); echo $add({});", r.below(10))],
+        _ => vec![format!("echo (fn($x) => $x <=> {n})({});", r.below(20))],
+    }
+}
+
+fn gen_exc(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    match r.below(6) {
+        0 => vec![
+            "try { throw new Exception(\"e\"); } catch (Exception $x) { echo $x->getMessage(); }".into(),
+        ],
+        1 => vec!["try { echo \"a\"; } finally { echo \"b\"; }".into()],
+        2 => vec![
+            "function g() { try { throw new RuntimeException(\"x\"); } catch (Exception $e) { return \"R\"; } finally { echo \"F\"; } } echo g();".into(),
+        ],
+        3 => vec![
+            "try { throw new TypeError(\"t\"); } catch (Exception $e) { echo \"exc\"; } catch (Error $e) { echo \"err\"; }".into(),
+        ],
+        4 => vec![
+            "try { echo match({}) { 1 => \"a\" }; } catch (\\UnhandledMatchError $e) { echo \"unhandled\"; }"
+                .replace("{}", &(2 + r.below(5)).to_string()),
+        ],
+        _ => vec![
+            "$v = null; try { $r = $v ?? throw new Exception(\"c\"); } catch (Exception $e) { echo $e->getMessage(); }".into(),
+        ],
+    }
+}
+
+fn gen_typejug2(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let vals = ["0", "1", "-5", "3.14", "\"42\"", "\"3.5abc\"", "\"\"", "\"0\"", "true", "false", "null", "\"10\""];
+    let v = *r.pick(&vals);
+    match r.below(9) {
+        0 => vec![format!("var_dump((int){v});")],
+        1 => vec![format!("var_dump((float){v});")],
+        2 => vec![format!("var_dump((bool){v});")],
+        3 => vec![format!("echo gettype({v});")],
+        4 => vec![format!("var_dump(is_numeric({v}));")],
+        5 => vec![format!("echo intval({v});")],
+        6 => vec![format!("echo var_export({v}, true);")],
+        7 => vec![format!("echo json_encode({v});")],
+        _ => vec![format!("var_dump({v} == {});", r.pick(&vals))],
+    }
+}
+
+fn gen_range(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    match r.below(6) {
+        0 => {
+            let (a, b, s) = (r.below(10), 10 + r.below(20), 1 + r.below(4));
+            vec![format!("echo implode(\",\", range({a}, {b}, {s}));")]
+        }
+        1 => {
+            let (a, b, s) = (20 + r.below(20), r.below(10), 1 + r.below(4));
+            vec![format!("echo implode(\",\", range({a}, {b}, {s}));")]
+        }
+        2 => {
+            let lo = (b'a' + r.below(10) as u8) as char;
+            let hi = (b'p' + r.below(10) as u8) as char;
+            vec![format!("echo implode(\",\", range(\"{lo}\", \"{hi}\", {}));", 1 + r.below(3))]
+        }
+        3 => vec![format!("echo implode(\",\", range({}, {}));", (r.below(20) as i64) - 10, r.below(20))],
+        4 => vec![format!("echo count(range({}, {}, {}));", r.below(5), 50 + r.below(50), 1 + r.below(7))],
+        _ => {
+            let lo = (b'A' + r.below(6) as u8) as char;
+            let hi = (b'T' + r.below(6) as u8) as char;
+            vec![format!("echo implode(\"\", range(\"{lo}\", \"{hi}\"));")]
+        }
+    }
+}
+
+fn gen_datefmt(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let tss = [0i64, 946684800, 1234567890, 1600000000, 1700000000, 1000000, 1609459200];
+    let ts = *r.pick(&tss);
+    let fmts = ["Y-m-d H:i:s", "D, d M Y", "l N w z", "H:i:s A", "y/n/j", "W F t S", "U G a"];
+    let f = *r.pick(&fmts);
+    match r.below(3) {
+        0 => vec![format!("echo date(\"{f}\", {ts});")],
+        1 => vec![format!("echo gmdate(\"{f}\", {ts});")],
+        _ => vec![format!("echo date(\"{f}\", {ts}), \"|\", date(\"{f}\", {});", ts + 86400 * (1 + r.below(400)) as i64)],
+    }
+}
+
+fn gen_printf2(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let n = (r.below(2000) as i64) - 1000;
+    let f = r.below(100000) as f64 / 100.0;
+    match r.below(9) {
+        0 => vec![format!("printf(\"%b|%o|%x|%X\", {}, {}, {}, {});", n.unsigned_abs(), n.unsigned_abs(), n.unsigned_abs(), n.unsigned_abs())],
+        1 => vec![format!("printf(\"%e|%E\", {f}, {f});")],
+        2 => vec![format!("printf(\"%+d|%+d\", {}, {});", n.abs(), -n.abs())],
+        3 => vec![format!("printf(\"%0{}.{}f\", {f});", 4 + r.below(6), r.below(5))],
+        4 => vec![format!("printf(\"%'*{}s\", \"{}\");", 4 + r.below(8), r.pick(SW))],
+        // Single-quoted PHP string: the `$s`/`$` must NOT be interpolated.
+        5 => vec![format!("printf('%1$s %2$s %1$s', \"{}\", \"{}\");", r.pick(SW), r.pick(SW))],
+        6 => vec![format!("printf(\"%-{}d|\", {});", 4 + r.below(6), n)],
+        7 => vec![format!("echo number_format({}.{:03}, {}, \".\", \",\");", r.below(9999999), r.below(1000), r.below(4))],
+        _ => vec![format!("printf(\"%g|%G\", {}, {});", f, f * 1000.0)],
+    }
+}
+
+fn gen_arr3(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let list = |r: &mut Rng| {
+        let n = 3 + r.below(4);
+        (0..n).map(|_| (r.below(15)).to_string()).collect::<Vec<_>>().join(", ")
+    };
+    let three = |r: &mut Rng| {
+        format!("{}, {}, {}", r.below(15), r.below(15), r.below(15))
+    };
+    let l = list(r);
+    match r.below(11) {
+        0 => vec![format!("echo implode(\",\", array_reverse([{l}]));")],
+        1 => vec![format!("echo implode(\",\", array_unique([{}]));", "1, 2, 2, 3, 1, 4, 4")],
+        // array_combine requires equal-length key/value lists (else PHP throws).
+        2 => vec![format!("echo json_encode(array_combine([\"a\", \"b\", \"c\"], [{}]));", three(r))],
+        3 => vec![format!("echo implode(\",\", array_merge([{l}], [{}]));", list(r))],
+        4 => vec![format!("echo implode(\",\", array_keys([{l}]));")],
+        5 => vec![format!("echo implode(\",\", array_values([{l}]));")],
+        6 => vec![format!("echo implode(\",\", array_map(fn($x) => $x * $x, [{l}]));")],
+        7 => vec![format!("$a = [{l}]; echo implode(\",\", array_map(null, $a, $a)[0]);")],
+        8 => vec![format!("echo array_sum(array_map(fn($x) => $x + 1, [{l}]));")],
+        9 => vec![format!("echo implode(\",\", array_intersect([{l}], [{}]));", list(r))],
+        _ => vec![format!("echo implode(\",\", array_diff([{l}], [{}]));", list(r))],
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Mode registry.
 // ---------------------------------------------------------------------------
 
@@ -907,6 +1150,50 @@ const MODES: &[Mode] = &[
     Mode {
         name: "coalesce",
         gen: gen_coalesce,
+    },
+    Mode {
+        name: "str2",
+        gen: gen_str2,
+    },
+    Mode {
+        name: "arr2",
+        gen: gen_arr2,
+    },
+    Mode {
+        name: "math2",
+        gen: gen_math2,
+    },
+    Mode {
+        name: "refs",
+        gen: gen_refs,
+    },
+    Mode {
+        name: "closures",
+        gen: gen_closures,
+    },
+    Mode {
+        name: "exc",
+        gen: gen_exc,
+    },
+    Mode {
+        name: "typejug2",
+        gen: gen_typejug2,
+    },
+    Mode {
+        name: "range",
+        gen: gen_range,
+    },
+    Mode {
+        name: "datefmt",
+        gen: gen_datefmt,
+    },
+    Mode {
+        name: "printf2",
+        gen: gen_printf2,
+    },
+    Mode {
+        name: "arr3",
+        gen: gen_arr3,
     },
 ];
 

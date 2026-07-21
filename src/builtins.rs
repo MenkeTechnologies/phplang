@@ -1019,7 +1019,7 @@ pub fn call_library(name: &str, args: Vec<Value>) -> Result<Value, String> {
         "array_keys" => with_host(|h| h.array_keys(&arg(&args, 0))),
         "array_values" => with_host(|h| php_array_values(h, &arg(&args, 0))),
         "array_push" => with_host(|h| php_array_push(h, &args)),
-        "range" => with_host(|h| php_range(h, &args)),
+        "range" => with_host(|h| php_range(h, &args))?,
         "sprintf" => with_host(|h| Value::str(php_sprintf(h, &args))),
         "printf" => with_host(|h| {
             let s = php_sprintf(h, &args);
@@ -1150,7 +1150,7 @@ pub fn call_library(name: &str, args: Vec<Value>) -> Result<Value, String> {
         "ksort" => with_host(|h| php_ksort(h, &arg(&args, 0), false)),
         "krsort" => with_host(|h| php_ksort(h, &arg(&args, 0), true)),
         "array_fill" => with_host(|h| php_array_fill(h, &args)),
-        "array_combine" => with_host(|h| php_array_combine(h, &args)),
+        "array_combine" => with_host(|h| php_array_combine(h, &args))?,
         "array_diff" => with_host(|h| php_array_diff(h, &args, false)),
         "array_intersect" => with_host(|h| php_array_diff(h, &args, true)),
 
@@ -1327,21 +1327,113 @@ fn php_array_push(h: &mut host::PhpHost, args: &[Value]) -> Value {
     Value::int(h.array_len(&arr))
 }
 
-fn php_range(h: &mut host::PhpHost, args: &[Value]) -> Value {
-    let start = h.to_number(&arg(args, 0));
-    let end = h.to_number(&arg(args, 1));
+/// `range($start, $end, $step = 1)`: an inclusive sequence. Character ranges
+/// (both bounds non-numeric single-byte-anchored strings) walk byte codepoints;
+/// numeric ranges are integer unless any bound/step is a float. `$step` is taken
+/// as its absolute value (direction comes from `$start` vs `$end`). Like PHP,
+/// a `$step` that exceeds the span between distinct bounds is a fatal ValueError.
+fn php_range(h: &mut host::PhpHost, args: &[Value]) -> Result<Value, String> {
+    const STEP_ERR: &str = "range(): Argument #3 ($step) must be less than the range \
+                            spanned by argument #1 ($start) and argument #2 ($end)";
+    let a0 = arg(args, 0);
+    let a1 = arg(args, 1);
     let arr = h.new_array();
-    // Integer range only in the scaffold.
-    let (mut i, e) = (start.to_int(), end.to_int());
-    let step = if i <= e { 1 } else { -1 };
-    loop {
-        h.arr_push_auto(&arr, Value::int(i));
-        if i == e {
-            break;
+
+    // Character range: both bounds are non-empty, non-numeric strings.
+    if let (Value::Str(s0), Value::Str(s1)) = (&a0, &a1) {
+        if !s0.is_empty()
+            && !s1.is_empty()
+            && !host::is_numeric_string(s0)
+            && !host::is_numeric_string(s1)
+        {
+            let low = s0.as_bytes()[0] as i64;
+            let high = s1.as_bytes()[0] as i64;
+            let step = args
+                .get(2)
+                .map(|v| h.to_number(v).to_int().abs())
+                .unwrap_or(1)
+                .max(1);
+            if low != high && (low - high).abs() < step {
+                return Err(STEP_ERR.into());
+            }
+            let mut c = low;
+            if low <= high {
+                while c <= high {
+                    h.arr_push_auto(&arr, Value::str(((c as u8) as char).to_string()));
+                    c += step;
+                }
+            } else {
+                while c >= high {
+                    h.arr_push_auto(&arr, Value::str(((c as u8) as char).to_string()));
+                    c -= step;
+                }
+            }
+            return Ok(arr);
         }
-        i += step;
     }
-    arr
+
+    // Numeric range. Float if any bound or the step is a float.
+    let n0 = h.to_number(&a0);
+    let n1 = h.to_number(&a1);
+    let nstep = args.get(2).map(|v| h.to_number(v));
+    let is_float = matches!(n0, Value::Float(_))
+        || matches!(n1, Value::Float(_))
+        || matches!(nstep, Some(Value::Float(_)));
+
+    if is_float {
+        let low = n0.to_float();
+        let high = n1.to_float();
+        let mut step = nstep.as_ref().map(|v| v.to_float().abs()).unwrap_or(1.0);
+        if step == 0.0 {
+            step = 1.0;
+        }
+        if (low - high).abs() >= f64::EPSILON && (low - high).abs() < step {
+            return Err(STEP_ERR.into());
+        }
+        if (low - high).abs() < f64::EPSILON {
+            h.arr_push_auto(&arr, Value::float(low));
+        } else if low < high {
+            let mut i = 0.0f64;
+            loop {
+                let v = low + i * step;
+                if v > high + f64::EPSILON * high {
+                    break;
+                }
+                h.arr_push_auto(&arr, Value::float(v));
+                i += 1.0;
+            }
+        } else {
+            let mut i = 0.0f64;
+            loop {
+                let v = low - i * step;
+                if v < high - f64::EPSILON * high {
+                    break;
+                }
+                h.arr_push_auto(&arr, Value::float(v));
+                i += 1.0;
+            }
+        }
+    } else {
+        let low = n0.to_int();
+        let high = n1.to_int();
+        let step = nstep.as_ref().map(|v| v.to_int().abs()).unwrap_or(1).max(1);
+        if low != high && (low - high).abs() < step {
+            return Err(STEP_ERR.into());
+        }
+        let mut i = low;
+        if low <= high {
+            while i <= high {
+                h.arr_push_auto(&arr, Value::int(i));
+                i += step;
+            }
+        } else {
+            while i >= high {
+                h.arr_push_auto(&arr, Value::int(i));
+                i -= step;
+            }
+        }
+    }
+    Ok(arr)
 }
 
 /// A parsed conversion spec `%[argnum$][flags][width][.precision]conv`.
@@ -2192,14 +2284,19 @@ fn php_array_fill(h: &mut host::PhpHost, args: &[Value]) -> Value {
     out
 }
 
-fn php_array_combine(h: &mut host::PhpHost, args: &[Value]) -> Value {
+fn php_array_combine(h: &mut host::PhpHost, args: &[Value]) -> Result<Value, String> {
     let keys = h.array_pairs(&arg(args, 0)).unwrap_or_default();
     let vals = h.array_pairs(&arg(args, 1)).unwrap_or_default();
+    if keys.len() != vals.len() {
+        return Err("array_combine(): Argument #1 ($keys) and argument #2 ($values) \
+                    must have the same number of elements"
+            .into());
+    }
     let out = h.new_array();
     for ((_, k), (_, v)) in keys.into_iter().zip(vals) {
         h.arr_set_key(&out, &k, v);
     }
-    out
+    Ok(out)
 }
 
 /// `array_diff` (`intersect=false`) / `array_intersect` (`intersect=true`) over
