@@ -76,7 +76,7 @@ path = "src/bin/gen_docs.rs"
 # native fusevm `Value`s. `jit` turns on fusevm's tracing Cranelift JIT so hot
 # PHP arithmetic loops trace-compile; the strict numeric hook (src/builtins.rs)
 # supplies PHP coercion semantics for non-numeric operands.
-fusevm = { version = "0.14.11", features = ["jit", "ffi"] }
+fusevm = { version = "0.14.12", features = ["jit", "ffi"] }
 
 # Standard-library support crates. PHP-facing behavior is implemented in
 # `src/stdlib/*`; these provide the vetted primitives (regex engine, date math,

@@ -75,6 +75,70 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::INSTANCEOF, b_instanceof);
     vm.register_builtin(ops::REF_BIND, b_ref_bind);
     vm.register_builtin(ops::BYREF_OUT, b_byref_out);
+    vm.register_builtin(ops::SPROP_GET, b_sprop_get);
+    vm.register_builtin(ops::SPROP_SET, b_sprop_set);
+    vm.register_builtin(ops::SPROP_INCDEC, b_sprop_incdec);
+    vm.register_builtin(ops::STATIC_BIND, b_static_bind);
+}
+
+/// `Class::$prop` read. Stack `[class, name]`.
+fn b_sprop_get(vm: &mut VM, _: u8) -> Value {
+    let name = pop_name(vm);
+    let class = pop_name(vm);
+    match host::static_prop_get(&class, &name) {
+        Ok(v) => v,
+        Err(e) => fail(vm, e),
+    }
+}
+
+/// `Class::$prop = val`. Stack `[class, name, val]`; leaves the assigned value.
+fn b_sprop_set(vm: &mut VM, _: u8) -> Value {
+    let val = vm.pop();
+    let name = pop_name(vm);
+    let class = pop_name(vm);
+    match host::static_prop_set(&class, &name, val) {
+        Ok(v) => v,
+        Err(e) => fail(vm, e),
+    }
+}
+
+/// `++`/`--` on `Class::$prop`. Stack `[class, name, code]`; the `code` bits match
+/// `b_incdec` (bit0 = increment, bit1 = prefix).
+fn b_sprop_incdec(vm: &mut VM, _: u8) -> Value {
+    let code = vm.pop().to_int();
+    let name = pop_name(vm);
+    let class = pop_name(vm);
+    let inc = code & 1 != 0;
+    let prefix = code & 2 != 0;
+    let old = match host::static_prop_get(&class, &name) {
+        Ok(v) => v,
+        Err(e) => return fail(vm, e),
+    };
+    let delta = if inc { 1 } else { -1 };
+    let newv = with_host(|h| match h.to_number(&old) {
+        Value::Int(n) => Value::int(n + delta),
+        Value::Float(f) => Value::float(f + delta as f64),
+        _ => Value::int(delta),
+    });
+    if let Err(e) = host::static_prop_set(&class, &name, newv.clone()) {
+        return fail(vm, e);
+    }
+    if prefix {
+        newv
+    } else {
+        old
+    }
+}
+
+/// `static $var = init;` — alias `$var` to its persistent slot. Stack
+/// `[name, slot-key, init]`. The `init` is only used the first time the slot is
+/// created; later calls reuse the existing cell.
+fn b_static_bind(vm: &mut VM, _: u8) -> Value {
+    let init = vm.pop();
+    let slot_key = pop_name(vm);
+    let name = pop_name(vm);
+    with_host(|h| h.bind_static_local(&name, &slot_key, init));
+    Value::Undef
 }
 
 /// Read the last call's by-reference parameter value at the given position (for
@@ -574,6 +638,9 @@ fn b_new(vm: &mut VM, argc: u8) -> Value {
 fn b_prop_get(vm: &mut VM, _: u8) -> Value {
     let name = pop_name(vm);
     let recv = vm.pop();
+    if let Err(e) = with_host(|h| h.check_prop_access(&recv, &name)) {
+        return fail(vm, e);
+    }
     with_host(|h| h.prop_get(&recv, &name))
 }
 
@@ -581,6 +648,9 @@ fn b_prop_set(vm: &mut VM, _: u8) -> Value {
     let val = vm.pop();
     let name = pop_name(vm);
     let recv = vm.pop();
+    if let Err(e) = with_host(|h| h.check_prop_access(&recv, &name)) {
+        return fail(vm, e);
+    }
     with_host(|h| h.prop_set(&recv, &name, val.clone()));
     val
 }
@@ -590,6 +660,9 @@ fn b_prop_set(vm: &mut VM, _: u8) -> Value {
 fn b_prop_ensure_array(vm: &mut VM, _: u8) -> Value {
     let name = pop_name(vm);
     let recv = vm.pop();
+    if let Err(e) = with_host(|h| h.check_prop_access(&recv, &name)) {
+        return fail(vm, e);
+    }
     with_host(|h| h.prop_ensure_array(&recv, &name))
 }
 
@@ -601,6 +674,9 @@ fn b_prop_incdec(vm: &mut VM, _: u8) -> Value {
     let recv = vm.pop();
     let inc = code & 1 != 0;
     let prefix = code & 2 != 0;
+    if let Err(e) = with_host(|h| h.check_prop_access(&recv, &name)) {
+        return fail(vm, e);
+    }
     with_host(|h| {
         let old = h.prop_get(&recv, &name);
         let delta = if inc { 1 } else { -1 };
@@ -624,10 +700,15 @@ fn b_mcall(vm: &mut VM, argc: u8) -> Value {
     let method = with_host(|h| h.to_str(&args.remove(0)));
     let class = with_host(|h| h.object_class(&recv));
     match class {
-        Some(c) => match host::call_method(&c, &method, Some(recv), args) {
-            Ok(v) => bubbled(vm, v),
-            Err(e) => fail(vm, e),
-        },
+        Some(c) => {
+            if let Err(e) = with_host(|h| h.check_method_access(&c, &method)) {
+                return fail(vm, e);
+            }
+            match host::call_method(&c, &method, Some(recv), args) {
+                Ok(v) => bubbled(vm, v),
+                Err(e) => fail(vm, e),
+            }
+        }
         None => fail(
             vm,
             format!("call to a member function {method}() on a non-object"),

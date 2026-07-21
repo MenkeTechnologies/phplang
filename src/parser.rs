@@ -150,6 +150,32 @@ impl Parser {
             _ if self.at_kw("for") => self.for_stmt()?,
             _ if self.at_kw("foreach") => self.foreach_stmt()?,
             _ if self.at_kw("function") => self.function_stmt()?,
+            // `static $a = 1, $b;` — a static local declaration, distinguished
+            // from a `static::` late-static-binding expression or a `static
+            // function`/`static fn` closure by the `$variable` that follows.
+            _ if self.at_kw("static")
+                && matches!(
+                    self.toks.get(self.pos + 1).map(|s| &s.tok),
+                    Some(Tok::Var(_))
+                ) =>
+            {
+                self.pos += 1; // static
+                let mut decls = Vec::new();
+                loop {
+                    let name = self.expect_var()?;
+                    let default = if self.eat_punct("=") {
+                        Some(self.expression()?)
+                    } else {
+                        None
+                    };
+                    decls.push((name, default));
+                    if !self.eat_punct(",") {
+                        break;
+                    }
+                }
+                self.expect_punct(";")?;
+                StmtKind::StaticLocal(decls)
+            }
             _ if self.at_kw("class")
                 || self.at_kw("interface")
                 || self.at_kw("trait")
@@ -685,16 +711,20 @@ impl Parser {
                 }
                 continue;
             }
-            // Member modifiers; only `static` is retained, the rest are accepted
-            // (visibility is parsed but not enforced in this wave).
+            // Member modifiers: `static` and the visibility keyword are captured;
+            // `abstract`/`final`/`readonly`/`var` are accepted and ignored.
             let mut is_static = false;
+            let mut visibility = Visibility::Public;
             loop {
                 if self.eat_kw("static") {
                     is_static = true;
-                } else if self.at_kw("public")
-                    || self.at_kw("private")
-                    || self.at_kw("protected")
-                    || self.at_kw("abstract")
+                } else if self.eat_kw("public") {
+                    visibility = Visibility::Public;
+                } else if self.eat_kw("protected") {
+                    visibility = Visibility::Protected;
+                } else if self.eat_kw("private") {
+                    visibility = Visibility::Private;
+                } else if self.at_kw("abstract")
                     || self.at_kw("final")
                     || self.at_kw("readonly")
                     || self.at_kw("var")
@@ -747,6 +777,7 @@ impl Parser {
                     params,
                     body,
                     is_static,
+                    visibility,
                 });
             } else {
                 // Property declaration(s): an optional type hint precedes the $var.
@@ -763,7 +794,12 @@ impl Parser {
                     } else {
                         None
                     };
-                    props.push((pname, default));
+                    props.push(PropDecl {
+                        name: pname,
+                        default,
+                        is_static,
+                        visibility,
+                    });
                     if !self.eat_punct(",") {
                         break;
                     }
@@ -1032,11 +1068,18 @@ impl Parser {
                         ))
                     }
                 };
-                let member = self.member_name()?;
-                if self.eat_punct("(") {
-                    e = Expr::StaticCall(class, member, self.arg_list()?);
+                // `Class::$prop` — a static property (the `::` is followed by a
+                // `$variable`, not a bareword constant/method name).
+                if let Some(Tok::Var(_)) = self.peek() {
+                    let prop = self.expect_var()?;
+                    e = Expr::StaticProp(class, prop);
                 } else {
-                    e = Expr::StaticGet(class, member);
+                    let member = self.member_name()?;
+                    if self.eat_punct("(") {
+                        e = Expr::StaticCall(class, member, self.arg_list()?);
+                    } else {
+                        e = Expr::StaticGet(class, member);
+                    }
                 }
             } else if self.at_punct("(") {
                 // A `( args )` applied to any primary value is a dynamic call: a
@@ -1087,6 +1130,15 @@ impl Parser {
             Some(Tok::Ident(kw)) if kw.eq_ignore_ascii_case("false") => Ok(Expr::Bool(false)),
             Some(Tok::Ident(kw)) if kw.eq_ignore_ascii_case("null") => Ok(Expr::Null),
             Some(Tok::Ident(kw)) if kw.eq_ignore_ascii_case("array") => {
+                self.expect_punct("(")?;
+                self.array_literal(")")
+            }
+            // `list($a, $b)` / `list('k' => $v)` — a destructuring language
+            // construct, not a function call. It is sugar for the `[...]` short
+            // form, so both lower to the same `Expr::Array` and share the
+            // compiler's assignment-target destructuring path. Only intercepted
+            // when followed by `(`, so a bareword `list` still parses as a name.
+            Some(Tok::Ident(kw)) if kw.eq_ignore_ascii_case("list") && self.at_punct("(") => {
                 self.expect_punct("(")?;
                 self.array_literal(")")
             }
@@ -1214,6 +1266,15 @@ impl Parser {
     fn array_literal(&mut self, close: &str) -> Result<Expr, String> {
         let mut elems = Vec::new();
         while !self.at_punct(close) && !self.at_end() {
+            // An empty slot — `[, $b]` / `list(, $b)` — is a skipped element in a
+            // destructuring target. It still consumes a positional index, so it is
+            // recorded as a `Null`-valued element (a hole the compiler skips when
+            // this array is used as an assignment LHS).
+            if self.at_punct(",") {
+                self.next();
+                elems.push((None, Expr::Null));
+                continue;
+            }
             let first = self.expression()?;
             if self.eat_punct("=>") {
                 let val = self.expression()?;

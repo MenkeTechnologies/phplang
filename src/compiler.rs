@@ -70,6 +70,10 @@ pub struct Compiler {
     /// Monotonic counter for compiler-generated temporary variable names
     /// (`foreach` desugaring), kept out of the PHP identifier space with a `@`.
     tmp: usize,
+    /// Monotonic counter minting a stable, unique storage key for each `static
+    /// $var` declaration, baked into the chunk so every call resolves the same
+    /// persistent slot.
+    static_slot: usize,
     /// By-reference parameter positions per function (lowercased name), gathered
     /// in a pre-pass so a call can write the callee's final by-ref values back to
     /// the caller's variables even when the function is declared later.
@@ -220,6 +224,26 @@ impl Compiler {
                 b.emit(Op::Pop, line);
             }
             StmtKind::Block(body) => self.compile_seq(b, body)?,
+            StmtKind::StaticLocal(decls) => {
+                for (name, default) in decls {
+                    // A unique, stable key per declaration — baked into the chunk
+                    // so every call resolves the same persistent slot.
+                    let key = format!("@static#{}", self.static_slot);
+                    self.static_slot += 1;
+                    let nidx = b.add_constant(Value::str(name.clone()));
+                    b.emit(Op::LoadConst(nidx), line);
+                    let kidx = b.add_constant(Value::str(key));
+                    b.emit(Op::LoadConst(kidx), line);
+                    match default {
+                        Some(e) => self.compile_expr(b, e)?,
+                        None => {
+                            b.emit(Op::LoadUndef, line);
+                        }
+                    }
+                    b.emit(Op::CallBuiltin(ops::STATIC_BIND, 3), line);
+                    b.emit(Op::Pop, line);
+                }
+            }
             StmtKind::Return(e) => {
                 match e {
                     Some(e) => self.compile_expr(b, e)?,
@@ -618,7 +642,10 @@ impl Compiler {
         // members below override them, matching PHP trait precedence.
         let mut consts: Vec<(String, Chunk)> = Vec::new();
         let mut prop_defaults: Vec<(String, Chunk)> = Vec::new();
+        let mut static_prop_defaults: Vec<(String, Chunk)> = Vec::new();
         let mut methods: FxHashMap<String, FuncDef> = FxHashMap::default();
+        let mut prop_vis: FxHashMap<String, Visibility> = FxHashMap::default();
+        let mut method_vis: FxHashMap<String, Visibility> = FxHashMap::default();
         for tname in &decl.uses {
             let tl = tname.to_ascii_lowercase();
             if let Some((_, tdef)) = self.classes.iter().find(|(n, _)| *n == tl) {
@@ -628,8 +655,17 @@ impl Compiler {
                 for (n, c) in &tdef.prop_defaults {
                     prop_defaults.push((n.clone(), c.clone()));
                 }
+                for (n, c) in &tdef.static_prop_defaults {
+                    static_prop_defaults.push((n.clone(), c.clone()));
+                }
                 for (n, m) in &tdef.methods {
                     methods.insert(n.clone(), m.clone());
+                }
+                for (n, v) in &tdef.prop_vis {
+                    prop_vis.insert(n.clone(), *v);
+                }
+                for (n, v) in &tdef.method_vis {
+                    method_vis.insert(n.clone(), *v);
                 }
             }
         }
@@ -641,19 +677,29 @@ impl Compiler {
             consts.push((name.clone(), cb.build()));
         }
 
-        for (name, default) in &decl.props {
+        for prop in &decl.props {
+            let name = &prop.name;
+            prop_vis.insert(name.clone(), prop.visibility);
             let mut pb = ChunkBuilder::new();
-            match default {
+            match &prop.default {
                 Some(e) => self.compile_expr(&mut pb, e)?,
                 None => {
                     pb.emit(Op::LoadUndef, 0);
                 }
             }
-            prop_defaults.retain(|(n, _)| n != name);
-            prop_defaults.push((name.clone(), pb.build()));
+            // Static properties are class-level (never copied into an instance);
+            // instance properties become per-object defaults.
+            if prop.is_static {
+                static_prop_defaults.retain(|(n, _)| n != name);
+                static_prop_defaults.push((name.clone(), pb.build()));
+            } else {
+                prop_defaults.retain(|(n, _)| n != name);
+                prop_defaults.push((name.clone(), pb.build()));
+            }
         }
 
         for m in &decl.methods {
+            method_vis.insert(m.name.to_ascii_lowercase(), m.visibility);
             let cparams = self.compile_params(&m.params)?;
             let mut mb = ChunkBuilder::new();
             // A method body has its own loop scope (as free functions do).
@@ -692,7 +738,10 @@ impl Compiler {
                 interfaces: decl.implements.clone(),
                 consts,
                 prop_defaults,
+                static_prop_defaults,
                 methods,
+                prop_vis,
+                method_vis,
             },
         ));
 
@@ -1018,6 +1067,14 @@ impl Compiler {
                     b.emit(Op::LoadConst(nidx), 0);
                     b.emit(Op::CallBuiltin(ops::SCONST, 2), 0);
                 }
+            }
+            Expr::StaticProp(class, name) => {
+                let cname = self.resolve_class_name(class)?;
+                let cidx = b.add_constant(Value::str(cname));
+                b.emit(Op::LoadConst(cidx), 0);
+                let nidx = b.add_constant(Value::str(name.clone()));
+                b.emit(Op::LoadConst(nidx), 0);
+                b.emit(Op::CallBuiltin(ops::SPROP_GET, 2), 0);
             }
             Expr::StaticCall(class, name, args) => {
                 let cname = self.resolve_class_name(class)?;
@@ -1405,6 +1462,59 @@ impl Compiler {
                     _ => return Err("unsupported assignment target".into()),
                 }
             }
+            Expr::StaticProp(class, name) => {
+                // `Class::$p = rhs` and its compound form `Class::$p op= rhs`.
+                let cname = self.resolve_class_name(class)?;
+                let cidx = b.add_constant(Value::str(cname.clone()));
+                b.emit(Op::LoadConst(cidx), 0);
+                let nidx = b.add_constant(Value::str(name.clone()));
+                b.emit(Op::LoadConst(nidx), 0);
+                match op {
+                    None => self.compile_expr(b, rhs)?,
+                    Some(cop) => {
+                        // value = Class::$p op rhs
+                        self.compile_expr(b, lhs)?;
+                        self.compile_expr(b, rhs)?;
+                        self.emit_binop(b, cop);
+                    }
+                }
+                b.emit(Op::CallBuiltin(ops::SPROP_SET, 3), 0);
+            }
+            // List destructuring — `list($a,$b) = …`, `[$a,$b] = …`, and the keyed
+            // form `['k' => $v] = …`. Both `list(...)` and `[...]` parse to
+            // `Expr::Array`, so this one arm serves every syntax. The RHS is
+            // evaluated once into a temp (its value is also the assignment
+            // expression's result, matching PHP), then each element target is
+            // assigned `@src[key]`. Unkeyed elements take successive integer
+            // indices; a `Null` element is a hole (`[,$b]`) that still consumes an
+            // index but binds nothing; a nested `Expr::Array` target recurses.
+            Expr::Array(elems) => {
+                if op.is_some() {
+                    return Err("compound assignment cannot target a list()/[] pattern".into());
+                }
+                let src = self.tmp_name("list");
+                self.emit_set_var(b, &src, |c, b| c.compile_expr(b, rhs))?;
+                let mut counter: i64 = 0;
+                for (k, target) in elems {
+                    let key = match k {
+                        Some(ke) => ke.clone(),
+                        None => {
+                            let i = counter;
+                            counter += 1;
+                            Expr::Int(i)
+                        }
+                    };
+                    // A hole binds nothing but has already consumed its index.
+                    if matches!(target, Expr::Null) {
+                        continue;
+                    }
+                    let elem = Expr::Index(Box::new(Expr::Var(src.clone())), Box::new(key));
+                    self.compile_assign(b, target, None, &elem)?;
+                    b.emit(Op::Pop, 0);
+                }
+                // The whole `[...] = rhs` expression evaluates to the RHS value.
+                self.emit_get_var(b, &src);
+            }
             _ => return Err("invalid assignment target".into()),
         }
         Ok(())
@@ -1641,6 +1751,16 @@ impl Compiler {
                 b.emit(Op::LoadInt(code), 0);
                 b.emit(Op::CallBuiltin(ops::PROP_INCDEC, 3), 0);
             }
+            Expr::StaticProp(class, name) => {
+                // `Class::$p++` — read-modify-write a static property.
+                let cname = self.resolve_class_name(class)?;
+                let cidx = b.add_constant(Value::str(cname));
+                b.emit(Op::LoadConst(cidx), 0);
+                let nidx = b.add_constant(Value::str(name.clone()));
+                b.emit(Op::LoadConst(nidx), 0);
+                b.emit(Op::LoadInt(code), 0);
+                b.emit(Op::CallBuiltin(ops::SPROP_INCDEC, 3), 0);
+            }
             Expr::Index(..) => {
                 // `++$a[k1]..[kN]` — read-modify-write the deepest element. Roots
                 // at a `$var` or an array-valued `$o->prop` (vivified into a temp).
@@ -1854,7 +1974,7 @@ fn collect_free_vars(e: &Expr, out: &mut Vec<String>) {
                 collect_free_vars(a, out);
             }
         }
-        Expr::StaticGet(_, _) => {}
+        Expr::StaticGet(_, _) | Expr::StaticProp(_, _) => {}
         Expr::Throw(inner) => collect_free_vars(inner, out),
         Expr::ConstFetch(_) => {}
         Expr::Unset(targets) => {

@@ -115,6 +115,10 @@ pub enum Expr {
     MethodCall(Box<Expr>, String, Vec<Expr>),
     /// `Class::CONST` / `Class::class` — class constant read (also `self::`/`parent::`).
     StaticGet(String, String),
+    /// `Class::$prop` — static property access (`self::$n`, `C::$x`). A read, an
+    /// assignment target, and an `++`/`--` target; storage is shared per declaring
+    /// class, so all instances and scopes observe the same value.
+    StaticProp(String, String),
     /// `Class::method(args)` — static / scope-resolution method call.
     StaticCall(String, String, Vec<Expr>),
     /// Ternary `cond ? then : els`.
@@ -229,6 +233,10 @@ pub enum StmtKind {
     },
     /// An empty `;` or a `{ }` block.
     Block(Vec<Stmt>),
+    /// `static $a = 1, $b;` inside a function — each name is bound to a persistent
+    /// per-declaration slot whose value survives across calls; the optional
+    /// initializer runs only on the first entry.
+    StaticLocal(Vec<(String, Option<Expr>)>),
 }
 
 /// One `catch (T1 | T2 [$var]) { body }` clause. `types` is the union of caught
@@ -256,9 +264,27 @@ pub struct Param {
     pub by_ref: bool,
 }
 
+/// Member visibility, captured on properties and methods. `Public` is the
+/// default when no `public`/`protected`/`private` modifier is written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Visibility {
+    Public,
+    Protected,
+    Private,
+}
+
+/// A declared class property: its name, optional default initializer, whether it
+/// is `static` (class-level, shared storage) and its declared visibility.
+#[derive(Debug, Clone)]
+pub struct PropDecl {
+    pub name: String,
+    pub default: Option<Expr>,
+    pub is_static: bool,
+    pub visibility: Visibility,
+}
+
 /// A parsed class declaration. Single inheritance only; interfaces/traits are
-/// parsed-and-discarded in the scaffold. Visibility modifiers are dropped (only
-/// `static` on a method is retained); enforcement is not part of this wave.
+/// parsed-and-discarded in the scaffold.
 #[derive(Debug, Clone)]
 pub struct ClassDecl {
     pub name: String,
@@ -273,8 +299,8 @@ pub struct ClassDecl {
     pub is_interface: bool,
     /// `const NAME = expr;` entries, in source order.
     pub consts: Vec<(String, Expr)>,
-    /// Instance property declarations `(name, default)`; `None` default is null.
-    pub props: Vec<(String, Option<Expr>)>,
+    /// Property declarations, in source order (instance and static).
+    pub props: Vec<PropDecl>,
     pub methods: Vec<Method>,
 }
 
@@ -286,6 +312,7 @@ pub struct Method {
     pub params: Vec<Param>,
     pub body: Vec<Stmt>,
     pub is_static: bool,
+    pub visibility: Visibility,
 }
 
 /// One `case`/`default` label of a `switch` plus its (fall-through) body. `test`

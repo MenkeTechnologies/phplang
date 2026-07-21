@@ -8,6 +8,7 @@
 //! lives in a `thread_local!` `PhpHost`, so a fresh `VM` can be spun up per
 //! function call (see `call_function`) while sharing one heap.
 
+use crate::ast::Visibility;
 use fusevm::{Chunk, VMResult, Value, VM};
 use indexmap::IndexMap;
 use rustc_hash::FxHashMap;
@@ -77,6 +78,10 @@ pub mod ops {
     pub const INSTANCEOF: u16 = 60; // [obj, class-name] -> Bool
     pub const REF_BIND: u16 = 61; // [target, source] -> value ($t = &$s)
     pub const BYREF_OUT: u16 = 62; // [position] -> the last call's by-ref param value
+    pub const SPROP_GET: u16 = 63; // [class, name] -> static property value (Class::$p)
+    pub const SPROP_SET: u16 = 64; // [class, name, val] -> val (Class::$p = v)
+    pub const SPROP_INCDEC: u16 = 65; // [class, name, code] -> value (++/-- on Class::$p)
+    pub const STATIC_BIND: u16 = 66; // [name, slot-key, init] -> Undef (bind `static $var`)
 }
 
 /// Sub-ops for the by-reference array mutators lowered through `ops::ARR_MUT`
@@ -126,7 +131,17 @@ pub struct ClassDef {
     pub interfaces: Vec<String>,
     pub consts: Vec<(String, Chunk)>,
     pub prop_defaults: Vec<(String, Chunk)>,
+    /// `static` property declarations (`public static $n = 0;`). Kept apart from
+    /// `prop_defaults` so they are never copied into an instance; each initializer
+    /// runs once, on first access, into the host's per-class static store.
+    pub static_prop_defaults: Vec<(String, Chunk)>,
     pub methods: FxHashMap<String, FuncDef>,
+    /// Declared visibility of properties declared in THIS class (instance and
+    /// static), by property name. Consulted (walking the parent chain) to enforce
+    /// `private`/`protected` on external access.
+    pub prop_vis: FxHashMap<String, Visibility>,
+    /// Declared visibility of methods declared in THIS class, by lowercased name.
+    pub method_vis: FxHashMap<String, Visibility>,
 }
 
 /// One compiled `catch (T1 | T2 [$var]) { body }` clause of a `try`.
@@ -257,6 +272,15 @@ pub struct PhpHost {
     /// The most recent call's by-reference parameters' final values, indexed by
     /// parameter position — read by the caller's post-call write-back (`BYREF_OUT`).
     byref_out: Vec<Value>,
+    /// Static-property storage, keyed by `"declaringclass::prop"` (lowercased
+    /// class). One cell per declaring class is shared by every subclass and every
+    /// instance, matching PHP's static-property semantics.
+    static_props: FxHashMap<String, Value>,
+    /// Persistent slots for function `static $var` locals, keyed by the
+    /// compile-time-unique id the compiler bakes into each declaration. The value
+    /// is an index into `ref_cells`, so a body's `$var` aliases the cell and its
+    /// value survives across calls.
+    static_slots: FxHashMap<String, usize>,
 }
 
 impl Default for PhpHost {
@@ -282,6 +306,8 @@ impl PhpHost {
             ob_stack: Vec::new(),
             ref_cells: Vec::new(),
             byref_out: Vec::new(),
+            static_props: FxHashMap::default(),
+            static_slots: FxHashMap::default(),
         };
         h.init_superglobals();
         h
@@ -1013,6 +1039,105 @@ impl PhpHost {
         None
     }
 
+    /// The class whose method is currently executing (for visibility checks),
+    /// derived from the innermost frame's `Class::method` name. `None` in the
+    /// global scope, a free function, or a closure (frame names without `::`).
+    fn current_class_ctx(&self) -> Option<String> {
+        let name = self.scopes.last()?.name.as_ref()?;
+        name.rsplit_once("::").map(|(cls, _)| cls.to_string())
+    }
+
+    /// Resolve the declared visibility of property `name` on `class`, walking the
+    /// parent chain; returns the declaring class (lowercased) and its visibility.
+    /// `None` for a dynamic/undeclared property (treated as public).
+    fn resolve_prop_vis(&self, class: &str, name: &str) -> Option<(String, Visibility)> {
+        let mut cur = Some(class.to_ascii_lowercase());
+        while let Some(c) = cur {
+            let def = self.classes.get(&c)?;
+            if let Some(v) = def.prop_vis.get(name) {
+                return Some((c, *v));
+            }
+            cur = def.parent.as_ref().map(|p| p.to_ascii_lowercase());
+        }
+        None
+    }
+
+    /// Whether the current class context may access a member declared with
+    /// `vis` in `declaring` (lowercased). Public: always. Private: only from the
+    /// declaring class itself. Protected: from the declaring class or any class in
+    /// the same inheritance line (ancestor or descendant).
+    fn visibility_allows(&self, vis: Visibility, declaring: &str) -> bool {
+        match vis {
+            Visibility::Public => true,
+            Visibility::Private => {
+                matches!(self.current_class_ctx(), Some(c) if c.eq_ignore_ascii_case(declaring))
+            }
+            Visibility::Protected => match self.current_class_ctx() {
+                Some(c) => self.class_is_a(&c, declaring) || self.class_is_a(declaring, &c),
+                None => false,
+            },
+        }
+    }
+
+    /// Enforce property visibility for `$obj->name` access. `Ok` when the property
+    /// is public, dynamic, or reachable from the current class context; otherwise
+    /// the PHP `Cannot access <vis> property C::$name` error.
+    pub fn check_prop_access(&self, recv: &Value, name: &str) -> Result<(), String> {
+        let Some(class) = self.object_class(recv) else {
+            return Ok(());
+        };
+        let Some((declaring, vis)) = self.resolve_prop_vis(&class, name) else {
+            return Ok(());
+        };
+        if self.visibility_allows(vis, &declaring) {
+            return Ok(());
+        }
+        let vname = match vis {
+            Visibility::Private => "private",
+            Visibility::Protected => "protected",
+            Visibility::Public => unreachable!(),
+        };
+        Err(format!("Cannot access {vname} property {class}::${name}"))
+    }
+
+    /// Enforce method visibility for `$obj->method()`. Same policy as properties;
+    /// the message matches PHP's `Call to <vis> method C::m() from <scope>`.
+    pub fn check_method_access(&self, class: &str, method: &str) -> Result<(), String> {
+        let method_l = method.to_ascii_lowercase();
+        // Walk the chain to the declaring class and its visibility.
+        let mut cur = Some(class.to_ascii_lowercase());
+        let found = loop {
+            let Some(c) = cur else {
+                break None;
+            };
+            let Some(def) = self.classes.get(&c) else {
+                break None;
+            };
+            if let Some(v) = def.method_vis.get(&method_l) {
+                break Some((c, *v));
+            }
+            cur = def.parent.as_ref().map(|p| p.to_ascii_lowercase());
+        };
+        let Some((declaring, vis)) = found else {
+            return Ok(());
+        };
+        if self.visibility_allows(vis, &declaring) {
+            return Ok(());
+        }
+        let vname = match vis {
+            Visibility::Private => "private",
+            Visibility::Protected => "protected",
+            Visibility::Public => unreachable!(),
+        };
+        let scope = match self.current_class_ctx() {
+            Some(c) => format!("scope {c}"),
+            None => "global scope".to_string(),
+        };
+        Err(format!(
+            "Call to {vname} method {class}::{method}() from {scope}"
+        ))
+    }
+
     /// The ordered property-default initializer chunks for a class, parent props
     /// first and child declarations overriding by name. `None` if unknown class.
     fn class_prop_default_chunks(&self, class: &str) -> Option<Vec<(String, Chunk)>> {
@@ -1038,6 +1163,54 @@ impl PhpHost {
             }
         }
         Some(map.into_iter().collect())
+    }
+
+    /// Resolve `Class::$name` to its storage key and initializer chunk, walking
+    /// the parent chain to the class that actually declares the static property.
+    /// The key is `"declaringclass::name"` so a subclass shares the parent's cell.
+    fn resolve_static_key(&self, class: &str, name: &str) -> Option<(String, Chunk)> {
+        let mut cur = Some(class.to_ascii_lowercase());
+        while let Some(c) = cur {
+            let def = self.classes.get(&c)?;
+            if let Some((_, chunk)) = def.static_prop_defaults.iter().find(|(n, _)| n == name) {
+                return Some((format!("{c}::{name}"), chunk.clone()));
+            }
+            cur = def.parent.as_ref().map(|p| p.to_ascii_lowercase());
+        }
+        None
+    }
+
+    /// The stored value of a static property, by storage key (`None` = not yet
+    /// initialized).
+    fn get_static_stored(&self, key: &str) -> Option<Value> {
+        self.static_props.get(key).cloned()
+    }
+
+    /// Store a static property's value by storage key.
+    fn set_static_stored(&mut self, key: &str, val: Value) {
+        self.static_props.insert(key.to_string(), val);
+    }
+
+    /// Bind a function-local `$name` to its persistent `static` slot. On first
+    /// encounter the cell is created with `init`; later calls reuse it, so the
+    /// value survives across calls. The current scope's name is aliased to the
+    /// cell (like a reference), so ordinary reads/writes of `$name` in the body
+    /// hit the persistent storage.
+    pub fn bind_static_local(&mut self, name: &str, slot_key: &str, init: Value) {
+        let slot = match self.static_slots.get(slot_key) {
+            Some(&s) => s,
+            None => {
+                self.ref_cells.push(init);
+                let s = self.ref_cells.len() - 1;
+                self.static_slots.insert(slot_key.to_string(), s);
+                s
+            }
+        };
+        let idx = self.scope_idx(name);
+        if let Some(scope) = self.scopes.get_mut(idx) {
+            scope.vars.remove(name);
+            scope.refs.insert(name.to_string(), slot);
+        }
     }
 
     /// The initializer chunk for `Class::name`, walking the parent chain.
@@ -2068,6 +2241,33 @@ pub fn class_const(class: &str, name: &str) -> Result<Value, String> {
         return Err(format!("undefined constant {class}::{name}"));
     };
     run_chunk_on(chunk)
+}
+
+/// `Class::$prop` read. On first access the (constant) initializer runs once and
+/// is stored in the per-class static cell; subsequent reads return the cell.
+pub fn static_prop_get(class: &str, name: &str) -> Result<Value, String> {
+    let Some((key, chunk)) = with_host(|h| h.resolve_static_key(class, name)) else {
+        return Err(format!(
+            "access to undeclared static property {class}::${name}"
+        ));
+    };
+    if let Some(v) = with_host(|h| h.get_static_stored(&key)) {
+        return Ok(v);
+    }
+    let v = run_chunk_on(chunk)?;
+    with_host(|h| h.set_static_stored(&key, v.clone()));
+    Ok(v)
+}
+
+/// `Class::$prop = val` — write the per-class static cell, initializing lazily.
+pub fn static_prop_set(class: &str, name: &str, val: Value) -> Result<Value, String> {
+    let Some((key, _)) = with_host(|h| h.resolve_static_key(class, name)) else {
+        return Err(format!(
+            "access to undeclared static property {class}::${name}"
+        ));
+    };
+    with_host(|h| h.set_static_stored(&key, val.clone()));
+    Ok(val)
 }
 
 /// Normalize a `foreach` subject to an iterable array. Arrays pass through; an
