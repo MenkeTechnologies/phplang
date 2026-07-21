@@ -72,6 +72,18 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::UNSET_VAR, b_unset_var);
     vm.register_builtin(ops::UNSET_PATH, b_unset_path);
     vm.register_builtin(ops::FOREACH_PREP, b_foreach_prep);
+    vm.register_builtin(ops::INSTANCEOF, b_instanceof);
+}
+
+/// `$obj instanceof Class` — true if `$obj` is an object whose class is, or
+/// descends from / implements, `Class`. Stack `[obj, class-name]`.
+fn b_instanceof(vm: &mut VM, _: u8) -> Value {
+    let target = pop_name(vm);
+    let obj = vm.pop();
+    Value::bool(with_host(|h| match h.object_class(&obj) {
+        Some(class) => h.is_a_class(&class, &target),
+        None => false,
+    }))
 }
 
 /// Normalize a `foreach` subject to an iterable array (objects are iterated).

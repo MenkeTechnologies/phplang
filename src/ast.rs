@@ -141,6 +141,9 @@ pub enum Expr {
     /// `unset($a, $b[$k], …)` — remove each variable or array element. Evaluates
     /// to null (a statement-level construct in PHP).
     Unset(Vec<Expr>),
+    /// `$x instanceof ClassName` — true if `$x` is an instance of the class or one
+    /// of its ancestors/interfaces.
+    InstanceOf(Box<Expr>, String),
 }
 
 /// One arm of a `match` expression. `conds` is `None` for the `default` arm;
@@ -253,6 +256,14 @@ pub struct Param {
 pub struct ClassDecl {
     pub name: String,
     pub parent: Option<String>,
+    /// Interfaces this class implements (or, for an `interface`, the interfaces it
+    /// extends). Used by `instanceof`/`is_a`/`catch`.
+    pub implements: Vec<String>,
+    /// Traits pulled in via `use Trait;` inside the class body; their methods and
+    /// properties are merged into the class at compile time.
+    pub uses: Vec<String>,
+    /// Whether this is an `interface` (vs a `class`/`trait`).
+    pub is_interface: bool,
     /// `const NAME = expr;` entries, in source order.
     pub consts: Vec<(String, Expr)>,
     /// Instance property declarations `(name, default)`; `None` default is null.

@@ -535,14 +535,33 @@ impl Compiler {
         self.current_class = Some(decl.name.clone());
         self.current_parent = decl.parent.clone();
 
-        let mut consts = Vec::with_capacity(decl.consts.len());
+        // Seed members from any used traits (declared earlier); the class's own
+        // members below override them, matching PHP trait precedence.
+        let mut consts: Vec<(String, Chunk)> = Vec::new();
+        let mut prop_defaults: Vec<(String, Chunk)> = Vec::new();
+        let mut methods: FxHashMap<String, FuncDef> = FxHashMap::default();
+        for tname in &decl.uses {
+            let tl = tname.to_ascii_lowercase();
+            if let Some((_, tdef)) = self.classes.iter().find(|(n, _)| *n == tl) {
+                for (n, c) in &tdef.consts {
+                    consts.push((n.clone(), c.clone()));
+                }
+                for (n, c) in &tdef.prop_defaults {
+                    prop_defaults.push((n.clone(), c.clone()));
+                }
+                for (n, m) in &tdef.methods {
+                    methods.insert(n.clone(), m.clone());
+                }
+            }
+        }
+
         for (name, expr) in &decl.consts {
             let mut cb = ChunkBuilder::new();
             self.compile_expr(&mut cb, expr)?;
+            consts.retain(|(n, _)| n != name);
             consts.push((name.clone(), cb.build()));
         }
 
-        let mut prop_defaults = Vec::with_capacity(decl.props.len());
         for (name, default) in &decl.props {
             let mut pb = ChunkBuilder::new();
             match default {
@@ -551,10 +570,10 @@ impl Compiler {
                     pb.emit(Op::LoadUndef, 0);
                 }
             }
+            prop_defaults.retain(|(n, _)| n != name);
             prop_defaults.push((name.clone(), pb.build()));
         }
 
-        let mut methods = FxHashMap::default();
         for m in &decl.methods {
             let cparams = self.compile_params(&m.params)?;
             let mut mb = ChunkBuilder::new();
@@ -591,6 +610,7 @@ impl Compiler {
             decl.name.to_ascii_lowercase(),
             ClassDef {
                 parent: decl.parent.clone(),
+                interfaces: decl.implements.clone(),
                 consts,
                 prop_defaults,
                 methods,
@@ -973,6 +993,13 @@ impl Compiler {
                 }
                 // `unset(...)` is a statement construct; it evaluates to null.
                 b.emit(Op::LoadUndef, 0);
+            }
+            Expr::InstanceOf(e, class) => {
+                self.compile_expr(b, e)?;
+                let cname = self.resolve_class_name(class)?;
+                let idx = b.add_constant(Value::str(cname));
+                b.emit(Op::LoadConst(idx), 0);
+                b.emit(Op::CallBuiltin(ops::INSTANCEOF, 2), 0);
             }
         }
         Ok(())
@@ -1715,6 +1742,7 @@ fn collect_free_vars(e: &Expr, out: &mut Vec<String>) {
                 collect_free_vars(t, out);
             }
         }
+        Expr::InstanceOf(e, _) => collect_free_vars(e, out),
         Expr::Null | Expr::Bool(_) | Expr::Int(_) | Expr::Float(_) | Expr::Str(_) => {}
     }
 }

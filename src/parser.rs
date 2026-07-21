@@ -149,6 +149,8 @@ impl Parser {
             _ if self.at_kw("foreach") => self.foreach_stmt()?,
             _ if self.at_kw("function") => self.function_stmt()?,
             _ if self.at_kw("class")
+                || self.at_kw("interface")
+                || self.at_kw("trait")
                 || ((self.at_kw("abstract") || self.at_kw("final"))
                     && matches!(self.toks.get(self.pos + 1).map(|s| &s.tok),
                         Some(Tok::Ident(s)) if s.eq_ignore_ascii_case("class"))) =>
@@ -570,10 +572,12 @@ impl Parser {
     /// consts, properties (with visibility/static/type modifiers), and methods.
     /// A leading `abstract`/`final` class modifier is accepted but not enforced.
     fn class_stmt(&mut self) -> Result<StmtKind, String> {
-        if !self.at_kw("class") {
+        let is_interface = self.at_kw("interface");
+        let is_trait = self.at_kw("trait");
+        if !self.at_kw("class") && !is_interface && !is_trait {
             self.pos += 1; // abstract / final
         }
-        self.pos += 1; // class
+        self.pos += 1; // class / interface / trait
         let name = match self.next() {
             Some(Tok::Ident(n)) => n,
             other => {
@@ -583,25 +587,27 @@ impl Parser {
                 ))
             }
         };
-        let parent = if self.eat_kw("extends") {
-            match self.next() {
-                Some(Tok::Ident(n)) => Some(n),
-                other => {
-                    return Err(format!(
-                        "expected parent class name but found {other:?} (line {})",
-                        self.line()
-                    ))
+        let mut parent = None;
+        let mut implements = Vec::new();
+        // `extends`: one parent for a class; an interface may extend several.
+        if self.eat_kw("extends") {
+            loop {
+                let n = self.expect_type_name()?;
+                if is_interface {
+                    implements.push(n);
+                    if !self.eat_punct(",") {
+                        break;
+                    }
+                } else {
+                    parent = Some(n);
+                    break;
                 }
             }
-        } else {
-            None
-        };
-        // `implements Iface, ...` — parsed and discarded (no interfaces here).
+        }
+        // `implements Iface, ...`.
         if self.eat_kw("implements") {
             loop {
-                if let Some(Tok::Ident(_)) = self.peek() {
-                    self.pos += 1;
-                }
+                implements.push(self.expect_type_name()?);
                 if !self.eat_punct(",") {
                     break;
                 }
@@ -611,7 +617,26 @@ impl Parser {
         let mut consts = Vec::new();
         let mut props = Vec::new();
         let mut methods = Vec::new();
+        let mut uses = Vec::new();
         while !self.at_punct("}") && !self.at_end() {
+            // `use Trait1, Trait2;` — pull trait members into this class.
+            if self.at_kw("use") {
+                self.pos += 1;
+                loop {
+                    uses.push(self.expect_type_name()?);
+                    if !self.eat_punct(",") {
+                        break;
+                    }
+                }
+                // A `{ ... }` adaptation block (insteadof/as) is accepted and
+                // skipped; otherwise a plain `;` terminates the use.
+                if self.at_punct("{") {
+                    self.block()?;
+                } else {
+                    self.expect_punct(";")?;
+                }
+                continue;
+            }
             // Member modifiers; only `static` is retained, the rest are accepted
             // (visibility is parsed but not enforced in this wave).
             let mut is_static = false;
@@ -702,6 +727,9 @@ impl Parser {
         Ok(StmtKind::Class(ClassDecl {
             name,
             parent,
+            implements,
+            uses,
+            is_interface,
             consts,
             props,
             methods,
@@ -896,7 +924,13 @@ impl Parser {
                 prefix: true,
             });
         }
-        self.power()
+        let e = self.power()?;
+        // `$x instanceof ClassName` (bareword class, optionally `\`-qualified).
+        if self.eat_kw("instanceof") {
+            let cls = self.expect_type_name()?;
+            return Ok(Expr::InstanceOf(Box::new(e), cls));
+        }
+        Ok(e)
     }
 
     /// The exponent level, sitting *below* unary so `-2 ** 2` parses as

@@ -74,6 +74,7 @@ pub mod ops {
     pub const UNSET_VAR: u16 = 57; // [name] -> Undef (remove the scope variable)
     pub const UNSET_PATH: u16 = 58; // [name, k1..kN] -> Undef (remove $a[k1]..[kN])
     pub const FOREACH_PREP: u16 = 59; // [v] -> an iterable array (object -> iterated)
+    pub const INSTANCEOF: u16 = 60; // [obj, class-name] -> Bool
 }
 
 /// Sub-ops for the by-reference array mutators lowered through `ops::ARR_MUT`
@@ -116,6 +117,9 @@ type ClosureCall = (Vec<Param>, Chunk, Vec<(String, Value)>);
 #[derive(Debug, Clone)]
 pub struct ClassDef {
     pub parent: Option<String>,
+    /// Implemented interfaces (lowercased) — for an `interface`, the interfaces it
+    /// extends. Consulted by `class_is_a`/`instanceof`/`catch`.
+    pub interfaces: Vec<String>,
     pub consts: Vec<(String, Chunk)>,
     pub prop_defaults: Vec<(String, Chunk)>,
     pub methods: FxHashMap<String, FuncDef>,
@@ -375,15 +379,26 @@ impl PhpHost {
     /// Whether `class` is `ancestor` or descends from it, walking the compiled
     /// class table's parent chain. `ancestor` must already be lowercased.
     fn class_is_a(&self, class: &str, ancestor: &str) -> bool {
-        let mut cur = Some(class.to_ascii_lowercase());
-        while let Some(c) = cur {
+        // Traverse the parent chain AND implemented/extended interfaces
+        // (transitively). A visited set + bound guards against malformed cycles.
+        let mut stack = vec![class.to_ascii_lowercase()];
+        let mut seen: Vec<String> = Vec::new();
+        while let Some(c) = stack.pop() {
             if c == ancestor {
                 return true;
             }
-            cur = self
-                .classes
-                .get(&c)
-                .and_then(|d| d.parent.as_ref().map(|p| p.to_ascii_lowercase()));
+            if seen.contains(&c) || seen.len() > 1000 {
+                continue;
+            }
+            seen.push(c.clone());
+            if let Some(d) = self.classes.get(&c) {
+                if let Some(p) = &d.parent {
+                    stack.push(p.to_ascii_lowercase());
+                }
+                for i in &d.interfaces {
+                    stack.push(i.to_ascii_lowercase());
+                }
+            }
         }
         false
     }
