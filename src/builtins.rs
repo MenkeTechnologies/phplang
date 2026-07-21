@@ -84,6 +84,103 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::SCALL_NAMED, b_scall_named);
     vm.register_builtin(ops::NEW_NAMED, b_new_named);
     vm.register_builtin(ops::CALLVALUE_NAMED, b_callvalue_named);
+    vm.register_builtin(ops::YIELD, b_yield);
+    vm.register_builtin(ops::YIELD_KV, b_yield_kv);
+    vm.register_builtin(ops::YIELD_FROM, b_yield_from);
+    vm.register_builtin(ops::IS_GENERATOR, b_is_generator);
+    vm.register_builtin(ops::GEN_REWIND, b_gen_rewind);
+    vm.register_builtin(ops::GEN_VALID, b_gen_valid);
+    vm.register_builtin(ops::GEN_KEY, b_gen_key);
+    vm.register_builtin(ops::GEN_CURRENT, b_gen_current);
+    vm.register_builtin(ops::GEN_NEXT, b_gen_next);
+}
+
+// ── generators ───────────────────────────────────────────────────────────────
+
+/// `yield $v` — suspend the running generator; returns the next `->send()` value.
+/// An error carrying a now-pending throw halts the body so it unwinds normally.
+fn b_yield(vm: &mut VM, _: u8) -> Value {
+    let val = vm.pop();
+    match host::yield_value(val) {
+        Ok(v) => bubbled(vm, v),
+        Err(e) => yield_err(vm, e),
+    }
+}
+
+/// `yield $k => $v` — suspend with an explicit key. Stack `[value, key]`.
+fn b_yield_kv(vm: &mut VM, _: u8) -> Value {
+    let key = vm.pop();
+    let val = vm.pop();
+    match host::yield_kv(key, val) {
+        Ok(v) => bubbled(vm, v),
+        Err(e) => yield_err(vm, e),
+    }
+}
+
+/// `yield from $it` — delegate; leaves the delegate's return value on the stack.
+fn b_yield_from(vm: &mut VM, _: u8) -> Value {
+    let src = vm.pop();
+    match host::yield_from(src) {
+        Ok(v) => bubbled(vm, v),
+        Err(e) => yield_err(vm, e),
+    }
+}
+
+/// A `yield` error is either a real error (yield outside a generator) or the
+/// sentinel for an injected/uncaught throw already recorded as pending — in the
+/// latter case halt the chunk so the pending exception unwinds the body.
+fn yield_err(vm: &mut VM, e: String) -> Value {
+    if host::has_pending_throw() {
+        vm.ip = vm.chunk.ops.len();
+        Value::Undef
+    } else {
+        fail(vm, e)
+    }
+}
+
+fn b_is_generator(vm: &mut VM, _: u8) -> Value {
+    let v = vm.pop();
+    Value::bool(with_host(|h| h.is_generator_val(&v)))
+}
+
+fn b_gen_rewind(vm: &mut VM, _: u8) -> Value {
+    let g = vm.pop();
+    match host::gen_rewind(&g) {
+        Ok(()) => bubbled(vm, Value::Undef),
+        Err(e) => yield_err(vm, e),
+    }
+}
+
+fn b_gen_valid(vm: &mut VM, _: u8) -> Value {
+    let g = vm.pop();
+    match host::gen_valid(&g) {
+        Ok(b) => bubbled(vm, Value::bool(b)),
+        Err(e) => yield_err(vm, e),
+    }
+}
+
+fn b_gen_key(vm: &mut VM, _: u8) -> Value {
+    let g = vm.pop();
+    match host::gen_key(&g) {
+        Ok(v) => bubbled(vm, v),
+        Err(e) => yield_err(vm, e),
+    }
+}
+
+fn b_gen_current(vm: &mut VM, _: u8) -> Value {
+    let g = vm.pop();
+    match host::gen_current(&g) {
+        Ok(v) => bubbled(vm, v),
+        Err(e) => yield_err(vm, e),
+    }
+}
+
+fn b_gen_next(vm: &mut VM, _: u8) -> Value {
+    let g = vm.pop();
+    match host::gen_next(&g) {
+        Ok(v) => bubbled(vm, v),
+        Err(e) => yield_err(vm, e),
+    }
 }
 
 /// Split a `(name, value)` argument-pair stream into positional arguments (name is
@@ -129,6 +226,19 @@ fn b_mcall_named(vm: &mut VM, argc: u8) -> Value {
     let method = pop_name(vm);
     let recv = vm.pop();
     let (pos, named) = split_named(pairs);
+    // Built-in `Closure`/`Generator` methods take positional args (no named form).
+    if with_host(|h| h.is_closure(&recv)) {
+        return match host::call_closure_method(&recv, &method, pos) {
+            Ok(v) => bubbled(vm, v),
+            Err(e) => fail(vm, e),
+        };
+    }
+    if with_host(|h| h.is_generator_val(&recv)) {
+        return match host::call_generator_method(&recv, &method, pos) {
+            Ok(v) => bubbled(vm, v),
+            Err(e) => yield_err(vm, e),
+        };
+    }
     match with_host(|h| h.object_class(&recv)) {
         Some(c) => {
             if let Err(e) = with_host(|h| h.check_method_access(&c, &method)) {
@@ -790,6 +900,20 @@ fn b_mcall(vm: &mut VM, argc: u8) -> Value {
     let mut args = pop_args(vm, argc as usize);
     let recv = args.remove(0);
     let method = with_host(|h| h.to_str(&args.remove(0)));
+    // `Closure` and `Generator` are built-in objects with no PHP class; dispatch
+    // their methods before the ordinary class-method resolution.
+    if with_host(|h| h.is_closure(&recv)) {
+        return match host::call_closure_method(&recv, &method, args) {
+            Ok(v) => bubbled(vm, v),
+            Err(e) => fail(vm, e),
+        };
+    }
+    if with_host(|h| h.is_generator_val(&recv)) {
+        return match host::call_generator_method(&recv, &method, args) {
+            Ok(v) => bubbled(vm, v),
+            Err(e) => yield_err(vm, e),
+        };
+    }
     let class = with_host(|h| h.object_class(&recv));
     match class {
         Some(c) => {

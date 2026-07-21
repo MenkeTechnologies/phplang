@@ -90,6 +90,18 @@ pub mod ops {
     pub const SCALL_NAMED: u16 = 69; // [class, method, (n,v)...] argc=2+2k -> return
     pub const NEW_NAMED: u16 = 70; // [class, (n,v)...] argc=1+2k -> object handle
     pub const CALLVALUE_NAMED: u16 = 71; // [callee, (n,v)...] argc=1+2k -> return value
+                                         // Generators (host-side stackful coroutines). YIELD/YIELD_KV/YIELD_FROM run
+                                         // inside a generator body and suspend it; the GEN_* ops drive a Generator from
+                                         // a `foreach` (lazily, preserving side-effect order).
+    pub const YIELD: u16 = 72; // [value] -> the value the next send()/next() supplies
+    pub const YIELD_KV: u16 = 73; // [value, key] -> same, with an explicit key
+    pub const YIELD_FROM: u16 = 74; // [iterable] -> delegate; leaves the delegate's return
+    pub const IS_GENERATOR: u16 = 75; // [v] -> Bool (v is a Generator handle)
+    pub const GEN_REWIND: u16 = 76; // [gen] -> Undef (prime to the first yield)
+    pub const GEN_VALID: u16 = 77; // [gen] -> Bool (not yet finished)
+    pub const GEN_KEY: u16 = 78; // [gen] -> current key
+    pub const GEN_CURRENT: u16 = 79; // [gen] -> current value
+    pub const GEN_NEXT: u16 = 80; // [gen] -> Undef (resume to the next yield)
 }
 
 /// Sub-ops for the by-reference array mutators lowered through `ops::ARR_MUT`
@@ -121,11 +133,21 @@ pub struct Param {
 pub struct FuncDef {
     pub params: Vec<Param>,
     pub chunk: Chunk,
+    /// True when the body contains a `yield`: calling it builds a suspended
+    /// `Generator` (a host-side stackful coroutine) instead of running the body.
+    pub is_generator: bool,
 }
 
-/// A closure unpacked for a call: its parameters, body chunk, and the
-/// `(name, value)` bindings it captured at creation time.
-type ClosureCall = (Vec<Param>, Chunk, Vec<(String, Value)>);
+/// A closure unpacked for a call: its parameters, body chunk, captured bindings,
+/// and any `Closure::bind` rebinding (`$this` object + private-access scope class).
+pub struct ClosureCall {
+    pub params: Vec<Param>,
+    pub chunk: Chunk,
+    pub captured: Vec<(String, Value)>,
+    pub bound_this: Option<Value>,
+    pub scope: Option<String>,
+    pub is_generator: bool,
+}
 
 /// A compiled class: its parent (for single-inheritance resolution), constant and
 /// property-default initializers (each an expression chunk that leaves its value
@@ -152,6 +174,10 @@ pub struct ClassDef {
     pub method_vis: FxHashMap<String, Visibility>,
     /// Whether this class is an `enum` (PHP 8.1).
     pub is_enum: bool,
+    /// Whether the class is `abstract` or an `interface` — either way, `new` on it
+    /// is a fatal error in PHP.
+    pub is_abstract: bool,
+    pub is_interface: bool,
     /// `enum` cases, in source order: `(case name, optional backing-value chunk)`.
     /// Consulted to build the singleton case instances (`E::Case`, `E::cases()`,
     /// `E::from()`, `E::tryFrom()`).
@@ -204,12 +230,21 @@ pub enum PhpObj {
         next_index: i64,
     },
     /// A first-class callable: its parameters, its lowered body chunk, and the
-    /// `(name, value)` bindings captured (by value) at creation time.
+    /// `(name, value)` bindings captured (by value) at creation time. `bound_this`
+    /// / `scope` are set by `Closure::bind`/`bindTo`/`call`: the bound `$this`
+    /// object and the class name whose private/protected members the body may reach.
     Closure {
         params: Vec<Param>,
         chunk: Chunk,
         captured: Vec<(String, Value)>,
+        bound_this: Option<Value>,
+        scope: Option<String>,
+        is_generator: bool,
     },
+    /// A live generator: an index into `PhpHost::generators`, where the suspended
+    /// stackful coroutine and its execution context live. Built by calling a
+    /// generator function; iterated by `foreach` or the `Generator` methods.
+    Generator { id: u32 },
     /// A class instance: its class name and its properties. Referenced by a
     /// `Value::Obj(u32)` handle, so objects have PHP reference semantics (passing
     /// one around shares the same instance).
@@ -298,6 +333,10 @@ pub struct PhpHost {
     /// Singleton `enum` case instances, keyed by `"enumlower::CaseName"`. Built
     /// once on first access so `E::Case === E::Case` holds by object identity.
     enum_case_cache: FxHashMap<String, Value>,
+    /// Live generators, indexed by the id a `PhpObj::Generator` handle carries.
+    /// Each holds a suspended stackful coroutine plus its swapped-out execution
+    /// context (its own call frame, in-flight signal/throw).
+    generators: Vec<GenCell>,
 }
 
 impl Default for PhpHost {
@@ -326,6 +365,7 @@ impl PhpHost {
             static_props: FxHashMap::default(),
             static_slots: FxHashMap::default(),
             enum_case_cache: FxHashMap::default(),
+            generators: Vec::new(),
         };
         h.init_superglobals();
         h
@@ -738,30 +778,97 @@ impl PhpHost {
         let Some(def) = self.functions.get(def_name).cloned() else {
             return Value::Undef;
         };
+        // A closure defined inside a method auto-binds the current `$this` and its
+        // class scope (PHP semantics), so `$this` and private member access work
+        // without an explicit `bindTo`. `None`/`None` at the top level or in a free
+        // function keeps the previous behavior exactly.
+        let bound_this = match self.get_var("this") {
+            t @ Value::Obj(_) => Some(t),
+            _ => None,
+        };
+        let scope = self.current_class_ctx();
         self.objs.push(PhpObj::Closure {
             params: def.params,
             chunk: def.chunk,
             captured,
+            bound_this,
+            scope,
+            is_generator: def.is_generator,
         });
         Value::Obj((self.objs.len() - 1) as u32)
     }
 
     /// The closure held by `v` (a handle), cloned for a call: its parameters,
-    /// body chunk, and captured bindings. `None` if `v` is not a closure.
+    /// body chunk, captured bindings, and any bound `$this`/scope. `None` if `v`
+    /// is not a closure.
     fn closure_of(&self, v: &Value) -> Option<ClosureCall> {
         match self.as_array(v) {
             Some(PhpObj::Closure {
                 params,
                 chunk,
                 captured,
-            }) => Some((params.clone(), chunk.clone(), captured.clone())),
+                bound_this,
+                scope,
+                is_generator,
+            }) => Some(ClosureCall {
+                params: params.clone(),
+                chunk: chunk.clone(),
+                captured: captured.clone(),
+                bound_this: bound_this.clone(),
+                scope: scope.clone(),
+                is_generator: *is_generator,
+            }),
             _ => None,
         }
+    }
+
+    /// A new closure identical to `v` but with `$this` rebound to `this` and the
+    /// private-access scope set to `scope` (both optional). Backs
+    /// `Closure::bind`/`bindTo`/`call`.
+    pub fn rebind_closure(
+        &mut self,
+        v: &Value,
+        this: Option<Value>,
+        scope: Option<String>,
+    ) -> Option<Value> {
+        let (params, chunk, captured, is_generator) = match self.as_array(v) {
+            Some(PhpObj::Closure {
+                params,
+                chunk,
+                captured,
+                is_generator,
+                ..
+            }) => (
+                params.clone(),
+                chunk.clone(),
+                captured.clone(),
+                *is_generator,
+            ),
+            _ => return None,
+        };
+        self.objs.push(PhpObj::Closure {
+            params,
+            chunk,
+            captured,
+            bound_this: this,
+            scope,
+            is_generator,
+        });
+        Some(Value::Obj((self.objs.len() - 1) as u32))
     }
 
     /// Whether `v` is a closure handle.
     pub fn is_closure(&self, v: &Value) -> bool {
         matches!(self.as_array(v), Some(PhpObj::Closure { .. }))
+    }
+
+    /// The closure's current private-access scope class, if any (for `bindTo`'s
+    /// default "keep the current scope" behavior).
+    fn closure_scope(&self, v: &Value) -> Option<String> {
+        match self.as_array(v) {
+            Some(PhpObj::Closure { scope, .. }) => scope.clone(),
+            _ => None,
+        }
     }
 
     // ── objects / classes ──────────────────────────────────────────────────
@@ -792,6 +899,20 @@ impl PhpHost {
     /// Whether a class of the given name is declared (case-insensitive).
     pub fn class_exists(&self, name: &str) -> bool {
         self.classes.contains_key(&name.to_ascii_lowercase())
+    }
+
+    /// The PHP fatal-error message if `class` cannot be instantiated with `new`
+    /// (it is `abstract` or an `interface`), else `None`. The original casing is
+    /// used in the message.
+    fn class_instantiation_error(&self, class: &str) -> Option<String> {
+        let def = self.classes.get(&class.to_ascii_lowercase())?;
+        if def.is_interface {
+            Some(format!("Cannot instantiate interface {class}"))
+        } else if def.is_abstract {
+            Some(format!("Cannot instantiate abstract class {class}"))
+        } else {
+            None
+        }
     }
 
     /// Whether a user function of the given name is defined (case-insensitive).
@@ -2043,7 +2164,418 @@ pub fn with_host<R>(f: impl FnOnce(&mut PhpHost) -> R) -> R {
 
 /// Reset the host to a fresh state (new heap, new global scope).
 pub fn reset_host() {
+    CUR_GEN.with(|c| c.set(None));
     HOST.with(|h| *h.borrow_mut() = PhpHost::new());
+}
+
+// ── generators (host-side stackful coroutines) ──────────────────────────────
+//
+// A generator function's body runs on its own native stack inside a
+// `corosensei::Coroutine`. `run_chunk_on` (the fusevm VM run loop) executes *on
+// that stack*, so a `yield` deep inside the body suspends the whole VM back to
+// the resumer with one stack switch — no fusevm change. Same design the sibling
+// node-js frontend uses. Single-threaded: the coroutine shares the thread-local
+// `HOST`, and no `with_host` borrow is ever held across a `resume`/`suspend`.
+//
+// The coroutine yields `()` (the current key/value are stashed in the `GenCell`),
+// is resumed with a `Value` (the `->send($x)` argument), and returns
+// `Result<Value, String>` (the generator body's `return` value, or an error).
+// corosensei's generics are `Coroutine<Input, Yield, Return>`: the body is resumed
+// with `Input` (the `->send($x)` value), yields `Yield` (here `()` — the current
+// key/value ride in the `GenCell`), and finally returns `Return`.
+type GenCoro = corosensei::Coroutine<Value, (), Result<Value, String>>;
+type GenYielder = corosensei::Yielder<Value, ()>;
+
+thread_local! {
+    /// Id of the generator whose body is currently executing (the one a `yield`
+    /// suspends), or `None` at the root / inside a non-generator call.
+    static CUR_GEN: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
+}
+
+/// A forced completion injected at a suspended `yield` by `->throw()` (there is no
+/// `Generator::return` in PHP, so only the throw case is needed).
+enum GenInject {
+    Throw(Value),
+}
+
+/// The volatile execution state swapped in/out at every generator resume/suspend
+/// boundary, so a suspended generator's half-finished call frame and in-flight
+/// signal/throw never leak into the resumer (and vice versa). The global scope
+/// (`scopes[0]`) is *not* part of this — it stays shared, so superglobals and
+/// `global $x` work identically inside a generator.
+#[derive(Default)]
+struct GenContext {
+    /// The generator's own call frames (everything above the global scope).
+    frames: Vec<Scope>,
+    signal: Option<Signal>,
+    pending_throw: Option<Value>,
+    error: Option<String>,
+}
+
+/// One live generator.
+struct GenCell {
+    /// The suspended coroutine. `None` only while it is actively running (taken
+    /// out across `resume` so the body can re-borrow the host freely).
+    coro: Option<GenCoro>,
+    /// Raw pointer to the coroutine body's `Yielder`, published on entry. Valid
+    /// for the whole body lifetime; only read from inside that body (its stack is
+    /// live), on the same thread.
+    yielder: *const GenYielder,
+    ctx: GenContext,
+    /// The most recently yielded key and value (read by `current()`/`key()`).
+    cur_key: Value,
+    cur_val: Value,
+    /// The next auto-increment integer key (PHP numbers un-keyed yields 0,1,2…).
+    auto_key: i64,
+    /// The body's `return` value, once it has finished (`getReturn`).
+    ret: Value,
+    started: bool,
+    done: bool,
+    inject: Option<GenInject>,
+}
+
+impl PhpHost {
+    pub fn is_generator_val(&self, v: &Value) -> bool {
+        matches!(self.as_array(v), Some(PhpObj::Generator { .. }))
+    }
+    fn gen_id(&self, v: &Value) -> Option<u32> {
+        match self.as_array(v) {
+            Some(PhpObj::Generator { id }) => Some(*id),
+            _ => None,
+        }
+    }
+    /// Swap the volatile execution context in one shot, returning the previous one:
+    /// installs a generator's frames/signal/throw on resume, pulls them back on
+    /// suspend. The global scope (index 0) is left untouched, so superglobals and
+    /// `global $x` stay shared.
+    fn install_gen_ctx(&mut self, mut c: GenContext) -> GenContext {
+        // Detach the caller's frames (everything above the global scope) and
+        // install the generator's own frames in their place.
+        let caller_frames = self.scopes.split_off(1);
+        self.scopes.append(&mut c.frames); // drains c.frames into the active stack
+        std::mem::swap(&mut self.signal, &mut c.signal);
+        std::mem::swap(&mut self.pending_throw, &mut c.pending_throw);
+        std::mem::swap(&mut self.error, &mut c.error);
+        // `c` now carries the caller's saved signal/throw/error; hand it the
+        // caller's frames so the reverse call restores them.
+        c.frames = caller_frames;
+        c
+    }
+}
+
+/// Build a suspended generator over `body`, run in the already-bound call frame
+/// `frame` (its parameters/captures set by the caller). Nothing runs until the
+/// first resume.
+fn make_generator(body: Chunk, frame: Scope) -> Value {
+    let id = with_host(|h| {
+        let id = h.generators.len() as u32;
+        h.generators.push(GenCell {
+            coro: None,
+            yielder: std::ptr::null(),
+            ctx: GenContext {
+                frames: vec![frame],
+                ..GenContext::default()
+            },
+            cur_key: Value::Undef,
+            cur_val: Value::Undef,
+            auto_key: 0,
+            ret: Value::Undef,
+            started: false,
+            done: false,
+            inject: None,
+        });
+        id
+    });
+    let coro = GenCoro::new(move |yielder: &GenYielder, _first: Value| {
+        // Same thread → publish the yielder so `yield` (deep in the body's VM) can
+        // reach it. Valid for the whole body.
+        with_host(|h| h.generators[id as usize].yielder = yielder as *const _);
+        let r = run_chunk_on(body);
+        // A `return v;` in the body leaves a Return signal; capture it as the
+        // generator's completion value (`getReturn`).
+        let ret = with_host(|h| match h.signal.take() {
+            Some(Signal::Return(v)) => v,
+            _ => Value::Undef,
+        });
+        r.map(|_| ret)
+    });
+    with_host(|h| h.generators[id as usize].coro = Some(coro));
+    with_host(|h| {
+        h.objs.push(PhpObj::Generator { id });
+        Value::Obj((h.objs.len() - 1) as u32)
+    })
+}
+
+/// How a `yield` computes its key.
+enum YieldKey {
+    /// `yield $v` — take (and advance) the next auto-increment integer key.
+    Auto,
+    /// `yield $k => $v` — an explicit key (an int at/above the counter advances it,
+    /// matching array-append semantics).
+    Explicit(Value),
+    /// `yield from` passthrough — re-emit the delegate's key without touching the
+    /// outer generator's auto-key counter.
+    Passthrough(Value),
+}
+
+/// Suspend the running generator, publishing `(key, val)` to the resumer. Returns
+/// the value the next `->send($x)` supplies (`Undef` for `->next()`), or unwinds a
+/// `->throw()` injected at this point.
+fn gen_yield(key: YieldKey, val: Value) -> Result<Value, String> {
+    let id = match CUR_GEN.with(|c| c.get()) {
+        Some(id) => id,
+        None => return Err("cannot yield outside a generator".to_string()),
+    };
+    let yp = with_host(|h| {
+        let g = &mut h.generators[id as usize];
+        let k = match key {
+            YieldKey::Auto => {
+                let k = g.auto_key;
+                g.auto_key += 1;
+                Value::int(k)
+            }
+            YieldKey::Explicit(Value::Int(i)) => {
+                if i >= g.auto_key {
+                    g.auto_key = i + 1;
+                }
+                Value::int(i)
+            }
+            YieldKey::Explicit(other) => other,
+            YieldKey::Passthrough(k) => k,
+        };
+        g.cur_key = k;
+        g.cur_val = val;
+        g.yielder
+    });
+    // SAFETY: same-thread coroutine; the yielder lives for the whole body and we
+    // only reach here from inside that live body.
+    let yielder = unsafe { &*yp };
+    let sent = yielder.suspend(());
+    if let Some(GenInject::Throw(e)) = with_host(|h| h.generators[id as usize].inject.take()) {
+        // Re-raise the injected exception at the suspension point so an enclosing
+        // try/catch in the body handles it (or it unwinds the body).
+        set_pending_throw(e);
+        return Err("__generator_throw__".to_string());
+    }
+    Ok(sent)
+}
+
+/// `yield $v` — suspend with an auto-incremented integer key.
+pub fn yield_value(val: Value) -> Result<Value, String> {
+    gen_yield(YieldKey::Auto, val)
+}
+
+/// `yield $k => $v` — suspend with an explicit key.
+pub fn yield_kv(key: Value, val: Value) -> Result<Value, String> {
+    gen_yield(YieldKey::Explicit(key), val)
+}
+
+/// `yield from $src` — the public entry point (see `gen_yield_from`).
+pub fn yield_from(src: Value) -> Result<Value, String> {
+    gen_yield_from(src)
+}
+
+/// `yield from $src` — delegate to an array, a Generator, or any Traversable,
+/// re-yielding each key/value from the enclosing generator. Evaluates to the
+/// delegate's `return` value (null for an array or a returnless generator).
+fn gen_yield_from(src: Value) -> Result<Value, String> {
+    // A sub-generator is driven lazily (preserving side-effect order and passing
+    // sent values through). Anything else is normalized to an array and replayed.
+    if with_host(|h| h.is_generator_val(&src)) {
+        gen_rewind(&src)?;
+        loop {
+            if !gen_valid(&src)? {
+                break;
+            }
+            let k = with_host(|h| {
+                h.generators[h.gen_id(&src).unwrap() as usize]
+                    .cur_key
+                    .clone()
+            });
+            let v = with_host(|h| {
+                h.generators[h.gen_id(&src).unwrap() as usize]
+                    .cur_val
+                    .clone()
+            });
+            let sent = gen_yield(YieldKey::Passthrough(k), v)?;
+            gen_send_raw(&src, sent)?;
+        }
+        return Ok(with_host(|h| {
+            h.generators[h.gen_id(&src).unwrap() as usize].ret.clone()
+        }));
+    }
+    let arr = foreach_prep(src)?;
+    let pairs: Vec<(Value, Value)> = with_host(|h| match h.as_array(&arr) {
+        Some(PhpObj::Array { entries, .. }) => entries
+            .iter()
+            .map(|(k, v)| (k.to_value(), v.clone()))
+            .collect(),
+        _ => Vec::new(),
+    });
+    for (k, v) in pairs {
+        gen_yield(YieldKey::Passthrough(k), v)?;
+    }
+    Ok(Value::Undef)
+}
+
+/// Resume a generator until its next `yield` or its body returns. The coroutine is
+/// taken out (so the body re-enters `with_host` freely) and the volatile context
+/// is swapped so the caller's frames/signal survive the switch.
+fn gen_resume(id: u32, send: Value) -> Result<(), String> {
+    if with_host(|h| h.generators[id as usize].done) {
+        return Ok(());
+    }
+    let mut coro = match with_host(|h| h.generators[id as usize].coro.take()) {
+        Some(c) => c,
+        None => return Err("cannot resume an already-running generator".to_string()),
+    };
+    with_host(|h| h.generators[id as usize].started = true);
+    let gen_ctx = with_host(|h| std::mem::take(&mut h.generators[id as usize].ctx));
+    let caller_ctx = with_host(|h| h.install_gen_ctx(gen_ctx));
+    let prev = CUR_GEN.with(|c| c.replace(Some(id)));
+
+    let out = coro.resume(send); // no host borrow held; body drives its own VM
+
+    CUR_GEN.with(|c| c.set(prev));
+    // An uncaught exception in the body leaves a pending throw in the generator's
+    // (currently installed) context. Take it out before the context is swapped
+    // away so it can be re-raised in the resumer's context below.
+    let body_throw = with_host(|h| h.pending_throw.take());
+    let gen_ctx = with_host(|h| h.install_gen_ctx(caller_ctx));
+    with_host(|h| {
+        h.generators[id as usize].ctx = gen_ctx;
+        h.generators[id as usize].coro = Some(coro);
+    });
+
+    let result = match out {
+        corosensei::CoroutineResult::Yield(()) => Ok(()),
+        corosensei::CoroutineResult::Return(r) => {
+            with_host(|h| {
+                let g = &mut h.generators[id as usize];
+                g.done = true;
+                g.cur_key = Value::Undef;
+                g.cur_val = Value::Undef;
+            });
+            match r {
+                Ok(v) => {
+                    with_host(|h| h.generators[id as usize].ret = v);
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            }
+        }
+    };
+    // Re-raise an uncaught body exception in the resumer's context.
+    if let Some(e) = body_throw {
+        set_pending_throw(e);
+        return Err("__generator_throw__".to_string());
+    }
+    result
+}
+
+/// Prime an unstarted generator to its first `yield` (PHP `rewind`/implicit on the
+/// first `current`/`valid`/`foreach`). A no-op once started.
+pub fn gen_rewind(gen: &Value) -> Result<(), String> {
+    let id = with_host(|h| h.gen_id(gen)).ok_or("not a generator")?;
+    if !with_host(|h| h.generators[id as usize].started) {
+        gen_resume(id, Value::Undef)?;
+    }
+    Ok(())
+}
+
+/// `->valid()` — whether the generator has not yet finished (priming it first).
+pub fn gen_valid(gen: &Value) -> Result<bool, String> {
+    gen_rewind(gen)?;
+    let id = with_host(|h| h.gen_id(gen)).ok_or("not a generator")?;
+    Ok(with_host(|h| !h.generators[id as usize].done))
+}
+
+/// `->current()` — the current yielded value (priming first). Null once finished.
+pub fn gen_current(gen: &Value) -> Result<Value, String> {
+    gen_rewind(gen)?;
+    let id = with_host(|h| h.gen_id(gen)).ok_or("not a generator")?;
+    Ok(with_host(|h| h.generators[id as usize].cur_val.clone()))
+}
+
+/// `->key()` — the current yielded key (priming first). Null once finished.
+pub fn gen_key(gen: &Value) -> Result<Value, String> {
+    gen_rewind(gen)?;
+    let id = with_host(|h| h.gen_id(gen)).ok_or("not a generator")?;
+    Ok(with_host(|h| h.generators[id as usize].cur_key.clone()))
+}
+
+/// `->next()` — advance to the next yield (priming first, then resuming with null).
+pub fn gen_next(gen: &Value) -> Result<Value, String> {
+    gen_rewind(gen)?;
+    let id = with_host(|h| h.gen_id(gen)).ok_or("not a generator")?;
+    if !with_host(|h| h.generators[id as usize].done) {
+        gen_resume(id, Value::Undef)?;
+    }
+    Ok(Value::Undef)
+}
+
+/// Resume `gen` with `sent` without the unstarted auto-prime — the internal step
+/// used to pass a sent value down through `yield from`.
+fn gen_send_raw(gen: &Value, sent: Value) -> Result<(), String> {
+    let id = with_host(|h| h.gen_id(gen)).ok_or("not a generator")?;
+    if !with_host(|h| h.generators[id as usize].done) {
+        gen_resume(id, sent)?;
+    }
+    Ok(())
+}
+
+/// `->send($v)` — resume the generator, making the paused `yield` evaluate to `$v`,
+/// and return the next yielded value (null once finished). On an unstarted
+/// generator PHP first primes to the first yield, then sends.
+pub fn gen_send(gen: &Value, sent: Value) -> Result<Value, String> {
+    let id = with_host(|h| h.gen_id(gen)).ok_or("not a generator")?;
+    if !with_host(|h| h.generators[id as usize].started) {
+        gen_resume(id, Value::Undef)?;
+    }
+    if !with_host(|h| h.generators[id as usize].done) {
+        gen_resume(id, sent)?;
+    }
+    Ok(with_host(|h| h.generators[id as usize].cur_val.clone()))
+}
+
+/// `->throw($e)` — raise `$e` at the current suspension point (running an enclosing
+/// try/catch/finally in the body), then return the next yielded value.
+pub fn gen_throw(gen: &Value, e: Value) -> Result<Value, String> {
+    let id = with_host(|h| h.gen_id(gen)).ok_or("not a generator")?;
+    gen_rewind(gen)?;
+    if with_host(|h| h.generators[id as usize].done) {
+        // Throw into a finished generator: it propagates straight to the caller.
+        set_pending_throw(e);
+        return Ok(Value::Undef);
+    }
+    with_host(|h| h.generators[id as usize].inject = Some(GenInject::Throw(e)));
+    gen_resume(id, Value::Undef)?;
+    Ok(with_host(|h| h.generators[id as usize].cur_val.clone()))
+}
+
+/// `->getReturn()` — the value the body `return`ed (null if none / not finished).
+pub fn gen_get_return(gen: &Value) -> Result<Value, String> {
+    let id = with_host(|h| h.gen_id(gen)).ok_or("not a generator")?;
+    Ok(with_host(|h| h.generators[id as usize].ret.clone()))
+}
+
+/// Dispatch a `$gen->method(...)` call on a Generator object.
+pub fn call_generator_method(gen: &Value, method: &str, args: Vec<Value>) -> Result<Value, String> {
+    let mut args = args;
+    match method.to_ascii_lowercase().as_str() {
+        "current" => gen_current(gen),
+        "key" => gen_key(gen),
+        "next" => gen_next(gen),
+        "valid" => gen_valid(gen).map(Value::bool),
+        "rewind" => gen_rewind(gen).map(|_| Value::Undef),
+        "send" => gen_send(gen, args.into_iter().next().unwrap_or(Value::Undef)),
+        "throw" => gen_throw(gen, args.into_iter().next().unwrap_or(Value::Undef)),
+        "getreturn" => gen_get_return(gen),
+        other => {
+            let _ = args.pop();
+            Err(format!("call to undefined method Generator::{other}()"))
+        }
+    }
 }
 
 // ── execution ─────────────────────────────────────────────────────────────
@@ -2125,7 +2657,15 @@ pub fn call_function(name: &str, args: Vec<Value>) -> Result<Value, String> {
         }
     }
     if let Some(def) = def {
-        return invoke(name, &def.params, def.chunk, Vec::new(), args, Vec::new());
+        return invoke(
+            name,
+            &def.params,
+            def.chunk,
+            Vec::new(),
+            args,
+            Vec::new(),
+            def.is_generator,
+        );
     }
     crate::builtins::call_library(name, args)
 }
@@ -2140,7 +2680,15 @@ pub fn call_function_named(
 ) -> Result<Value, String> {
     let def = with_host(|h| h.functions.get(&name.to_ascii_lowercase()).cloned());
     if let Some(def) = def {
-        return invoke(name, &def.params, def.chunk, Vec::new(), args, named);
+        return invoke(
+            name,
+            &def.params,
+            def.chunk,
+            Vec::new(),
+            args,
+            named,
+            def.is_generator,
+        );
     }
     let mut all = args;
     all.extend(named.into_iter().map(|(_, v)| v));
@@ -2153,6 +2701,7 @@ pub fn call_function_named(
 /// for omitted parameters), run `body`, and return the `return` value (or null if
 /// the body fell off the end). Default chunks run OUTSIDE the binding `with_host`
 /// closure because `run_chunk_on` itself borrows the thread-local host.
+#[allow(clippy::too_many_arguments)]
 fn invoke(
     frame: &str,
     params: &[Param],
@@ -2160,6 +2709,7 @@ fn invoke(
     pre: Vec<(String, Value)>,
     args: Vec<Value>,
     named: Vec<(String, Value)>,
+    is_generator: bool,
 ) -> Result<Value, String> {
     // Which parameter positions a positional or named argument (or a null-fill for
     // a no-default omitted param) already bound — so the default pass below runs
@@ -2243,6 +2793,13 @@ fn invoke(
             }
         }
     }
+    // A generator function does not run its body on call: it hands the fully-bound
+    // call frame to a suspended coroutine and returns a Generator handle. The frame
+    // is pulled off the active stack and lives in the generator until it finishes.
+    if is_generator {
+        let frame_scope = with_host(|h| h.scopes.pop().expect("generator call frame"));
+        return Ok(make_generator(body, frame_scope));
+    }
     let r = run_chunk_on(body);
     let sig = with_host(|h| {
         // Capture by-reference parameters' final values (read from the still-open
@@ -2273,12 +2830,42 @@ fn invoke(
     }
 }
 
+/// Run a closure body: bind its captures (a bound `$this` overriding any captured
+/// one) and set the frame's class scope so private/protected access matches the
+/// bound scope, then dispatch (as a generator, if its body yields).
+fn invoke_closure(
+    cc: ClosureCall,
+    args: Vec<Value>,
+    named: Vec<(String, Value)>,
+) -> Result<Value, String> {
+    // Encode the private-access scope in the frame name (`Scope::{closure}`), which
+    // `current_class_ctx` reads back for visibility checks.
+    let frame = match &cc.scope {
+        Some(s) => format!("{s}::{{closure}}"),
+        None => "{closure}".to_string(),
+    };
+    let mut pre = cc.captured;
+    if let Some(t) = cc.bound_this {
+        pre.retain(|(k, _)| k != "this");
+        pre.push(("this".to_string(), t));
+    }
+    invoke(
+        &frame,
+        &cc.params,
+        cc.chunk,
+        pre,
+        args,
+        named,
+        cc.is_generator,
+    )
+}
+
 /// Invoke a callable *value*: a closure handle runs its captured-plus-bound body
 /// in a fresh scope; a string is dispatched by name through `call_function`. Used
 /// by `$f(...)` calls and callback builtins (`array_map`).
 pub fn call_value(callee: Value, args: Vec<Value>) -> Result<Value, String> {
-    if let Some((params, chunk, captured)) = with_host(|h| h.closure_of(&callee)) {
-        return invoke("{closure}", &params, chunk, captured, args, Vec::new());
+    if let Some(cc) = with_host(|h| h.closure_of(&callee)) {
+        return invoke_closure(cc, args, Vec::new());
     }
     match callee {
         Value::Str(s) => call_function(&s, args),
@@ -2292,12 +2879,87 @@ pub fn call_value_named(
     args: Vec<Value>,
     named: Vec<(String, Value)>,
 ) -> Result<Value, String> {
-    if let Some((params, chunk, captured)) = with_host(|h| h.closure_of(&callee)) {
-        return invoke("{closure}", &params, chunk, captured, args, named);
+    if let Some(cc) = with_host(|h| h.closure_of(&callee)) {
+        return invoke_closure(cc, args, named);
     }
     match callee {
         Value::Str(s) => call_function_named(&s, args, named),
         _ => Err("value is not callable".to_string()),
+    }
+}
+
+/// `Closure::bind($fn, $obj, $scope)` / `$fn->bindTo($obj, $scope)` — a copy of the
+/// closure with `$this` rebound to `obj` and its private-access scope set. `scope`
+/// may be a class-name string, an object (its class is used), or null/"static"
+/// (keep the current scope). A null `obj` unbinds `$this` (a static closure).
+pub fn closure_bind(closure: &Value, obj: Value, scope: Option<Value>) -> Result<Value, String> {
+    let this = matches!(obj, Value::Obj(_)).then_some(obj.clone());
+    let scope_class = with_host(|h| resolve_bind_scope(h, closure, &obj, scope));
+    match with_host(|h| h.rebind_closure(closure, this, scope_class)) {
+        Some(v) => Ok(v),
+        None => Err("Closure::bind expects a Closure".to_string()),
+    }
+}
+
+/// Resolve the `$scope` argument of `bind`/`bindTo` to a class name (or `None` for
+/// the global scope). An object argument uses its class; a class-name string is
+/// taken verbatim; an omitted scope or the literal `"static"` keeps the closure's
+/// *current* scope (PHP's default — it does NOT grant access to the new object's
+/// class unless a scope is named explicitly).
+fn resolve_bind_scope(
+    h: &mut PhpHost,
+    closure: &Value,
+    _obj: &Value,
+    scope: Option<Value>,
+) -> Option<String> {
+    match scope {
+        Some(Value::Obj(_)) => h.object_class(scope.as_ref().unwrap()),
+        Some(Value::Str(s)) if !s.eq_ignore_ascii_case("static") => Some(s.to_string()),
+        // Omitted / null / "static" → leave the closure's scope unchanged.
+        _ => h.closure_scope(closure),
+    }
+}
+
+/// `$fn->call($obj, ...$args)` — bind `$fn` to `$obj` with the scope set to
+/// `$obj`'s class (so it can reach that class's private members), then call it.
+pub fn closure_call(closure: &Value, obj: Value, args: Vec<Value>) -> Result<Value, String> {
+    // `call` always scopes to the bound object's class — pass the object as the
+    // scope so `resolve_bind_scope` derives its class.
+    let bound = closure_bind(closure, obj.clone(), Some(obj))?;
+    call_value(bound, args)
+}
+
+/// Dispatch a method call on a `Closure` object: `bindTo`, `call`, or `__invoke`.
+pub fn call_closure_method(
+    closure: &Value,
+    method: &str,
+    args: Vec<Value>,
+) -> Result<Value, String> {
+    let mut args = args;
+    match method.to_ascii_lowercase().as_str() {
+        "bindto" => {
+            let obj = if args.is_empty() {
+                Value::Undef
+            } else {
+                args.remove(0)
+            };
+            let scope = if args.is_empty() {
+                None
+            } else {
+                Some(args.remove(0))
+            };
+            closure_bind(closure, obj, scope)
+        }
+        "call" => {
+            let obj = if args.is_empty() {
+                Value::Undef
+            } else {
+                args.remove(0)
+            };
+            closure_call(closure, obj, args)
+        }
+        "__invoke" => call_value(closure.clone(), args),
+        other => Err(format!("call to undefined method Closure::{other}()")),
     }
 }
 
@@ -2308,6 +2970,9 @@ pub fn call_value_named(
 /// on fresh VMs, so no host borrow is held across them.
 pub fn new_object(class: &str, args: Vec<Value>) -> Result<Value, String> {
     let cl = class.to_ascii_lowercase();
+    if let Some(e) = with_host(|h| h.class_instantiation_error(class)) {
+        return Err(e);
+    }
     let Some(defaults) = with_host(|h| h.class_prop_default_chunks(&cl)) else {
         return Err(format!("class \"{class}\" not found"));
     };
@@ -2341,6 +3006,9 @@ pub fn new_object_named(
     named: Vec<(String, Value)>,
 ) -> Result<Value, String> {
     let cl = class.to_ascii_lowercase();
+    if let Some(e) = with_host(|h| h.class_instantiation_error(class)) {
+        return Err(e);
+    }
     let Some(defaults) = with_host(|h| h.class_prop_default_chunks(&cl)) else {
         return Err(format!("class \"{class}\" not found"));
     };
@@ -2372,6 +3040,11 @@ pub fn call_method(
     args: Vec<Value>,
 ) -> Result<Value, String> {
     let method_l = method.to_ascii_lowercase();
+    // `Closure::bind($fn, $obj, $scope)` / `Closure::fromCallable($c)` — the only
+    // static `Closure` methods, synthesized here (there is no `Closure` class).
+    if class.eq_ignore_ascii_case("Closure") {
+        return call_closure_static(&method_l, args);
+    }
     // Enum static helpers `cases()`/`from()`/`tryFrom()` are synthesized, not
     // declared, so they are handled before the ordinary method resolution.
     if with_host(|h| h.is_enum_class(class)) {
@@ -2404,7 +3077,40 @@ pub fn call_method(
         pre,
         args,
         Vec::new(),
+        def.is_generator,
     )
+}
+
+/// Static `Closure::` helpers: `bind($fn, $obj, $scope)` and
+/// `fromCallable($callable)`.
+fn call_closure_static(method_l: &str, mut args: Vec<Value>) -> Result<Value, String> {
+    match method_l {
+        "bind" => {
+            let closure = if args.is_empty() {
+                Value::Undef
+            } else {
+                args.remove(0)
+            };
+            let obj = if args.is_empty() {
+                Value::Undef
+            } else {
+                args.remove(0)
+            };
+            let scope = if args.is_empty() {
+                None
+            } else {
+                Some(args.remove(0))
+            };
+            closure_bind(&closure, obj, scope)
+        }
+        "fromcallable" => {
+            // A closure passes through; a callable string wraps to a closure-like
+            // handle. The scaffold returns the argument unchanged (a string is
+            // already dispatchable through `call_value`).
+            Ok(args.into_iter().next().unwrap_or(Value::Undef))
+        }
+        other => Err(format!("call to undefined method Closure::{other}()")),
+    }
 }
 
 /// `call_method` with PHP 8.0 named arguments.
@@ -2430,6 +3136,7 @@ pub fn call_method_named(
         pre,
         args,
         named,
+        def.is_generator,
     )
 }
 

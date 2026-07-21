@@ -709,6 +709,9 @@ impl Parser {
         let is_interface = self.at_kw("interface");
         let is_trait = self.at_kw("trait");
         let is_enum = self.at_kw("enum");
+        // A leading `abstract` marks the class un-instantiable; `final` is accepted
+        // and ignored.
+        let is_abstract = self.at_kw("abstract");
         if !self.at_kw("class") && !is_interface && !is_trait && !is_enum {
             self.pos += 1; // abstract / final
         }
@@ -911,6 +914,7 @@ impl Parser {
             implements,
             uses,
             is_interface,
+            is_abstract,
             is_enum,
             enum_backing,
             cases,
@@ -927,6 +931,42 @@ impl Parser {
     }
 
     fn assignment(&mut self) -> Result<Expr, String> {
+        // `yield` binds looser than assignment, so it surfaces here (a statement
+        // `yield $v;` and an assignment RHS `$x = yield $v` both route through
+        // `assignment()`). `yield from EXPR` delegates; `yield K => V` carries a key;
+        // a bare `yield` (followed by a terminator) yields null.
+        if self.at_kw("yield") {
+            self.pos += 1;
+            if self.eat_kw("from") {
+                let src = self.ternary()?;
+                return Ok(Expr::YieldFrom(Box::new(src)));
+            }
+            // A bare `yield` with no operand (next token ends the expression).
+            if matches!(
+                self.peek(),
+                None | Some(Tok::Punct(";"))
+                    | Some(Tok::Punct(")"))
+                    | Some(Tok::Punct("]"))
+                    | Some(Tok::Punct(","))
+            ) {
+                return Ok(Expr::Yield {
+                    key: None,
+                    value: None,
+                });
+            }
+            let first = self.ternary()?;
+            if self.eat_punct("=>") {
+                let val = self.ternary()?;
+                return Ok(Expr::Yield {
+                    key: Some(Box::new(first)),
+                    value: Some(Box::new(val)),
+                });
+            }
+            return Ok(Expr::Yield {
+                key: None,
+                value: Some(Box::new(first)),
+            });
+        }
         let lhs = self.ternary()?;
         // `??=` — the lexer emits `? ? =`; ternary() leaves the `??` unconsumed
         // when a `=` follows (see its lookahead). Desugar `$x ??= v` to

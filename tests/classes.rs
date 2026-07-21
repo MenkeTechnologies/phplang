@@ -9,6 +9,51 @@ fn run(src: &str) -> String {
     eval_capture(src).unwrap_or_else(|e| panic!("eval error for {src:?}: {e}"))
 }
 
+/// The error message from a program expected to fail (e.g. instantiating an
+/// abstract class), for asserting the PHP diagnostic text.
+fn run_err(src: &str) -> String {
+    eval_capture(src).expect_err("expected an error")
+}
+
+#[test]
+fn instantiating_an_abstract_class_is_an_error() {
+    // PHP: `new` on an abstract class is a fatal `Error: Cannot instantiate
+    // abstract class Shape`.
+    let src = r#"<?php
+        abstract class Shape { abstract public function area(): float; }
+        $s = new Shape();"#;
+    assert!(
+        run_err(src).contains("Cannot instantiate abstract class Shape"),
+        "got: {}",
+        run_err(src)
+    );
+}
+
+#[test]
+fn instantiating_an_interface_is_an_error() {
+    let src = r#"<?php
+        interface Speaker { public function speak(): string; }
+        $s = new Speaker();"#;
+    assert!(
+        run_err(src).contains("Cannot instantiate interface Speaker"),
+        "got: {}",
+        run_err(src)
+    );
+}
+
+#[test]
+fn a_concrete_subclass_of_an_abstract_class_is_instantiable() {
+    let src = r#"<?php
+        abstract class Shape {
+            abstract public function area(): float;
+            public function name() { return "shape"; }
+        }
+        class Circle extends Shape { public function area(): float { return 3.14; } }
+        $c = new Circle();
+        echo $c->name(), ":", $c->area();"#;
+    assert_eq!(run(src), "shape:3.14");
+}
+
 #[test]
 fn construct_binds_constructor_arg_to_property() {
     let src = r#"<?php

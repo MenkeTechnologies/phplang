@@ -213,11 +213,14 @@ impl Compiler {
                 b.emit(Op::Pop, line);
             }
             StmtKind::Echo(args) => {
+                // `echo a, b, c` emits each argument as it is evaluated (PHP
+                // outputs left to right), so a side effect inside a later argument
+                // (e.g. a generator method that echoes) interleaves correctly.
                 for a in args {
                     self.compile_expr(b, a)?;
+                    b.emit(Op::CallBuiltin(ops::ECHO, 1), line);
+                    b.emit(Op::Pop, line);
                 }
-                b.emit(Op::CallBuiltin(ops::ECHO, args.len() as u8), line);
-                b.emit(Op::Pop, line);
             }
             StmtKind::Expr(e) => {
                 self.compile_expr(b, e)?;
@@ -299,6 +302,7 @@ impl Compiler {
                     FuncDef {
                         params: cparams,
                         chunk: fb.build(),
+                        is_generator: body_has_yield(body),
                     },
                 ));
             }
@@ -524,8 +528,10 @@ impl Compiler {
         Ok(())
     }
 
-    /// `foreach ($arr as [$k =>] $v) { body }` desugars to iterating the array's
-    /// key list by index, binding `$v` (and `$k`) from a hidden temporary.
+    /// `foreach ($subject as [$k =>] $v) { body }`. A `Generator` subject is driven
+    /// lazily through the `Generator` protocol (so side effects interleave and
+    /// infinite generators work); everything else desugars to iterating a
+    /// materialized key list by index.
     fn compile_foreach(
         &mut self,
         b: &mut ChunkBuilder,
@@ -535,15 +541,29 @@ impl Compiler {
         by_ref: bool,
         body: &[Stmt],
     ) -> Result<(), String> {
+        // Evaluate the subject once into a hidden temporary, then branch: a lazy
+        // generator loop, or the array/iterator index loop.
+        let subj_t = self.tmp_name("subj");
+        self.emit_set_var(b, &subj_t, |c, b| c.compile_expr(b, arr))?;
+
+        self.emit_get_var(b, &subj_t);
+        b.emit(Op::CallBuiltin(ops::IS_GENERATOR, 1), 0);
+        b.emit(Op::CallBuiltin(ops::TRUTHY, 1), 0);
+        let to_array = b.emit(Op::JumpIfFalse(0), 0);
+        self.compile_foreach_generator(b, &subj_t, key_var, val_var, body)?;
+        let after_gen = b.emit(Op::Jump(0), 0);
+        let array_start = b.current_pos();
+        b.patch_jump(to_array, array_start);
+
         let arr_t = self.tmp_name("arr");
         let keys_t = self.tmp_name("keys");
         let i_t = self.tmp_name("i");
 
-        // @arr = foreach_prep(<arr>);  @keys = array_keys(@arr);  @i = 0;
+        // @arr = foreach_prep(@subj);  @keys = array_keys(@arr);  @i = 0;
         // FOREACH_PREP passes arrays through and materializes an iterable object
         // (Iterator / IteratorAggregate / public properties) into an array.
         self.emit_set_var(b, &arr_t, |c, b| {
-            c.compile_expr(b, arr)?;
+            c.emit_get_var(b, &subj_t);
             b.emit(Op::CallBuiltin(ops::FOREACH_PREP, 1), 0);
             Ok(())
         })?;
@@ -616,6 +636,70 @@ impl Compiler {
             Ok(())
         })?;
         b.emit(Op::Jump(top), 0);
+        let end = b.current_pos();
+        b.patch_jump(exit, end);
+        for j in ctx.breaks {
+            b.patch_jump(j, end);
+        }
+        for j in ctx.continues {
+            b.patch_jump(j, cont_target);
+        }
+        // The generator path jumps here, past the array path.
+        b.patch_jump(after_gen, end);
+        Ok(())
+    }
+
+    /// The lazy `foreach` loop for a `Generator` subject held in `@subj`:
+    /// `rewind`, then repeatedly `valid`/`key`/`current`/(body)/`next`. Preserves
+    /// side-effect ordering and supports infinite generators (unlike materializing).
+    fn compile_foreach_generator(
+        &mut self,
+        b: &mut ChunkBuilder,
+        subj_t: &str,
+        key_var: Option<&str>,
+        val_var: &str,
+        body: &[Stmt],
+    ) -> Result<(), String> {
+        // @subj->rewind();  (prime to the first yield)
+        self.emit_get_var(b, subj_t);
+        b.emit(Op::CallBuiltin(ops::GEN_REWIND, 1), 0);
+        b.emit(Op::Pop, 0);
+
+        let top = b.current_pos();
+        // while (@subj->valid())
+        self.emit_get_var(b, subj_t);
+        b.emit(Op::CallBuiltin(ops::GEN_VALID, 1), 0);
+        b.emit(Op::CallBuiltin(ops::TRUTHY, 1), 0);
+        let exit = b.emit(Op::JumpIfFalse(0), 0);
+
+        // bind key var (if any) and the value var from the current yield.
+        if let Some(kv) = key_var {
+            self.emit_set_var(b, kv, |c, b| {
+                c.emit_get_var(b, subj_t);
+                b.emit(Op::CallBuiltin(ops::GEN_KEY, 1), 0);
+                Ok(())
+            })?;
+        }
+        self.emit_set_var(b, val_var, |c, b| {
+            c.emit_get_var(b, subj_t);
+            b.emit(Op::CallBuiltin(ops::GEN_CURRENT, 1), 0);
+            Ok(())
+        })?;
+
+        self.loops.push(LoopCtx {
+            breaks: vec![],
+            continues: vec![],
+        });
+        self.compile_seq(b, body)?;
+        let ctx = self.loops.pop().unwrap();
+
+        // `continue` lands here → advance to the next yield.
+        let cont_target = b.current_pos();
+        self.emit_get_var(b, subj_t);
+        b.emit(Op::CallBuiltin(ops::GEN_NEXT, 1), 0);
+        b.emit(Op::Pop, 0);
+        b.emit(Op::Jump(top), 0);
+
         let end = b.current_pos();
         b.patch_jump(exit, end);
         for j in ctx.breaks {
@@ -727,6 +811,7 @@ impl Compiler {
                 FuncDef {
                     params: cparams,
                     chunk: mb.build(),
+                    is_generator: body_has_yield(&m.body),
                 },
             );
         }
@@ -758,6 +843,8 @@ impl Compiler {
                 prop_vis,
                 method_vis,
                 is_enum: decl.is_enum,
+                is_abstract: decl.is_abstract,
+                is_interface: decl.is_interface,
                 enum_cases,
             },
         ));
@@ -1261,6 +1348,31 @@ impl Compiler {
                 let si = b.add_constant(Value::str(s.clone()));
                 b.emit(Op::LoadConst(si), 0);
                 b.emit(Op::CallBuiltin(ops::REF_BIND, 2), 0);
+            }
+            Expr::Yield { key, value } => {
+                // Leave the yielded value (and, for the keyed form, the key) on the
+                // stack, then suspend the running generator. The YIELD builtin
+                // returns the value the next `->send($x)`/`->next()` supplies, so
+                // `$x = yield ...` sees it.
+                match value {
+                    Some(v) => self.compile_expr(b, v)?,
+                    None => {
+                        b.emit(Op::LoadUndef, 0);
+                    }
+                }
+                match key {
+                    Some(k) => {
+                        self.compile_expr(b, k)?;
+                        b.emit(Op::CallBuiltin(ops::YIELD_KV, 2), 0);
+                    }
+                    None => {
+                        b.emit(Op::CallBuiltin(ops::YIELD, 1), 0);
+                    }
+                }
+            }
+            Expr::YieldFrom(src) => {
+                self.compile_expr(b, src)?;
+                b.emit(Op::CallBuiltin(ops::YIELD_FROM, 1), 0);
             }
         }
         Ok(())
@@ -1807,6 +1919,7 @@ impl Compiler {
             FuncDef {
                 params: cparams,
                 chunk: fb.build(),
+                is_generator: body_has_yield(body),
             },
         ));
 
@@ -2135,6 +2248,123 @@ fn collect_free_vars(e: &Expr, out: &mut Vec<String>) {
             collect_free_vars(a, out);
             collect_free_vars(b, out);
         }
+        Expr::Yield { key, value } => {
+            if let Some(k) = key {
+                collect_free_vars(k, out);
+            }
+            if let Some(v) = value {
+                collect_free_vars(v, out);
+            }
+        }
+        Expr::YieldFrom(src) => collect_free_vars(src, out),
         Expr::Null | Expr::Bool(_) | Expr::Int(_) | Expr::Float(_) | Expr::Str(_) => {}
+    }
+}
+
+/// Whether a function/method/closure body contains a top-level `yield` (making it a
+/// generator). The walk stops at nested function/closure/arrow-function boundaries:
+/// a `yield` inside a nested closure belongs to *that* closure, not the enclosing
+/// function.
+fn body_has_yield(body: &[Stmt]) -> bool {
+    body.iter().any(stmt_has_yield)
+}
+
+fn stmt_has_yield(s: &Stmt) -> bool {
+    match &s.kind {
+        StmtKind::Expr(e) | StmtKind::Return(Some(e)) => expr_has_yield(e),
+        StmtKind::Echo(es) => es.iter().any(expr_has_yield),
+        StmtKind::If {
+            cond,
+            then,
+            elifs,
+            els,
+        } => {
+            expr_has_yield(cond)
+                || body_has_yield(then)
+                || elifs
+                    .iter()
+                    .any(|(c, b)| expr_has_yield(c) || body_has_yield(b))
+                || els.as_ref().is_some_and(|b| body_has_yield(b))
+        }
+        StmtKind::While { cond, body } | StmtKind::DoWhile { cond, body } => {
+            expr_has_yield(cond) || body_has_yield(body)
+        }
+        StmtKind::For {
+            init,
+            cond,
+            step,
+            body,
+        } => {
+            init.iter().any(expr_has_yield)
+                || cond.as_ref().is_some_and(expr_has_yield)
+                || step.iter().any(expr_has_yield)
+                || body_has_yield(body)
+        }
+        StmtKind::Foreach { arr, body, .. } => expr_has_yield(arr) || body_has_yield(body),
+        StmtKind::Switch { subj, cases } => {
+            expr_has_yield(subj)
+                || cases
+                    .iter()
+                    .any(|c| c.test.as_ref().is_some_and(expr_has_yield) || body_has_yield(&c.body))
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            finally,
+        } => {
+            body_has_yield(body)
+                || catches.iter().any(|c| body_has_yield(&c.body))
+                || finally.as_ref().is_some_and(|b| body_has_yield(b))
+        }
+        StmtKind::Block(b) => body_has_yield(b),
+        // Nested declarations own their own yields; a `return;` / `break` / etc.
+        // carry none.
+        _ => false,
+    }
+}
+
+fn expr_has_yield(e: &Expr) -> bool {
+    match e {
+        Expr::Yield { .. } | Expr::YieldFrom(_) => true,
+        Expr::Unary(_, a)
+        | Expr::Spread(a)
+        | Expr::Index(a, _)
+        | Expr::Append(a)
+        | Expr::PropGet(a, _)
+        | Expr::NullsafePropGet(a, _)
+        | Expr::Throw(a)
+        | Expr::InstanceOf(a, _)
+        | Expr::NamedArg(_, a) => expr_has_yield(a),
+        Expr::Binary(_, a, b)
+        | Expr::Elvis(a, b)
+        | Expr::Coalesce(a, b)
+        | Expr::RefAssign(a, b) => expr_has_yield(a) || expr_has_yield(b),
+        Expr::Assign(a, _, b) => expr_has_yield(a) || expr_has_yield(b),
+        Expr::Ternary(a, c, d) => expr_has_yield(a) || expr_has_yield(c) || expr_has_yield(d),
+        Expr::IncDec { target, .. } => expr_has_yield(target),
+        Expr::Call(_, args) | Expr::New(_, args) | Expr::StaticCall(_, _, args) => {
+            args.iter().any(expr_has_yield)
+        }
+        Expr::CallValue(c, args) => expr_has_yield(c) || args.iter().any(expr_has_yield),
+        Expr::MethodCall(r, _, args) | Expr::NullsafeMethodCall(r, _, args) => {
+            expr_has_yield(r) || args.iter().any(expr_has_yield)
+        }
+        Expr::Array(items) => items
+            .iter()
+            .any(|(k, v)| k.as_ref().is_some_and(expr_has_yield) || expr_has_yield(v)),
+        // `Interp` parts are only literals and bare `$var`s — neither holds a yield.
+        Expr::Interp(_) => false,
+        Expr::Match { subj, arms } => {
+            expr_has_yield(subj)
+                || arms.iter().any(|a| {
+                    a.conds
+                        .as_ref()
+                        .is_some_and(|cs| cs.iter().any(expr_has_yield))
+                        || expr_has_yield(&a.body)
+                })
+        }
+        Expr::Unset(targets) => targets.iter().any(expr_has_yield),
+        // Nested function definitions own their own yields.
+        _ => false,
     }
 }

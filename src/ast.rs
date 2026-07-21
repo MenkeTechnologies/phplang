@@ -160,6 +160,20 @@ pub enum Expr {
     InstanceOf(Box<Expr>, String),
     /// `$target = &$source` — bind `target` as a reference alias of `source`.
     RefAssign(Box<Expr>, Box<Expr>),
+    /// `yield`, `yield $v`, or `yield $k => $v` — suspend the enclosing generator,
+    /// handing a value (and optional key) to the resumer. Evaluates to the value
+    /// passed by the next `->send($x)` (null for `->next()`). A function whose body
+    /// contains a `yield` is a generator: calling it builds a `Generator` object
+    /// instead of running the body.
+    Yield {
+        key: Option<Box<Expr>>,
+        value: Option<Box<Expr>>,
+    },
+    /// `yield from $iterable` — delegate: re-yield every key/value of `$iterable`
+    /// (an array, `Traversable`, or another generator) from the enclosing
+    /// generator. Evaluates to the delegated generator's `return` value (null for
+    /// an array / a generator with no `return`).
+    YieldFrom(Box<Expr>),
 }
 
 /// One arm of a `match` expression. `conds` is `None` for the `default` arm;
@@ -307,6 +321,8 @@ pub struct ClassDecl {
     pub uses: Vec<String>,
     /// Whether this is an `interface` (vs a `class`/`trait`).
     pub is_interface: bool,
+    /// Whether the class is declared `abstract` (cannot be instantiated directly).
+    pub is_abstract: bool,
     /// Whether this is an `enum` (PHP 8.1). An enum compiles like a class whose
     /// `cases` are singleton instances; `implements` gains `UnitEnum` (plus
     /// `BackedEnum` when `enum_backing` is set).

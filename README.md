@@ -123,11 +123,25 @@ end-to-end (see `tests/basic.rs`):
 - **First-class callable syntax** (`strlen(...)`, `$obj->method(...)`,
   `Cls::method(...)`, `$callable(...)`) — each yields a `Closure` that forwards
   its arguments to the referenced function/method.
+- **Closure rebinding**: `Closure::bind($fn, $obj, $scope)`, `$fn->bindTo($obj,
+  $scope)`, and `$fn->call($obj, …)` rebind `$this` and the private/protected
+  access scope; a closure created inside a method auto-binds the current `$this`
+  and class scope.
+- **Generators** (`yield`): a function whose body contains `yield` returns a
+  lazy `Generator` — `yield $v`, `yield $k => $v`, bare `yield`, and `yield from`
+  (delegating to an array, `Traversable`, or another generator). The `Generator`
+  object supports `current`/`key`/`next`/`valid`/`send`/`throw`/`getReturn` and
+  drives `foreach` lazily (side effects interleave; infinite generators work).
+  Implemented as host-side stackful coroutines (`corosensei`) — the fusevm VM run
+  loop executes on the coroutine's stack, so `yield` suspends it with one stack
+  switch and no VM change.
 - Classes/OOP: `new`, instance properties and methods, `$this`, constructors
   (with property promotion), class constants, `::class`, static methods/constants,
   `self::`/`parent::`, single inheritance, **interfaces** (`implements`, interface
   `extends`), the **`instanceof`** operator, and **traits** (`use Trait;` member
-  merging). References — `$b = &$a`, `foreach ($a as &$v)`, and by-reference
+  merging). `abstract` classes and interfaces reject direct instantiation
+  (`new` on either is a `Cannot instantiate …` error). References — `$b = &$a`,
+  `foreach ($a as &$v)`, and by-reference
   parameters (`function f(&$x)`). Namespaces are accepted in a flat model
   (`namespace X;` / `use A\B\C;`; qualified names fold to their short name).
 - **Enums** (PHP 8.1): pure enums (`enum Suit { case Hearts; … }` with
@@ -195,10 +209,7 @@ end-to-end (see `tests/basic.rs`):
 
 Strict typed-parameter enforcement (type hints are parsed but not enforced —
 phplang follows PHP's coercive/weak-typing mode) and true (non-flat) namespaces
-with `as` alias remapping. **Generators (`yield`)** are blocked on the shared VM: phplang
-runs each function to completion on a fresh `fusevm` VM, and `fusevm` exposes no
-frame suspend/resume primitive, so a faithful lazy generator cannot be built in the
-frontend alone (it needs VM-level support). Closures and arrow functions do not yet
+with `as` alias remapping. Closures and arrow functions do not yet
 capture by reference (`use (&$v)` is rejected). A few current deviations, documented
 in-code: array semantics are reference-based rather than PHP's copy-on-write; loose
 comparison follows a simplified model; default parameter values are not restricted to

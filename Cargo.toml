@@ -94,6 +94,12 @@ urlencoding = "2"
 bigdecimal = "0.4"
 num-bigint = "0.4"
 
+# Generators / `yield` are host-side stackful coroutines: a generator function's
+# body runs on its own native stack inside a `corosensei::Coroutine`, and `yield`
+# suspends it back to the resumer. No fusevm change — the VM run loop simply runs
+# on the coroutine's stack, exactly as the sibling node-js frontend does.
+corosensei = "0.3"
+
 clap = { version = "4.5", features = ["derive", "cargo"] }
 thiserror = "2.0"
 rustc-hash = "2.1"
