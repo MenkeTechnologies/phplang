@@ -185,6 +185,21 @@ impl Parser {
             {
                 self.class_stmt()?
             }
+            // `enum Name [: type] { ... }`. `enum` is not a reserved keyword, so it
+            // is only treated as an enum declaration when followed by a name and a
+            // `{`, `:`, or `implements` — otherwise it stays a plain identifier.
+            _ if self.at_kw("enum")
+                && matches!(
+                    self.toks.get(self.pos + 1).map(|s| &s.tok),
+                    Some(Tok::Ident(_))
+                )
+                && (self.nth_is_punct(2, "{")
+                    || self.nth_is_punct(2, ":")
+                    || matches!(self.toks.get(self.pos + 2).map(|s| &s.tok),
+                        Some(Tok::Ident(s)) if s.eq_ignore_ascii_case("implements"))) =>
+            {
+                self.class_stmt()?
+            }
             _ if self.at_kw("try") => self.try_stmt()?,
             _ if self.at_kw("return") => {
                 self.pos += 1;
@@ -623,13 +638,16 @@ impl Parser {
     }
 
     /// Parse a call argument list up to and consuming the closing `)` (the opening
-    /// `(` is already eaten). Supports `...$arr` argument unpacking.
+    /// `(` is already eaten). Supports `...$arr` argument unpacking and PHP 8.0
+    /// named arguments (`name: value`).
     fn arg_list(&mut self) -> Result<Vec<Expr>, String> {
         let mut args = Vec::new();
         if !self.at_punct(")") {
             loop {
                 if self.eat_punct("...") {
                     args.push(Expr::Spread(Box::new(self.expression()?)));
+                } else if let Some(name) = self.named_arg_label() {
+                    args.push(Expr::NamedArg(name, Box::new(self.expression()?)));
                 } else {
                     args.push(self.expression()?);
                 }
@@ -642,16 +660,59 @@ impl Parser {
         Ok(args)
     }
 
+    /// A named-argument label `name:` — an identifier immediately followed by a
+    /// single `:` (a distinct token from `::`). Consumes `name :` and returns the
+    /// name; leaves the cursor untouched and returns `None` otherwise.
+    fn named_arg_label(&mut self) -> Option<String> {
+        if let Some(Tok::Ident(n)) = self.peek() {
+            if self.nth_is_punct(1, ":") {
+                let n = n.clone();
+                self.pos += 2; // identifier + ':'
+                return Some(n);
+            }
+        }
+        None
+    }
+
+    /// First-class callable syntax `callee(...)` (PHP 8.1). Called just after a
+    /// call's opening `(` is consumed: if the argument list is exactly `...`, this
+    /// consumes `... )` and returns the desugared closure
+    /// `fn(...$args) => call_user_func_array(<callable>, $args)` — a real
+    /// `Closure`. Returns `None` when it is not the first-class-callable form (the
+    /// caller then parses a normal argument list).
+    fn try_fcc(&mut self, callable: Expr) -> Result<Option<Expr>, String> {
+        if !(self.at_punct("...") && self.nth_is_punct(1, ")")) {
+            return Ok(None);
+        }
+        self.pos += 2; // consume `...` and `)`
+        let param = Param {
+            name: "args".to_string(),
+            default: None,
+            variadic: true,
+            promoted: false,
+            by_ref: false,
+        };
+        let body = Expr::Call(
+            "call_user_func_array".to_string(),
+            vec![callable, Expr::Var("args".to_string())],
+        );
+        Ok(Some(Expr::ArrowFn {
+            params: vec![param],
+            body: Box::new(body),
+        }))
+    }
+
     /// `class Name [extends Parent] [implements ...] { members }`. Members are
     /// consts, properties (with visibility/static/type modifiers), and methods.
     /// A leading `abstract`/`final` class modifier is accepted but not enforced.
     fn class_stmt(&mut self) -> Result<StmtKind, String> {
         let is_interface = self.at_kw("interface");
         let is_trait = self.at_kw("trait");
-        if !self.at_kw("class") && !is_interface && !is_trait {
+        let is_enum = self.at_kw("enum");
+        if !self.at_kw("class") && !is_interface && !is_trait && !is_enum {
             self.pos += 1; // abstract / final
         }
-        self.pos += 1; // class / interface / trait
+        self.pos += 1; // class / interface / trait / enum
         let name = match self.next() {
             Some(Tok::Ident(n)) => n,
             other => {
@@ -661,6 +722,11 @@ impl Parser {
                 ))
             }
         };
+        // A backed enum names its scalar backing type after `:` (`enum E: string`).
+        let mut enum_backing = None;
+        if is_enum && self.eat_punct(":") {
+            enum_backing = Some(self.expect_type_name()?);
+        }
         let mut parent = None;
         let mut implements = Vec::new();
         // `extends`: one parent for a class; an interface may extend several.
@@ -692,7 +758,29 @@ impl Parser {
         let mut props = Vec::new();
         let mut methods = Vec::new();
         let mut uses = Vec::new();
+        let mut cases = Vec::new();
         while !self.at_punct("}") && !self.at_end() {
+            // `case Name [= value];` — an enum case (only meaningful inside `enum`).
+            if is_enum && self.at_kw("case") {
+                self.pos += 1;
+                let cname = match self.next() {
+                    Some(Tok::Ident(n)) => n,
+                    other => {
+                        return Err(format!(
+                            "expected enum case name but found {other:?} (line {})",
+                            self.line()
+                        ))
+                    }
+                };
+                let value = if self.eat_punct("=") {
+                    Some(self.expression()?)
+                } else {
+                    None
+                };
+                self.expect_punct(";")?;
+                cases.push(EnumCase { name: cname, value });
+                continue;
+            }
             // `use Trait1, Trait2;` — pull trait members into this class.
             if self.at_kw("use") {
                 self.pos += 1;
@@ -808,12 +896,24 @@ impl Parser {
             }
         }
         self.expect_punct("}")?;
+        // A backed enum implements `BackedEnum` (which extends `UnitEnum`); a pure
+        // enum implements `UnitEnum`. Added so `instanceof UnitEnum`/`BackedEnum`
+        // holds without the user declaring it.
+        if is_enum {
+            implements.push("UnitEnum".to_string());
+            if enum_backing.is_some() {
+                implements.push("BackedEnum".to_string());
+            }
+        }
         Ok(StmtKind::Class(ClassDecl {
             name,
             parent,
             implements,
             uses,
             is_interface,
+            is_enum,
+            enum_backing,
+            cases,
             consts,
             props,
             methods,
@@ -1051,9 +1151,24 @@ impl Parser {
                 // Instance member: `$o->prop` or `$o->method(args)`.
                 let member = self.member_name()?;
                 if self.eat_punct("(") {
-                    e = Expr::MethodCall(Box::new(e), member, self.arg_list()?);
+                    if let Some(fcc) = self.try_fcc(Expr::Array(vec![
+                        (None, e.clone()),
+                        (None, Expr::Str(member.clone())),
+                    ]))? {
+                        e = fcc;
+                    } else {
+                        e = Expr::MethodCall(Box::new(e), member, self.arg_list()?);
+                    }
                 } else {
                     e = Expr::PropGet(Box::new(e), member);
+                }
+            } else if self.eat_punct("?->") {
+                // Nullsafe member: `$o?->prop` or `$o?->method(args)`.
+                let member = self.member_name()?;
+                if self.eat_punct("(") {
+                    e = Expr::NullsafeMethodCall(Box::new(e), member, self.arg_list()?);
+                } else {
+                    e = Expr::NullsafePropGet(Box::new(e), member);
                 }
             } else if self.eat_punct("::") {
                 // Static / scope-resolution access: the left must be a class name
@@ -1076,7 +1191,11 @@ impl Parser {
                 } else {
                     let member = self.member_name()?;
                     if self.eat_punct("(") {
-                        e = Expr::StaticCall(class, member, self.arg_list()?);
+                        if let Some(fcc) = self.try_fcc(Expr::Str(format!("{class}::{member}")))? {
+                            e = fcc;
+                        } else {
+                            e = Expr::StaticCall(class, member, self.arg_list()?);
+                        }
                     } else {
                         e = Expr::StaticGet(class, member);
                     }
@@ -1087,8 +1206,12 @@ impl Parser {
                 // `(expr)(…)`. A bareword `name(` is already consumed as
                 // `Expr::Call` in `primary`, so this only fires on a value callee.
                 self.pos += 1;
-                let args = self.arg_list()?;
-                e = Expr::CallValue(Box::new(e), args);
+                if let Some(fcc) = self.try_fcc(e.clone())? {
+                    e = fcc;
+                } else {
+                    let args = self.arg_list()?;
+                    e = Expr::CallValue(Box::new(e), args);
+                }
             } else if self.at_punct("++") {
                 self.pos += 1;
                 e = Expr::IncDec {
@@ -1219,6 +1342,10 @@ impl Parser {
             Some(Tok::Ident(name)) => {
                 // A bareword followed by `(` is a function call.
                 if self.eat_punct("(") {
+                    // `name(...)` — first-class callable syntax → a `Closure`.
+                    if let Some(fcc) = self.try_fcc(Expr::Str(name.clone()))? {
+                        return Ok(fcc);
+                    }
                     let args = self.arg_list()?;
                     // `isset()`/`empty()` are language constructs, not functions:
                     // they must not error on an undefined variable/key. phplang

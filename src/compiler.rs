@@ -731,6 +731,21 @@ impl Compiler {
             );
         }
 
+        // An `enum`'s cases: each case's optional backing-value expression is
+        // lowered to its own chunk (run once when the singleton is built).
+        let mut enum_cases: Vec<(String, Option<Chunk>)> = Vec::new();
+        for case in &decl.cases {
+            let chunk = match &case.value {
+                Some(e) => {
+                    let mut cb = ChunkBuilder::new();
+                    self.compile_expr(&mut cb, e)?;
+                    Some(cb.build())
+                }
+                None => None,
+            };
+            enum_cases.push((case.name.clone(), chunk));
+        }
+
         self.classes.push((
             decl.name.to_ascii_lowercase(),
             ClassDef {
@@ -742,6 +757,8 @@ impl Compiler {
                 methods,
                 prop_vis,
                 method_vis,
+                is_enum: decl.is_enum,
+                enum_cases,
             },
         ));
 
@@ -941,6 +958,17 @@ impl Compiler {
                 inc,
                 prefix,
             } => self.compile_incdec(b, target, *inc, *prefix)?,
+            Expr::Call(name, args) if has_named(args) => {
+                // A call with any `name: value` argument. Push the function name
+                // then a `(name, value)` pair per argument for the host to rebind.
+                let idx = b.add_constant(Value::str(name.clone()));
+                b.emit(Op::LoadConst(idx), 0);
+                self.compile_arg_pairs(b, args)?;
+                b.emit(
+                    Op::CallBuiltin(ops::CALL_NAMED, (args.len() * 2 + 1) as u8),
+                    0,
+                );
+            }
             Expr::Call(name, args) => {
                 let has_spread = args.iter().any(|a| matches!(a, Expr::Spread(_)));
                 // The by-reference array mutators take their array by variable
@@ -1006,6 +1034,14 @@ impl Compiler {
             Expr::Spread(_) => {
                 return Err("'...' argument unpacking is only valid in a function call".into())
             }
+            Expr::CallValue(callee, args) if has_named(args) => {
+                self.compile_expr(b, callee)?;
+                self.compile_arg_pairs(b, args)?;
+                b.emit(
+                    Op::CallBuiltin(ops::CALLVALUE_NAMED, (args.len() * 2 + 1) as u8),
+                    0,
+                );
+            }
             Expr::CallValue(callee, args) => {
                 self.compile_expr(b, callee)?;
                 for a in args {
@@ -1029,6 +1065,16 @@ impl Compiler {
                 captures.retain(|n| !params.iter().any(|p| p.name == *n));
                 self.compile_closure(b, params, &captures, &ret)?;
             }
+            Expr::New(class, args) if has_named(args) => {
+                let cname = self.resolve_class_name(class)?;
+                let idx = b.add_constant(Value::str(cname));
+                b.emit(Op::LoadConst(idx), 0);
+                self.compile_arg_pairs(b, args)?;
+                b.emit(
+                    Op::CallBuiltin(ops::NEW_NAMED, (args.len() * 2 + 1) as u8),
+                    0,
+                );
+            }
             Expr::New(class, args) => {
                 let cname = self.resolve_class_name(class)?;
                 let idx = b.add_constant(Value::str(cname));
@@ -1044,6 +1090,16 @@ impl Compiler {
                 b.emit(Op::LoadConst(idx), 0);
                 b.emit(Op::CallBuiltin(ops::PROP_GET, 2), 0);
             }
+            Expr::MethodCall(recv, name, args) if has_named(args) => {
+                self.compile_expr(b, recv)?;
+                let idx = b.add_constant(Value::str(name.clone()));
+                b.emit(Op::LoadConst(idx), 0);
+                self.compile_arg_pairs(b, args)?;
+                b.emit(
+                    Op::CallBuiltin(ops::MCALL_NAMED, (args.len() * 2 + 2) as u8),
+                    0,
+                );
+            }
             Expr::MethodCall(recv, name, args) => {
                 self.compile_expr(b, recv)?;
                 let idx = b.add_constant(Value::str(name.clone()));
@@ -1052,6 +1108,35 @@ impl Compiler {
                     self.compile_expr(b, a)?;
                 }
                 b.emit(Op::CallBuiltin(ops::MCALL, (args.len() + 2) as u8), 0);
+            }
+            // `$o?->prop` — evaluate the receiver once; short-circuit to null when
+            // it is null, else read the property.
+            Expr::NullsafePropGet(recv, name) => {
+                self.compile_nullsafe(b, recv, |c, b| {
+                    let idx = b.add_constant(Value::str(name.clone()));
+                    b.emit(Op::LoadConst(idx), 0);
+                    b.emit(Op::CallBuiltin(ops::PROP_GET, 2), 0);
+                    let _ = c;
+                    Ok(())
+                })?;
+            }
+            // `$o?->method(args)` — short-circuit to null on a null receiver (the
+            // arguments are not evaluated), else the normal method call.
+            Expr::NullsafeMethodCall(recv, name, args) => {
+                self.compile_nullsafe(b, recv, |c, b| {
+                    let idx = b.add_constant(Value::str(name.clone()));
+                    b.emit(Op::LoadConst(idx), 0);
+                    for a in args {
+                        c.compile_expr(b, a)?;
+                    }
+                    b.emit(Op::CallBuiltin(ops::MCALL, (args.len() + 2) as u8), 0);
+                    Ok(())
+                })?;
+            }
+            Expr::NamedArg(_, inner) => {
+                // A named argument outside a handled call site: compile its value
+                // (the name is only meaningful in an argument list).
+                self.compile_expr(b, inner)?;
             }
             Expr::StaticGet(class, name) => {
                 let cname = self.resolve_class_name(class)?;
@@ -1075,6 +1160,18 @@ impl Compiler {
                 let nidx = b.add_constant(Value::str(name.clone()));
                 b.emit(Op::LoadConst(nidx), 0);
                 b.emit(Op::CallBuiltin(ops::SPROP_GET, 2), 0);
+            }
+            Expr::StaticCall(class, name, args) if has_named(args) => {
+                let cname = self.resolve_class_name(class)?;
+                let cidx = b.add_constant(Value::str(cname));
+                b.emit(Op::LoadConst(cidx), 0);
+                let nidx = b.add_constant(Value::str(name.clone()));
+                b.emit(Op::LoadConst(nidx), 0);
+                self.compile_arg_pairs(b, args)?;
+                b.emit(
+                    Op::CallBuiltin(ops::SCALL_NAMED, (args.len() * 2 + 2) as u8),
+                    0,
+                );
             }
             Expr::StaticCall(class, name, args) => {
                 let cname = self.resolve_class_name(class)?;
@@ -1855,6 +1952,51 @@ impl Compiler {
         Ok(())
     }
 
+    /// Lower a nullsafe access `recv?->…`: evaluate `recv` once; when it is null,
+    /// that null is left on the stack as the result (the `tail` is skipped);
+    /// otherwise `tail` runs with the receiver on top of the stack and produces
+    /// the accessed value. Both paths leave exactly one value.
+    fn compile_nullsafe(
+        &mut self,
+        b: &mut ChunkBuilder,
+        recv: &Expr,
+        tail: impl FnOnce(&mut Self, &mut ChunkBuilder) -> Result<(), String>,
+    ) -> Result<(), String> {
+        self.compile_expr(b, recv)?; // [recv]
+        b.emit(Op::Dup, 0); // [recv, recv]
+        b.emit(Op::LoadUndef, 0); // [recv, recv, null]
+        b.emit(Op::CallBuiltin(ops::STRICT_EQ, 2), 0); // [recv, isNull]
+        b.emit(Op::CallBuiltin(ops::TRUTHY, 1), 0); // [recv, bool]
+        let is_null = b.emit(Op::JumpIfTrue(0), 0); // null → keep recv(null) as result
+        tail(self, b)?; // not null: consume recv, push accessed value
+        let jend = b.emit(Op::Jump(0), 0);
+        let null_pos = b.current_pos();
+        b.patch_jump(is_null, null_pos); // null branch: recv(null) already on stack
+        let end = b.current_pos();
+        b.patch_jump(jend, end);
+        Ok(())
+    }
+
+    /// Push each call argument as a `(name, value)` pair for a `*_NAMED` call: a
+    /// named argument contributes its name as a string constant, a positional
+    /// argument contributes `Undef`. Consumed by the host's named-argument binding.
+    fn compile_arg_pairs(&mut self, b: &mut ChunkBuilder, args: &[Expr]) -> Result<(), String> {
+        for a in args {
+            match a {
+                Expr::NamedArg(n, v) => {
+                    let idx = b.add_constant(Value::str(n.clone()));
+                    b.emit(Op::LoadConst(idx), 0);
+                    self.compile_expr(b, v)?;
+                }
+                _ => {
+                    b.emit(Op::LoadUndef, 0);
+                    self.compile_expr(b, a)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn emit_get_var(&mut self, b: &mut ChunkBuilder, name: &str) {
         let idx = b.add_constant(Value::str(name.to_string()));
         b.emit(Op::LoadConst(idx), 0);
@@ -1884,6 +2026,11 @@ impl Compiler {
 /// capture is by value; a nested arrow fn contributes its body's free variables
 /// minus its own parameters, and a nested `use(...)` closure contributes exactly
 /// the names it captures.
+/// Whether a call's argument list contains any named argument (`name: value`).
+fn has_named(args: &[Expr]) -> bool {
+    args.iter().any(|a| matches!(a, Expr::NamedArg(..)))
+}
+
 fn collect_free_vars(e: &Expr, out: &mut Vec<String>) {
     fn push(name: &str, out: &mut Vec<String>) {
         if !out.iter().any(|n| n == name) {
@@ -1967,13 +2114,14 @@ fn collect_free_vars(e: &Expr, out: &mut Vec<String>) {
                 collect_free_vars(a, out);
             }
         }
-        Expr::PropGet(recv, _) => collect_free_vars(recv, out),
-        Expr::MethodCall(recv, _, args) => {
+        Expr::PropGet(recv, _) | Expr::NullsafePropGet(recv, _) => collect_free_vars(recv, out),
+        Expr::MethodCall(recv, _, args) | Expr::NullsafeMethodCall(recv, _, args) => {
             collect_free_vars(recv, out);
             for a in args {
                 collect_free_vars(a, out);
             }
         }
+        Expr::NamedArg(_, v) => collect_free_vars(v, out),
         Expr::StaticGet(_, _) | Expr::StaticProp(_, _) => {}
         Expr::Throw(inner) => collect_free_vars(inner, out),
         Expr::ConstFetch(_) => {}

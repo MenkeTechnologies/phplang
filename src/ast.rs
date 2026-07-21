@@ -113,6 +113,16 @@ pub enum Expr {
     PropGet(Box<Expr>, String),
     /// `$obj->method(args)` — instance method call.
     MethodCall(Box<Expr>, String, Vec<Expr>),
+    /// `$obj?->prop` — nullsafe property read: the receiver is evaluated once and,
+    /// if it is null, the access short-circuits to null (the property is never
+    /// read). Otherwise it behaves like `PropGet`.
+    NullsafePropGet(Box<Expr>, String),
+    /// `$obj?->method(args)` — nullsafe method call: short-circuits to null when
+    /// the receiver is null (the arguments are not evaluated), else like `MethodCall`.
+    NullsafeMethodCall(Box<Expr>, String, Vec<Expr>),
+    /// A named call argument `name: value` (PHP 8.0). Only valid inside a call's
+    /// argument list; the compiler binds it to the parameter of that name.
+    NamedArg(String, Box<Expr>),
     /// `Class::CONST` / `Class::class` — class constant read (also `self::`/`parent::`).
     StaticGet(String, String),
     /// `Class::$prop` — static property access (`self::$n`, `C::$x`). A read, an
@@ -297,11 +307,28 @@ pub struct ClassDecl {
     pub uses: Vec<String>,
     /// Whether this is an `interface` (vs a `class`/`trait`).
     pub is_interface: bool,
+    /// Whether this is an `enum` (PHP 8.1). An enum compiles like a class whose
+    /// `cases` are singleton instances; `implements` gains `UnitEnum` (plus
+    /// `BackedEnum` when `enum_backing` is set).
+    pub is_enum: bool,
+    /// The scalar backing type of a backed enum (`enum E: string`) — `"int"` or
+    /// `"string"`. `None` for a pure enum.
+    pub enum_backing: Option<String>,
+    /// `case Name [= value];` entries of an `enum`, in source order.
+    pub cases: Vec<EnumCase>,
     /// `const NAME = expr;` entries, in source order.
     pub consts: Vec<(String, Expr)>,
     /// Property declarations, in source order (instance and static).
     pub props: Vec<PropDecl>,
     pub methods: Vec<Method>,
+}
+
+/// One `case Name [= value];` of an `enum`. `value` is the backing-value
+/// expression for a backed enum, `None` for a pure enum.
+#[derive(Debug, Clone)]
+pub struct EnumCase {
+    pub name: String,
+    pub value: Option<Expr>,
 }
 
 /// A method of a class. `is_static` is retained but not enforced (a static call

@@ -79,6 +79,98 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::SPROP_SET, b_sprop_set);
     vm.register_builtin(ops::SPROP_INCDEC, b_sprop_incdec);
     vm.register_builtin(ops::STATIC_BIND, b_static_bind);
+    vm.register_builtin(ops::CALL_NAMED, b_call_named);
+    vm.register_builtin(ops::MCALL_NAMED, b_mcall_named);
+    vm.register_builtin(ops::SCALL_NAMED, b_scall_named);
+    vm.register_builtin(ops::NEW_NAMED, b_new_named);
+    vm.register_builtin(ops::CALLVALUE_NAMED, b_callvalue_named);
+}
+
+/// Split a `(name, value)` argument-pair stream into positional arguments (name is
+/// `Undef`) and named arguments (name is a `Str`), preserving source order.
+fn split_named(pairs: Vec<Value>) -> (Vec<Value>, Vec<(String, Value)>) {
+    let mut positional = Vec::new();
+    let mut named = Vec::new();
+    let mut it = pairs.into_iter();
+    while let (Some(name), Some(val)) = (it.next(), it.next()) {
+        match name {
+            Value::Str(s) => named.push((s.to_string(), val)),
+            _ => positional.push(val),
+        }
+    }
+    (positional, named)
+}
+
+/// `f(name: v, ...)` — named-argument function call. Stack `[fname, (n,v)...]`.
+fn b_call_named(vm: &mut VM, argc: u8) -> Value {
+    let pairs = pop_args(vm, argc as usize - 1);
+    let name = pop_name(vm);
+    let (pos, named) = split_named(pairs);
+    match host::call_function_named(&name, pos, named) {
+        Ok(v) => bubbled(vm, v),
+        Err(e) => fail(vm, e),
+    }
+}
+
+/// `$f(name: v, ...)` — named-argument dynamic call. Stack `[callee, (n,v)...]`.
+fn b_callvalue_named(vm: &mut VM, argc: u8) -> Value {
+    let pairs = pop_args(vm, argc as usize - 1);
+    let callee = vm.pop();
+    let (pos, named) = split_named(pairs);
+    match host::call_value_named(callee, pos, named) {
+        Ok(v) => bubbled(vm, v),
+        Err(e) => fail(vm, e),
+    }
+}
+
+/// `$o->m(name: v, ...)` — named-argument method call. Stack `[recv, method, (n,v)...]`.
+fn b_mcall_named(vm: &mut VM, argc: u8) -> Value {
+    let pairs = pop_args(vm, argc as usize - 2);
+    let method = pop_name(vm);
+    let recv = vm.pop();
+    let (pos, named) = split_named(pairs);
+    match with_host(|h| h.object_class(&recv)) {
+        Some(c) => {
+            if let Err(e) = with_host(|h| h.check_method_access(&c, &method)) {
+                return fail(vm, e);
+            }
+            match host::call_method_named(&c, &method, Some(recv), pos, named) {
+                Ok(v) => bubbled(vm, v),
+                Err(e) => fail(vm, e),
+            }
+        }
+        None => fail(
+            vm,
+            format!("call to a member function {method}() on a non-object"),
+        ),
+    }
+}
+
+/// `C::m(name: v, ...)` — named-argument static call. Stack `[class, method, (n,v)...]`.
+fn b_scall_named(vm: &mut VM, argc: u8) -> Value {
+    let pairs = pop_args(vm, argc as usize - 2);
+    let method = pop_name(vm);
+    let class = pop_name(vm);
+    let (pos, named) = split_named(pairs);
+    let this = with_host(|h| {
+        let t = h.get_var("this");
+        matches!(t, Value::Obj(_)).then_some(t)
+    });
+    match host::call_method_named(&class, &method, this, pos, named) {
+        Ok(v) => bubbled(vm, v),
+        Err(e) => fail(vm, e),
+    }
+}
+
+/// `new C(name: v, ...)` — named-argument constructor. Stack `[class, (n,v)...]`.
+fn b_new_named(vm: &mut VM, argc: u8) -> Value {
+    let pairs = pop_args(vm, argc as usize - 1);
+    let class = pop_name(vm);
+    let (pos, named) = split_named(pairs);
+    match host::new_object_named(&class, pos, named) {
+        Ok(v) => bubbled(vm, v),
+        Err(e) => fail(vm, e),
+    }
 }
 
 /// `Class::$prop` read. Stack `[class, name]`.
@@ -913,7 +1005,14 @@ fn strict_eq(h: &host::PhpHost, a: &Value, b: &Value) -> bool {
         (Str(x), Str(y)) => x == y,
         (Bool(x), Bool(y)) => x == y,
         (Undef, Undef) => true,
-        (Obj(_), Obj(_)) => {
+        (Obj(x), Obj(y)) => {
+            // The same heap handle is always identical (same array or object
+            // instance) — this also gives enum-case singletons `===` identity.
+            if x == y {
+                return true;
+            }
+            // Two distinct array handles are `===` when their keys/values match in
+            // order and type; two distinct object handles are never identical.
             let (Some(pa), Some(pb)) = (h.array_pairs(a), h.array_pairs(b)) else {
                 return false;
             };

@@ -104,7 +104,9 @@ end-to-end (see `tests/basic.rs`):
   assignment (`+= .=` …), pre/post `++`/`--`.
 - Loose/strict comparison (`== != === !== < > <= >=`, PHP-8 string↔number
   ordering), short-circuit `&& || and or`, ternary `?:` (incl. the elvis short
-  form), null-coalesce `??`, `!`, and `(int)`/`(float)`/`(string)`/`(bool)` casts.
+  form), null-coalesce `??`, the nullsafe operator `?->` (a null receiver
+  short-circuits the whole `$a?->b`/`$a?->b()` to null without evaluating the
+  member or its arguments), `!`, and `(int)`/`(float)`/`(string)`/`(bool)` casts.
 - Indexed, associative, and appended (`$a[] =`) arrays; index read/write; deep
   and nested lvalues (`$a[b][c] =`, `$a[b][] =`, compound and `++`/`--` on
   elements); the by-reference array mutators (`array_push`/`pop`/`shift`/
@@ -114,9 +116,13 @@ end-to-end (see `tests/basic.rs`):
   `continue`, `return`; `match` expressions (a no-arm/no-`default` match throws
   `\UnhandledMatchError`, as PHP 8 does).
 - User `function`s with positional, default (`$x = 1`) and variadic (`...$rest`)
-  parameters, recursion, and call-site argument unpacking (`f(...$args)`);
-  anonymous `function () use (...) { … }` closures and `fn (…) => …` arrow
-  functions as first-class callables (`$f(...)`).
+  parameters, recursion, call-site argument unpacking (`f(...$args)`), and
+  **named arguments** (`f(name: 1, other: 2)`, mixable with positional, order
+  independent, extra names collected into a variadic); anonymous
+  `function () use (...) { … }` closures and `fn (…) => …` arrow functions.
+- **First-class callable syntax** (`strlen(...)`, `$obj->method(...)`,
+  `Cls::method(...)`, `$callable(...)`) — each yields a `Closure` that forwards
+  its arguments to the referenced function/method.
 - Classes/OOP: `new`, instance properties and methods, `$this`, constructors
   (with property promotion), class constants, `::class`, static methods/constants,
   `self::`/`parent::`, single inheritance, **interfaces** (`implements`, interface
@@ -124,6 +130,11 @@ end-to-end (see `tests/basic.rs`):
   merging). References — `$b = &$a`, `foreach ($a as &$v)`, and by-reference
   parameters (`function f(&$x)`). Namespaces are accepted in a flat model
   (`namespace X;` / `use A\B\C;`; qualified names fold to their short name).
+- **Enums** (PHP 8.1): pure enums (`enum Suit { case Hearts; … }` with
+  `Suit::Hearts`, `->name`, `Suit::cases()`, singleton `===` identity) and backed
+  enums (`enum Status: string { case Active = 'active'; }` with `->value`,
+  `Status::from()`, `Status::tryFrom()`); enums may declare methods and constants
+  and satisfy `instanceof UnitEnum`/`BackedEnum`.
 - Exceptions: `throw` as a statement and a PHP-8 expression (`$x ?? throw …`),
   `try` / `catch (A | B $e)` / `finally` with `finally`-always semantics (it runs
   on return, throw, break, and continue out of the guarded body), a built-in

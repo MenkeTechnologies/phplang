@@ -82,6 +82,14 @@ pub mod ops {
     pub const SPROP_SET: u16 = 64; // [class, name, val] -> val (Class::$p = v)
     pub const SPROP_INCDEC: u16 = 65; // [class, name, code] -> value (++/-- on Class::$p)
     pub const STATIC_BIND: u16 = 66; // [name, slot-key, init] -> Undef (bind `static $var`)
+                                     // Named-argument call variants (PHP 8.0). Each argument is encoded as a
+                                     // `(name, value)` pair on the stack — `name` is a `Str` for a named argument
+                                     // or `Undef` for a positional one — so the host can rebind by parameter name.
+    pub const CALL_NAMED: u16 = 67; // [fname, (n,v)...] argc=1+2k -> return value
+    pub const MCALL_NAMED: u16 = 68; // [recv, method, (n,v)...] argc=2+2k -> return
+    pub const SCALL_NAMED: u16 = 69; // [class, method, (n,v)...] argc=2+2k -> return
+    pub const NEW_NAMED: u16 = 70; // [class, (n,v)...] argc=1+2k -> object handle
+    pub const CALLVALUE_NAMED: u16 = 71; // [callee, (n,v)...] argc=1+2k -> return value
 }
 
 /// Sub-ops for the by-reference array mutators lowered through `ops::ARR_MUT`
@@ -142,6 +150,12 @@ pub struct ClassDef {
     pub prop_vis: FxHashMap<String, Visibility>,
     /// Declared visibility of methods declared in THIS class, by lowercased name.
     pub method_vis: FxHashMap<String, Visibility>,
+    /// Whether this class is an `enum` (PHP 8.1).
+    pub is_enum: bool,
+    /// `enum` cases, in source order: `(case name, optional backing-value chunk)`.
+    /// Consulted to build the singleton case instances (`E::Case`, `E::cases()`,
+    /// `E::from()`, `E::tryFrom()`).
+    pub enum_cases: Vec<(String, Option<Chunk>)>,
 }
 
 /// One compiled `catch (T1 | T2 [$var]) { body }` clause of a `try`.
@@ -281,6 +295,9 @@ pub struct PhpHost {
     /// is an index into `ref_cells`, so a body's `$var` aliases the cell and its
     /// value survives across calls.
     static_slots: FxHashMap<String, usize>,
+    /// Singleton `enum` case instances, keyed by `"enumlower::CaseName"`. Built
+    /// once on first access so `E::Case === E::Case` holds by object identity.
+    enum_case_cache: FxHashMap<String, Value>,
 }
 
 impl Default for PhpHost {
@@ -308,6 +325,7 @@ impl PhpHost {
             byref_out: Vec::new(),
             static_props: FxHashMap::default(),
             static_slots: FxHashMap::default(),
+            enum_case_cache: FxHashMap::default(),
         };
         h.init_superglobals();
         h
@@ -1213,6 +1231,57 @@ impl PhpHost {
         }
     }
 
+    // ── enums (PHP 8.1) ──────────────────────────────────────────────────────
+
+    /// Whether `class` is an `enum` (case-insensitive).
+    pub fn is_enum_class(&self, class: &str) -> bool {
+        self.classes
+            .get(&class.to_ascii_lowercase())
+            .map(|d| d.is_enum)
+            .unwrap_or(false)
+    }
+
+    /// The declared case's optional backing-value chunk (`Some(chunk_opt)` when the
+    /// enum declares a case of this exact name, else `None`).
+    fn enum_case_chunk(&self, class: &str, case: &str) -> Option<Option<Chunk>> {
+        let d = self.classes.get(&class.to_ascii_lowercase())?;
+        d.enum_cases
+            .iter()
+            .find(|(n, _)| n == case)
+            .map(|(_, c)| c.clone())
+    }
+
+    /// The enum's case names in declaration order.
+    fn enum_case_names(&self, class: &str) -> Vec<String> {
+        self.classes
+            .get(&class.to_ascii_lowercase())
+            .map(|d| d.enum_cases.iter().map(|(n, _)| n.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    fn enum_case_cached(&self, key: &str) -> Option<Value> {
+        self.enum_case_cache.get(key).cloned()
+    }
+
+    fn enum_case_store(&mut self, key: &str, v: Value) {
+        self.enum_case_cache.insert(key.to_string(), v);
+    }
+
+    /// Allocate an enum-case instance with its `name` (and, for a backed enum,
+    /// `value`) properties. `class` keeps its source casing for `get_class`.
+    fn new_enum_object(&mut self, class: &str, name: &str, value: Option<Value>) -> Value {
+        let mut props: IndexMap<String, Value> = IndexMap::new();
+        props.insert("name".to_string(), Value::str(name.to_string()));
+        if let Some(v) = value {
+            props.insert("value".to_string(), v);
+        }
+        self.objs.push(PhpObj::Object {
+            class: class.to_string(),
+            props,
+        });
+        Value::Obj((self.objs.len() - 1) as u32)
+    }
+
     /// The initializer chunk for `Class::name`, walking the parent chain.
     fn resolve_const_chunk(&self, class: &str, name: &str) -> Option<Chunk> {
         let mut cur = Some(class.to_ascii_lowercase());
@@ -2056,9 +2125,26 @@ pub fn call_function(name: &str, args: Vec<Value>) -> Result<Value, String> {
         }
     }
     if let Some(def) = def {
-        return invoke(name, &def.params, def.chunk, Vec::new(), args);
+        return invoke(name, &def.params, def.chunk, Vec::new(), args, Vec::new());
     }
     crate::builtins::call_library(name, args)
+}
+
+/// `call_function` with PHP 8.0 named arguments. User functions bind by parameter
+/// name; a builtin (no name metadata) falls back to positional binding with the
+/// named values appended in call order.
+pub fn call_function_named(
+    name: &str,
+    args: Vec<Value>,
+    named: Vec<(String, Value)>,
+) -> Result<Value, String> {
+    let def = with_host(|h| h.functions.get(&name.to_ascii_lowercase()).cloned());
+    if let Some(def) = def {
+        return invoke(name, &def.params, def.chunk, Vec::new(), args, named);
+    }
+    let mut all = args;
+    all.extend(named.into_iter().map(|(_, v)| v));
+    call_function(name, all)
 }
 
 /// Run a user-defined function or closure body: push a call frame named `frame`,
@@ -2073,18 +2159,26 @@ fn invoke(
     body: Chunk,
     pre: Vec<(String, Value)>,
     args: Vec<Value>,
+    named: Vec<(String, Value)>,
 ) -> Result<Value, String> {
-    with_host(|h| {
+    // Which parameter positions a positional or named argument (or a null-fill for
+    // a no-default omitted param) already bound — so the default pass below runs
+    // only the chunks that are actually needed. Computed inside the binding closure.
+    let bound = with_host(|h| {
         let scope = Scope {
             name: Some(frame.to_string()),
             ..Scope::default()
         };
         h.scopes.push(scope);
         // Stash the full call argument list (hidden `@args`) for func_get_args /
-        // func_num_args / func_get_arg, which read the current frame.
+        // func_num_args / func_get_arg: positional args then named values, in call
+        // order.
         let argsarr = h.new_array();
         for a in &args {
             h.arr_push_auto(&argsarr, a.clone());
+        }
+        for (_, v) in &named {
+            h.arr_push_auto(&argsarr, v.clone());
         }
         h.set_var("@args", argsarr);
         // Captured bindings first, then parameters (a parameter of the same name
@@ -2092,33 +2186,49 @@ fn invoke(
         for (k, v) in pre {
             h.set_var(&k, v);
         }
+        let mut bound = vec![false; params.len()];
+        // Positional binding (a variadic `...$rest` collects the rest positionally).
         let mut ai = 0;
-        for p in params {
+        for (i, p) in params.iter().enumerate() {
             if p.variadic {
-                // A variadic (`...$rest`, always last) collects the remaining args.
                 let arr = h.new_array();
                 while ai < args.len() {
                     h.arr_push_auto(&arr, args[ai].clone());
                     ai += 1;
                 }
                 h.set_var(&p.name, arr);
+                bound[i] = true;
             } else if ai < args.len() {
                 h.set_var(&p.name, args[ai].clone());
-                ai += 1;
-            } else {
-                // Omitted: a parameter without a default reads as null; one with a
-                // default is filled below by running its chunk.
-                if p.default.is_none() {
-                    h.set_var(&p.name, Value::Undef);
-                }
+                bound[i] = true;
                 ai += 1;
             }
         }
+        // Named binding: match each `name: value` to the parameter of that name; an
+        // unmatched name lands in the variadic parameter's array under a string key
+        // (as PHP collects extra named args), or is dropped if there is no variadic.
+        for (n, v) in &named {
+            if let Some(i) = params.iter().position(|p| !p.variadic && p.name == *n) {
+                h.set_var(&params[i].name, v.clone());
+                bound[i] = true;
+            } else if let Some(vi) = params.iter().position(|p| p.variadic) {
+                let arr = h.get_var(&params[vi].name);
+                h.arr_set_key(&arr, &Value::str(n.clone()), v.clone());
+            }
+        }
+        // A parameter with neither an argument nor a default reads as null.
+        for (i, p) in params.iter().enumerate() {
+            if !bound[i] && !p.variadic && p.default.is_none() {
+                h.set_var(&p.name, Value::Undef);
+                bound[i] = true;
+            }
+        }
+        bound
     });
-    // Evaluate defaults for the omitted parameters, left to right, so a default
-    // may reference an earlier parameter already bound in this frame.
+    // Evaluate defaults for the still-unbound parameters, left to right, so a
+    // default may reference an earlier parameter already bound in this frame.
     for (i, p) in params.iter().enumerate() {
-        if p.variadic || i < args.len() {
+        if p.variadic || bound[i] {
             continue;
         }
         if let Some(chunk) = &p.default {
@@ -2168,10 +2278,25 @@ fn invoke(
 /// by `$f(...)` calls and callback builtins (`array_map`).
 pub fn call_value(callee: Value, args: Vec<Value>) -> Result<Value, String> {
     if let Some((params, chunk, captured)) = with_host(|h| h.closure_of(&callee)) {
-        return invoke("{closure}", &params, chunk, captured, args);
+        return invoke("{closure}", &params, chunk, captured, args, Vec::new());
     }
     match callee {
         Value::Str(s) => call_function(&s, args),
+        _ => Err("value is not callable".to_string()),
+    }
+}
+
+/// `call_value` with PHP 8.0 named arguments (for `$closure(name: v)` / `$f(...)`).
+pub fn call_value_named(
+    callee: Value,
+    args: Vec<Value>,
+    named: Vec<(String, Value)>,
+) -> Result<Value, String> {
+    if let Some((params, chunk, captured)) = with_host(|h| h.closure_of(&callee)) {
+        return invoke("{closure}", &params, chunk, captured, args, named);
+    }
+    match callee {
+        Value::Str(s) => call_function_named(&s, args, named),
         _ => Err("value is not callable".to_string()),
     }
 }
@@ -2209,6 +2334,34 @@ pub fn new_object(class: &str, args: Vec<Value>) -> Result<Value, String> {
     Ok(obj)
 }
 
+/// `new Class(...)` with PHP 8.0 named constructor arguments.
+pub fn new_object_named(
+    class: &str,
+    args: Vec<Value>,
+    named: Vec<(String, Value)>,
+) -> Result<Value, String> {
+    let cl = class.to_ascii_lowercase();
+    let Some(defaults) = with_host(|h| h.class_prop_default_chunks(&cl)) else {
+        return Err(format!("class \"{class}\" not found"));
+    };
+    let mut props: IndexMap<String, Value> = IndexMap::new();
+    for (name, chunk) in defaults {
+        let v = run_chunk_on(chunk)?;
+        props.insert(name, v);
+    }
+    let obj = with_host(|h| {
+        h.objs.push(PhpObj::Object {
+            class: class.to_string(),
+            props,
+        });
+        Value::Obj((h.objs.len() - 1) as u32)
+    });
+    if with_host(|h| h.resolve_method(&cl, "__construct").is_some()) {
+        call_method_named(&cl, "__construct", Some(obj.clone()), args, named)?;
+    }
+    Ok(obj)
+}
+
 /// Invoke `Class::method` (resolved up the parent chain) with `this` bound to
 /// `$this` when present. Reuses the shared `invoke` frame handling, so methods
 /// honor default and variadic parameters.
@@ -2217,6 +2370,50 @@ pub fn call_method(
     method: &str,
     this: Option<Value>,
     args: Vec<Value>,
+) -> Result<Value, String> {
+    let method_l = method.to_ascii_lowercase();
+    // Enum static helpers `cases()`/`from()`/`tryFrom()` are synthesized, not
+    // declared, so they are handled before the ordinary method resolution.
+    if with_host(|h| h.is_enum_class(class)) {
+        match method_l.as_str() {
+            "cases" => return enum_cases_all(class),
+            "from" => {
+                return enum_from(
+                    class,
+                    args.into_iter().next().unwrap_or(Value::Undef),
+                    false,
+                )
+            }
+            "tryfrom" => {
+                return enum_from(class, args.into_iter().next().unwrap_or(Value::Undef), true)
+            }
+            _ => {}
+        }
+    }
+    let Some((def_class, def)) = with_host(|h| h.resolve_method(class, &method_l)) else {
+        return Err(format!("call to undefined method {class}::{method}()"));
+    };
+    let pre = match this {
+        Some(t) => vec![("this".to_string(), t)],
+        None => Vec::new(),
+    };
+    invoke(
+        &format!("{def_class}::{method}"),
+        &def.params,
+        def.chunk,
+        pre,
+        args,
+        Vec::new(),
+    )
+}
+
+/// `call_method` with PHP 8.0 named arguments.
+pub fn call_method_named(
+    class: &str,
+    method: &str,
+    this: Option<Value>,
+    args: Vec<Value>,
+    named: Vec<(String, Value)>,
 ) -> Result<Value, String> {
     let method_l = method.to_ascii_lowercase();
     let Some((def_class, def)) = with_host(|h| h.resolve_method(class, &method_l)) else {
@@ -2232,15 +2429,86 @@ pub fn call_method(
         def.chunk,
         pre,
         args,
+        named,
     )
 }
 
-/// `Class::CONST` — evaluate the (inherited) constant initializer.
+/// `Class::CONST` — evaluate the (inherited) constant initializer. On an `enum`, a
+/// name that is not a real constant is resolved as an enum case singleton.
 pub fn class_const(class: &str, name: &str) -> Result<Value, String> {
-    let Some(chunk) = with_host(|h| h.resolve_const_chunk(class, name)) else {
-        return Err(format!("undefined constant {class}::{name}"));
+    if let Some(chunk) = with_host(|h| h.resolve_const_chunk(class, name)) {
+        return run_chunk_on(chunk);
+    }
+    if let Some(r) = enum_case(class, name) {
+        return r;
+    }
+    Err(format!("undefined constant {class}::{name}"))
+}
+
+/// Resolve `Enum::Case` to its singleton instance (built once, then cached so
+/// `Enum::Case === Enum::Case` holds by object identity). `None` when `class` is
+/// not an enum or has no case of that name — the caller then falls through to the
+/// normal class-constant lookup / error.
+pub fn enum_case(class: &str, case: &str) -> Option<Result<Value, String>> {
+    let lower = class.to_ascii_lowercase();
+    if !with_host(|h| h.is_enum_class(&lower)) {
+        return None;
+    }
+    let chunk_opt = with_host(|h| h.enum_case_chunk(&lower, case))?;
+    let key = format!("{lower}::{case}");
+    if let Some(v) = with_host(|h| h.enum_case_cached(&key)) {
+        return Some(Ok(v));
+    }
+    let value = match chunk_opt {
+        Some(chunk) => match run_chunk_on(chunk) {
+            Ok(v) => Some(v),
+            Err(e) => return Some(Err(e)),
+        },
+        None => None,
     };
-    run_chunk_on(chunk)
+    let obj = with_host(|h| h.new_enum_object(class, case, value));
+    with_host(|h| h.enum_case_store(&key, obj.clone()));
+    Some(Ok(obj))
+}
+
+/// `Enum::cases()` — an array of every case singleton, in declaration order.
+pub fn enum_cases_all(class: &str) -> Result<Value, String> {
+    let names = with_host(|h| h.enum_case_names(class));
+    let arr = with_host(|h| h.new_array());
+    for name in names {
+        match enum_case(class, &name) {
+            Some(Ok(v)) => with_host(|h| h.arr_push_auto(&arr, v)),
+            Some(Err(e)) => return Err(e),
+            None => {}
+        }
+    }
+    Ok(arr)
+}
+
+/// `Enum::from(value)` / `Enum::tryFrom(value)` — the case whose backing `value`
+/// matches. `tryFrom` yields null on no match; `from` is a hard error (PHP throws
+/// a catchable `ValueError`; the scaffold surfaces it as a fatal).
+pub fn enum_from(class: &str, needle: Value, is_try: bool) -> Result<Value, String> {
+    let names = with_host(|h| h.enum_case_names(class));
+    let needle_s = with_host(|h| h.to_str(&needle));
+    for name in names {
+        let case = match enum_case(class, &name) {
+            Some(Ok(v)) => v,
+            Some(Err(e)) => return Err(e),
+            None => continue,
+        };
+        let val = with_host(|h| h.prop_get(&case, "value"));
+        if with_host(|h| h.to_str(&val)) == needle_s {
+            return Ok(case);
+        }
+    }
+    if is_try {
+        Ok(Value::Undef)
+    } else {
+        Err(format!(
+            "\"{needle_s}\" is not a valid backing value for enum {class}"
+        ))
+    }
 }
 
 /// `Class::$prop` read. On first access the (constant) initializer runs once and
