@@ -73,6 +73,17 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::UNSET_PATH, b_unset_path);
     vm.register_builtin(ops::FOREACH_PREP, b_foreach_prep);
     vm.register_builtin(ops::INSTANCEOF, b_instanceof);
+    vm.register_builtin(ops::REF_BIND, b_ref_bind);
+}
+
+/// `$target = &$source` — bind the two names to a shared cell; leaves the value.
+fn b_ref_bind(vm: &mut VM, _: u8) -> Value {
+    let source = pop_name(vm);
+    let target = pop_name(vm);
+    with_host(|h| {
+        h.ref_bind(&target, &source);
+        h.get_var(&target)
+    })
 }
 
 /// `$obj instanceof Class` — true if `$obj` is an object whose class is, or

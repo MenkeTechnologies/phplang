@@ -233,8 +233,9 @@ impl Compiler {
                 arr,
                 key_var,
                 val_var,
+                by_ref,
                 body,
-            } => self.compile_foreach(b, arr, key_var.as_deref(), val_var, body)?,
+            } => self.compile_foreach(b, arr, key_var.as_deref(), val_var, *by_ref, body)?,
         }
         Ok(())
     }
@@ -442,6 +443,7 @@ impl Compiler {
         arr: &Expr,
         key_var: Option<&str>,
         val_var: &str,
+        by_ref: bool,
         body: &[Stmt],
     ) -> Result<(), String> {
         let arr_t = self.tmp_name("arr");
@@ -504,8 +506,20 @@ impl Compiler {
         self.compile_seq(b, body)?;
         let ctx = self.loops.pop().unwrap();
 
+        // `continue` lands here; for a by-reference foreach the (possibly
+        // modified) value is written back into the array element first. `@arr`
+        // shares the source array's handle, so the write is visible to the caller.
+        let cont_target = b.current_pos();
+        if by_ref {
+            let nidx = b.add_constant(Value::str(arr_t.clone()));
+            b.emit(Op::LoadConst(nidx), 0); // name = @arr
+            self.emit_get_var(b, &k_t); // key = @k
+            self.emit_get_var(b, val_var); // val = $v
+            b.emit(Op::CallBuiltin(ops::INDEX_SET, 3), 0);
+            b.emit(Op::Pop, 0);
+        }
+
         // @i = @i + 1;
-        let step_pos = b.current_pos();
         self.emit_set_var(b, &i_t, |c, b| {
             c.emit_get_var(b, &i_t);
             b.emit(Op::LoadInt(1), 0);
@@ -519,7 +533,7 @@ impl Compiler {
             b.patch_jump(j, end);
         }
         for j in ctx.continues {
-            b.patch_jump(j, step_pos);
+            b.patch_jump(j, cont_target);
         }
         Ok(())
     }
@@ -1000,6 +1014,16 @@ impl Compiler {
                 let idx = b.add_constant(Value::str(cname));
                 b.emit(Op::LoadConst(idx), 0);
                 b.emit(Op::CallBuiltin(ops::INSTANCEOF, 2), 0);
+            }
+            Expr::RefAssign(lhs, rhs) => {
+                let (Expr::Var(t), Expr::Var(s)) = (lhs.as_ref(), rhs.as_ref()) else {
+                    return Err("reference `= &` supports only `$a = &$b` between variables".into());
+                };
+                let ti = b.add_constant(Value::str(t.clone()));
+                b.emit(Op::LoadConst(ti), 0);
+                let si = b.add_constant(Value::str(s.clone()));
+                b.emit(Op::LoadConst(si), 0);
+                b.emit(Op::CallBuiltin(ops::REF_BIND, 2), 0);
             }
         }
         Ok(())
@@ -1743,6 +1767,10 @@ fn collect_free_vars(e: &Expr, out: &mut Vec<String>) {
             }
         }
         Expr::InstanceOf(e, _) => collect_free_vars(e, out),
+        Expr::RefAssign(a, b) => {
+            collect_free_vars(a, out);
+            collect_free_vars(b, out);
+        }
         Expr::Null | Expr::Bool(_) | Expr::Int(_) | Expr::Float(_) | Expr::Str(_) => {}
     }
 }

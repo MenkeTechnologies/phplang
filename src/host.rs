@@ -75,6 +75,7 @@ pub mod ops {
     pub const UNSET_PATH: u16 = 58; // [name, k1..kN] -> Undef (remove $a[k1]..[kN])
     pub const FOREACH_PREP: u16 = 59; // [v] -> an iterable array (object -> iterated)
     pub const INSTANCEOF: u16 = 60; // [obj, class-name] -> Bool
+    pub const REF_BIND: u16 = 61; // [target, source] -> value ($t = &$s)
 }
 
 /// Sub-ops for the by-reference array mutators lowered through `ops::ARR_MUT`
@@ -210,6 +211,10 @@ enum Signal {
 #[derive(Default)]
 struct Scope {
     vars: FxHashMap<String, Value>,
+    /// Names bound as references (`$b = &$a`) map to a shared cell in
+    /// `PhpHost::ref_cells`; reads/writes of such a name go through the cell so
+    /// aliased variables observe each other's mutations.
+    refs: FxHashMap<String, usize>,
     /// The source line this frame is currently executing (DAP line hook). Only
     /// meaningful under `--dap`; `0` otherwise.
     line: u32,
@@ -243,6 +248,9 @@ pub struct PhpHost {
     /// Named constants (`PHP_EOL`, `M_PI`, user `define`s), keyed case-sensitively.
     /// Seeded with the standard predefined constants on every fresh host.
     constants: FxHashMap<String, Value>,
+    /// Shared storage cells for reference bindings (`$b = &$a`). A scope's `refs`
+    /// map points names at these slots.
+    ref_cells: Vec<Value>,
 }
 
 impl Default for PhpHost {
@@ -266,6 +274,7 @@ impl PhpHost {
             try_defs: Vec::new(),
             constants: predefined_constants(),
             ob_stack: Vec::new(),
+            ref_cells: Vec::new(),
         };
         h.init_superglobals();
         h
@@ -497,39 +506,76 @@ impl PhpHost {
 
     // ── variables ──────────────────────────────────────────────────────────
 
-    pub fn get_var(&self, name: &str) -> Value {
-        // Superglobals (`$_SERVER`, `$_ENV`, `$GLOBALS`, `$argv`, …) live in the
-        // global scope and are visible from every function frame.
-        let scope = if is_superglobal(name) {
-            self.scopes.first()
-        } else {
-            self.scopes.last()
-        };
-        scope
-            .and_then(|s| s.vars.get(name).cloned())
-            .unwrap_or(Value::Undef)
-    }
-
-    pub fn set_var(&mut self, name: &str, val: Value) {
-        let idx = if is_superglobal(name) {
+    /// The index of the scope a variable name resolves in: the global frame for a
+    /// superglobal, else the innermost frame.
+    fn scope_idx(&self, name: &str) -> usize {
+        if is_superglobal(name) {
             0
         } else {
             self.scopes.len().saturating_sub(1)
+        }
+    }
+
+    pub fn get_var(&self, name: &str) -> Value {
+        let idx = self.scope_idx(name);
+        let Some(scope) = self.scopes.get(idx) else {
+            return Value::Undef;
         };
-        if let Some(scope) = self.scopes.get_mut(idx) {
+        // A name bound as a reference reads through its shared cell.
+        if let Some(&slot) = scope.refs.get(name) {
+            return self.ref_cells.get(slot).cloned().unwrap_or(Value::Undef);
+        }
+        scope.vars.get(name).cloned().unwrap_or(Value::Undef)
+    }
+
+    pub fn set_var(&mut self, name: &str, val: Value) {
+        let idx = self.scope_idx(name);
+        let slot = self.scopes.get(idx).and_then(|s| s.refs.get(name).copied());
+        if let Some(slot) = slot {
+            if let Some(cell) = self.ref_cells.get_mut(slot) {
+                *cell = val;
+            }
+        } else if let Some(scope) = self.scopes.get_mut(idx) {
             scope.vars.insert(name.to_string(), val);
         }
     }
 
-    /// `unset($name)` — remove the scope variable.
-    pub fn unset_var(&mut self, name: &str) {
-        let idx = if is_superglobal(name) {
-            0
-        } else {
-            self.scopes.len().saturating_sub(1)
+    /// `$target = &$source` — bind `target` as a reference to `source`, so both
+    /// names share one storage cell (either's mutation is visible to the other).
+    pub fn ref_bind(&mut self, target: &str, source: &str) {
+        let idx = self.scope_idx(source);
+        // Resolve the source's cell, promoting a plain variable into one.
+        let slot = match self.scopes.get(idx).and_then(|s| s.refs.get(source).copied()) {
+            Some(s) => s,
+            None => {
+                let cur = self
+                    .scopes
+                    .get(idx)
+                    .and_then(|s| s.vars.get(source).cloned())
+                    .unwrap_or(Value::Undef);
+                self.ref_cells.push(cur);
+                let s = self.ref_cells.len() - 1;
+                if let Some(scope) = self.scopes.get_mut(idx) {
+                    scope.vars.remove(source);
+                    scope.refs.insert(source.to_string(), s);
+                }
+                s
+            }
         };
+        let tidx = self.scope_idx(target);
+        if let Some(scope) = self.scopes.get_mut(tidx) {
+            scope.vars.remove(target);
+            scope.refs.insert(target.to_string(), slot);
+        }
+    }
+
+    /// `unset($name)` — remove the scope variable (and break any reference
+    /// binding for that name, leaving the shared cell intact for other aliases).
+    pub fn unset_var(&mut self, name: &str) {
+        let idx = self.scope_idx(name);
         if let Some(scope) = self.scopes.get_mut(idx) {
             scope.vars.remove(name);
+            scope.refs.remove(name);
         }
     }
 
@@ -582,7 +628,7 @@ impl PhpHost {
     /// `variables`. Compiler temporaries (`@`-prefixed) are hidden, matching a
     /// debugger's default locals view.
     pub fn dbg_locals(&self) -> Vec<(String, String)> {
-        let vars: Vec<(String, Value)> = self
+        let mut vars: Vec<(String, Value)> = self
             .scopes
             .last()
             .map(|s| {
@@ -593,6 +639,14 @@ impl PhpHost {
                     .collect()
             })
             .unwrap_or_default();
+        // Reference-bound names read through their shared cell.
+        if let Some(s) = self.scopes.last() {
+            for (k, &slot) in &s.refs {
+                if !k.starts_with('@') {
+                    vars.push((k.clone(), self.ref_cells.get(slot).cloned().unwrap_or(Value::Undef)));
+                }
+            }
+        }
         vars.into_iter()
             .map(|(n, v)| (format!("${n}"), self.to_str(&v)))
             .collect()

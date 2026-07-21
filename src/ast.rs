@@ -144,6 +144,8 @@ pub enum Expr {
     /// `$x instanceof ClassName` — true if `$x` is an instance of the class or one
     /// of its ancestors/interfaces.
     InstanceOf(Box<Expr>, String),
+    /// `$target = &$source` — bind `target` as a reference alias of `source`.
+    RefAssign(Box<Expr>, Box<Expr>),
 }
 
 /// One arm of a `match` expression. `conds` is `None` for the `default` arm;
@@ -199,11 +201,13 @@ pub enum StmtKind {
         step: Vec<Expr>,
         body: Vec<Stmt>,
     },
-    /// `foreach ($arr as [$k =>] $v) { body }`.
+    /// `foreach ($arr as [$k =>] [&]$v) { body }`. `by_ref` marks `as &$v`, where
+    /// mutating `$v` writes back into the array element.
     Foreach {
         arr: Expr,
         key_var: Option<String>,
         val_var: String,
+        by_ref: bool,
         body: Vec<Stmt>,
     },
     /// `function name($a, $b) { body }`.

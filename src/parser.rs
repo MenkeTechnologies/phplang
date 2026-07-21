@@ -361,11 +361,14 @@ impl Parser {
         if !self.eat_kw("as") {
             return Err(format!("expected 'as' in foreach (line {})", self.line()));
         }
+        // A `&` before the value var marks by-reference iteration (writes back).
+        let ref1 = self.eat_punct("&");
         let first = self.expect_var()?;
-        let (key_var, val_var) = if self.eat_punct("=>") {
-            (Some(first), self.expect_var()?)
+        let (key_var, val_var, by_ref) = if self.eat_punct("=>") {
+            let ref2 = self.eat_punct("&");
+            (Some(first), self.expect_var()?, ref2)
         } else {
-            (None, first)
+            (None, first, ref1)
         };
         self.expect_punct(")")?;
         let body = self.body()?;
@@ -373,6 +376,7 @@ impl Parser {
             arr,
             key_var,
             val_var,
+            by_ref,
             body,
         })
     }
@@ -771,6 +775,12 @@ impl Parser {
         };
         if let Some(compound) = op {
             self.pos += 1;
+            // `$b = &$a` — a reference binding rather than a value copy.
+            if compound.is_none() && self.at_punct("&") {
+                self.pos += 1;
+                let rhs = self.assignment()?;
+                return Ok(Expr::RefAssign(Box::new(lhs), Box::new(rhs)));
+            }
             let rhs = self.assignment()?; // right-associative
             return Ok(Expr::Assign(Box::new(lhs), compound, Box::new(rhs)));
         }
