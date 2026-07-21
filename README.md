@@ -139,7 +139,7 @@ end-to-end (see `tests/basic.rs`):
   variadic introspection (`func_get_args`/`func_num_args`), `fopen` file streams
   (`fread`/`fwrite`/`fgets`/`fseek`/`fclose`), the `unset()` construct, `spl_object_id`,
   and the `@` error-suppression operator.
-- A large standard library (450+ functions), split into category modules under
+- A large standard library (475+ functions, incl. bcmath and gmp arbitrary precision), split into category modules under
   `src/stdlib/` and consulted through a per-category dispatch chain:
   - **strings** — `str_*`, `substr*`, `strpos`/`stripos`/`strrpos`, `strstr`,
     `strtr`, `sprintf`/`vsprintf`/`sscanf`, `number_format`, `nl2br`,
@@ -178,8 +178,8 @@ end-to-end (see `tests/basic.rs`):
 
 ## [0x04] NOT YET (LATER WAVES)
 
-Interfaces, traits, namespaces, references (`&`), typed-parameter enforcement, and
-the `bcmath`/`gmp` arbitrary-precision extensions. **Generators (`yield`)** are blocked on the shared VM: phplang
+Interfaces, traits, namespaces, references (`&`), and typed-parameter enforcement.
+**Generators (`yield`)** are blocked on the shared VM: phplang
 runs each function to completion on a fresh `fusevm` VM, and `fusevm` exposes no
 frame suspend/resume primitive, so a faithful lazy generator cannot be built in the
 frontend alone (it needs VM-level support). Closures and arrow functions do not yet
