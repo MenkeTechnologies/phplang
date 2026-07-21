@@ -126,7 +126,8 @@ fn get_html_translation_table(args: &[Value]) -> Value {
     let single_q = flags & 1 != 0; // ENT_QUOTES adds this bit
 
     let mut pairs: Vec<(Value, Value)> = Vec::new();
-    let mut push = |ch: char, ent: &str| pairs.push((Value::str(ch.to_string()), Value::str(ent.to_string())));
+    let mut push =
+        |ch: char, ent: &str| pairs.push((Value::str(ch.to_string()), Value::str(ent.to_string())));
 
     // Both tables share the specialchars core (in PHP's ordering).
     if double_q {

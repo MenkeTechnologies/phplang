@@ -98,7 +98,10 @@ fn array_pad_left_reindexes() {
 
 #[test]
 fn array_pad_no_pad_when_large_enough() {
-    assert_eq!(run("<?php echo implode(',', array_pad([1,2,3],2,0));"), "1,2,3");
+    assert_eq!(
+        run("<?php echo implode(',', array_pad([1,2,3],2,0));"),
+        "1,2,3"
+    );
 }
 
 // ── array_key_first / array_key_last / array_is_list ─────────────────────────
@@ -188,7 +191,9 @@ fn merge_recursive_scalar_and_array() {
 fn merge_recursive_does_not_mutate_input() {
     // The source subarray must be left intact (deep copy).
     assert_eq!(
-        run("<?php $x=['a'=>[1]]; array_merge_recursive($x,['a'=>[2]]); echo implode(',',$x['a']);"),
+        run(
+            "<?php $x=['a'=>[1]]; array_merge_recursive($x,['a'=>[2]]); echo implode(',',$x['a']);"
+        ),
         "1"
     );
 }
@@ -307,7 +312,9 @@ fn shuffle_preserves_membership() {
 #[test]
 fn shuffle_returns_true_and_makes_list() {
     assert_eq!(
-        run("<?php $a=['x'=>1,'y'=>2]; var_dump(shuffle($a)); echo array_is_list($a)?'list':'map';"),
+        run(
+            "<?php $a=['x'=>1,'y'=>2]; var_dump(shuffle($a)); echo array_is_list($a)?'list':'map';"
+        ),
         "bool(true)\nlist"
     );
 }
@@ -384,7 +391,9 @@ fn compact_nested_names() {
 #[test]
 fn extract_binds_string_keys() {
     assert_eq!(
-        run("<?php $n=extract(['city'=>'NYC','zip'=>10001,5=>'skip']); echo $n,'|',$city,'|',$zip;"),
+        run(
+            "<?php $n=extract(['city'=>'NYC','zip'=>10001,5=>'skip']); echo $n,'|',$city,'|',$zip;"
+        ),
         "2|NYC|10001"
     );
 }

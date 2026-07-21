@@ -14,13 +14,19 @@ fn decode_scalars_and_types() {
     // Integral numbers -> int, fractional/exponent -> float.
     assert_eq!(run(r#"<?php var_dump(json_decode("42"));"#), "int(42)\n");
     assert_eq!(run(r#"<?php var_dump(json_decode("-7"));"#), "int(-7)\n");
-    assert_eq!(run(r#"<?php var_dump(json_decode("1.5"));"#), "float(1.5)\n");
+    assert_eq!(
+        run(r#"<?php var_dump(json_decode("1.5"));"#),
+        "float(1.5)\n"
+    );
     assert_eq!(
         run(r#"<?php var_dump(is_float(json_decode("1e3")));"#),
         "bool(true)\n"
     );
     // Booleans and null.
-    assert_eq!(run(r#"<?php var_dump(json_decode("true"));"#), "bool(true)\n");
+    assert_eq!(
+        run(r#"<?php var_dump(json_decode("true"));"#),
+        "bool(true)\n"
+    );
     assert_eq!(
         run(r#"<?php var_dump(json_decode("false"));"#),
         "bool(false)\n"
@@ -60,7 +66,9 @@ fn decode_array() {
     );
     // Mixed element types, whitespace tolerated.
     assert_eq!(
-        run(r#"<?php $a = json_decode(" [ 1 , \"x\" , true , null ] "); echo $a[0], $a[1], ($a[2]?"T":"F"); var_dump($a[3]);"#),
+        run(
+            r#"<?php $a = json_decode(" [ 1 , \"x\" , true , null ] "); echo $a[0], $a[1], ($a[2]?"T":"F"); var_dump($a[3]);"#
+        ),
         "1xTNULL\n"
     );
 }
@@ -72,7 +80,9 @@ fn decode_object_to_assoc_array() {
     assert_eq!(run(src), "bob|30|T");
     // Numeric string object keys normalize to int keys (PHP array coercion).
     assert_eq!(
-        run(r#"<?php $o = json_decode('{"0":"a","1":"b"}'); echo $o[0], $o[1], "|", array_is_list($o)?"L":"M";"#),
+        run(
+            r#"<?php $o = json_decode('{"0":"a","1":"b"}'); echo $o[0], $o[1], "|", array_is_list($o)?"L":"M";"#
+        ),
         "ab|L"
     );
 }
@@ -88,10 +98,7 @@ fn decode_nested() {
 #[test]
 fn decode_string_escapes() {
     // Standard two-char escapes: "a\nb\tc" -> 5 chars (a, LF, b, TAB, c).
-    assert_eq!(
-        run(r#"<?php echo strlen(json_decode('"a\nb\tc"'));"#),
-        "5"
-    );
+    assert_eq!(run(r#"<?php echo strlen(json_decode('"a\nb\tc"'));"#), "5");
     // Escaped solidus \/ decodes to '/'. (PHP single quotes keep `\/` verbatim.)
     assert_eq!(run(r#"<?php echo json_decode('"a\/b"');"#), "a/b");
     // Escaped quote \" decodes to '"'.
@@ -101,15 +108,9 @@ fn decode_string_escapes() {
     // input is `"\\"`, which decodes to a single backslash.
     assert_eq!(run(r#"<?php echo json_decode('"\\\\"');"#), "\\");
     // \uXXXX for a BMP code point.
-    assert_eq!(
-        run(r#"<?php echo json_decode('"café"');"#),
-        "caf\u{00e9}"
-    );
+    assert_eq!(run(r#"<?php echo json_decode('"café"');"#), "caf\u{00e9}");
     // Surrogate pair -> astral code point (U+1F600 grinning face).
-    assert_eq!(
-        run(r#"<?php echo json_decode('"😀"');"#),
-        "\u{1F600}"
-    );
+    assert_eq!(run(r#"<?php echo json_decode('"😀"');"#), "\u{1F600}");
 }
 
 #[test]
@@ -121,7 +122,9 @@ fn decode_errors_set_last_error() {
     );
     // Syntax error -> null result, code 4.
     assert_eq!(
-        run(r#"<?php var_dump(json_decode("[1,")); echo json_last_error(), "|", json_last_error_msg();"#),
+        run(
+            r#"<?php var_dump(json_decode("[1,")); echo json_last_error(), "|", json_last_error_msg();"#
+        ),
         "NULL\n4|Syntax error"
     );
     // Empty string is a syntax error in PHP.
@@ -145,7 +148,9 @@ fn decode_errors_set_last_error() {
 fn decode_depth_limit() {
     // depth=1 allows a single container level.
     assert_eq!(
-        run(r#"<?php var_dump(json_decode("[1]", true, 1) === null ? 0 : 1); echo json_last_error();"#),
+        run(
+            r#"<?php var_dump(json_decode("[1]", true, 1) === null ? 0 : 1); echo json_last_error();"#
+        ),
         "int(1)\n0"
     );
     // A nested container at depth=1 exceeds the limit -> JSON_ERROR_DEPTH (1).
@@ -160,7 +165,9 @@ fn decode_nonpositive_depth_clamps_to_one() {
     // PHP raises a ValueError for depth <= 0; phplang clamps to 1 (the doc
     // contract). A single container level still decodes.
     assert_eq!(
-        run(r#"<?php var_dump(json_decode("[1]", true, 0) === null ? 0 : 1); echo json_last_error();"#),
+        run(
+            r#"<?php var_dump(json_decode("[1]", true, 0) === null ? 0 : 1); echo json_last_error();"#
+        ),
         "int(1)\n0"
     );
     // A negative depth clamps to 1 too, so a nested container exceeds it.
@@ -177,25 +184,48 @@ fn validate_basic() {
         run(r#"<?php var_dump(json_validate('{"a":1,"b":[2,3]}')); echo json_last_error();"#),
         "bool(true)\n0"
     );
-    assert_eq!(run(r#"<?php var_dump(json_validate("[1,2,3]"));"#), "bool(true)\n");
-    assert_eq!(run(r#"<?php var_dump(json_validate("42"));"#), "bool(true)\n");
-    assert_eq!(run(r#"<?php var_dump(json_validate("null"));"#), "bool(true)\n");
-    assert_eq!(run(r#"<?php var_dump(json_validate("\"hi\""));"#), "bool(true)\n");
+    assert_eq!(
+        run(r#"<?php var_dump(json_validate("[1,2,3]"));"#),
+        "bool(true)\n"
+    );
+    assert_eq!(
+        run(r#"<?php var_dump(json_validate("42"));"#),
+        "bool(true)\n"
+    );
+    assert_eq!(
+        run(r#"<?php var_dump(json_validate("null"));"#),
+        "bool(true)\n"
+    );
+    assert_eq!(
+        run(r#"<?php var_dump(json_validate("\"hi\""));"#),
+        "bool(true)\n"
+    );
 }
 
 #[test]
 fn validate_invalid_sets_error() {
     // Trailing comma is invalid -> false with a syntax error recorded.
     assert_eq!(
-        run(r#"<?php var_dump(json_validate("[1,")); echo json_last_error(), "|", json_last_error_msg();"#),
+        run(
+            r#"<?php var_dump(json_validate("[1,")); echo json_last_error(), "|", json_last_error_msg();"#
+        ),
         "bool(false)\n4|Syntax error"
     );
     // Empty string is invalid JSON.
-    assert_eq!(run(r#"<?php var_dump(json_validate(""));"#), "bool(false)\n");
+    assert_eq!(
+        run(r#"<?php var_dump(json_validate(""));"#),
+        "bool(false)\n"
+    );
     // Trailing garbage after a complete value.
-    assert_eq!(run(r#"<?php var_dump(json_validate("1 2"));"#), "bool(false)\n");
+    assert_eq!(
+        run(r#"<?php var_dump(json_validate("1 2"));"#),
+        "bool(false)\n"
+    );
     // Bad object syntax.
-    assert_eq!(run(r#"<?php var_dump(json_validate('{"a":}'));"#), "bool(false)\n");
+    assert_eq!(
+        run(r#"<?php var_dump(json_validate('{"a":}'));"#),
+        "bool(false)\n"
+    );
 }
 
 #[test]
@@ -259,7 +289,9 @@ fn round_trip_encode_decode() {
 
     // A list round-trips as a JSON array and stays a list.
     assert_eq!(
-        run(r#"<?php $y = json_decode(json_encode([10,20,30])); echo $y[0]+$y[1]+$y[2], "|", array_is_list($y)?"L":"M";"#),
+        run(
+            r#"<?php $y = json_decode(json_encode([10,20,30])); echo $y[0]+$y[1]+$y[2], "|", array_is_list($y)?"L":"M";"#
+        ),
         "60|L"
     );
 

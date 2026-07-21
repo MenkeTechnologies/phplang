@@ -628,7 +628,10 @@ fn b_mcall(vm: &mut VM, argc: u8) -> Value {
             Ok(v) => bubbled(vm, v),
             Err(e) => fail(vm, e),
         },
-        None => fail(vm, format!("call to a member function {method}() on a non-object")),
+        None => fail(
+            vm,
+            format!("call to a member function {method}() on a non-object"),
+        ),
     }
 }
 
@@ -2324,9 +2327,11 @@ fn php_array_combine(h: &mut host::PhpHost, args: &[Value]) -> Result<Value, Str
     let keys = h.array_pairs(&arg(args, 0)).unwrap_or_default();
     let vals = h.array_pairs(&arg(args, 1)).unwrap_or_default();
     if keys.len() != vals.len() {
-        return Err("array_combine(): Argument #1 ($keys) and argument #2 ($values) \
+        return Err(
+            "array_combine(): Argument #1 ($keys) and argument #2 ($values) \
                     must have the same number of elements"
-            .into());
+                .into(),
+        );
     }
     let out = h.new_array();
     for ((_, k), (_, v)) in keys.into_iter().zip(vals) {

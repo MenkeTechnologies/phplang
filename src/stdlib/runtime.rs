@@ -109,9 +109,9 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
 /// output. Unknown levels fall back to the E_USER_NOTICE label.
 fn level_label(level: i64) -> &'static str {
     match level {
-        256 => "Fatal error",   // E_USER_ERROR
-        512 => "Warning",       // E_USER_WARNING
-        16384 => "Deprecated",  // E_USER_DEPRECATED
-        _ => "Notice",          // E_USER_NOTICE (1024) and anything else
+        256 => "Fatal error",  // E_USER_ERROR
+        512 => "Warning",      // E_USER_WARNING
+        16384 => "Deprecated", // E_USER_DEPRECATED
+        _ => "Notice",         // E_USER_NOTICE (1024) and anything else
     }
 }

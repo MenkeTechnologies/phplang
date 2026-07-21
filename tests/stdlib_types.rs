@@ -30,7 +30,10 @@ fn is_object_and_iterable_and_countable() {
     let src = r#"<?php class C {} $o = new C(); echo is_object($o) ? "y" : "n"; echo is_iterable($o) ? "y" : "n";"#;
     assert_eq!(run(src), "yn");
     // A closure is an object.
-    assert_eq!(run(r#"<?php $f = fn() => 1; echo is_object($f) ? "y" : "n";"#), "y");
+    assert_eq!(
+        run(r#"<?php $f = fn() => 1; echo is_object($f) ? "y" : "n";"#),
+        "y"
+    );
 }
 
 #[test]
@@ -86,7 +89,10 @@ fn serialize_arrays() {
 #[test]
 fn unserialize_scalars() {
     assert_eq!(run(r#"<?php var_dump(unserialize("N;"));"#), "NULL\n");
-    assert_eq!(run(r#"<?php var_dump(unserialize("b:1;"));"#), "bool(true)\n");
+    assert_eq!(
+        run(r#"<?php var_dump(unserialize("b:1;"));"#),
+        "bool(true)\n"
+    );
     assert_eq!(
         run(r#"<?php var_dump(unserialize("b:0;"));"#),
         "bool(false)\n"
@@ -139,7 +145,10 @@ fn serialize_float_e_notation() {
     assert_eq!(run(r#"<?php echo serialize(1.5);"#), "d:1.5;");
     assert_eq!(run(r#"<?php echo serialize(0.1);"#), "d:0.1;");
     // Threshold: decpt > 17 flips to E-notation; 1e16 is right below it.
-    assert_eq!(run(r#"<?php echo serialize(1e16);"#), "d:10000000000000000;");
+    assert_eq!(
+        run(r#"<?php echo serialize(1e16);"#),
+        "d:10000000000000000;"
+    );
     assert_eq!(run(r#"<?php echo serialize(1e17);"#), "d:1.0E+17;");
     assert_eq!(run(r#"<?php echo serialize(0.0001);"#), "d:0.0001;");
     assert_eq!(run(r#"<?php echo serialize(0.00001);"#), "d:1.0E-5;");

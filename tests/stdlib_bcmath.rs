@@ -110,7 +110,10 @@ fn sqrt_truncates_to_scale() {
 #[test]
 fn sqrt_negative_errors() {
     let e = eval_capture(r#"<?php echo bcsqrt("-4", 2);"#).unwrap_err();
-    assert!(e.to_lowercase().contains("greater than or equal"), "got: {e}");
+    assert!(
+        e.to_lowercase().contains("greater than or equal"),
+        "got: {e}"
+    );
 }
 
 // ── bccomp ───────────────────────────────────────────────────────────────────
@@ -134,11 +137,9 @@ fn scale_default_state() {
     // bcscale($s) returns the previous scale and sets the new module default,
     // which subsequent scale-less calls use. Restore to 0 at the end so the
     // per-thread default does not leak to sibling tests on the same thread.
-    let out = run(
-        r#"<?php
+    let out = run(r#"<?php
 $prev = bcscale(3);
-echo $prev, ":", bcscale(), ":", bcadd("1", "2"), ":", bcscale(0);"#,
-    );
+echo $prev, ":", bcscale(), ":", bcadd("1", "2"), ":", bcscale(0);"#);
     assert_eq!(out, "0:3:3.000:3");
 }
 

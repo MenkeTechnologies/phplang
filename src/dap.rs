@@ -109,7 +109,11 @@ pub fn run() -> Result<(), String> {
             "evaluate" => {
                 // Nothing is on the stack before `launch`; ack with an empty
                 // result so a watch/hover registered up front does not error.
-                respond(req_seq, command, json!({ "result": "", "variablesReference": 0 }));
+                respond(
+                    req_seq,
+                    command,
+                    json!({ "result": "", "variablesReference": 0 }),
+                );
             }
             "pause" => respond(req_seq, command, json!({})),
             "configurationDone" => respond(req_seq, command, json!({})),
@@ -199,7 +203,11 @@ fn set_function_breakpoints(msg: &J, req_seq: i64) {
         .unwrap_or_default();
     DBG.with(|d| d.borrow_mut().function_breakpoints = names.iter().cloned().collect());
     let bps: Vec<J> = names.iter().map(|_| json!({ "verified": true })).collect();
-    respond(req_seq, "setFunctionBreakpoints", json!({ "breakpoints": bps }));
+    respond(
+        req_seq,
+        "setFunctionBreakpoints",
+        json!({ "breakpoints": bps }),
+    );
 }
 
 /// Evaluate a debugger expression. v1 resolves a bare variable name against the
@@ -325,7 +333,10 @@ pub fn on_debug_line(vm: &mut VM) {
         h.set_cur_line(line);
         (
             h.frame_depth(),
-            h.dbg_stack().first().map(|(n, _)| n.clone()).unwrap_or_default(),
+            h.dbg_stack()
+                .first()
+                .map(|(n, _)| n.clone())
+                .unwrap_or_default(),
         )
     });
     let (stop, reason) = DBG.with(|d| {

@@ -208,7 +208,11 @@ fn crc32_bzip2(data: &[u8]) -> u32 {
 
 /// Generic HMAC per RFC 2104: H((K⊕opad) ‖ H((K⊕ipad) ‖ msg)).
 fn hmac(block_size: usize, f: fn(&[u8]) -> Vec<u8>, key: &[u8], msg: &[u8]) -> Vec<u8> {
-    let mut k = if key.len() > block_size { f(key) } else { key.to_vec() };
+    let mut k = if key.len() > block_size {
+        f(key)
+    } else {
+        key.to_vec()
+    };
     k.resize(block_size, 0);
     let mut inner: Vec<u8> = k.iter().map(|b| b ^ 0x36).collect();
     inner.extend_from_slice(msg);

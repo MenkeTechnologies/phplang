@@ -73,10 +73,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
 /// `filter_var($value, $filter = FILTER_DEFAULT, $options = 0)`.
 fn filter_var(args: &[Value]) -> Value {
     let input = args.first().cloned().unwrap_or(Value::Undef);
-    let filter_id = args
-        .get(1)
-        .map(resolve_filter_id)
-        .unwrap_or(FILTER_DEFAULT);
+    let filter_id = args.get(1).map(resolve_filter_id).unwrap_or(FILTER_DEFAULT);
     let cfg = args.get(2).cloned().unwrap_or(Value::Undef);
     let (flags, options) = parse_config(&cfg);
     apply_filter(&input, filter_id, flags, &options)

@@ -13,7 +13,9 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         "define" => {
             let cname = with_host(|h| h.to_str(args.first().unwrap_or(&Value::Undef)));
             let value = args.get(1).cloned().unwrap_or(Value::Undef);
-            Some(Ok(Value::bool(with_host(|h| h.const_define(&cname, value)))))
+            Some(Ok(Value::bool(with_host(|h| {
+                h.const_define(&cname, value)
+            }))))
         }
         // defined(name) — whether a constant of that name exists.
         "defined" => {

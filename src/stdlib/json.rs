@@ -79,7 +79,11 @@ fn decode_depth(args: &[Value], idx: usize) -> usize {
     match args.get(idx) {
         Some(v) => {
             let d = crate::host::with_host(|h| h.to_number(v).to_int());
-            if d < 1 { 1 } else { d as usize }
+            if d < 1 {
+                1
+            } else {
+                d as usize
+            }
         }
         None => 512,
     }

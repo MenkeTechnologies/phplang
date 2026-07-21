@@ -23,10 +23,7 @@ fn class_exists_true_and_false() {
         run(r#"<?php class Widget {} echo class_exists("widget") ? "y" : "n";"#),
         "y"
     );
-    assert_eq!(
-        run(r#"<?php echo class_exists("Nope") ? "y" : "n";"#),
-        "n"
-    );
+    assert_eq!(run(r#"<?php echo class_exists("Nope") ? "y" : "n";"#), "n");
 }
 
 #[test]
@@ -86,7 +83,10 @@ fn get_class_returns_original_casing() {
 
 #[test]
 fn get_class_non_object_is_false() {
-    assert_eq!(run(r#"<?php echo get_class(5) === false ? "y" : "n";"#), "y");
+    assert_eq!(
+        run(r#"<?php echo get_class(5) === false ? "y" : "n";"#),
+        "y"
+    );
 }
 
 #[test]

@@ -94,7 +94,10 @@ fn hash_file(args: &[Value]) -> Result<Value, String> {
         Some(b) => b,
         None => return Ok(Value::bool(false)),
     };
-    Ok(wrap(digest_bytes(&algo, &bytes).expect("algo checked above"), raw))
+    Ok(wrap(
+        digest_bytes(&algo, &bytes).expect("algo checked above"),
+        raw,
+    ))
 }
 
 /// `hash_hmac_file(algo, filename, key, binary = false)`. Validates the
@@ -159,9 +162,7 @@ fn hash_pbkdf2(args: &[Value]) -> Result<Value, String> {
         }
     };
     if iterations <= 0 {
-        return Err(
-            "hash_pbkdf2(): Argument #4 ($iterations) must be greater than 0".to_string(),
-        );
+        return Err("hash_pbkdf2(): Argument #4 ($iterations) must be greater than 0".to_string());
     }
     if length < 0 {
         return Err(
@@ -236,7 +237,10 @@ fn random_bytes(args: &[Value]) -> Result<Value, String> {
 /// Whether `hash_file` supports a digest name (subset of PHP's `hash_algos`,
 /// limited to the crate-backed digests wired here).
 fn is_supported_algo(algo: &str) -> bool {
-    matches!(algo, "md5" | "sha1" | "sha256" | "sha384" | "sha512" | "crc32b")
+    matches!(
+        algo,
+        "md5" | "sha1" | "sha256" | "sha384" | "sha512" | "crc32b"
+    )
 }
 
 /// Digest by algorithm name for `hash_file`; `None` for an unsupported name.
@@ -317,7 +321,11 @@ fn crc32b_bytes(data: &[u8]) -> Vec<u8> {
 /// crate digests above; duplicated from `src/stdlib/hash.rs` because that copy
 /// is private to its module.
 fn hmac(block_size: usize, f: fn(&[u8]) -> Vec<u8>, key: &[u8], msg: &[u8]) -> Vec<u8> {
-    let mut k = if key.len() > block_size { f(key) } else { key.to_vec() };
+    let mut k = if key.len() > block_size {
+        f(key)
+    } else {
+        key.to_vec()
+    };
     k.resize(block_size, 0);
     let mut inner: Vec<u8> = k.iter().map(|b| b ^ 0x36).collect();
     inner.extend_from_slice(msg);

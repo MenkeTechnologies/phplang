@@ -106,13 +106,19 @@ fn str_getcsv_custom_separator() {
 #[test]
 fn str_getcsv_empty_line_is_single_null() {
     // A wholly empty line yields one null field.
-    assert_eq!(run("<?php $r=str_getcsv(''); echo count($r),':',var_export($r[0],true);"), "1:NULL");
+    assert_eq!(
+        run("<?php $r=str_getcsv(''); echo count($r),':',var_export($r[0],true);"),
+        "1:NULL"
+    );
 }
 
 #[test]
 fn str_getcsv_empty_fields_are_empty_strings() {
     // A bare separator yields two empty-string fields (not null).
-    assert_eq!(run("<?php $r=str_getcsv(','); echo count($r),':[',$r[0],'][',$r[1],']';"), "2:[][]");
+    assert_eq!(
+        run("<?php $r=str_getcsv(','); echo count($r),':[',$r[0],'][',$r[1],']';"),
+        "2:[][]"
+    );
 }
 
 // ── array_walk_recursive ─────────────────────────────────────────────────────
@@ -264,7 +270,10 @@ fn strnatcmp_fractional_vs_magnitude() {
 
 #[test]
 fn str_word_count_counts_words() {
-    assert_eq!(run("<?php echo str_word_count('Hello world foo bar');"), "4");
+    assert_eq!(
+        run("<?php echo str_word_count('Hello world foo bar');"),
+        "4"
+    );
     assert_eq!(run("<?php echo str_word_count('');"), "0");
 }
 
@@ -308,13 +317,19 @@ fn uniqid_default_is_13_hex_chars() {
 
 #[test]
 fn uniqid_prefix_prepended() {
-    assert_eq!(run("<?php $u=uniqid('pre_'); echo substr($u,0,4),':',strlen($u);"), "pre_:17");
+    assert_eq!(
+        run("<?php $u=uniqid('pre_'); echo substr($u,0,4),':',strlen($u);"),
+        "pre_:17"
+    );
 }
 
 #[test]
 fn uniqid_more_entropy_appends_fraction() {
     // more_entropy adds a '.' and 8 fractional digits (total length 23).
-    assert_eq!(run("<?php $u=uniqid('', true); echo strlen($u),':',(strpos($u,'.')!==false?'dot':'no');"), "23:dot");
+    assert_eq!(
+        run("<?php $u=uniqid('', true); echo strlen($u),':',(strpos($u,'.')!==false?'dot':'no');"),
+        "23:dot"
+    );
 }
 
 // ── array_udiff / array_uintersect ───────────────────────────────────────────
@@ -339,7 +354,9 @@ fn array_uintersect_keeps_common() {
 fn array_uintersect_three_arrays_requires_all() {
     // 2 is in both others, 4 only in the second — only 2 survives.
     assert_eq!(
-        run("<?php echo implode(',', array_uintersect([1,2,3,4],[2,4],[2,9], fn($a,$b)=>$a<=>$b));"),
+        run(
+            "<?php echo implode(',', array_uintersect([1,2,3,4],[2,4],[2,9], fn($a,$b)=>$a<=>$b));"
+        ),
         "2"
     );
 }

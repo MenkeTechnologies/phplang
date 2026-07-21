@@ -17,10 +17,7 @@ fn two_dimensional_set_from_unset() {
 
 #[test]
 fn three_dimensional_set_and_read() {
-    assert_eq!(
-        run("<?php $a[0][1][2] = 'deep'; echo $a[0][1][2];"),
-        "deep"
-    );
+    assert_eq!(run("<?php $a[0][1][2] = 'deep'; echo $a[0][1][2];"), "deep");
 }
 
 #[test]
@@ -43,19 +40,13 @@ fn append_into_nested_array() {
 #[test]
 fn mid_path_append_creates_element() {
     // `$a[][k] = v` appends a fresh sub-array `[k => v]` (verified vs PHP 8.5).
-    assert_eq!(
-        run("<?php $a[]['k'] = 'v'; echo $a[0]['k'];"),
-        "v"
-    );
+    assert_eq!(run("<?php $a[]['k'] = 'v'; echo $a[0]['k'];"), "v");
 }
 
 #[test]
 fn mid_path_append_with_prefix() {
     // `$a[b][][c] = 5` → $a['b'] gains an appended child `[c => 5]`.
-    assert_eq!(
-        run("<?php $a['b'][]['c'] = 5; echo $a['b'][0]['c'];"),
-        "5"
-    );
+    assert_eq!(run("<?php $a['b'][]['c'] = 5; echo $a['b'][0]['c'];"), "5");
 }
 
 #[test]

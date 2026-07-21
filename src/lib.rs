@@ -328,10 +328,7 @@ class SplMinHeap extends SplHeap {
 "#;
 
 /// A compiled program's installable definitions: `(functions, classes)`.
-type PreludeDefs = (
-    Vec<(String, host::FuncDef)>,
-    Vec<(String, host::ClassDef)>,
-);
+type PreludeDefs = (Vec<(String, host::FuncDef)>, Vec<(String, host::ClassDef)>);
 
 /// The compiled prelude's functions and classes, built once and merged onto every
 /// fresh host before the user program (so user declarations of the same name win).

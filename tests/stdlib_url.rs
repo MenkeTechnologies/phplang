@@ -13,8 +13,14 @@ fn urlencode_vs_rawurlencode_space_and_tilde() {
     // urlencode: space -> '+', tilde escaped; rawurlencode: space -> %20, tilde kept.
     assert_eq!(run(r#"<?php echo urlencode("a b");"#), "a+b");
     assert_eq!(run(r#"<?php echo rawurlencode("a b");"#), "a%20b");
-    assert_eq!(run(r#"<?php echo urlencode("a b~c!.*");"#), "a+b%7Ec%21.%2A");
-    assert_eq!(run(r#"<?php echo rawurlencode("a b~c!.*");"#), "a%20b~c%21.%2A");
+    assert_eq!(
+        run(r#"<?php echo urlencode("a b~c!.*");"#),
+        "a+b%7Ec%21.%2A"
+    );
+    assert_eq!(
+        run(r#"<?php echo rawurlencode("a b~c!.*");"#),
+        "a%20b~c%21.%2A"
+    );
     // Unreserved set A-Za-z0-9-_. passes through untouched.
     assert_eq!(run(r#"<?php echo urlencode("A_z-9.x");"#), "A_z-9.x");
 }
@@ -25,9 +31,15 @@ fn urldecode_vs_rawurldecode_plus() {
     assert_eq!(run(r#"<?php echo urldecode("a+b%20c");"#), "a b c");
     assert_eq!(run(r#"<?php echo rawurldecode("a+b%20c");"#), "a+b c");
     // A stray '%' with no valid hex pair is emitted verbatim.
-    assert_eq!(run(r#"<?php echo rawurldecode("100%25 done");"#), "100% done");
+    assert_eq!(
+        run(r#"<?php echo rawurldecode("100%25 done");"#),
+        "100% done"
+    );
     // Round-trips.
-    assert_eq!(run(r#"<?php echo urldecode(urlencode("x y&z=1"));"#), "x y&z=1");
+    assert_eq!(
+        run(r#"<?php echo urldecode(urlencode("x y&z=1"));"#),
+        "x y&z=1"
+    );
     assert_eq!(
         run(r#"<?php echo rawurldecode(rawurlencode("/a b/?q"));"#),
         "/a b/?q"
@@ -122,21 +134,24 @@ fn parse_url_relative_and_empty_path() {
 #[test]
 fn parse_url_malformed_returns_false() {
     // Empty host with a port is rejected as false by PHP.
-    assert_eq!(run(r#"<?php var_export(parse_url("http://:80"));"#), "false");
+    assert_eq!(
+        run(r#"<?php var_export(parse_url("http://:80"));"#),
+        "false"
+    );
 }
 
 #[test]
 fn parse_url_component_selector() {
     // PHP_URL_PORT == 2 -> the port int; PHP_URL_QUERY == 6, absent -> null.
-    assert_eq!(run(r#"<?php echo parse_url("https://h:8080/p", 2);"#), "8080");
+    assert_eq!(
+        run(r#"<?php echo parse_url("https://h:8080/p", 2);"#),
+        "8080"
+    );
     assert_eq!(
         run(r#"<?php var_dump(parse_url("https://h/p", 6));"#),
         "NULL\n"
     );
-    assert_eq!(
-        run(r#"<?php echo parse_url("https://h/p?a=b", 6);"#),
-        "a=b"
-    );
+    assert_eq!(run(r#"<?php echo parse_url("https://h/p?a=b", 6);"#), "a=b");
 }
 
 #[test]

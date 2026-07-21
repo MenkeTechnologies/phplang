@@ -241,7 +241,8 @@ impl<'a> Lexer<'a> {
         }
         // A leading-zero integer with all-octal digits is an octal literal
         // (`0755`), the classic PHP form; a `0` alone stays decimal zero.
-        if raw.len() > 1 && raw.starts_with('0') && raw.bytes().all(|b| (b'0'..=b'7').contains(&b)) {
+        if raw.len() > 1 && raw.starts_with('0') && raw.bytes().all(|b| (b'0'..=b'7').contains(&b))
+        {
             self.push(parse_radix(&raw[1..], 8));
             return;
         }

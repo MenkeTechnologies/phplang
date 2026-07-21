@@ -21,7 +21,10 @@ fn base64_encode_basic() {
 #[test]
 fn base64_decode_basic_and_roundtrip() {
     assert_eq!(run(r#"<?php echo base64_decode("SGVsbG8=");"#), "Hello");
-    assert_eq!(run(r#"<?php echo base64_decode(base64_encode("round trip!"));"#), "round trip!");
+    assert_eq!(
+        run(r#"<?php echo base64_decode(base64_encode("round trip!"));"#),
+        "round trip!"
+    );
     // missing padding is accepted (non-strict)
     assert_eq!(run(r#"<?php echo base64_decode("SGVsbG8");"#), "Hello");
 }
@@ -36,14 +39,29 @@ fn base64_decode_nonstrict_skips_junk() {
 #[test]
 fn base64_decode_strict() {
     // strict allows whitespace but rejects other invalid characters -> false
-    assert_eq!(run(r#"<?php var_dump(base64_decode("SG Vs\nbG8=", true));"#), "string(5) \"Hello\"\n");
-    assert_eq!(run(r#"<?php var_dump(base64_decode("!!SGVsbG8=??", true));"#), "bool(false)\n");
+    assert_eq!(
+        run(r#"<?php var_dump(base64_decode("SG Vs\nbG8=", true));"#),
+        "string(5) \"Hello\"\n"
+    );
+    assert_eq!(
+        run(r#"<?php var_dump(base64_decode("!!SGVsbG8=??", true));"#),
+        "bool(false)\n"
+    );
     // data after padding is rejected in strict mode
-    assert_eq!(run(r#"<?php var_dump(base64_decode("SGVsbG8=extra", true));"#), "bool(false)\n");
+    assert_eq!(
+        run(r#"<?php var_dump(base64_decode("SGVsbG8=extra", true));"#),
+        "bool(false)\n"
+    );
     // no padding is fine even in strict mode
-    assert_eq!(run(r#"<?php var_dump(base64_decode("SGVsbG8", true));"#), "string(5) \"Hello\"\n");
+    assert_eq!(
+        run(r#"<?php var_dump(base64_decode("SGVsbG8", true));"#),
+        "string(5) \"Hello\"\n"
+    );
     // lone padding char is malformed
-    assert_eq!(run(r#"<?php var_dump(base64_decode("=", true));"#), "bool(false)\n");
+    assert_eq!(
+        run(r#"<?php var_dump(base64_decode("=", true));"#),
+        "bool(false)\n"
+    );
 }
 
 #[test]
@@ -64,9 +82,15 @@ fn hex2bin_invalid_returns_false() {
 
 #[test]
 fn quoted_printable_encode_basic() {
-    assert_eq!(run(r#"<?php echo quoted_printable_encode("a=b");"#), "a=3Db");
+    assert_eq!(
+        run(r#"<?php echo quoted_printable_encode("a=b");"#),
+        "a=3Db"
+    );
     // tab (control) is encoded; plain ASCII passes through
-    assert_eq!(run(r#"<?php echo quoted_printable_encode("x\ty");"#), "x=09y");
+    assert_eq!(
+        run(r#"<?php echo quoted_printable_encode("x\ty");"#),
+        "x=09y"
+    );
 }
 
 #[test]
@@ -79,11 +103,20 @@ fn quoted_printable_encode_soft_wrap() {
 
 #[test]
 fn quoted_printable_decode_basic() {
-    assert_eq!(run(r#"<?php echo quoted_printable_decode("a=3Db");"#), "a=b");
+    assert_eq!(
+        run(r#"<?php echo quoted_printable_decode("a=3Db");"#),
+        "a=b"
+    );
     // soft line break is removed
-    assert_eq!(run(r#"<?php echo quoted_printable_decode("line1=\r\nline2");"#), "line1line2");
+    assert_eq!(
+        run(r#"<?php echo quoted_printable_decode("line1=\r\nline2");"#),
+        "line1line2"
+    );
     // malformed '=' is kept verbatim
-    assert_eq!(run(r#"<?php echo quoted_printable_decode("a=zz");"#), "a=zz");
+    assert_eq!(
+        run(r#"<?php echo quoted_printable_decode("a=zz");"#),
+        "a=zz"
+    );
     // round trip on ASCII
     assert_eq!(
         run(r#"<?php echo quoted_printable_decode(quoted_printable_encode("plain=text!"));"#),
@@ -94,14 +127,20 @@ fn quoted_printable_decode_basic() {
 #[test]
 fn convert_uuencode_matches_php() {
     // exact byte layout cross-checked against php: convert_uuencode("Cat")
-    assert_eq!(run(r#"<?php echo bin2hex(convert_uuencode("Cat"));"#), "23305625540a600a");
+    assert_eq!(
+        run(r#"<?php echo bin2hex(convert_uuencode("Cat"));"#),
+        "23305625540a600a"
+    );
     // empty input yields just the backtick trailer line
     assert_eq!(run(r#"<?php echo bin2hex(convert_uuencode(""));"#), "600a");
 }
 
 #[test]
 fn convert_uu_roundtrip() {
-    assert_eq!(run(r#"<?php echo convert_uudecode(convert_uuencode("Hello"));"#), "Hello");
+    assert_eq!(
+        run(r#"<?php echo convert_uudecode(convert_uuencode("Hello"));"#),
+        "Hello"
+    );
     assert_eq!(
         run(r#"<?php echo convert_uudecode(convert_uuencode("Hello World, this is a test!"));"#),
         "Hello World, this is a test!"
@@ -124,16 +163,31 @@ fn quoted_printable_decode_trailing_bare_equals_dropped() {
 #[test]
 fn convert_uudecode_invalid_returns_false() {
     // empty input -> false
-    assert_eq!(run(r#"<?php var_dump(convert_uudecode(""));"#), "bool(false)\n");
+    assert_eq!(
+        run(r#"<?php var_dump(convert_uudecode(""));"#),
+        "bool(false)\n"
+    );
     // a single length char declaring a 45-byte line with no data overruns the
     // buffer -> malformed -> false ('M' == chr(45 + 0x20))
-    assert_eq!(run(r#"<?php var_dump(convert_uudecode("M"));"#), "bool(false)\n");
+    assert_eq!(
+        run(r#"<?php var_dump(convert_uudecode("M"));"#),
+        "bool(false)\n"
+    );
     // valid data still decodes (guard against over-rejection)
-    assert_eq!(run(r#"<?php echo convert_uudecode(convert_uuencode("ok"));"#), "ok");
+    assert_eq!(
+        run(r#"<?php echo convert_uudecode(convert_uuencode("ok"));"#),
+        "ok"
+    );
 }
 
 #[test]
 fn utf8_shims_ascii_identity() {
-    assert_eq!(run(r#"<?php echo utf8_encode("plain ascii");"#), "plain ascii");
-    assert_eq!(run(r#"<?php echo utf8_decode("plain ascii");"#), "plain ascii");
+    assert_eq!(
+        run(r#"<?php echo utf8_encode("plain ascii");"#),
+        "plain ascii"
+    );
+    assert_eq!(
+        run(r#"<?php echo utf8_decode("plain ascii");"#),
+        "plain ascii"
+    );
 }

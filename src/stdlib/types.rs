@@ -144,7 +144,11 @@ fn serialize_float(f: f64) -> String {
         let (first, rest) = digits.split_at(1);
         let frac = if rest.is_empty() { "0" } else { rest };
         let e = decpt - 1;
-        format!("{first}.{frac}E{}{}", if e < 0 { "-" } else { "+" }, e.abs())
+        format!(
+            "{first}.{frac}E{}{}",
+            if e < 0 { "-" } else { "+" },
+            e.abs()
+        )
     } else if decpt <= 0 {
         // 0.00…digits — leading zeros equal to -decpt.
         format!("0.{}{}", "0".repeat((-decpt) as usize), digits)
@@ -156,7 +160,11 @@ fn serialize_float(f: f64) -> String {
         let (int_part, frac) = digits.split_at(decpt as usize);
         format!("{int_part}.{frac}")
     };
-    if neg { format!("-{body}") } else { body }
+    if neg {
+        format!("-{body}")
+    } else {
+        body
+    }
 }
 
 // ── unserialize ──────────────────────────────────────────────────────────────

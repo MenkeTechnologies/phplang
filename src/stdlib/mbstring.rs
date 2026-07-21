@@ -149,7 +149,11 @@ fn mb_strpos(args: &[Value], ci: bool) -> Result<Value, String> {
             if ci { "mb_stripos" } else { "mb_strpos" }
         ));
     }
-    let off = if off_raw < 0 { (len + off_raw) as usize } else { off_raw as usize };
+    let off = if off_raw < 0 {
+        (len + off_raw) as usize
+    } else {
+        off_raw as usize
+    };
     // Empty needle matches at the offset (PHP 8 semantics).
     for i in off..=hay.len().saturating_sub(needle.len()) {
         if hay[i..].starts_with(&needle[..]) {
@@ -409,7 +413,9 @@ fn mb_split(args: &[Value]) -> Value {
             .map(|p| Value::str(p.to_string()))
             .collect()
     } else {
-        re.split(&subject).map(|p| Value::str(p.to_string())).collect()
+        re.split(&subject)
+            .map(|p| Value::str(p.to_string()))
+            .collect()
     };
     make_list(parts)
 }
@@ -444,8 +450,7 @@ fn mb_convert_kana(args: &[Value]) -> String {
             }
             // Fullwidth ASCII variants → halfwidth.
             if (0xFF01..=0xFF5E).contains(&cp) {
-                let is_letter =
-                    (0xFF21..=0xFF3A).contains(&cp) || (0xFF41..=0xFF5A).contains(&cp);
+                let is_letter = (0xFF21..=0xFF3A).contains(&cp) || (0xFF41..=0xFF5A).contains(&cp);
                 let is_digit = (0xFF10..=0xFF19).contains(&cp);
                 if fw_all || (fw_letter && is_letter) || (fw_digit && is_digit) {
                     return char::from_u32(cp - 0xFEE0).unwrap_or(c);

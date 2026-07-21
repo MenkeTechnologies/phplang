@@ -58,8 +58,17 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             let ext = str_arg(args, 0).to_ascii_lowercase();
             Value::bool(matches!(
                 ext.as_str(),
-                "core" | "standard" | "json" | "pcre" | "mbstring" | "ctype" | "filter"
-                    | "date" | "hash" | "spl" | "tokenizer"
+                "core"
+                    | "standard"
+                    | "json"
+                    | "pcre"
+                    | "mbstring"
+                    | "ctype"
+                    | "filter"
+                    | "date"
+                    | "hash"
+                    | "spl"
+                    | "tokenizer"
             ))
         }
         // Cooperative: does not actually block, keeping the runtime responsive
@@ -147,9 +156,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             Value::int(count)
         }
         // Object identity (spl).
-        "spl_object_id" => {
-            Value::int(with_host(|h| h.object_id(&arg(args, 0))).unwrap_or(0))
-        }
+        "spl_object_id" => Value::int(with_host(|h| h.object_id(&arg(args, 0))).unwrap_or(0)),
         "spl_object_hash" => {
             let id = with_host(|h| h.object_id(&arg(args, 0))).unwrap_or(0);
             Value::str(format!("{id:032x}"))

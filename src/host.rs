@@ -313,7 +313,9 @@ impl PhpHost {
         self.arr_set_key(&s, &Value::str("SCRIPT_NAME"), Value::str(String::new()));
         self.arr_set_key(&s, &Value::str("REQUEST_TIME"), Value::int(0));
         self.set_var("_SERVER", s);
-        for name in ["_GET", "_POST", "_REQUEST", "_COOKIE", "_FILES", "_SESSION", "GLOBALS"] {
+        for name in [
+            "_GET", "_POST", "_REQUEST", "_COOKIE", "_FILES", "_SESSION", "GLOBALS",
+        ] {
             let empty = self.new_array();
             self.set_var(name, empty);
         }
@@ -558,7 +560,11 @@ impl PhpHost {
     pub fn ref_bind(&mut self, target: &str, source: &str) {
         let idx = self.scope_idx(source);
         // Resolve the source's cell, promoting a plain variable into one.
-        let slot = match self.scopes.get(idx).and_then(|s| s.refs.get(source).copied()) {
+        let slot = match self
+            .scopes
+            .get(idx)
+            .and_then(|s| s.refs.get(source).copied())
+        {
             Some(s) => s,
             None => {
                 let cur = self
@@ -656,7 +662,10 @@ impl PhpHost {
         if let Some(s) = self.scopes.last() {
             for (k, &slot) in &s.refs {
                 if !k.starts_with('@') {
-                    vars.push((k.clone(), self.ref_cells.get(slot).cloned().unwrap_or(Value::Undef)));
+                    vars.push((
+                        k.clone(),
+                        self.ref_cells.get(slot).cloned().unwrap_or(Value::Undef),
+                    ));
                 }
             }
         }
@@ -766,7 +775,9 @@ impl PhpHost {
         let mut out = Vec::new();
         let mut cur = Some(class.to_ascii_lowercase());
         while let Some(c) = cur {
-            let Some(def) = self.classes.get(&c) else { break };
+            let Some(def) = self.classes.get(&c) else {
+                break;
+            };
             for m in def.methods.keys() {
                 if !out.contains(m) {
                     out.push(m.clone());
@@ -787,7 +798,9 @@ impl PhpHost {
     pub fn class_has_prop(&self, class: &str, name: &str) -> bool {
         let mut cur = Some(class.to_ascii_lowercase());
         while let Some(c) = cur {
-            let Some(def) = self.classes.get(&c) else { break };
+            let Some(def) = self.classes.get(&c) else {
+                break;
+            };
             if def.prop_defaults.iter().any(|(n, _)| n == name) {
                 return true;
             }
@@ -824,7 +837,10 @@ impl PhpHost {
     }
 
     pub fn is_resource(&self, v: &Value) -> bool {
-        matches!(self.as_array(v), Some(PhpObj::Resource { closed: false, .. }))
+        matches!(
+            self.as_array(v),
+            Some(PhpObj::Resource { closed: false, .. })
+        )
     }
 
     /// At-or-past end of the stream (`feof`).
@@ -838,7 +854,9 @@ impl PhpHost {
     /// The current cursor (`ftell`), or `None` if `v` is not an open resource.
     pub fn res_tell(&self, v: &Value) -> Option<i64> {
         match self.as_array(v) {
-            Some(PhpObj::Resource { pos, closed: false, .. }) => Some(*pos as i64),
+            Some(PhpObj::Resource {
+                pos, closed: false, ..
+            }) => Some(*pos as i64),
             _ => None,
         }
     }
@@ -1737,7 +1755,10 @@ fn predefined_constants() -> FxHashMap<String, Value> {
             "Linux"
         },
     );
-    ss("DIRECTORY_SEPARATOR", if cfg!(windows) { "\\" } else { "/" });
+    ss(
+        "DIRECTORY_SEPARATOR",
+        if cfg!(windows) { "\\" } else { "/" },
+    );
     ss("PATH_SEPARATOR", if cfg!(windows) { ";" } else { ":" });
     // math constants
     let mut sf = |k: &str, v: f64| {
@@ -1830,7 +1851,9 @@ pub fn run_main(chunk: Chunk) -> Result<Value, String> {
     // the PHP CLI's `PHP Fatal error:  Uncaught <Class>: <message>`.
     if let Some(exc) = with_host(|h| h.pending_throw.take()) {
         let (class, msg) = with_host(|h| {
-            let class = h.object_class(&exc).unwrap_or_else(|| "Exception".to_string());
+            let class = h
+                .object_class(&exc)
+                .unwrap_or_else(|| "Exception".to_string());
             let msg = h.to_str(&h.prop_get(&exc, "message"));
             (class, msg)
         });
@@ -2030,7 +2053,13 @@ pub fn call_method(
         Some(t) => vec![("this".to_string(), t)],
         None => Vec::new(),
     };
-    invoke(&format!("{def_class}::{method}"), &def.params, def.chunk, pre, args)
+    invoke(
+        &format!("{def_class}::{method}"),
+        &def.params,
+        def.chunk,
+        pre,
+        args,
+    )
 }
 
 /// `Class::CONST` — evaluate the (inherited) constant initializer.

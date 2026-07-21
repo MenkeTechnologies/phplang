@@ -97,18 +97,16 @@ fn percent_decode(s: &str, plus_to_space: bool) -> String {
                 out.push(b' ');
                 i += 1;
             }
-            b'%' if i + 2 < b.len() => {
-                match (hex_val(b[i + 1]), hex_val(b[i + 2])) {
-                    (Some(h), Some(l)) => {
-                        out.push((h << 4) | l);
-                        i += 3;
-                    }
-                    _ => {
-                        out.push(b'%');
-                        i += 1;
-                    }
+            b'%' if i + 2 < b.len() => match (hex_val(b[i + 1]), hex_val(b[i + 2])) {
+                (Some(h), Some(l)) => {
+                    out.push((h << 4) | l);
+                    i += 3;
                 }
-            }
+                _ => {
+                    out.push(b'%');
+                    i += 1;
+                }
+            },
             c => {
                 out.push(c);
                 i += 1;
@@ -237,7 +235,9 @@ fn parse_str(args: &[Value]) -> Value {
             for (i, seg) in segments.iter().enumerate() {
                 let last = i == segments.len() - 1;
                 match (seg, last) {
-                    (Some(k), true) => h.arr_set_key(&container, &Value::str(k.clone()), value.clone()),
+                    (Some(k), true) => {
+                        h.arr_set_key(&container, &Value::str(k.clone()), value.clone())
+                    }
                     (None, true) => h.arr_push_auto(&container, value.clone()),
                     (Some(k), false) => {
                         container = ensure_child_array(h, &container, &Value::str(k.clone()))
@@ -401,9 +401,7 @@ fn memrchr(b: &[u8], start: usize, end: usize, ch: u8) -> Option<usize> {
 /// Index of the first byte in `set` within `b[start..end]`, else `end` (the C
 /// `strcspn` idiom used by PHP's parser to bound authorities and paths).
 fn binary_strcspn(b: &[u8], start: usize, end: usize, set: &[u8]) -> usize {
-    (start..end)
-        .find(|&i| set.contains(&b[i]))
-        .unwrap_or(end)
+    (start..end).find(|&i| set.contains(&b[i])).unwrap_or(end)
 }
 
 /// Parse an all-digits slice into an `i64`, or `None` if empty/non-digit.

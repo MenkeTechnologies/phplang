@@ -103,7 +103,9 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             }
             let e = big(args, 1);
             if e.sign() == Sign::Minus {
-                return Some(Err("gmp_powm(): Negative exponent not supported".to_string()));
+                return Some(Err(
+                    "gmp_powm(): Negative exponent not supported".to_string()
+                ));
             }
             out(big(args, 0).modpow(&e, &m))
         }

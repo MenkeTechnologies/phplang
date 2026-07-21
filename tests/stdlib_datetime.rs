@@ -37,7 +37,10 @@ fn date_twelve_hour_and_meridiem() {
     assert_eq!(run(r#"<?php echo date("g h", 0);"#), "12 12");
     assert_eq!(run(r#"<?php echo date("A a", 0);"#), "AM am");
     // 13:00 UTC -> G=13, g=1, h=01, A=PM. 946731600 = 2000-01-01 13:00:00 UTC.
-    assert_eq!(run(r#"<?php echo date("G g h A", 946731600);"#), "13 1 01 PM");
+    assert_eq!(
+        run(r#"<?php echo date("G g h A", 946731600);"#),
+        "13 1 01 PM"
+    );
 }
 
 #[test]
@@ -61,7 +64,10 @@ fn date_escaping_and_literals() {
 
 #[test]
 fn gmdate_matches_date_in_utc() {
-    assert_eq!(run(r#"<?php echo gmdate("Y-m-d H:i:s", 0);"#), "1970-01-01 00:00:00");
+    assert_eq!(
+        run(r#"<?php echo gmdate("Y-m-d H:i:s", 0);"#),
+        "1970-01-01 00:00:00"
+    );
     assert_eq!(
         run(r#"<?php echo gmdate("Y-m-d", 946684800);"#),
         "2000-01-01"
@@ -111,7 +117,10 @@ fn mktime_huge_field_returns_false_no_panic() {
 fn strtotime_empty_string_is_false() {
     // Bug 2: PHP 8 treats an empty (or whitespace-only) string as a parse failure.
     assert_eq!(run(r#"<?php echo strtotime("") === false ? "F":"?";"#), "F");
-    assert_eq!(run(r#"<?php echo strtotime("   ") === false ? "F":"?";"#), "F");
+    assert_eq!(
+        run(r#"<?php echo strtotime("   ") === false ? "F":"?";"#),
+        "F"
+    );
     // "now" still resolves to the base timestamp.
     assert_eq!(run(r#"<?php echo strtotime("now", 42);"#), "42");
 }
@@ -140,7 +149,10 @@ fn strtotime_month_year_overflow_matches_php() {
 #[test]
 fn date_iso_rfc_and_subsecond_formats() {
     // Bug 4: c, r, o, u, v were previously emitted as literals.
-    assert_eq!(run(r#"<?php echo date("c", 0);"#), "1970-01-01T00:00:00+00:00");
+    assert_eq!(
+        run(r#"<?php echo date("c", 0);"#),
+        "1970-01-01T00:00:00+00:00"
+    );
     assert_eq!(
         run(r#"<?php echo date("r", 0);"#),
         "Thu, 01 Jan 1970 00:00:00 +0000"
@@ -153,7 +165,10 @@ fn date_iso_rfc_and_subsecond_formats() {
     assert_eq!(run(r#"<?php echo date("o", 1104537600);"#), "2004");
     assert_eq!(run(r#"<?php echo date("Y", 1104537600);"#), "2005");
     // gmdate honors the same additions.
-    assert_eq!(run(r#"<?php echo gmdate("c", 0);"#), "1970-01-01T00:00:00+00:00");
+    assert_eq!(
+        run(r#"<?php echo gmdate("c", 0);"#),
+        "1970-01-01T00:00:00+00:00"
+    );
 }
 
 #[test]
@@ -189,7 +204,10 @@ fn strtotime_absolute_and_epoch() {
     assert_eq!(run(r#"<?php echo strtotime("@12345");"#), "12345");
     assert_eq!(run(r#"<?php echo strtotime("now", 42);"#), "42");
     // Unparseable -> false -> empty echo.
-    assert_eq!(run(r#"<?php echo strtotime("not a date") === false ? "F":"?";"#), "F");
+    assert_eq!(
+        run(r#"<?php echo strtotime("not a date") === false ? "F":"?";"#),
+        "F"
+    );
 }
 
 #[test]
@@ -203,7 +221,10 @@ fn strtotime_relative_offsets() {
     // +1 year from epoch = 1971-01-01.
     assert_eq!(run(r#"<?php echo strtotime("+1 year", 0);"#), "31536000");
     // Chained tokens accumulate.
-    assert_eq!(run(r#"<?php echo strtotime("+1 day +1 hour", 0);"#), "90000");
+    assert_eq!(
+        run(r#"<?php echo strtotime("+1 day +1 hour", 0);"#),
+        "90000"
+    );
     // "ago" suffix negates.
     assert_eq!(run(r#"<?php echo strtotime("1 day ago", 86400);"#), "0");
 }
@@ -211,7 +232,10 @@ fn strtotime_relative_offsets() {
 #[test]
 fn strtotime_named_days() {
     // Base 2000-01-02 12:00:00 UTC = 946814400.
-    assert_eq!(run(r#"<?php echo strtotime("today", 946814400);"#), "946771200"); // midnight
+    assert_eq!(
+        run(r#"<?php echo strtotime("today", 946814400);"#),
+        "946771200"
+    ); // midnight
     assert_eq!(
         run(r#"<?php echo strtotime("yesterday", 946814400);"#),
         "946684800"
@@ -224,17 +248,25 @@ fn strtotime_named_days() {
 
 #[test]
 fn microtime_float_flag() {
-    assert_eq!(run(r#"<?php echo is_float(microtime(true)) ? "y":"n";"#), "y");
+    assert_eq!(
+        run(r#"<?php echo is_float(microtime(true)) ? "y":"n";"#),
+        "y"
+    );
     // Without the flag, PHP returns a "msec sec" string.
     assert_eq!(run(r#"<?php echo is_string(microtime()) ? "y":"n";"#), "y");
-    assert_eq!(run(r#"<?php echo is_string(microtime(false)) ? "y":"n";"#), "y");
+    assert_eq!(
+        run(r#"<?php echo is_string(microtime(false)) ? "y":"n";"#),
+        "y"
+    );
 }
 
 #[test]
 fn timezone_get_set_roundtrip() {
     assert_eq!(run(r#"<?php echo date_default_timezone_get();"#), "UTC");
     assert_eq!(
-        run(r#"<?php date_default_timezone_set("America/New_York"); echo date_default_timezone_get();"#),
+        run(
+            r#"<?php date_default_timezone_set("America/New_York"); echo date_default_timezone_get();"#
+        ),
         "America/New_York"
     );
     assert_eq!(
@@ -247,7 +279,9 @@ fn timezone_get_set_roundtrip() {
 fn getdate_components() {
     // 2000-01-02 03:04:05 UTC = 946782245.
     assert_eq!(
-        run(r#"<?php $g = getdate(946782245); echo $g['year']."-".$g['mon']."-".$g['mday']." ".$g['hours'].":".$g['minutes'].":".$g['seconds'];"#),
+        run(
+            r#"<?php $g = getdate(946782245); echo $g['year']."-".$g['mon']."-".$g['mday']." ".$g['hours'].":".$g['minutes'].":".$g['seconds'];"#
+        ),
         "2000-1-2 3:4:5"
     );
     assert_eq!(

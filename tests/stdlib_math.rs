@@ -54,7 +54,10 @@ fn inverse_trig_landmarks() {
 
 #[test]
 fn deg_rad_roundtrip() {
-    assert_eq!(run("<?php echo round(deg2rad(180), 13);"), "3.1415926535898");
+    assert_eq!(
+        run("<?php echo round(deg2rad(180), 13);"),
+        "3.1415926535898"
+    );
     assert_eq!(run("<?php echo rad2deg(3.141592653589793);"), "180");
     assert_eq!(run("<?php echo round(rad2deg(deg2rad(90)), 6);"), "90");
 }
@@ -110,7 +113,10 @@ fn base_to_decimal_ints() {
 #[test]
 fn base_convert_various() {
     assert_eq!(run("<?php echo base_convert('ff', 16, 2);"), "11111111");
-    assert_eq!(run("<?php echo base_convert('a37334', 16, 2);"), "101000110111001100110100");
+    assert_eq!(
+        run("<?php echo base_convert('a37334', 16, 2);"),
+        "101000110111001100110100"
+    );
     assert_eq!(run("<?php echo base_convert('2557', 10, 16);"), "9fd");
     assert_eq!(run("<?php echo base_convert('z', 36, 10);"), "35");
     assert_eq!(run("<?php echo base_convert('0', 10, 2);"), "0");

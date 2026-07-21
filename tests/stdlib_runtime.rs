@@ -17,7 +17,10 @@ fn temp_path(tag: &str) -> std::path::PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!("phplang_runtime_{tag}_{}_{nanos}.txt", std::process::id()))
+    std::env::temp_dir().join(format!(
+        "phplang_runtime_{tag}_{}_{nanos}.txt",
+        std::process::id()
+    ))
 }
 
 // ── assert ───────────────────────────────────────────────────────────────────
@@ -26,7 +29,10 @@ fn temp_path(tag: &str) -> std::path::PathBuf {
 fn assert_true_is_true() {
     // A truthy assertion returns true (assertions "enabled" but non-fatal).
     assert_eq!(run("<?php echo var_export(assert(true), true);"), "true");
-    assert_eq!(run("<?php echo var_export(assert(true) === true, true);"), "true");
+    assert_eq!(
+        run("<?php echo var_export(assert(true) === true, true);"),
+        "true"
+    );
 }
 
 #[test]
@@ -78,9 +84,8 @@ fn error_log_type3_appends_to_file() {
     let path = temp_path("errlog");
     let p = path.to_string_lossy().replace('\\', "\\\\");
     // Two appends must accumulate in the destination file.
-    let src = format!(
-        "<?php error_log('first', 3, '{p}'); error_log('second', 3, '{p}'); echo 'ok';"
-    );
+    let src =
+        format!("<?php error_log('first', 3, '{p}'); error_log('second', 3, '{p}'); echo 'ok';");
     let out = run(&src);
     let contents = std::fs::read_to_string(&path).unwrap_or_default();
     let _ = std::fs::remove_file(&path);
@@ -101,19 +106,28 @@ fn error_log_type3_returns_true() {
 #[test]
 fn error_log_stderr_default_returns_true() {
     // type 0 (default) goes to stderr and returns true.
-    assert_eq!(run("<?php echo var_export(error_log('to stderr'), true);"), "true");
+    assert_eq!(
+        run("<?php echo var_export(error_log('to stderr'), true);"),
+        "true"
+    );
 }
 
 // ── debug_backtrace / debug_print_backtrace ──────────────────────────────────
 
 #[test]
 fn debug_backtrace_is_empty_array() {
-    assert_eq!(run("<?php $b = debug_backtrace(); echo is_array($b) ? 'arr' : 'no', ':', count($b);"), "arr:0");
+    assert_eq!(
+        run("<?php $b = debug_backtrace(); echo is_array($b) ? 'arr' : 'no', ':', count($b);"),
+        "arr:0"
+    );
 }
 
 #[test]
 fn debug_print_backtrace_returns_null() {
-    assert_eq!(run("<?php echo var_export(debug_print_backtrace(), true);"), "NULL");
+    assert_eq!(
+        run("<?php echo var_export(debug_print_backtrace(), true);"),
+        "NULL"
+    );
 }
 
 // ── error/exception handler registration (no-ops) ────────────────────────────
@@ -134,8 +148,14 @@ fn set_returns_null_restore_returns_true() {
         run("<?php echo var_export(set_exception_handler(function(){}), true);"),
         "NULL"
     );
-    assert_eq!(run("<?php echo var_export(restore_error_handler(), true);"), "true");
-    assert_eq!(run("<?php echo var_export(restore_exception_handler(), true);"), "true");
+    assert_eq!(
+        run("<?php echo var_export(restore_error_handler(), true);"),
+        "true"
+    );
+    assert_eq!(
+        run("<?php echo var_export(restore_exception_handler(), true);"),
+        "true"
+    );
 }
 
 // ── shutdown / autoload registration ─────────────────────────────────────────

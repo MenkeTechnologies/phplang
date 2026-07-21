@@ -56,8 +56,19 @@ const DAYS: [&str; 7] = [
 ];
 /// Full month names, 1-based (index 0 unused).
 const MONTHS: [&str; 13] = [
-    "", "January", "February", "March", "April", "May", "June", "July", "August",
-    "September", "October", "November", "December",
+    "",
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
 ];
 
 /// UTC `DateTime` for a Unix timestamp; the epoch on any out-of-range value.
@@ -208,7 +219,10 @@ fn php_mktime(args: &[Value]) -> Value {
 
     // Fold the (possibly out-of-range) month into a year/month pair, guarding
     // every step so absurd inputs return false instead of panicking.
-    let Some(months_total) = year.checked_mul(12).and_then(|x| month.checked_sub(1).and_then(|mm| x.checked_add(mm))) else {
+    let Some(months_total) = year
+        .checked_mul(12)
+        .and_then(|x| month.checked_sub(1).and_then(|mm| x.checked_add(mm)))
+    else {
         return Value::bool(false);
     };
     let y = months_total.div_euclid(12);

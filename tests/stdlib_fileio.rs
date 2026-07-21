@@ -18,7 +18,11 @@ fn unique_dir(tag: &str) -> PathBuf {
         .unwrap()
         .as_nanos();
     let mut p = std::env::temp_dir();
-    p.push(format!("phplang_fileio_{tag}_{}_{}", std::process::id(), nanos));
+    p.push(format!(
+        "phplang_fileio_{tag}_{}_{}",
+        std::process::id(),
+        nanos
+    ));
     std::fs::create_dir_all(&p).unwrap();
     p
 }
@@ -33,7 +37,10 @@ fn child(dir: &Path, name: &str) -> String {
 #[test]
 fn basename_plain_and_suffix() {
     assert_eq!(run("<?php echo basename('/foo/bar/baz.txt');"), "baz.txt");
-    assert_eq!(run("<?php echo basename('/foo/bar/baz.txt', '.txt');"), "baz");
+    assert_eq!(
+        run("<?php echo basename('/foo/bar/baz.txt', '.txt');"),
+        "baz"
+    );
     assert_eq!(run("<?php echo basename('/foo/bar/');"), "bar");
     assert_eq!(run("<?php echo basename('solo');"), "solo");
 }
@@ -257,9 +264,7 @@ fn touch_creates_file() {
 fn touch_sets_explicit_mtime() {
     let dir = unique_dir("touchtime");
     let file = child(&dir, "stamped.txt");
-    let src = format!(
-        "<?php touch('{file}', 1000000000); echo filemtime('{file}');"
-    );
+    let src = format!("<?php touch('{file}', 1000000000); echo filemtime('{file}');");
     assert_eq!(run(&src), "1000000000");
     std::fs::remove_dir_all(&dir).unwrap();
 }
@@ -387,9 +392,7 @@ fn glob_question_and_bracket() {
         std::fs::write(dir.join(name), "x").unwrap();
     }
     // `a?` matches a1,a2; `[ab]1` matches a1,b1.
-    let src = format!(
-        "<?php echo count(glob('{dirs}/a?')), ':', count(glob('{dirs}/[ab]1'));"
-    );
+    let src = format!("<?php echo count(glob('{dirs}/a?')), ':', count(glob('{dirs}/[ab]1'));");
     assert_eq!(run(&src), "2:2");
     std::fs::remove_dir_all(&dir).unwrap();
 }
@@ -400,9 +403,8 @@ fn glob_only_dir_flag() {
     let dirs = dir.to_string_lossy().into_owned();
     std::fs::write(dir.join("file.txt"), "x").unwrap();
     std::fs::create_dir(dir.join("subdir")).unwrap();
-    let src = format!(
-        "<?php $g = glob('{dirs}/*', GLOB_ONLYDIR); echo count($g), ':', basename($g[0]);"
-    );
+    let src =
+        format!("<?php $g = glob('{dirs}/*', GLOB_ONLYDIR); echo count($g), ':', basename($g[0]);");
     assert_eq!(run(&src), "1:subdir");
     std::fs::remove_dir_all(&dir).unwrap();
 }
@@ -414,9 +416,7 @@ fn glob_excludes_dotfiles_unless_pattern_starts_with_dot() {
     std::fs::write(dir.join(".hidden"), "x").unwrap();
     std::fs::write(dir.join("shown.txt"), "x").unwrap();
     // `*` skips the dotfile; `.*` includes it (and never `.`/`..`).
-    let src = format!(
-        "<?php echo count(glob('{dirs}/*')), ':', count(glob('{dirs}/.*'));"
-    );
+    let src = format!("<?php echo count(glob('{dirs}/*')), ':', count(glob('{dirs}/.*'));");
     assert_eq!(run(&src), "1:1");
     std::fs::remove_dir_all(&dir).unwrap();
 }
@@ -425,7 +425,9 @@ fn glob_excludes_dotfiles_unless_pattern_starts_with_dot() {
 fn glob_no_match_is_empty_array() {
     let dir = unique_dir("globempty");
     let dirs = dir.to_string_lossy().into_owned();
-    let src = format!("<?php $g = glob('{dirs}/*.nope'); echo is_array($g) ? 'arr' : 'no', ':', count($g);");
+    let src = format!(
+        "<?php $g = glob('{dirs}/*.nope'); echo is_array($g) ? 'arr' : 'no', ':', count($g);"
+    );
     assert_eq!(run(&src), "arr:0");
     std::fs::remove_dir_all(&dir).unwrap();
 }
@@ -434,20 +436,38 @@ fn glob_no_match_is_empty_array() {
 
 #[test]
 fn fnmatch_wildcards() {
-    assert_eq!(run("<?php echo fnmatch('*.txt', 'foo.txt') ? '1' : '0';"), "1");
-    assert_eq!(run("<?php echo fnmatch('*.txt', 'foo.md') ? '1' : '0';"), "0");
+    assert_eq!(
+        run("<?php echo fnmatch('*.txt', 'foo.txt') ? '1' : '0';"),
+        "1"
+    );
+    assert_eq!(
+        run("<?php echo fnmatch('*.txt', 'foo.md') ? '1' : '0';"),
+        "0"
+    );
     assert_eq!(run("<?php echo fnmatch('f?o', 'foo') ? '1' : '0';"), "1");
     assert_eq!(run("<?php echo fnmatch('f?o', 'fooo') ? '1' : '0';"), "0");
-    assert_eq!(run("<?php echo fnmatch('[a-c]at', 'bat') ? '1' : '0';"), "1");
-    assert_eq!(run("<?php echo fnmatch('[!a-c]at', 'bat') ? '1' : '0';"), "0");
-    assert_eq!(run("<?php echo fnmatch('[!a-c]at', 'rat') ? '1' : '0';"), "1");
+    assert_eq!(
+        run("<?php echo fnmatch('[a-c]at', 'bat') ? '1' : '0';"),
+        "1"
+    );
+    assert_eq!(
+        run("<?php echo fnmatch('[!a-c]at', 'bat') ? '1' : '0';"),
+        "0"
+    );
+    assert_eq!(
+        run("<?php echo fnmatch('[!a-c]at', 'rat') ? '1' : '0';"),
+        "1"
+    );
 }
 
 #[test]
 fn fnmatch_casefold_flag() {
     // Bareword FNM_CASEFOLD (unseeded → name string) folds ASCII case.
     assert_eq!(run("<?php echo fnmatch('FOO', 'foo') ? '1' : '0';"), "0");
-    assert_eq!(run("<?php echo fnmatch('FOO', 'foo', FNM_CASEFOLD) ? '1' : '0';"), "1");
+    assert_eq!(
+        run("<?php echo fnmatch('FOO', 'foo', FNM_CASEFOLD) ? '1' : '0';"),
+        "1"
+    );
 }
 
 // ── stat / lstat / fileperms / filetype ─────────────────────────────────────

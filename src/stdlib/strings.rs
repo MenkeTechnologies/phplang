@@ -442,7 +442,10 @@ fn chunk_split(args: &[Value]) -> Result<Value, String> {
 fn quotemeta(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
-        if matches!(c, '.' | '\\' | '+' | '*' | '?' | '[' | '^' | ']' | '$' | '(' | ')') {
+        if matches!(
+            c,
+            '.' | '\\' | '+' | '*' | '?' | '[' | '^' | ']' | '$' | '(' | ')'
+        ) {
             out.push('\\');
         }
         out.push(c);
@@ -772,7 +775,9 @@ fn mb_substr(args: &[Value]) -> String {
         }
         _ => chars.len() - start,
     };
-    chars[start..(start + count).min(chars.len())].iter().collect()
+    chars[start..(start + count).min(chars.len())]
+        .iter()
+        .collect()
 }
 
 // ── private helpers ──────────────────────────────────────────────────────────

@@ -452,7 +452,11 @@ fn preg_split(args: &[Value]) -> Result<Value, String> {
     let offset_capture = flags & SPLIT_OFFSET_CAPTURE != 0;
     // limit <= 0 (and the PHP default -1) means no limit; limit == 1 returns the
     // whole string unsplit.
-    let cap: usize = if limit <= 0 { usize::MAX } else { limit as usize };
+    let cap: usize = if limit <= 0 {
+        usize::MAX
+    } else {
+        limit as usize
+    };
 
     let bytes = subject.as_bytes();
     // `(text, offset)`. Offset is `-1` for a non-participating captured

@@ -82,7 +82,11 @@ fn c_isspace(c: u8) -> bool {
 /// code reads the terminator (a `0` byte) at `aend`; returning `0` for
 /// out-of-range indices reproduces that exactly.
 fn byte_at(s: &[u8], i: usize) -> u8 {
-    if i < s.len() { s[i] } else { 0 }
+    if i < s.len() {
+        s[i]
+    } else {
+        0
+    }
 }
 
 /// `compare_left`: two left-aligned digit runs, the first differing digit wins.
@@ -684,9 +688,8 @@ fn str_word_count(args: &[Value]) -> Value {
         String::new()
     };
     let mask = charmask(charlist.as_bytes());
-    let is_word = |c: u8| {
-        c.is_ascii_alphabetic() || (has_cl && mask[c as usize]) || c == b'\'' || c == b'-'
-    };
+    let is_word =
+        |c: u8| c.is_ascii_alphabetic() || (has_cl && mask[c as usize]) || c == b'\'' || c == b'-';
 
     let n = bytes.len();
     if n == 0 {
@@ -718,7 +721,9 @@ fn str_word_count(args: &[Value]) -> Value {
         }
         if p > start {
             match format {
-                1 => words.push(Value::str(String::from_utf8_lossy(&bytes[start..p]).into_owned())),
+                1 => words.push(Value::str(
+                    String::from_utf8_lossy(&bytes[start..p]).into_owned(),
+                )),
                 2 => pairs.push((
                     Value::int(start as i64),
                     Value::str(String::from_utf8_lossy(&bytes[start..p]).into_owned()),

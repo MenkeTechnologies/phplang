@@ -11,7 +11,10 @@ fn run(src: &str) -> String {
 #[test]
 fn str_split_codepoints() {
     // "héllo" is 5 codepoints; the 2-byte é must not be split mid-char.
-    assert_eq!(run(r#"<?php $a = mb_str_split("héllo"); echo count($a), "|", $a[1];"#), "5|é");
+    assert_eq!(
+        run(r#"<?php $a = mb_str_split("héllo"); echo count($a), "|", $a[1];"#),
+        "5|é"
+    );
     assert_eq!(
         run(r#"<?php $a = mb_str_split("héllo", 2); echo count($a), "|", $a[0], "|", $a[2];"#),
         "3|hé|o"
@@ -25,15 +28,33 @@ fn str_split_codepoints() {
 #[test]
 fn convert_case_modes() {
     // Integer modes: 0 upper, 1 lower, 2 title.
-    assert_eq!(run(r#"<?php echo mb_convert_case("héllo wörld", 0);"#), "HÉLLO WÖRLD");
+    assert_eq!(
+        run(r#"<?php echo mb_convert_case("héllo wörld", 0);"#),
+        "HÉLLO WÖRLD"
+    );
     assert_eq!(run(r#"<?php echo mb_convert_case("HÉLLO", 1);"#), "héllo");
-    assert_eq!(run(r#"<?php echo mb_convert_case("hello world", 2);"#), "Hello World");
+    assert_eq!(
+        run(r#"<?php echo mb_convert_case("hello world", 2);"#),
+        "Hello World"
+    );
     // Constant names reach the fn as strings (no constant table); both work.
-    assert_eq!(run(r#"<?php echo mb_convert_case("abc", MB_CASE_UPPER);"#), "ABC");
-    assert_eq!(run(r#"<?php echo mb_convert_case("ABC", MB_CASE_LOWER);"#), "abc");
-    assert_eq!(run(r#"<?php echo mb_convert_case("a b", MB_CASE_TITLE);"#), "A B");
+    assert_eq!(
+        run(r#"<?php echo mb_convert_case("abc", MB_CASE_UPPER);"#),
+        "ABC"
+    );
+    assert_eq!(
+        run(r#"<?php echo mb_convert_case("ABC", MB_CASE_LOWER);"#),
+        "abc"
+    );
+    assert_eq!(
+        run(r#"<?php echo mb_convert_case("a b", MB_CASE_TITLE);"#),
+        "A B"
+    );
     // Non-letter resets the word run: apostrophe boundary uppercases the "s".
-    assert_eq!(run(r#"<?php echo mb_convert_case("who's who", MB_CASE_TITLE);"#), "Who'S Who");
+    assert_eq!(
+        run(r#"<?php echo mb_convert_case("who's who", MB_CASE_TITLE);"#),
+        "Who'S Who"
+    );
 }
 
 #[test]
@@ -41,7 +62,10 @@ fn positions_codepoint_aware() {
     // é is one codepoint here, so "l" is at codepoint index 3 (byte index 4).
     assert_eq!(run(r#"<?php echo mb_strpos("héllo", "l");"#), "2");
     assert_eq!(run(r#"<?php echo mb_strpos("héllo", "l", 3);"#), "3");
-    assert_eq!(run(r#"<?php var_dump(mb_strpos("héllo", "z"));"#), "bool(false)\n");
+    assert_eq!(
+        run(r#"<?php var_dump(mb_strpos("héllo", "z"));"#),
+        "bool(false)\n"
+    );
     // Case-insensitive.
     assert_eq!(run(r#"<?php echo mb_stripos("HÉLLO", "é");"#), "1");
     // Last occurrence.
@@ -51,13 +75,22 @@ fn positions_codepoint_aware() {
 
 #[test]
 fn substr_count_and_pad() {
-    assert_eq!(run(r#"<?php echo mb_substr_count("héllo héllo", "é");"#), "2");
+    assert_eq!(
+        run(r#"<?php echo mb_substr_count("héllo héllo", "é");"#),
+        "2"
+    );
     assert_eq!(run(r#"<?php echo mb_substr_count("aaa", "aa");"#), "1");
     assert!(eval_capture(r#"<?php mb_substr_count("abc", "");"#).is_err());
     // Codepoint-counted padding.
     assert_eq!(run(r#"<?php echo mb_str_pad("é", 3, "-");"#), "é--");
-    assert_eq!(run(r#"<?php echo mb_str_pad("x", 4, "ab", STR_PAD_LEFT);"#), "abax");
-    assert_eq!(run(r#"<?php echo mb_str_pad("x", 5, "-", STR_PAD_BOTH);"#), "--x--");
+    assert_eq!(
+        run(r#"<?php echo mb_str_pad("x", 4, "ab", STR_PAD_LEFT);"#),
+        "abax"
+    );
+    assert_eq!(
+        run(r#"<?php echo mb_str_pad("x", 5, "-", STR_PAD_BOTH);"#),
+        "--x--"
+    );
     // Already long enough: unchanged.
     assert_eq!(run(r#"<?php echo mb_str_pad("hello", 3);"#), "hello");
 }
@@ -90,17 +123,32 @@ fn strwidth_east_asian() {
 #[test]
 fn convert_and_detect_encoding() {
     // Non-ASCII collapses to '?' when converting to ASCII.
-    assert_eq!(run(r#"<?php echo mb_convert_encoding("héllo", "ASCII");"#), "h?llo");
+    assert_eq!(
+        run(r#"<?php echo mb_convert_encoding("héllo", "ASCII");"#),
+        "h?llo"
+    );
     // Pure ASCII survives any conversion.
-    assert_eq!(run(r#"<?php echo mb_convert_encoding("hello", "UTF-8");"#), "hello");
+    assert_eq!(
+        run(r#"<?php echo mb_convert_encoding("hello", "UTF-8");"#),
+        "hello"
+    );
     // é (U+00E9 <= 0xFF) survives ISO-8859-1.
-    assert_eq!(run(r#"<?php echo mb_convert_encoding("héllo", "ISO-8859-1");"#), "héllo");
+    assert_eq!(
+        run(r#"<?php echo mb_convert_encoding("héllo", "ISO-8859-1");"#),
+        "héllo"
+    );
     // Detection: pure ASCII vs UTF-8.
     assert_eq!(run(r#"<?php echo mb_detect_encoding("hello");"#), "ASCII");
     assert_eq!(run(r#"<?php echo mb_detect_encoding("héllo");"#), "UTF-8");
     // Candidate list honored in order.
-    assert_eq!(run(r#"<?php echo mb_detect_encoding("héllo", ["ASCII", "UTF-8"]);"#), "UTF-8");
-    assert_eq!(run(r#"<?php echo mb_detect_encoding("hello", ["UTF-8", "ASCII"]);"#), "UTF-8");
+    assert_eq!(
+        run(r#"<?php echo mb_detect_encoding("héllo", ["ASCII", "UTF-8"]);"#),
+        "UTF-8"
+    );
+    assert_eq!(
+        run(r#"<?php echo mb_detect_encoding("hello", ["UTF-8", "ASCII"]);"#),
+        "UTF-8"
+    );
 }
 
 #[test]
@@ -113,7 +161,10 @@ fn strpos_offset_out_of_range_is_valueerror() {
     // Boundary offsets (== len, == -len) are valid, not errors.
     assert_eq!(run(r#"<?php echo mb_strpos("abc", "", 3);"#), "3");
     assert_eq!(run(r#"<?php echo mb_strpos("abc", "a", -3);"#), "0");
-    assert_eq!(run(r#"<?php var_dump(mb_strpos("abc", "c", 3));"#), "bool(false)\n");
+    assert_eq!(
+        run(r#"<?php var_dump(mb_strpos("abc", "c", 3));"#),
+        "bool(false)\n"
+    );
 }
 
 #[test]
@@ -163,33 +214,69 @@ fn strcut_byte_offsets_no_split() {
 
 #[test]
 fn split_regex() {
-    assert_eq!(run(r#"<?php echo implode("|", mb_split(",", "a,b,c"));"#), "a|b|c");
-    assert_eq!(run(r#"<?php echo implode("|", mb_split("\s+", "a  b   c"));"#), "a|b|c");
+    assert_eq!(
+        run(r#"<?php echo implode("|", mb_split(",", "a,b,c"));"#),
+        "a|b|c"
+    );
+    assert_eq!(
+        run(r#"<?php echo implode("|", mb_split("\s+", "a  b   c"));"#),
+        "a|b|c"
+    );
     // Limit caps the pieces; the last holds the remainder.
-    assert_eq!(run(r#"<?php echo implode("|", mb_split(",", "a,b,c,d", 2));"#), "a|b,c,d");
+    assert_eq!(
+        run(r#"<?php echo implode("|", mb_split(",", "a,b,c,d", 2));"#),
+        "a|b,c,d"
+    );
     // Empty pattern returns the whole string as one element.
-    assert_eq!(run(r#"<?php $a = mb_split("", "abc"); echo count($a), "|", $a[0];"#), "1|abc");
+    assert_eq!(
+        run(r#"<?php $a = mb_split("", "abc"); echo count($a), "|", $a[0];"#),
+        "1|abc"
+    );
     // Invalid regex returns false.
-    assert_eq!(run(r#"<?php var_dump(mb_split("(", "abc"));"#), "bool(false)\n");
+    assert_eq!(
+        run(r#"<?php var_dump(mb_split("(", "abc"));"#),
+        "bool(false)\n"
+    );
 }
 
 #[test]
 fn convert_kana_ascii_widths() {
     // Fullwidth alphanumerics + ideographic space -> halfwidth (mode "as").
-    assert_eq!(run("<?php echo mb_convert_kana(\"ＡＢＣ１２３　\", \"as\");"), "ABC123 ");
+    assert_eq!(
+        run("<?php echo mb_convert_kana(\"ＡＢＣ１２３　\", \"as\");"),
+        "ABC123 "
+    );
     // Halfwidth -> fullwidth (mode "AS").
-    assert_eq!(run(r#"<?php echo mb_convert_kana("ABC123", "AS");"#), "ＡＢＣ１２３");
+    assert_eq!(
+        run(r#"<?php echo mb_convert_kana("ABC123", "AS");"#),
+        "ＡＢＣ１２３"
+    );
     // Letters only: 'r' converts fullwidth letters, leaves digits alone.
-    assert_eq!(run("<?php echo mb_convert_kana(\"ＡＢ１２\", \"r\");"), "AB１２");
+    assert_eq!(
+        run("<?php echo mb_convert_kana(\"ＡＢ１２\", \"r\");"),
+        "AB１２"
+    );
     // Digits only: 'n' converts fullwidth digits, leaves letters alone.
-    assert_eq!(run("<?php echo mb_convert_kana(\"ＡＢ１２\", \"n\");"), "ＡＢ12");
+    assert_eq!(
+        run("<?php echo mb_convert_kana(\"ＡＢ１２\", \"n\");"),
+        "ＡＢ12"
+    );
 }
 
 #[test]
 fn check_and_internal_encoding() {
-    assert_eq!(run(r#"<?php var_dump(mb_check_encoding("hello", "ASCII"));"#), "bool(true)\n");
-    assert_eq!(run(r#"<?php var_dump(mb_check_encoding("héllo", "ASCII"));"#), "bool(false)\n");
-    assert_eq!(run(r#"<?php var_dump(mb_check_encoding("héllo", "UTF-8"));"#), "bool(true)\n");
+    assert_eq!(
+        run(r#"<?php var_dump(mb_check_encoding("hello", "ASCII"));"#),
+        "bool(true)\n"
+    );
+    assert_eq!(
+        run(r#"<?php var_dump(mb_check_encoding("héllo", "ASCII"));"#),
+        "bool(false)\n"
+    );
+    assert_eq!(
+        run(r#"<?php var_dump(mb_check_encoding("héllo", "UTF-8"));"#),
+        "bool(true)\n"
+    );
     // Getter returns the default; setter returns true and updates the getter.
     assert_eq!(run(r#"<?php echo mb_internal_encoding();"#), "UTF-8");
     assert_eq!(

@@ -37,7 +37,10 @@ fn pop_returns_last_and_shrinks() {
 #[test]
 fn pop_on_empty_returns_null() {
     // array_pop of an empty array is null (echoes as "").
-    assert_eq!(run("<?php $a = []; $x = array_pop($a); echo '[', $x, ']';"), "[]");
+    assert_eq!(
+        run("<?php $a = []; $x = array_pop($a); echo '[', $x, ']';"),
+        "[]"
+    );
 }
 
 #[test]
@@ -97,7 +100,10 @@ fn shift_preserves_string_keys() {
 
 #[test]
 fn shift_on_empty_returns_null() {
-    assert_eq!(run("<?php $a = []; $x = array_shift($a); echo '[', $x, ']';"), "[]");
+    assert_eq!(
+        run("<?php $a = []; $x = array_shift($a); echo '[', $x, ']';"),
+        "[]"
+    );
 }
 
 #[test]

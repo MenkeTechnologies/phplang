@@ -66,7 +66,10 @@ fn preg_match_all_pattern_and_set_order() {
 
 #[test]
 fn preg_replace_scalar_and_backrefs() {
-    assert_eq!(run(r#"<?php echo preg_replace('/\d/', '#', 'a1b2c3');"#), "a#b#c#");
+    assert_eq!(
+        run(r#"<?php echo preg_replace('/\d/', '#', 'a1b2c3');"#),
+        "a#b#c#"
+    );
     // Swap two captured words via `$1`/`$2`.
     assert_eq!(
         run(r#"<?php echo preg_replace('/(\w+)\s(\w+)/', '$2 $1', 'hello world');"#),
@@ -82,10 +85,7 @@ fn preg_replace_scalar_and_backrefs() {
         "a55"
     );
     // Literal `$` in the replacement (not a backref).
-    assert_eq!(
-        run(r#"<?php echo preg_replace('/x/', '$k', 'x');"#),
-        "$k"
-    );
+    assert_eq!(run(r#"<?php echo preg_replace('/x/', '$k', 'x');"#), "$k");
     // Limit argument caps the number of replacements.
     assert_eq!(
         run(r#"<?php echo preg_replace('/\d/', '#', 'a1b2c3', 2);"#),
@@ -158,10 +158,7 @@ fn preg_split_basic_limit_and_flags() {
 #[test]
 fn preg_quote_escapes_metacharacters() {
     assert_eq!(run(r#"<?php echo preg_quote('a.b*c');"#), r"a\.b\*c");
-    assert_eq!(
-        run(r#"<?php echo preg_quote('1+1=2');"#),
-        r"1\+1\=2"
-    );
+    assert_eq!(run(r#"<?php echo preg_quote('1+1=2');"#), r"1\+1\=2");
     // The optional delimiter argument is escaped too.
     assert_eq!(run(r#"<?php echo preg_quote('a/b', '/');"#), r"a\/b");
 }
@@ -188,15 +185,9 @@ fn multiline_and_dotall_flags() {
         "3"
     );
     // `s`: `.` matches newline.
-    assert_eq!(
-        run("<?php echo preg_match('/a.b/s', \"a\\nb\");"),
-        "1"
-    );
+    assert_eq!(run("<?php echo preg_match('/a.b/s', \"a\\nb\");"), "1");
     // Without `s`, `.` does not cross a newline.
-    assert_eq!(
-        run("<?php echo preg_match('/a.b/', \"a\\nb\");"),
-        "0"
-    );
+    assert_eq!(run("<?php echo preg_match('/a.b/', \"a\\nb\");"), "0");
 }
 
 #[test]

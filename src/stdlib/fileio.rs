@@ -99,7 +99,10 @@ fn file_flags(v: &Value) -> (bool, bool) {
         Value::Int(n) => (n & 2 != 0, n & 4 != 0),
         Value::Str(s) => {
             let up = s.to_ascii_uppercase();
-            (up.contains("IGNORE_NEW_LINES"), up.contains("SKIP_EMPTY_LINES"))
+            (
+                up.contains("IGNORE_NEW_LINES"),
+                up.contains("SKIP_EMPTY_LINES"),
+            )
         }
         _ => (false, false),
     }
@@ -542,7 +545,11 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
                 Some(i) => {
                     let dir = &pattern[..i];
                     let read = if dir.is_empty() { "/" } else { dir };
-                    (read.to_string(), pattern[..=i].to_string(), pattern[i + 1..].to_string())
+                    (
+                        read.to_string(),
+                        pattern[..=i].to_string(),
+                        pattern[i + 1..].to_string(),
+                    )
                 }
                 None => (".".to_string(), String::new(), pattern.clone()),
             };
@@ -629,7 +636,11 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         }
         "dirname" => {
             let path = str_arg(args, 0);
-            let levels = if provided(args, 1) { int_arg(args, 1) } else { 1 };
+            let levels = if provided(args, 1) {
+                int_arg(args, 1)
+            } else {
+                1
+            };
             Value::str(php_dirname(&path, levels))
         }
         "pathinfo" => {

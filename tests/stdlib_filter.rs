@@ -15,13 +15,31 @@ fn run(src: &str) -> String {
 fn validate_int_basic_and_typing() {
     // Success returns a real int (no quotes under json_encode); whitespace and a
     // leading sign are allowed.
-    assert_eq!(run(r#"<?php echo json_encode(filter_var("123", FILTER_VALIDATE_INT));"#), "123");
-    assert_eq!(run(r#"<?php echo filter_var(" 42 ", FILTER_VALIDATE_INT);"#), "42");
-    assert_eq!(run(r#"<?php echo filter_var("-5", FILTER_VALIDATE_INT);"#), "-5");
+    assert_eq!(
+        run(r#"<?php echo json_encode(filter_var("123", FILTER_VALIDATE_INT));"#),
+        "123"
+    );
+    assert_eq!(
+        run(r#"<?php echo filter_var(" 42 ", FILTER_VALIDATE_INT);"#),
+        "42"
+    );
+    assert_eq!(
+        run(r#"<?php echo filter_var("-5", FILTER_VALIDATE_INT);"#),
+        "-5"
+    );
     // Leading zeros ("007") are rejected as false, matching PHP.
-    assert_eq!(run(r#"<?php var_export(filter_var("007", FILTER_VALIDATE_INT));"#), "false");
-    assert_eq!(run(r#"<?php var_export(filter_var("12.5", FILTER_VALIDATE_INT));"#), "false");
-    assert_eq!(run(r#"<?php var_export(filter_var("abc", FILTER_VALIDATE_INT));"#), "false");
+    assert_eq!(
+        run(r#"<?php var_export(filter_var("007", FILTER_VALIDATE_INT));"#),
+        "false"
+    );
+    assert_eq!(
+        run(r#"<?php var_export(filter_var("12.5", FILTER_VALIDATE_INT));"#),
+        "false"
+    );
+    assert_eq!(
+        run(r#"<?php var_export(filter_var("abc", FILTER_VALIDATE_INT));"#),
+        "false"
+    );
 }
 
 #[test]
@@ -46,10 +64,22 @@ fn validate_int_i64_min_boundary() {
 #[test]
 fn validate_int_signed_and_zero_forms() {
     // "0", "+0", "-0" all validate to 0 (a lone zero is not a leading-zero error).
-    assert_eq!(run(r#"<?php echo filter_var("0", FILTER_VALIDATE_INT);"#), "0");
-    assert_eq!(run(r#"<?php echo filter_var("+0", FILTER_VALIDATE_INT);"#), "0");
-    assert_eq!(run(r#"<?php echo filter_var("-0", FILTER_VALIDATE_INT);"#), "0");
-    assert_eq!(run(r#"<?php echo filter_var("+42", FILTER_VALIDATE_INT);"#), "42");
+    assert_eq!(
+        run(r#"<?php echo filter_var("0", FILTER_VALIDATE_INT);"#),
+        "0"
+    );
+    assert_eq!(
+        run(r#"<?php echo filter_var("+0", FILTER_VALIDATE_INT);"#),
+        "0"
+    );
+    assert_eq!(
+        run(r#"<?php echo filter_var("-0", FILTER_VALIDATE_INT);"#),
+        "0"
+    );
+    assert_eq!(
+        run(r#"<?php echo filter_var("+42", FILTER_VALIDATE_INT);"#),
+        "42"
+    );
     // A non-ASCII whitespace prefix (NBSP) is NOT trimmed by PHP and must fail.
     assert_eq!(
         run("<?php var_export(filter_var(\"\u{a0}42\", FILTER_VALIDATE_INT));"),
@@ -66,7 +96,9 @@ fn validate_int_hex_octal_flags() {
         "26"
     );
     assert_eq!(
-        run(r#"<?php var_export(filter_var("-0x1A", FILTER_VALIDATE_INT, FILTER_FLAG_ALLOW_HEX));"#),
+        run(
+            r#"<?php var_export(filter_var("-0x1A", FILTER_VALIDATE_INT, FILTER_FLAG_ALLOW_HEX));"#
+        ),
         "false"
     );
     // Bare "0x" has no digits.
@@ -106,25 +138,44 @@ fn validate_int_null_on_failure() {
 
 #[test]
 fn validate_float_and_thousand_flag() {
-    assert_eq!(run(r#"<?php echo filter_var("12.5", FILTER_VALIDATE_FLOAT);"#), "12.5");
+    assert_eq!(
+        run(r#"<?php echo filter_var("12.5", FILTER_VALIDATE_FLOAT);"#),
+        "12.5"
+    );
     // The thousands separator is only accepted with FILTER_FLAG_ALLOW_THOUSAND.
     assert_eq!(
-        run(r#"<?php echo filter_var("1,234.5", FILTER_VALIDATE_FLOAT, FILTER_FLAG_ALLOW_THOUSAND);"#),
+        run(
+            r#"<?php echo filter_var("1,234.5", FILTER_VALIDATE_FLOAT, FILTER_FLAG_ALLOW_THOUSAND);"#
+        ),
         "1234.5"
     );
     assert_eq!(
         run(r#"<?php var_export(filter_var("1,234.5", FILTER_VALIDATE_FLOAT));"#),
         "false"
     );
-    assert_eq!(run(r#"<?php var_export(filter_var("x", FILTER_VALIDATE_FLOAT));"#), "false");
+    assert_eq!(
+        run(r#"<?php var_export(filter_var("x", FILTER_VALIDATE_FLOAT));"#),
+        "false"
+    );
     // Scientific notation is always accepted (no flag needed), matching PHP.
-    assert_eq!(run(r#"<?php echo filter_var("1.5e3", FILTER_VALIDATE_FLOAT);"#), "1500");
+    assert_eq!(
+        run(r#"<?php echo filter_var("1.5e3", FILTER_VALIDATE_FLOAT);"#),
+        "1500"
+    );
     // "inf"/"nan" look numeric to Rust's parser but PHP's float filter rejects them.
-    assert_eq!(run(r#"<?php var_export(filter_var("inf", FILTER_VALIDATE_FLOAT));"#), "false");
-    assert_eq!(run(r#"<?php var_export(filter_var("nan", FILTER_VALIDATE_FLOAT));"#), "false");
+    assert_eq!(
+        run(r#"<?php var_export(filter_var("inf", FILTER_VALIDATE_FLOAT));"#),
+        "false"
+    );
+    assert_eq!(
+        run(r#"<?php var_export(filter_var("nan", FILTER_VALIDATE_FLOAT));"#),
+        "false"
+    );
     // A lone thousands separator collapses to empty and must fail, not parse "".
     assert_eq!(
-        run(r#"<?php var_export(filter_var(",", FILTER_VALIDATE_FLOAT, FILTER_FLAG_ALLOW_THOUSAND));"#),
+        run(
+            r#"<?php var_export(filter_var(",", FILTER_VALIDATE_FLOAT, FILTER_FLAG_ALLOW_THOUSAND));"#
+        ),
         "false"
     );
 }
@@ -133,21 +184,44 @@ fn validate_float_and_thousand_flag() {
 
 #[test]
 fn validate_boolean_recognized_values() {
-    assert_eq!(run(r#"<?php var_export(filter_var("yes", FILTER_VALIDATE_BOOLEAN));"#), "true");
-    assert_eq!(run(r#"<?php var_export(filter_var("on", FILTER_VALIDATE_BOOLEAN));"#), "true");
-    assert_eq!(run(r#"<?php var_export(filter_var("1", FILTER_VALIDATE_BOOLEAN));"#), "true");
-    assert_eq!(run(r#"<?php var_export(filter_var("no", FILTER_VALIDATE_BOOLEAN));"#), "false");
-    assert_eq!(run(r#"<?php var_export(filter_var("off", FILTER_VALIDATE_BOOLEAN));"#), "false");
+    assert_eq!(
+        run(r#"<?php var_export(filter_var("yes", FILTER_VALIDATE_BOOLEAN));"#),
+        "true"
+    );
+    assert_eq!(
+        run(r#"<?php var_export(filter_var("on", FILTER_VALIDATE_BOOLEAN));"#),
+        "true"
+    );
+    assert_eq!(
+        run(r#"<?php var_export(filter_var("1", FILTER_VALIDATE_BOOLEAN));"#),
+        "true"
+    );
+    assert_eq!(
+        run(r#"<?php var_export(filter_var("no", FILTER_VALIDATE_BOOLEAN));"#),
+        "false"
+    );
+    assert_eq!(
+        run(r#"<?php var_export(filter_var("off", FILTER_VALIDATE_BOOLEAN));"#),
+        "false"
+    );
     // The BOOL alias resolves to the same filter.
-    assert_eq!(run(r#"<?php var_export(filter_var("true", FILTER_VALIDATE_BOOL));"#), "true");
+    assert_eq!(
+        run(r#"<?php var_export(filter_var("true", FILTER_VALIDATE_BOOL));"#),
+        "true"
+    );
 }
 
 #[test]
 fn validate_boolean_unrecognized_and_null_on_failure() {
     // Unrecognized is false by default, null under FILTER_NULL_ON_FAILURE.
-    assert_eq!(run(r#"<?php var_export(filter_var("maybe", FILTER_VALIDATE_BOOLEAN));"#), "false");
     assert_eq!(
-        run(r#"<?php var_dump(filter_var("maybe", FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE));"#),
+        run(r#"<?php var_export(filter_var("maybe", FILTER_VALIDATE_BOOLEAN));"#),
+        "false"
+    );
+    assert_eq!(
+        run(
+            r#"<?php var_dump(filter_var("maybe", FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE));"#
+        ),
         "NULL\n"
     );
 }
@@ -161,8 +235,14 @@ fn validate_email() {
         "foo.bar@sub.example.co.uk"
     );
     // A dotless domain and a malformed address are both rejected (PHP 8.5).
-    assert_eq!(run(r#"<?php var_export(filter_var("foo@localhost", FILTER_VALIDATE_EMAIL));"#), "false");
-    assert_eq!(run(r#"<?php var_export(filter_var("not-an-email", FILTER_VALIDATE_EMAIL));"#), "false");
+    assert_eq!(
+        run(r#"<?php var_export(filter_var("foo@localhost", FILTER_VALIDATE_EMAIL));"#),
+        "false"
+    );
+    assert_eq!(
+        run(r#"<?php var_export(filter_var("not-an-email", FILTER_VALIDATE_EMAIL));"#),
+        "false"
+    );
 }
 
 #[test]
@@ -172,21 +252,36 @@ fn validate_url() {
         "http://example.com/path?q=1"
     );
     // A schemeless URL is rejected.
-    assert_eq!(run(r#"<?php var_export(filter_var("example.com", FILTER_VALIDATE_URL));"#), "false");
+    assert_eq!(
+        run(r#"<?php var_export(filter_var("example.com", FILTER_VALIDATE_URL));"#),
+        "false"
+    );
 }
 
 #[test]
 fn validate_ip_families() {
-    assert_eq!(run(r#"<?php echo filter_var("127.0.0.1", FILTER_VALIDATE_IP);"#), "127.0.0.1");
-    assert_eq!(run(r#"<?php echo filter_var("::1", FILTER_VALIDATE_IP, FILTER_FLAG_IPV6);"#), "::1");
+    assert_eq!(
+        run(r#"<?php echo filter_var("127.0.0.1", FILTER_VALIDATE_IP);"#),
+        "127.0.0.1"
+    );
+    assert_eq!(
+        run(r#"<?php echo filter_var("::1", FILTER_VALIDATE_IP, FILTER_FLAG_IPV6);"#),
+        "::1"
+    );
     // An IPv6 address is rejected when only IPv4 is requested.
     assert_eq!(
         run(r#"<?php var_export(filter_var("::1", FILTER_VALIDATE_IP, FILTER_FLAG_IPV4));"#),
         "false"
     );
-    assert_eq!(run(r#"<?php var_export(filter_var("999.1.1.1", FILTER_VALIDATE_IP));"#), "false");
+    assert_eq!(
+        run(r#"<?php var_export(filter_var("999.1.1.1", FILTER_VALIDATE_IP));"#),
+        "false"
+    );
     // Leading zeros in an octet are rejected (matches PHP + std::net).
-    assert_eq!(run(r#"<?php var_export(filter_var("127.0.0.01", FILTER_VALIDATE_IP));"#), "false");
+    assert_eq!(
+        run(r#"<?php var_export(filter_var("127.0.0.01", FILTER_VALIDATE_IP));"#),
+        "false"
+    );
 }
 
 // ── FILTER_VALIDATE_MAC ──────────────────────────────────────────────────────
@@ -233,14 +328,19 @@ fn validate_mac_rejects_malformed() {
 
 #[test]
 fn validate_domain_hostname_flag() {
-    assert_eq!(run(r#"<?php echo filter_var("example.com", FILTER_VALIDATE_DOMAIN);"#), "example.com");
+    assert_eq!(
+        run(r#"<?php echo filter_var("example.com", FILTER_VALIDATE_DOMAIN);"#),
+        "example.com"
+    );
     assert_eq!(
         run(r#"<?php echo filter_var("good.com", FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME);"#),
         "good.com"
     );
     // A leading hyphen is only rejected under FILTER_FLAG_HOSTNAME.
     assert_eq!(
-        run(r#"<?php var_export(filter_var("-bad.com", FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME));"#),
+        run(
+            r#"<?php var_export(filter_var("-bad.com", FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME));"#
+        ),
         "false"
     );
 }
@@ -289,7 +389,10 @@ fn sanitize_special_chars_numeric_entities() {
 #[test]
 fn sanitize_string_strips_tags() {
     // strip_tags then encode quotes.
-    assert_eq!(run(r#"<?php echo filter_var("<b>hi</b>", FILTER_SANITIZE_STRING);"#), "hi");
+    assert_eq!(
+        run(r#"<?php echo filter_var("<b>hi</b>", FILTER_SANITIZE_STRING);"#),
+        "hi"
+    );
     assert_eq!(
         run(r#"<?php echo filter_var("say \"x\"", FILTER_SANITIZE_STRING);"#),
         "say &#34;x&#34;"
@@ -311,12 +414,20 @@ fn sanitize_email_and_url() {
 
 #[test]
 fn sanitize_number_int_and_float() {
-    assert_eq!(run(r#"<?php echo filter_var("a-1b2c+3", FILTER_SANITIZE_NUMBER_INT);"#), "-12+3");
+    assert_eq!(
+        run(r#"<?php echo filter_var("a-1b2c+3", FILTER_SANITIZE_NUMBER_INT);"#),
+        "-12+3"
+    );
     // Default float sanitize keeps only digits and signs.
-    assert_eq!(run(r#"<?php echo filter_var("a1.5e3,2x", FILTER_SANITIZE_NUMBER_FLOAT);"#), "1532");
+    assert_eq!(
+        run(r#"<?php echo filter_var("a1.5e3,2x", FILTER_SANITIZE_NUMBER_FLOAT);"#),
+        "1532"
+    );
     // With ALLOW_FRACTION the decimal point survives.
     assert_eq!(
-        run(r#"<?php echo filter_var("a1.5e3,2x", FILTER_SANITIZE_NUMBER_FLOAT, FILTER_FLAG_ALLOW_FRACTION);"#),
+        run(
+            r#"<?php echo filter_var("a1.5e3,2x", FILTER_SANITIZE_NUMBER_FLOAT, FILTER_FLAG_ALLOW_FRACTION);"#
+        ),
         "1.532"
     );
 }
@@ -324,7 +435,10 @@ fn sanitize_number_int_and_float() {
 #[test]
 fn filter_default_passthrough() {
     // FILTER_DEFAULT does no filtering.
-    assert_eq!(run(r#"<?php echo filter_var("hello world", FILTER_DEFAULT);"#), "hello world");
+    assert_eq!(
+        run(r#"<?php echo filter_var("hello world", FILTER_DEFAULT);"#),
+        "hello world"
+    );
     // No filter argument also means FILTER_DEFAULT.
     assert_eq!(run(r#"<?php echo filter_var("plain");"#), "plain");
 }
@@ -347,7 +461,9 @@ fn filter_var_array_per_field_specs() {
 #[test]
 fn filter_var_array_single_filter_for_all() {
     assert_eq!(
-        run(r#"<?php echo json_encode(filter_var_array(["a"=>"1","b"=>"2"], FILTER_VALIDATE_INT));"#),
+        run(
+            r#"<?php echo json_encode(filter_var_array(["a"=>"1","b"=>"2"], FILTER_VALIDATE_INT));"#
+        ),
         r#"{"a":1,"b":2}"#
     );
 }
@@ -356,7 +472,9 @@ fn filter_var_array_single_filter_for_all() {
 fn filter_var_array_missing_field_is_null() {
     // A field named in the definition but absent from the data is null, not false.
     assert_eq!(
-        run(r#"<?php echo json_encode(filter_var_array(["a"=>"1"], ["a"=>FILTER_VALIDATE_INT,"b"=>FILTER_VALIDATE_INT]));"#),
+        run(
+            r#"<?php echo json_encode(filter_var_array(["a"=>"1"], ["a"=>FILTER_VALIDATE_INT,"b"=>FILTER_VALIDATE_INT]));"#
+        ),
         r#"{"a":1,"b":null}"#
     );
 }

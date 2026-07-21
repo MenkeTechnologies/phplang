@@ -9,7 +9,10 @@ fn run(src: &str) -> String {
 
 #[test]
 fn md5_known_vectors() {
-    assert_eq!(run(r#"<?php echo md5("");"#), "d41d8cd98f00b204e9800998ecf8427e");
+    assert_eq!(
+        run(r#"<?php echo md5("");"#),
+        "d41d8cd98f00b204e9800998ecf8427e"
+    );
     assert_eq!(
         run(r#"<?php echo md5("The quick brown fox jumped over the lazy dog.");"#),
         "5c6ffbdd40d9556b73a21e63c3e0e904"
@@ -47,7 +50,10 @@ fn hash_sha256_sha512() {
 
 #[test]
 fn hash_md5_sha1_via_algo() {
-    assert_eq!(run(r#"<?php echo hash("md5", "");"#), "d41d8cd98f00b204e9800998ecf8427e");
+    assert_eq!(
+        run(r#"<?php echo hash("md5", "");"#),
+        "d41d8cd98f00b204e9800998ecf8427e"
+    );
     assert_eq!(
         run(r#"<?php echo hash("sha1", "abc");"#),
         "a9993e364706816aba3e25717850c26c9cd0d89d"
@@ -69,12 +75,20 @@ fn crc32_function_value() {
 fn hash_crc32_variants() {
     let dog = "The quick brown fox jumped over the lazy dog.";
     // crc32b == hexdec matches crc32(); crc32 is the distinct BZIP2 variant.
-    assert_eq!(run(&format!(r#"<?php echo hash("crc32b", "{dog}");"#)), "82a34642");
-    assert_eq!(run(&format!(r#"<?php echo hash("crc32", "{dog}");"#)), "413a86af");
+    assert_eq!(
+        run(&format!(r#"<?php echo hash("crc32b", "{dog}");"#)),
+        "82a34642"
+    );
+    assert_eq!(
+        run(&format!(r#"<?php echo hash("crc32", "{dog}");"#)),
+        "413a86af"
+    );
     assert_eq!(run(r#"<?php echo hash("crc32b", "");"#), "00000000");
     // Cross-check crc32() equals hexdec(hash('crc32b', …)).
     assert_eq!(
-        run(&format!(r#"<?php echo crc32("{dog}") === hexdec(hash("crc32b","{dog}")) ? "y":"n";"#)),
+        run(&format!(
+            r#"<?php echo crc32("{dog}") === hexdec(hash("crc32b","{dog}")) ? "y":"n";"#
+        )),
         "y"
     );
 }
@@ -151,7 +165,10 @@ fn hash_algos_list() {
         run(r#"<?php echo implode(",", hash_algos());"#),
         "md5,sha1,sha256,sha512,crc32,crc32b"
     );
-    assert_eq!(run(r#"<?php echo in_array("sha512", hash_algos()) ? "y":"n";"#), "y");
+    assert_eq!(
+        run(r#"<?php echo in_array("sha512", hash_algos()) ? "y":"n";"#),
+        "y"
+    );
 }
 
 #[test]

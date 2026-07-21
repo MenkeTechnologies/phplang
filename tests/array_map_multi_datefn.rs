@@ -16,7 +16,8 @@ fn array_map_single_preserves_keys() {
 
 #[test]
 fn array_map_multiple_arrays() {
-    let src = r#"<?php echo implode(",", array_map(fn($a, $b) => $a + $b, [1, 2, 3], [10, 20, 30]));"#;
+    let src =
+        r#"<?php echo implode(",", array_map(fn($a, $b) => $a + $b, [1, 2, 3], [10, 20, 30]));"#;
     assert_eq!(run(src), "11,22,33");
 }
 

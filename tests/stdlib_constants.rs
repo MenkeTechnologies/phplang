@@ -24,7 +24,10 @@ fn php_eol_is_newline() {
 fn math_constants() {
     assert_eq!(run("<?php printf('%.5f', M_PI);"), "3.14159");
     assert_eq!(run("<?php printf('%.5f', M_E);"), "2.71828");
-    assert_eq!(run("<?php echo M_SQRT2 > 1.4141 && M_SQRT2 < 1.4143 ? 'y' : 'n';"), "y");
+    assert_eq!(
+        run("<?php echo M_SQRT2 > 1.4141 && M_SQRT2 < 1.4143 ? 'y' : 'n';"),
+        "y"
+    );
 }
 
 #[test]
@@ -59,7 +62,10 @@ fn define_does_not_redefine() {
 #[test]
 fn undefined_constant_falls_back_to_name() {
     // PHP 7 leniency (minus the notice): an undefined bareword is its own name.
-    assert_eq!(run("<?php echo THIS_IS_NOT_DEFINED;"), "THIS_IS_NOT_DEFINED");
+    assert_eq!(
+        run("<?php echo THIS_IS_NOT_DEFINED;"),
+        "THIS_IS_NOT_DEFINED"
+    );
 }
 
 #[test]

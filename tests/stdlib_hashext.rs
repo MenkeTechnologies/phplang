@@ -18,7 +18,12 @@ fn temp_path(tag: &str) -> PathBuf {
         .unwrap()
         .as_nanos();
     let mut p = std::env::temp_dir();
-    p.push(format!("phplang_hashext_{}_{}_{}.tmp", tag, std::process::id(), nanos));
+    p.push(format!(
+        "phplang_hashext_{}_{}_{}.tmp",
+        tag,
+        std::process::id(),
+        nanos
+    ));
     p
 }
 
@@ -120,10 +125,19 @@ fn hash_hmac_file_matches_reference() {
 
 #[test]
 fn hash_equals_basic() {
-    assert_eq!(run(r#"<?php echo hash_equals("abc", "abc") === true ? "y" : "n";"#), "y");
-    assert_eq!(run(r#"<?php echo hash_equals("abc", "abd") === false ? "y" : "n";"#), "y");
+    assert_eq!(
+        run(r#"<?php echo hash_equals("abc", "abc") === true ? "y" : "n";"#),
+        "y"
+    );
+    assert_eq!(
+        run(r#"<?php echo hash_equals("abc", "abd") === false ? "y" : "n";"#),
+        "y"
+    );
     // Different lengths are false.
-    assert_eq!(run(r#"<?php echo hash_equals("abc", "ab") ? "y" : "n";"#), "n");
+    assert_eq!(
+        run(r#"<?php echo hash_equals("abc", "ab") ? "y" : "n";"#),
+        "n"
+    );
     // Empty strings compare equal.
     assert_eq!(run(r#"<?php echo hash_equals("", "") ? "y" : "n";"#), "y");
     // Longer known vectors.
@@ -137,7 +151,9 @@ fn hash_equals_basic() {
 fn pbkdf2_rfc6070_sha1_vectors() {
     // RFC 6070 test vectors for PBKDF2-HMAC-SHA1 (raw output, length = dkLen).
     assert_eq!(
-        run(r#"<?php echo hash_pbkdf2("sha1", "password", "salt", 1, 20, true) === hex2bin("0c60c80f961f0e71f3a9b524af6012062fe037a6") ? "y" : "n";"#),
+        run(
+            r#"<?php echo hash_pbkdf2("sha1", "password", "salt", 1, 20, true) === hex2bin("0c60c80f961f0e71f3a9b524af6012062fe037a6") ? "y" : "n";"#
+        ),
         "y"
     );
     // c=2 as the hex output form (length = 40 hex chars = 20 bytes).
@@ -156,7 +172,9 @@ fn pbkdf2_rfc6070_sha1_vectors() {
 fn pbkdf2_sha256_and_length_zero() {
     // PBKDF2-HMAC-SHA256, c=1 (well-known vector).
     assert_eq!(
-        run(r#"<?php echo hash_pbkdf2("sha256", "password", "salt", 1, 32, true) === hex2bin("120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b") ? "y" : "n";"#),
+        run(
+            r#"<?php echo hash_pbkdf2("sha256", "password", "salt", 1, 32, true) === hex2bin("120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b") ? "y" : "n";"#
+        ),
         "y"
     );
     // length = 0 uses the full digest: sha256 => 64 hex chars.

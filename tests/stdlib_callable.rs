@@ -161,14 +161,8 @@ fn function_exists_expanded_builtins() {
 // they existed.
 #[test]
 fn function_exists_language_constructs_are_false() {
-    assert_eq!(
-        run("<?php echo function_exists('isset') ? 'y' : 'n';"),
-        "n"
-    );
-    assert_eq!(
-        run("<?php echo function_exists('empty') ? 'y' : 'n';"),
-        "n"
-    );
+    assert_eq!(run("<?php echo function_exists('isset') ? 'y' : 'n';"), "n");
+    assert_eq!(run("<?php echo function_exists('empty') ? 'y' : 'n';"), "n");
 }
 
 // ── array callables ──────────────────────────────────────────────────────────

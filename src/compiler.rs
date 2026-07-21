@@ -926,7 +926,10 @@ impl Compiler {
                             }
                         }
                     }
-                    b.emit(Op::CallBuiltin(ops::CALL_SPREAD, (args.len() * 2 + 1) as u8), 0);
+                    b.emit(
+                        Op::CallBuiltin(ops::CALL_SPREAD, (args.len() * 2 + 1) as u8),
+                        0,
+                    );
                 } else {
                     let idx = b.add_constant(Value::str(name.clone()));
                     b.emit(Op::LoadConst(idx), 0);
@@ -936,7 +939,8 @@ impl Compiler {
                     b.emit(Op::CallBuiltin(ops::CALL, (args.len() + 1) as u8), 0);
                     // By-reference parameters: write the callee's final values back
                     // to the caller's argument variables (leaving the call result).
-                    if let Some(positions) = self.byref_fns.get(&name.to_ascii_lowercase()).cloned() {
+                    if let Some(positions) = self.byref_fns.get(&name.to_ascii_lowercase()).cloned()
+                    {
                         for pos in positions {
                             if let Some(Expr::Var(vname)) = args.get(pos) {
                                 let nidx = b.add_constant(Value::str(vname.clone()));
@@ -1465,7 +1469,10 @@ impl Compiler {
                 for k in &prefix {
                     c.compile_expr(b, k)?;
                 }
-                b.emit(Op::CallBuiltin(ops::PATH_APPEND_CHILD, (prefix.len() + 1) as u8), 0);
+                b.emit(
+                    Op::CallBuiltin(ops::PATH_APPEND_CHILD, (prefix.len() + 1) as u8),
+                    0,
+                );
                 Ok(())
             })?;
             // Keep writing through $@t along the remaining segments.
@@ -1474,7 +1481,11 @@ impl Compiler {
 
         // No mid-append: keys with an optional trailing `[]` append.
         let append = matches!(segs.last(), Some(LvSeg::Append));
-        let key_segs = if append { &segs[..segs.len() - 1] } else { segs };
+        let key_segs = if append {
+            &segs[..segs.len() - 1]
+        } else {
+            segs
+        };
         let keys: Vec<&Expr> = key_segs
             .iter()
             .map(|s| match s {
@@ -1549,10 +1560,16 @@ impl Compiler {
                 for t in &key_tmps {
                     self.emit_get_var(b, t);
                 }
-                b.emit(Op::CallBuiltin(ops::GET_PATH, (key_tmps.len() + 1) as u8), 0);
+                b.emit(
+                    Op::CallBuiltin(ops::GET_PATH, (key_tmps.len() + 1) as u8),
+                    0,
+                );
                 self.compile_expr(b, rhs)?;
                 self.emit_binop(b, cop);
-                b.emit(Op::CallBuiltin(ops::SET_PATH, (key_tmps.len() + 2) as u8), 0);
+                b.emit(
+                    Op::CallBuiltin(ops::SET_PATH, (key_tmps.len() + 2) as u8),
+                    0,
+                );
             }
         }
         Ok(())

@@ -111,7 +111,11 @@ fn php_array_column(h: &mut host::PhpHost, args: &[Value]) -> Value {
         } else {
             continue;
         };
-        match if has_idx { row_get(h, &row, &idx) } else { None } {
+        match if has_idx {
+            row_get(h, &row, &idx)
+        } else {
+            None
+        } {
             Some(k) => h.arr_set_key(&out, &k, value),
             None => h.arr_push_auto(&out, value),
         }

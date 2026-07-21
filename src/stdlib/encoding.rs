@@ -212,8 +212,16 @@ fn uuencode(src: &[u8]) -> Vec<u8> {
         let mut j = 0;
         while j < line_len {
             let b0 = src[i + j] as i32;
-            let b1 = if j + 1 < line_len { src[i + j + 1] as i32 } else { 0 };
-            let b2 = if j + 2 < line_len { src[i + j + 2] as i32 } else { 0 };
+            let b1 = if j + 1 < line_len {
+                src[i + j + 1] as i32
+            } else {
+                0
+            };
+            let b2 = if j + 2 < line_len {
+                src[i + j + 2] as i32
+            } else {
+                0
+            };
             out.push(uu_enc(b0 >> 2));
             out.push(uu_enc(((b0 << 4) & 0x30) | ((b1 >> 4) & 0x0f)));
             out.push(uu_enc(((b1 << 2) & 0x3c) | ((b2 >> 6) & 0x03)));
@@ -332,9 +340,13 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         // Deprecated Latin-1<->UTF-8 shims. In this UTF-8 runtime they operate on
         // the string's bytes: encode widens each byte to a code point, decode
         // narrows each code point back to a byte (>0xFF -> '?'). Exact for ASCII.
-        "utf8_encode" => {
-            Value::str(str_arg(args, 0).as_bytes().iter().map(|&b| b as char).collect::<String>())
-        }
+        "utf8_encode" => Value::str(
+            str_arg(args, 0)
+                .as_bytes()
+                .iter()
+                .map(|&b| b as char)
+                .collect::<String>(),
+        ),
         "utf8_decode" => {
             let s = str_arg(args, 0);
             let bytes: Vec<u8> = s
