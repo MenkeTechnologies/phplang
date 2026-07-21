@@ -141,6 +141,8 @@ impl Parser {
                 self.expect_punct(";")?;
                 StmtKind::Echo(vec![e])
             }
+            _ if self.at_kw("namespace") => self.namespace_stmt()?,
+            _ if self.at_kw("use") => self.use_import_stmt()?,
             _ if self.at_kw("if") => self.if_stmt()?,
             _ if self.at_kw("while") => self.while_stmt()?,
             _ if self.at_kw("do") => self.do_while_stmt()?,
@@ -417,6 +419,42 @@ impl Parser {
         self.skip_return_type();
         let body = self.block()?;
         Ok(StmtKind::Function { name, params, body })
+    }
+
+    /// `namespace Name;` or `namespace Name { ... }`. phplang uses a flat
+    /// namespace (qualified names fold to their last segment), so the declaration
+    /// is accepted and the name discarded; a block form runs its body inline.
+    fn namespace_stmt(&mut self) -> Result<StmtKind, String> {
+        self.pos += 1; // namespace
+        if matches!(self.peek(), Some(Tok::Ident(_))) || self.at_punct("\\") {
+            let _ = self.expect_type_name()?;
+        }
+        if self.at_punct("{") {
+            Ok(StmtKind::Block(self.block()?))
+        } else {
+            self.expect_punct(";")?;
+            Ok(StmtKind::Block(Vec::new()))
+        }
+    }
+
+    /// `use A\B\C [as D];` (also `use function …` / `use const …`) — a namespace
+    /// import. In the flat-namespace model the short name already resolves, so the
+    /// import is accepted and discarded (aliases via `as` are not remapped).
+    fn use_import_stmt(&mut self) -> Result<StmtKind, String> {
+        self.pos += 1; // use
+        self.eat_kw("function");
+        self.eat_kw("const");
+        loop {
+            let _ = self.expect_type_name()?;
+            if self.eat_kw("as") {
+                self.next(); // alias identifier — ignored
+            }
+            if !self.eat_punct(",") {
+                break;
+            }
+        }
+        self.expect_punct(";")?;
+        Ok(StmtKind::Block(Vec::new()))
     }
 
     /// `try { body } catch (T1 | T2 [$e]) { ... } ... [finally { ... }]` — at
