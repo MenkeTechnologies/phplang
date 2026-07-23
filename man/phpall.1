@@ -1,0 +1,106 @@
+.\" phpall(1) — comprehensive all-in-one man page for phplang.
+.\" Modeled after zshall(1): every section of the reference in one document.
+.\" Render with:  man -l man/phpall.1
+.\" Install:      cp man/phpall.1 /usr/local/share/man/man1/
+.TH PHPALL 1 "2026-07-23" "phplang 0.1.0" "User Commands"
+.SH NAME
+phpall \- the phplang comprehensive reference (invocation, language, architecture,
+bytecode VM + Cranelift JIT, LSP, DAP, inline-Rust FFI)
+.SH OVERVIEW
+This is the all\-in\-one
+.B phplang
+manual, modeled on
+.BR zshall (1).
+It concatenates the major sections of the phplang reference into a single page so
+you can grep with `/`:
+.RS 2
+.PP
+.B 1.  INVOCATION
+.RB "\(em " "flags, files, exit status"
+.br
+.B 2.  LANGUAGE
+.RB "\(em " "the PHP the runtime parses and runs"
+.br
+.B 3.  ARCHITECTURE
+.RB "\(em " "lex \[->] parse \[->] lower \[->] fusevm VM + JIT"
+.br
+.B 4.  TOOLING
+.RB "\(em " "\-\-lsp, \-\-dap, inline-Rust FFI, dumps"
+.br
+.B 5.  DIAGNOSTICS
+.RB "\(em " "error format and common messages"
+.RE
+.SH 1. INVOCATION
+.B php
+[\fIOPTIONS\fR] \fIFILE\fR [\fIARGV\fR...] runs a PHP script.
+.B \-r \fICODE\fR
+runs code given on the command line, and
+.B \-a
+starts the interactive shell.
+.B \-\-lsp
+and
+.B \-\-dap
+speak their protocols over stdio and take no file. See
+.BR php (1)
+for the per\-flag table.
+.SH 2. LANGUAGE
+phplang runs PHP as ordinary compiled bytecode. Source files use the standard
+\(oq\fI<?php ... ?>\fR\(cq and \(oq\fI<?= ... ?>\fR\(cq tags; any text outside a PHP
+tag is passed through verbatim as inline HTML. It lexes and parses the source,
+lowers it to
+.B fusevm
+instructions, and lets the shared engine execute and JIT\-compile them. Arithmetic
+lowers to native fusevm ops; PHP object semantics \(em arrays, strings, and type
+coercion \(em are served by the
+.B PhpHost
+runtime on top of the VM. It is the first compiled standalone PHP runtime.
+.SH 3. ARCHITECTURE
+.EX
+PHP source \[->] lexer \[->] parser (AST) \[->] lower to fusevm bytecode \[->] fusevm VM + Cranelift JIT
+.EE
+.PP
+There is no bespoke PHP VM or JIT; execution and codegen live entirely in fusevm,
+the shared engine behind zshrs, stryke, awkrs, elisp, ruby, arb, and pythonrs. A
+tracing Cranelift JIT compiles hot arithmetic loops.
+.SH 4. TOOLING
+.SS Language server (\-\-lsp)
+.B php \-\-lsp
+speaks LSP over stdio: completion and hover from the symbol corpus (the same table
+that generates
+.IR docs/reference.html ),
+and diagnostics from the runtime's own parser. It is read\-only; no output reaches
+the terminal.
+.SS Debugger (\-\-dap)
+.B php \-\-dap
+speaks the Debug Adapter Protocol over stdio: line breakpoints, single\-stepping,
+a stack trace, and inspection of a frame's locals. Program output is captured and
+forwarded as
+.B output
+events so it never corrupts the protocol channel.
+.SS Inline-Rust FFI
+A
+.B rust { pub extern "C" fn \[u2026] }
+block desugars to an internal
+.BR __rust_compile ,
+compiles to a cached
+.B cdylib
+on first run (via the shared
+.B fusevm
+FFI runtime), and its exports become callable by name from PHP
+.RB ( src/rust_ffi.rs ).
+.SS Dumps
+.B \-\-dump\-tokens
+prints the token stream,
+.B \-\-dump\-ast
+the parsed AST, and
+.B \-\-disasm
+a fusevm bytecode disassembly \(em each then exits.
+.SH 5. DIAGNOSTICS
+Errors are written to standard error. The process exits non\-zero on an unhandled
+error and 0 on success.
+.SH SEE ALSO
+.BR php (1)
+The focused invocation page. Source and issue tracker:
+https://github.com/MenkeTechnologies/phplang
+.SH AUTHOR
+Part of the fusevm language family.
