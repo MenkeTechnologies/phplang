@@ -85,9 +85,12 @@ path = "src/bin/gen_docs.rs"
 # from fusevm's registered builtins). Array cells ride through the VM as
 # `Value::Obj(u32)` handles into that heap; scalars (int/float/bool/string) are
 # native fusevm `Value`s. `jit` turns on fusevm's tracing Cranelift JIT so hot
-# PHP arithmetic loops trace-compile; the strict numeric hook (src/builtins.rs)
-# supplies PHP coercion semantics for non-numeric operands.
-fusevm = { version = "0.14.17", features = ["jit", "ffi"] }
+# PHP arithmetic loops trace-compile, and `jit-disk-cache` persists that native
+# code across runs (keyed by chunk hash) so a warm run skips codegen; `aot`
+# enables the ahead-of-time object emitter. The strict numeric hook
+# (src/builtins.rs) supplies PHP coercion semantics for non-numeric operands.
+# `php --tiers` reports which of those tiers a script actually reaches.
+fusevm = { version = "0.15.0", features = ["jit", "jit-disk-cache", "aot", "ffi"] }
 
 # Standard-library support crates. PHP-facing behavior is implemented in
 # `src/stdlib/*`; these provide the vetted primitives (regex engine, date math,

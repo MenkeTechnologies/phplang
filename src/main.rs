@@ -42,6 +42,9 @@ fn main() -> ExitCode {
         if cli.disasm {
             return finish(disasm(&file));
         }
+        if cli.tiers {
+            return finish(tiers(&file));
+        }
         return match phplang::eval_file(&file) {
             Ok(_) => ExitCode::SUCCESS,
             Err(e) => fail(&e),
@@ -126,6 +129,16 @@ fn disasm(file: &str) -> Result<(), String> {
             f.chunk.disassemble()
         );
     }
+    Ok(())
+}
+
+/// `--tiers`: run the script, then report which fusevm execution tier took
+/// each of its chunks — asked of fusevms own eligibility and cache
+/// predicates, so the answer comes from the compiler that would have done the
+/// work. The programs own output precedes the report.
+fn tiers(file: &str) -> Result<(), String> {
+    let src = std::fs::read_to_string(file).map_err(|e| format!("cannot read {file}: {e}"))?;
+    println!("{}", phplang::tiers::report(&src)?);
     Ok(())
 }
 

@@ -88,6 +88,7 @@ php script.php              # run a file
 php -r 'echo 1 + 1;'        # run a one-liner (no <?php tag needed)
 php -a                      # interactive REPL (persistent state per line)
 php --dump-bytecode f.php   # print the lowered fusevm bytecode
+php --tiers f.php           # run it, then report which fusevm tiers took it
 ```
 
 A `man/php.1` man page and runnable `examples/*.php` ship with the crate.
