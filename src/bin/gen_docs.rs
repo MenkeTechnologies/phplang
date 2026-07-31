@@ -6,22 +6,25 @@
 //! cargo run --bin gen-docs
 //! ```
 //!
-//! Source of truth: the corpus in `phplang::lsp` (`corpus()`), the exact
-//! `(name, chapter, doc, example)` table used for documentation. The static page
-//! therefore never drifts from the runtime — a name is documented here only if
-//! phplang actually recognizes it in `lexer.rs`/`parser.rs` (keywords, constructs,
-//! casts) or `builtins.rs` (library functions).
+//! Source of truth: the corpus in `phplang::corpus` (re-exported as
+//! `phplang::lsp::corpus()`), the exact `(name, chapter, signature, doc, example)`
+//! table used for documentation. The static page therefore never drifts from the
+//! runtime — a name is documented here only if phplang actually recognizes it in
+//! `lexer.rs`/`parser.rs` (keywords, constructs, operators, casts), in
+//! `builtins.rs` + `stdlib/*` (library functions), in `host.rs`
+//! (`predefined_constants`), or in `lib.rs` (the PHP-source prelude classes).
 //!
 //! Chapters are the corpus's own grouping (`entry.1`), rendered in first-seen
-//! order, one `<section>` per chapter, one `<article class="doc-entry">` per name
-//! with a runnable usage example.
+//! order, one `<section>` per chapter, one `<article class="doc-entry">` per name:
+//! anchored heading, signature code block, prose description, and — where the
+//! entry carries one — a runnable usage example ending in a `// =>` result.
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
 fn main() {
     let corpus = phplang::lsp::corpus();
-    let chapters: BTreeSet<&str> = corpus.iter().map(|(_, c, _, _)| *c).collect();
+    let chapters: BTreeSet<&str> = corpus.iter().map(|(_, c, ..)| *c).collect();
 
     let page = format!(
         "{head}{body}{foot}",
@@ -46,14 +49,19 @@ fn main() {
 }
 
 /// Render one `<section>` per chapter, each holding one `<article class="doc-entry">`
-/// per name: name heading, one-line description, and a runnable usage example.
+/// per name: anchored name heading, the signature in a fenced code block, the
+/// prose description, and — when the entry carries one — a runnable usage example.
 ///
 /// Chapters are grouped in first-seen order and every entry of a chapter lands
 /// in that chapter's single section — even when the corpus interleaves chapters.
 /// Grouping keeps each `id="ch-…"` anchor unique, so the reference PDF never
 /// emits a multiply-defined label.
-/// One reference entry: (name, chapter, signature, description).
-type Entry<'a> = (&'a str, &'a str, &'a str, &'a str);
+/// One reference entry: (name, chapter, signature, description, example).
+///
+/// `example` may be empty — the entry then renders signature + description only,
+/// which is the shape a pure declaration (a constant, a class, an operator with a
+/// self-evident use) needs. An empty `signature` is never valid.
+type Entry<'a> = (&'a str, &'a str, &'a str, &'a str, &'a str);
 
 fn build_body(corpus: &[Entry]) -> String {
     // Ordered list of chapters (first-seen) plus each chapter's entries. A plain
@@ -81,20 +89,29 @@ fn build_body(corpus: &[Entry]) -> String {
         );
         // A per-chapter counter keeps the `doc-…` anchor ids unique even when a
         // name repeats across chapters.
-        for (idx, (name, _chapter, doc, example)) in entries.iter().enumerate() {
+        for (idx, (name, _chapter, sig, doc, example)) in entries.iter().enumerate() {
             let anchor = format!("doc-{}-{}", slugify(chapter), idx + 1);
             let _ = write!(
                 out,
                 "        <article class=\"doc-entry\" id=\"{anchor}\">\n\
                  \x20         <h3><a class=\"doc-anchor\" href=\"#{anchor}\">#</a> <code>{name}</code></h3>\n\
-                 \x20         <p>{doc}</p>\n\
-                 \x20         <pre><code class=\"lang-php\">{example}</code></pre>\n\
-                 \x20       </article>\n",
+                 \x20         <pre><code class=\"lang-php\">{sig}</code></pre>\n\
+                 \x20         <p>{doc}</p>\n",
                 anchor = anchor,
                 name = html_escape(name),
+                sig = html_escape(sig),
                 doc = html_escape(doc),
-                example = html_escape(example),
             );
+            // The example block is optional: a constant, a class, or an operator
+            // whose use is already shown by its signature carries none.
+            if !example.is_empty() {
+                let _ = writeln!(
+                    out,
+                    "          <pre><code class=\"lang-php\">{example}</code></pre>",
+                    example = html_escape(example),
+                );
+            }
+            out.push_str("        </article>\n");
         }
         out.push_str("      </section>\n");
     }

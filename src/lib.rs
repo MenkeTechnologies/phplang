@@ -11,6 +11,7 @@ pub mod banner;
 pub mod builtins;
 pub mod cli;
 pub mod compiler;
+pub mod corpus;
 pub mod dap;
 pub mod host;
 pub mod intercepts;
