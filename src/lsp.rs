@@ -26,7 +26,6 @@ use lsp_types::{
     TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, Uri,
 };
 
-
 /// The keyword / construct / operator / builtin / constant / class corpus,
 /// exposed for offline doc generation. See `src/corpus.rs` for the table itself.
 pub fn corpus() -> &'static [Entry] {

@@ -217,7 +217,10 @@ fn arm_names(src: &str, opener: &str) -> BTreeSet<String> {
             out.extend(names);
         }
     }
-    assert!(inside, "opener {opener:?} not found — did the fn get renamed?");
+    assert!(
+        inside,
+        "opener {opener:?} not found — did the fn get renamed?"
+    );
     out
 }
 
@@ -232,11 +235,7 @@ fn arm_literals(line: &str) -> Option<Vec<String>> {
         let name = &body[..end];
         // A registration name is a bare PHP identifier. This rejects arms that
         // begin with some other string literal (a message, a path, a format).
-        if name.is_empty()
-            || !name
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '_')
-        {
+        if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
             return None;
         }
         names.push(name.to_string());
@@ -338,7 +337,10 @@ fn every_documented_prelude_class_is_declared() {
         .iter()
         .filter(|(_, chapter, ..)| *chapter == "Prelude class")
         .map(|(name, ..)| *name)
-        .filter(|name| !prelude.contains(&format!("class {name} ")) && !prelude.contains(&format!("class {name} {{")))
+        .filter(|name| {
+            !prelude.contains(&format!("class {name} "))
+                && !prelude.contains(&format!("class {name} {{"))
+        })
         .collect();
     assert!(
         missing.is_empty(),
