@@ -397,6 +397,31 @@ pub fn eval_file_debug(path: &str) -> Result<Value, String> {
     r
 }
 
+/// Evaluate `src` with `vars` bound and return the captured program output —
+/// [`eval_capture`] for an embedder that has input to hand the program.
+///
+/// The variables are seeded *after* the host reset that starts every run, which
+/// is the whole reason this exists: setting them beforehand through
+/// `host::with_host` cannot work, because the reset wipes them. Each is bound as
+/// an ordinary PHP variable, so `("stdin", "…")` reads as `$stdin`.
+///
+/// ```no_run
+/// let out = phplang::eval_capture_with("<?php echo strtoupper($stdin);", &[("stdin", "hi")]);
+/// assert_eq!(out.unwrap(), "HI");
+/// ```
+pub fn eval_capture_with(src: &str, vars: &[(&str, &str)]) -> Result<String, String> {
+    host::reset_host();
+    host::with_host(|h| {
+        for (name, text) in vars {
+            h.set_var(name, Value::Str(std::sync::Arc::new(text.to_string())));
+        }
+        h.begin_capture();
+    });
+    let r = run_compiled(compile(src)?);
+    let out = host::with_host(|h| h.end_capture());
+    r.map(|_| out)
+}
+
 /// Evaluate `src` and return the captured program output. The convenience entry
 /// point for tests: installs an output buffer, runs, and returns what `echo`
 /// wrote (PHP is output-oriented — its observable result is stdout, not a value).
