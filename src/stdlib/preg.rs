@@ -23,15 +23,13 @@
 //! it. Subjects are UTF-8; byte slices are decoded back with lossy UTF-8.
 //!
 //! `$matches` by-reference out-parameter (`preg_match`, `preg_match_all`): the
-//! stdlib dispatch chain receives call arguments *by value*, and the by-ref
-//! lowering the compiler performs for `array_push` & friends is keyed on the
-//! function name in the compiler (which this module may not edit). So the out
-//! array is populated *in place* only when the caller pre-initialises it as an
-//! array (`$m = []; preg_match($p, $s, $m);`) — the array handle is shared, so
-//! writing through it is visible to the caller. When the caller passes an
-//! uninitialised variable, the captures cannot be bound back; the return value
-//! (match count) is always correct. Captures are also fully reachable through
-//! `preg_replace` backreferences and `preg_replace_callback`.
+//! stdlib dispatch chain receives call arguments *by value*, so the captures
+//! travel back the way a user function's `&$x` parameter does — published at
+//! the parameter's position (`PhpHost::byref_out_put`) for the call site to
+//! store into the caller's variable. `preg_match($p, $s, $m)` therefore defines
+//! `$m` whether or not the caller initialised it, and an array the caller *did*
+//! pass is also written through, so a handle they kept elsewhere sees the same
+//! captures.
 
 use crate::host::with_host;
 use fusevm::Value;
@@ -178,12 +176,19 @@ fn caps_trimmed(caps: &Captures) -> Vec<Value> {
 /// back when the caller pre-initialised the variable as an array (`$m = []`),
 /// giving a shared handle. An uninitialised variable cannot be bound; the return
 /// value (match count) is always correct regardless.
-fn fill_out(target: &Value, rows: Vec<Value>) {
+/// Deliver a by-reference OUT array — `preg_match`'s `$matches` and its
+/// siblings. The value is published at the parameter's position for the call
+/// site to store (which is what defines the variable when the caller passed one
+/// that did not exist), and also written through the handle when the caller
+/// passed an array that already did.
+fn fill_out(target: &Value, pos: usize, rows: Vec<Value>) {
     with_host(|h| {
-        if !h.is_array(target) {
-            return;
+        let out = h.new_array();
+        h.arr_set_reindexed(&out, rows.clone());
+        h.byref_out_put(pos, out);
+        if h.is_array(target) {
+            h.arr_set_reindexed(target, rows);
         }
-        h.arr_set_reindexed(target, rows);
     });
 }
 
@@ -197,13 +202,13 @@ fn preg_match(args: &[Value]) -> Result<Value, String> {
     match re.captures(subject.as_bytes()) {
         Some(caps) => {
             if args.len() > 2 {
-                fill_out(&args[2], caps_trimmed(&caps));
+                fill_out(&args[2], 2, caps_trimmed(&caps));
             }
             Ok(Value::int(1))
         }
         None => {
             if args.len() > 2 {
-                fill_out(&args[2], vec![]);
+                fill_out(&args[2], 2, vec![]);
             }
             Ok(Value::int(0))
         }
@@ -235,7 +240,7 @@ fn preg_match_all(args: &[Value]) -> Result<Value, String> {
                 .map(|g| make_list(all.iter().map(|row| row[g].clone()).collect()))
                 .collect()
         };
-        fill_out(&args[2], rows);
+        fill_out(&args[2], 2, rows);
     }
     Ok(Value::int(count as i64))
 }

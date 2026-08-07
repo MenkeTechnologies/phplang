@@ -94,10 +94,11 @@ pub enum Expr {
     /// callable string.
     CallValue(Box<Expr>, Vec<Expr>),
     /// An anonymous function `function(params) use(vars) { body }`. `uses` names
-    /// the enclosing variables captured by value at closure-creation time.
+    /// the enclosing variables captured at closure-creation time, each by value
+    /// or — for `use (&$v)` — by reference.
     Closure {
         params: Vec<Param>,
-        uses: Vec<String>,
+        uses: Vec<Capture>,
         body: Vec<Stmt>,
     },
     /// An arrow function `fn(params) => expr` — its body is a single expression
@@ -364,4 +365,14 @@ pub struct Method {
 pub struct SwitchCase {
     pub test: Option<Expr>,
     pub body: Vec<Stmt>,
+}
+
+/// One `use (...)` entry of an anonymous function. A by-value capture copies the
+/// variable's value when the closure is created; a by-reference one (`use (&$v)`)
+/// shares the enclosing variable itself, so the closure's writes are visible
+/// outside it and later writes outside are visible in it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Capture {
+    pub name: String,
+    pub by_ref: bool,
 }

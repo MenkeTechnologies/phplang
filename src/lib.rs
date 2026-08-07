@@ -209,44 +209,43 @@ class DateTimeImmutable {
 "#;
 
 /// The SPL data-structure classes, written in PHP. They store elements in an
-/// internal array property; because phplang arrays are reference-based, aliasing
-/// the property to a local (`$a = $this->items; array_pop($a);`) mutates the
-/// shared array in place. Method-driven (offsetGet/push/…); `foreach` over an SPL
-/// instance is not yet supported (no object iterators).
+/// internal array property and mutate it through `$this`, which is the only way
+/// a PHP array — a value, not a handle — can be mutated in place. Aliasing it to
+/// a local first would copy it, and the write would be lost. Method-driven
+/// (offsetGet/push/…), with `getIterator` returning the backing array.
 const SPL_PRELUDE: &str = r#"
 class stdClass {}
 class SplDoublyLinkedList {
     public $dll = [];
-    public function push($v) { $a = $this->dll; $a[] = $v; }
-    public function pop() { $a = $this->dll; return array_pop($a); }
-    public function shift() { $a = $this->dll; return array_shift($a); }
-    public function unshift($v) { $a = $this->dll; array_unshift($a, $v); }
+    public function push($v) { $this->dll[] = $v; }
+    public function pop() { return array_pop($this->dll); }
+    public function shift() { return array_shift($this->dll); }
+    public function unshift($v) { array_unshift($this->dll, $v); }
     public function top() { $n = count($this->dll); return $n > 0 ? $this->dll[$n - 1] : null; }
     public function bottom() { return count($this->dll) > 0 ? $this->dll[0] : null; }
     public function count() { return count($this->dll); }
     public function isEmpty() { return count($this->dll) === 0; }
     public function toArray() { return $this->dll; }
     public function offsetGet($i) { return $this->dll[$i]; }
-    public function offsetSet($i, $v) { $a = $this->dll; if ($i === null) { $a[] = $v; } else { $a[$i] = $v; } }
+    public function offsetSet($i, $v) { if ($i === null) { $this->dll[] = $v; } else { $this->dll[$i] = $v; } }
     public function offsetExists($i) { return isset($this->dll[$i]); }
-    public function offsetUnset($i) { $a = $this->dll; unset($a[$i]); }
+    public function offsetUnset($i) { unset($this->dll[$i]); }
     public function getIterator() { return $this->dll; }
 }
 class SplStack extends SplDoublyLinkedList {}
 class SplQueue extends SplDoublyLinkedList {
-    public function enqueue($v) { $a = $this->dll; $a[] = $v; }
-    public function dequeue() { $a = $this->dll; return array_shift($a); }
+    public function enqueue($v) { $this->dll[] = $v; }
+    public function dequeue() { return array_shift($this->dll); }
 }
 class SplFixedArray {
     public $data = [];
     public $sz = 0;
     public function __construct($size = 0) {
         $this->sz = $size;
-        $a = $this->data;
-        for ($i = 0; $i < $size; $i++) { $a[$i] = null; }
+        for ($i = 0; $i < $size; $i++) { $this->data[$i] = null; }
     }
     public function offsetGet($i) { return $this->data[$i]; }
-    public function offsetSet($i, $v) { $a = $this->data; $a[$i] = $v; }
+    public function offsetSet($i, $v) { $this->data[$i] = $v; }
     public function offsetExists($i) { return $i >= 0 && $i < $this->sz; }
     public function getSize() { return $this->sz; }
     public function setSize($size) { $this->sz = $size; }
@@ -258,10 +257,10 @@ class ArrayObject {
     public $storage = [];
     public function __construct($array = []) { $this->storage = $array; }
     public function offsetGet($k) { return $this->storage[$k]; }
-    public function offsetSet($k, $v) { $a = $this->storage; if ($k === null) { $a[] = $v; } else { $a[$k] = $v; } }
+    public function offsetSet($k, $v) { if ($k === null) { $this->storage[] = $v; } else { $this->storage[$k] = $v; } }
     public function offsetExists($k) { return isset($this->storage[$k]); }
-    public function offsetUnset($k) { $a = $this->storage; unset($a[$k]); }
-    public function append($v) { $a = $this->storage; $a[] = $v; }
+    public function offsetUnset($k) { unset($this->storage[$k]); }
+    public function append($v) { $this->storage[] = $v; }
     public function count() { return count($this->storage); }
     public function getArrayCopy() { return $this->storage; }
     public function getIterator() { return $this->storage; }
@@ -269,14 +268,14 @@ class ArrayObject {
 class ArrayIterator extends ArrayObject {}
 class SplObjectStorage {
     public $store = [];
-    public function attach($obj, $data = null) { $a = $this->store; $a[spl_object_id($obj)] = $data; }
-    public function detach($obj) { $a = $this->store; unset($a[spl_object_id($obj)]); }
+    public function attach($obj, $data = null) { $this->store[spl_object_id($obj)] = $data; }
+    public function detach($obj) { unset($this->store[spl_object_id($obj)]); }
     public function contains($obj) { return array_key_exists(spl_object_id($obj), $this->store); }
     public function count() { return count($this->store); }
 }
 class SplPriorityQueue {
     public $items = [];
-    public function insert($value, $priority) { $a = $this->items; $a[] = [$priority, $value]; }
+    public function insert($value, $priority) { $this->items[] = [$priority, $value]; }
     public function count() { return count($this->items); }
     public function isEmpty() { return count($this->items) === 0; }
     public function _best() {
@@ -292,14 +291,13 @@ class SplPriorityQueue {
         $b = $this->_best();
         if ($b < 0) { return null; }
         $v = $this->items[$b][1];
-        $a = $this->items;
-        array_splice($a, $b, 1);
+        array_splice($this->items, $b, 1);
         return $v;
     }
 }
 class SplHeap {
     public $items = [];
-    public function insert($v) { $a = $this->items; $a[] = $v; }
+    public function insert($v) { $this->items[] = $v; }
     public function count() { return count($this->items); }
     public function isEmpty() { return count($this->items) === 0; }
     public function compare($a, $b) { return $a <=> $b; }
@@ -316,8 +314,7 @@ class SplHeap {
         $b = $this->_best();
         if ($b < 0) { return null; }
         $v = $this->items[$b];
-        $a = $this->items;
-        array_splice($a, $b, 1);
+        array_splice($this->items, $b, 1);
         return $v;
     }
 }

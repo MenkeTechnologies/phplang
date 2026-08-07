@@ -108,7 +108,10 @@ end-to-end (see `tests/basic.rs`):
   form), null-coalesce `??`, the nullsafe operator `?->` (a null receiver
   short-circuits the whole `$a?->b`/`$a?->b()` to null without evaluating the
   member or its arguments), `!`, and `(int)`/`(float)`/`(string)`/`(bool)` casts.
-- Indexed, associative, and appended (`$a[] =`) arrays; index read/write; deep
+- Indexed, associative, and appended (`$a[] =`) arrays with PHP **value semantics**
+  — assigning, passing, returning or storing one hands over a copy (deep through
+  nested arrays; an object inside stays a handle), while `$b = &$a` and a `&$x`
+  parameter share; index read/write; deep
   and nested lvalues (`$a[b][c] =`, `$a[b][] =`, compound and `++`/`--` on
   elements); the by-reference array mutators (`array_push`/`pop`/`shift`/
   `unshift`/`splice`).
@@ -120,7 +123,9 @@ end-to-end (see `tests/basic.rs`):
   parameters, recursion, call-site argument unpacking (`f(...$args)`), and
   **named arguments** (`f(name: 1, other: 2)`, mixable with positional, order
   independent, extra names collected into a variadic); anonymous
-  `function () use (...) { … }` closures and `fn (…) => …` arrow functions.
+  `function () use (...) { … }` closures — by value, and by reference with
+  `use (&$v)`, which binds the closure's name to the enclosing variable itself —
+  and `fn (…) => …` arrow functions.
 - **First-class callable syntax** (`strlen(...)`, `$obj->method(...)`,
   `Cls::method(...)`, `$callable(...)`) — each yields a `Closure` that forwards
   its arguments to the referenced function/method.
@@ -184,7 +189,8 @@ end-to-end (see `tests/basic.rs`):
     `get_debug_type`, `serialize`/`unserialize`, `var_dump`/`print_r`/`var_export`.
   - **preg** — `preg_match`/`match_all`/`replace`/`replace_callback`/`split`/
     `quote`/`grep` (byte-mode by default, Unicode with `/u`; PCRE subset — no
-    backreferences/lookaround).
+    backreferences/lookaround); `$matches` is a real by-reference OUT parameter,
+    so it defines the caller's variable whether or not it existed.
   - **datetime** — `time`/`mktime`/`date`/`gmdate`/`checkdate`/`strtotime` (UTC).
   - **hash** — `md5`/`sha1`/`hash`/`crc32`/`hash_hmac`. **encoding** —
     `base64_*`, `bin2hex`/`hex2bin`, quoted-printable, `utf8_*`. **url** —
@@ -210,12 +216,13 @@ end-to-end (see `tests/basic.rs`):
 
 Strict typed-parameter enforcement (type hints are parsed but not enforced —
 phplang follows PHP's coercive/weak-typing mode) and true (non-flat) namespaces
-with `as` alias remapping. Closures and arrow functions do not yet
-capture by reference (`use (&$v)` is rejected). A few current deviations, documented
-in-code: array semantics are reference-based rather than PHP's copy-on-write; loose
+with `as` alias remapping. A few current deviations, documented
+in-code: loose
 comparison follows a simplified model; default parameter values are not restricted to
-constant expressions; functions with a by-reference OUT parameter (`parse_str`,
-`preg_match`'s `$matches`) return the value instead. Persistent bytecode caching and AOT (`--build`) —
+constant expressions; the by-reference OUT parameter is implemented for
+`preg_match`/`preg_match_all`/`preg_replace`(`_callback`)/`parse_str`/
+`similar_text`/`str_replace` and not for the rest of the library
+(`settype`, `array_multisort`, `sscanf`'s trailing arguments). Persistent bytecode caching and AOT (`--build`) —
 present in the sibling frontends — are not wired yet; an LSP server (`--lsp`) and
 a DAP debug adapter (`--dap`, with source-line and function breakpoints, stepping,
 call stack, locals, and expression `evaluate`) are.

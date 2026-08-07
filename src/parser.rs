@@ -1346,17 +1346,11 @@ impl Parser {
                     self.expect_punct("(")?;
                     if !self.at_punct(")") {
                         loop {
-                            // By-reference capture (`use (&$v)`) is not supported —
-                            // the scaffold has no reference cells, so it would
-                            // silently bind by value and break recursive/mutating
-                            // closures. Reject it loudly instead.
-                            if self.at_punct("&") {
-                                return Err(format!(
-                                    "by-reference closure capture `use (&${{…}})` is not supported (line {})",
-                                    self.line()
-                                ));
-                            }
-                            uses.push(self.expect_var()?);
+                            // `use (&$v)` captures the enclosing variable itself
+                            // rather than its value at creation time.
+                            let by_ref = self.eat_punct("&");
+                            let name = self.expect_var()?;
+                            uses.push(Capture { name, by_ref });
                             if !self.eat_punct(",") {
                                 break;
                             }

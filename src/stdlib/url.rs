@@ -250,7 +250,16 @@ fn parse_str(args: &[Value]) -> Value {
                 }
             }
         }
-        root
+        // `parse_str` has no return value in PHP: the parsed array is its second,
+        // by-reference parameter. Published at that position for the call site to
+        // store, and written through a handle the caller already had.
+        h.byref_out_put(1, root.clone());
+        if let Some(target) = args.get(1) {
+            if h.is_array(target) {
+                h.arr_replace_all(target, &root);
+            }
+        }
+        Value::Undef
     })
 }
 

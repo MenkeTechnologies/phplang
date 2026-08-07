@@ -41,10 +41,20 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         "addslashes" => Value::str(addslashes(&str_arg(args, 0))),
         "stripslashes" => Value::str(stripslashes(&str_arg(args, 0))),
         "str_rot13" => Value::str(str_rot13(&str_arg(args, 0))),
-        "similar_text" => Value::int(similar_text_bytes(
-            str_arg(args, 0).as_bytes(),
-            str_arg(args, 1).as_bytes(),
-        ) as i64),
+        "similar_text" => {
+            let (a, b) = (str_arg(args, 0), str_arg(args, 1));
+            let common = similar_text_bytes(a.as_bytes(), b.as_bytes());
+            // `$percent` is a by-reference OUT parameter, and PHP's formula is
+            // `sim * 2 / (len(a) + len(b)) * 100`.
+            let total = a.len() + b.len();
+            let percent = if total == 0 {
+                0.0
+            } else {
+                common as f64 * 2.0 / total as f64 * 100.0
+            };
+            with_host(|h| h.byref_out_put(2, Value::float(percent)));
+            Value::int(common as i64)
+        }
         "levenshtein" => levenshtein(args),
         "vsprintf" => return Some(vformat(args, false)),
         "vprintf" => return Some(vformat(args, true)),

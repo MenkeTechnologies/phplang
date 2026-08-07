@@ -138,13 +138,30 @@ fn is_callable_on_closure_and_name() {
 }
 
 #[test]
-fn by_reference_use_capture_is_rejected() {
-    // The scaffold has no reference cells, so `use (&$v)` is rejected at parse
-    // time rather than silently binding by value.
-    let src = r#"<?php $f = function() use (&$x) { return $x; };"#;
-    let err = eval_capture(src).unwrap_err();
-    assert!(
-        err.contains("by-reference"),
-        "expected a by-reference-capture error, got: {err}"
-    );
+fn by_reference_use_capture_shares_the_variable() {
+    // `use (&$v)` binds the closure's name to the enclosing variable's reference
+    // cell, so writes cross in both directions. Values checked against php 8.5.9.
+    let counter = r#"<?php $n = 0; $bump = function() use (&$n) { $n++; };
+        $bump(); $bump(); $bump(); echo $n;"#;
+    assert_eq!(run(counter), "3");
+
+    // A write made after the closure was created is visible inside it — which is
+    // the difference from a by-value capture, checked here in one program.
+    let both = r#"<?php $c = 5;
+        $byval = function() use ($c) { return $c; };
+        $byref = function() use (&$c) { return $c; };
+        $c = 9;
+        echo $byval(), "/", $byref();"#;
+    assert_eq!(run(both), "5/9");
+
+    // The captured variable outlives the scope it came from.
+    let closed_over = r#"<?php
+        $mk = function() { $n = 0; return function() use (&$n) { return ++$n; }; };
+        $f = $mk(); echo $f(), $f(), $f();"#;
+    assert_eq!(run(closed_over), "123");
+
+    // An array captured by reference is mutated in place, not copied.
+    let arr = r#"<?php $log = []; $add = function($x) use (&$log) { $log[] = $x; };
+        $add('a'); $add('b'); echo count($log), implode(',', $log);"#;
+    assert_eq!(run(arr), "2a,b");
 }

@@ -16,6 +16,7 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::ECHO, b_echo);
     vm.register_builtin(ops::GETVAR, b_getvar);
     vm.register_builtin(ops::SETVAR, b_setvar);
+    vm.register_builtin(ops::COPY, b_copy);
     vm.register_builtin(ops::CONCAT, b_concat);
     vm.register_builtin(ops::TRUTHY, b_truthy);
     vm.register_builtin(ops::CALL, b_call);
@@ -74,6 +75,7 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::FOREACH_PREP, b_foreach_prep);
     vm.register_builtin(ops::INSTANCEOF, b_instanceof);
     vm.register_builtin(ops::REF_BIND, b_ref_bind);
+    vm.register_builtin(ops::REF_CELL, b_ref_cell);
     vm.register_builtin(ops::BYREF_OUT, b_byref_out);
     vm.register_builtin(ops::SPROP_GET, b_sprop_get);
     vm.register_builtin(ops::SPROP_SET, b_sprop_set);
@@ -351,6 +353,13 @@ fn b_byref_out(vm: &mut VM, _: u8) -> Value {
 }
 
 /// `$target = &$source` — bind the two names to a shared cell; leaves the value.
+/// `use (&$v)`: the enclosing variable's reference cell, as a handle the
+/// closure carries until its frame is built.
+fn b_ref_cell(vm: &mut VM, _: u8) -> Value {
+    let name = pop_name(vm);
+    with_host(|h| h.ref_cell_of(&name))
+}
+
 fn b_ref_bind(vm: &mut VM, _: u8) -> Value {
     let source = pop_name(vm);
     let target = pop_name(vm);
@@ -578,6 +587,16 @@ fn b_setvar(vm: &mut VM, _: u8) -> Value {
     let name = pop_name(vm);
     with_host(|h| h.set_var(&name, val.clone()));
     val
+}
+
+/// The copy an assignment makes. A PHP array is a value, so `$b = $a`,
+/// `$o->p = $a` and `$box[k] = $a` each store a copy; an object, a closure and a
+/// stream are handles and pass through. The compiler emits this on the
+/// right-hand side of a source-level assignment only, so a compiler temporary,
+/// a `&` binding and a `foreach` reference keep the handle they were given.
+fn b_copy(vm: &mut VM, _: u8) -> Value {
+    let val = vm.pop();
+    with_host(|h| h.copy_on_assign(val))
 }
 
 fn b_concat(vm: &mut VM, _: u8) -> Value {
@@ -1257,6 +1276,10 @@ pub(crate) fn arg(args: &[Value], i: usize) -> Value {
 /// Dispatch a PHP library function by (case-insensitive) name.
 pub fn call_library(name: &str, args: Vec<Value>) -> Result<Value, String> {
     let lname = name.to_ascii_lowercase();
+    // A builtin with a by-reference OUT parameter publishes its value for the
+    // call site to write back (see `BYREF_BUILTINS`); clearing first means a
+    // call that writes none cannot be read as having written the last one's.
+    with_host(|h| h.byref_out_clear());
     let v = match lname.as_str() {
         "strlen" => Value::int(with_host(|h| h.to_str(&arg(&args, 0)).len() as i64)),
         "count" | "sizeof" => Value::int(with_host(|h| {
@@ -1561,10 +1584,17 @@ fn php_strpos(h: &host::PhpHost, args: &[Value]) -> Value {
     }
 }
 
-fn php_str_replace(h: &host::PhpHost, args: &[Value]) -> Value {
+fn php_str_replace(h: &mut host::PhpHost, args: &[Value]) -> Value {
     let search = h.to_str(&arg(args, 0));
     let replace = h.to_str(&arg(args, 1));
     let subject = h.to_str(&arg(args, 2));
+    // `$count` is a by-reference OUT parameter: the number of replacements.
+    let replacements = if search.is_empty() {
+        0
+    } else {
+        subject.matches(&search).count()
+    };
+    h.byref_out_put(3, Value::int(replacements as i64));
     Value::str(subject.replace(&search, &replace))
 }
 

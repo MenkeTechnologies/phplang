@@ -157,17 +157,17 @@ fn parse_url_component_selector() {
 #[test]
 fn parse_str_arrays_and_key_mangling() {
     // '[]' appends, '[k]' nests, '.'/' ' in the base key become '_'.
-    let src = r#"<?php $r = parse_str("a=1&b[]=2&b[]=3&c.d=4");
+    let src = r#"<?php parse_str("a=1&b[]=2&b[]=3&c.d=4", $r);
         echo $r["a"],"|",$r["b"][0],"|",$r["b"][1],"|",$r["c_d"];"#;
     assert_eq!(run(src), "1|2|3|4");
-    let src2 = r#"<?php $r = parse_str("a b=c d&x[y]=z");
+    let src2 = r#"<?php parse_str("a b=c d&x[y]=z", $r);
         echo $r["a_b"],"|",$r["x"]["y"];"#;
     assert_eq!(run(src2), "c d|z");
 }
 
 #[test]
 fn parse_str_decodes_percent_and_plus() {
-    let src = r#"<?php $r = parse_str("q=a%20b+c&e=");
+    let src = r#"<?php parse_str("q=a%20b+c&e=", $r);
         echo $r["q"],"|",$r["e"],"|",strlen($r["e"]);"#;
     assert_eq!(run(src), "a b c||0");
 }
@@ -201,16 +201,16 @@ fn http_build_query_explicit_empty_separator() {
 fn parse_str_strips_leading_plus_and_space() {
     // A leading '+' (decodes to a space) is stripped from the base key, not
     // mangled to '_': "+a" -> "a".
-    let src = r#"<?php $r = parse_str("+a=1"); echo json_encode($r);"#;
+    let src = r#"<?php parse_str("+a=1", $r); echo json_encode($r);"#;
     assert_eq!(run(src), r#"{"a":"1"}"#);
     // A leading literal space is likewise stripped; interior space still mangles.
-    let src2 = r#"<?php $r = parse_str("%20x y=2"); echo json_encode($r);"#;
+    let src2 = r#"<?php parse_str("%20x y=2", $r); echo json_encode($r);"#;
     assert_eq!(run(src2), r#"{"x_y":"2"}"#);
 }
 
 #[test]
 fn parse_str_nested_deep() {
-    let src = r#"<?php $r = parse_str("a[b][c]=1");
+    let src = r#"<?php parse_str("a[b][c]=1", $r);
         echo json_encode($r);"#;
     assert_eq!(run(src), r#"{"a":{"b":{"c":"1"}}}"#);
 }

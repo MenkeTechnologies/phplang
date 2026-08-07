@@ -78,6 +78,17 @@ pub mod ops {
     pub const INSTANCEOF: u16 = 60; // [obj, class-name] -> Bool
     pub const REF_BIND: u16 = 61; // [target, source] -> value ($t = &$s)
     pub const BYREF_OUT: u16 = 62; // [position] -> the last call's by-ref param value
+    /// `[name, value]` — a source-level `$x = expr`. Same as [`SETVAR`] but the
+    /// copied, everything else passes through. Emitted by the compiler on the
+    /// right-hand side of a source-level assignment only, so a compiler
+    /// temporary and a `&` binding still share the handle they are given.
+    /// See `PhpHost::copy_on_assign`.
+    pub const COPY: u16 = 81;
+    /// `[name]` — the enclosing variable's reference cell as a `PhpObj::Ref`
+    /// handle, promoting the variable to a cell if it was not one. What
+    /// `use (&$v)` captures; binding one into a frame aliases the name to the
+    /// cell rather than storing the handle.
+    pub const REF_CELL: u16 = 82;
     pub const SPROP_GET: u16 = 63; // [class, name] -> static property value (Class::$p)
     pub const SPROP_SET: u16 = 64; // [class, name, val] -> val (Class::$p = v)
     pub const SPROP_INCDEC: u16 = 65; // [class, name, code] -> value (++/-- on Class::$p)
@@ -254,6 +265,11 @@ pub enum PhpObj {
         class: String,
         props: IndexMap<String, Value>,
     },
+    /// A handle to a variable's reference cell, which is what `use (&$v)`
+    /// captures. It is never a value a PHP script can hold: it is created at
+    /// closure creation and consumed when the closure's frame is built, where
+    /// it binds the frame's name to the cell instead of storing the handle.
+    Ref { slot: usize },
     /// An open file stream (`fopen`). Content is buffered in memory: read modes
     /// load the file up front; write/append modes accumulate and flush to `path`
     /// on `fclose`/`fflush`. `Value::Obj` handle, so the position is shared.
@@ -377,6 +393,23 @@ impl PhpHost {
     /// write-back); `Undef` if out of range.
     pub fn byref_out_get(&self, pos: usize) -> Value {
         self.byref_out.get(pos).cloned().unwrap_or(Value::Undef)
+    }
+
+    /// Publish one by-reference OUT value from a *builtin* — `preg_match`'s
+    /// `$matches`, `parse_str`'s result array. A user function fills the whole
+    /// vector from its frame when it returns; a builtin has no frame, so it
+    /// names the position it is writing.
+    pub fn byref_out_put(&mut self, pos: usize, v: Value) {
+        if self.byref_out.len() <= pos {
+            self.byref_out.resize(pos + 1, Value::Undef);
+        }
+        self.byref_out[pos] = v;
+    }
+
+    /// Drop the previous call's OUT values, so a call that writes none cannot
+    /// be read as having written the one before it.
+    pub fn byref_out_clear(&mut self) {
+        self.byref_out.clear();
     }
 
     /// Seed the superglobal arrays in the global scope: `$_ENV`/`$_SERVER` from
@@ -643,6 +676,46 @@ impl PhpHost {
 
     /// `$target = &$source` — bind `target` as a reference to `source`, so both
     /// names share one storage cell (either's mutation is visible to the other).
+    /// The reference cell `name` resolves to, promoting a plain variable into
+    /// one first, wrapped in a [`PhpObj::Ref`] handle. What `use (&$v)` captures
+    /// — see [`PhpHost::bind_ref_slot`] for the other half.
+    pub fn ref_cell_of(&mut self, name: &str) -> Value {
+        let slot = self.ref_slot_of(name);
+        self.objs.push(PhpObj::Ref { slot });
+        Value::Obj((self.objs.len() - 1) as u32)
+    }
+
+    /// Point `name` in the current scope at an existing reference cell, so it
+    /// and whatever else shares the cell are one variable.
+    pub fn bind_ref_slot(&mut self, name: &str, slot: usize) {
+        let idx = self.scope_idx(name);
+        if let Some(scope) = self.scopes.get_mut(idx) {
+            scope.vars.remove(name);
+            scope.refs.insert(name.to_string(), slot);
+        }
+    }
+
+    /// The reference cell `name` resolves to, creating one — and moving the
+    /// variable's current value into it — if the variable is still a plain one.
+    fn ref_slot_of(&mut self, name: &str) -> usize {
+        let idx = self.scope_idx(name);
+        if let Some(slot) = self.scopes.get(idx).and_then(|s| s.refs.get(name).copied()) {
+            return slot;
+        }
+        let cur = self
+            .scopes
+            .get(idx)
+            .and_then(|s| s.vars.get(name).cloned())
+            .unwrap_or(Value::Undef);
+        self.ref_cells.push(cur);
+        let slot = self.ref_cells.len() - 1;
+        if let Some(scope) = self.scopes.get_mut(idx) {
+            scope.vars.remove(name);
+            scope.refs.insert(name.to_string(), slot);
+        }
+        slot
+    }
+
     pub fn ref_bind(&mut self, target: &str, source: &str) {
         let idx = self.scope_idx(source);
         // Resolve the source's cell, promoting a plain variable into one.
@@ -766,6 +839,43 @@ impl PhpHost {
         self.objs.push(PhpObj::Array {
             entries: IndexMap::new(),
             next_index: 0,
+        });
+        Value::Obj((self.objs.len() - 1) as u32)
+    }
+
+    /// A PHP array is a **value**: assigning one, passing one to a function or
+    /// returning one hands over a copy, so a write through the new name is
+    /// invisible through the old one. Everything else — an object, a closure,
+    /// a generator, a stream — is a handle and is passed through untouched,
+    /// which is exactly PHP's own split.
+    ///
+    /// The copy is deep in the arrays and shallow everywhere else: an array
+    /// nested in an array is itself a value and is copied with it, while an
+    /// object stored in one is a handle and stays shared. PHP defers the same
+    /// copy until a write (copy-on-write), which no program can observe — the
+    /// difference is the cost of a copy that turns out to be unread, not the
+    /// answer.
+    pub fn copy_on_assign(&mut self, v: Value) -> Value {
+        let Value::Obj(id) = v else { return v };
+        let Some(PhpObj::Array {
+            entries,
+            next_index,
+        }) = self.objs.get(id as usize)
+        else {
+            return v;
+        };
+        let next_index = *next_index;
+        let pairs: Vec<(ArrayKey, Value)> = entries
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let copied: IndexMap<ArrayKey, Value> = pairs
+            .into_iter()
+            .map(|(k, v)| (k, self.copy_on_assign(v)))
+            .collect();
+        self.objs.push(PhpObj::Array {
+            entries: copied,
+            next_index,
         });
         Value::Obj((self.objs.len() - 1) as u32)
     }
@@ -1623,6 +1733,28 @@ impl PhpHost {
     /// Replace an array handle's entries with a re-indexed (`0..n`) value list,
     /// in place — the mutation is visible through every variable holding the same
     /// handle (`sort`/`rsort`). No-op if `arr` is not an array.
+    /// Replace every entry of `arr` with `src`'s, keys included — how a
+    /// by-reference OUT array is written through a handle the caller already
+    /// held. A no-op unless both are arrays.
+    pub fn arr_replace_all(&mut self, arr: &Value, src: &Value) {
+        let Some(PhpObj::Array {
+            entries,
+            next_index,
+        }) = self.as_array(src)
+        else {
+            return;
+        };
+        let (entries, next_index) = (entries.clone(), *next_index);
+        if let Some(PhpObj::Array {
+            entries: dst,
+            next_index: dst_next,
+        }) = self.as_array_mut(arr)
+        {
+            *dst = entries;
+            *dst_next = next_index;
+        }
+    }
+
     pub fn arr_set_reindexed(&mut self, arr: &Value, vals: Vec<Value>) {
         if let Some(PhpObj::Array {
             entries,
@@ -2736,7 +2868,19 @@ fn invoke(
         // Captured bindings first, then parameters (a parameter of the same name
         // as a capture shadows it, as PHP does).
         for (k, v) in pre {
-            h.set_var(&k, v);
+            // A `use (&$v)` capture arrives as a handle to the enclosing
+            // variable's cell: bind the name to that cell rather than storing
+            // the handle, and the two are one variable from here on.
+            match v {
+                Value::Obj(id) => match h.objs.get(id as usize) {
+                    Some(PhpObj::Ref { slot }) => {
+                        let slot = *slot;
+                        h.bind_ref_slot(&k, slot);
+                    }
+                    _ => h.set_var(&k, v),
+                },
+                _ => h.set_var(&k, v),
+            }
         }
         let mut bound = vec![false; params.len()];
         // Positional binding (a variadic `...$rest` collects the rest positionally).
@@ -2751,7 +2895,14 @@ fn invoke(
                 h.set_var(&p.name, arr);
                 bound[i] = true;
             } else if ai < args.len() {
-                h.set_var(&p.name, args[ai].clone());
+                // A by-value parameter takes a copy of an array argument; a
+                // by-reference one must see the caller's array itself.
+                let arg = if p.by_ref {
+                    args[ai].clone()
+                } else {
+                    h.copy_on_assign(args[ai].clone())
+                };
+                h.set_var(&p.name, arg);
                 bound[i] = true;
                 ai += 1;
             }
@@ -2761,7 +2912,12 @@ fn invoke(
         // (as PHP collects extra named args), or is dropped if there is no variadic.
         for (n, v) in &named {
             if let Some(i) = params.iter().position(|p| !p.variadic && p.name == *n) {
-                h.set_var(&params[i].name, v.clone());
+                let v = if params[i].by_ref {
+                    v.clone()
+                } else {
+                    h.copy_on_assign(v.clone())
+                };
+                h.set_var(&params[i].name, v);
                 bound[i] = true;
             } else if let Some(vi) = params.iter().position(|p| p.variadic) {
                 let arr = h.get_var(&params[vi].name);

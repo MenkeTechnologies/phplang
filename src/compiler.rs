@@ -91,6 +91,7 @@ pub fn compile(stmts: &[Stmt], debug: bool) -> Result<Program, String> {
     };
     // Pre-pass: record by-reference parameter positions of every function so a
     // call site can write the callee's finals back even for forward references.
+    c.seed_builtin_byref();
     c.collect_byref(stmts);
     let mut b = ChunkBuilder::new();
     c.compile_seq(&mut b, stmts)?;
@@ -130,6 +131,29 @@ impl Compiler {
             });
         }
         Ok(out)
+    }
+
+    /// Seed the write-back map with the standard-library functions whose
+    /// signature has a by-reference OUT parameter. The call site treats them
+    /// exactly like a user function that declared `&$x`: after the call it
+    /// reads `ops::BYREF_OUT` at the position and stores it in the caller's
+    /// variable, which is how `preg_match($re, $s, $m)` comes to define `$m`.
+    ///
+    /// A user function of the same name shadows the builtin, and
+    /// [`Compiler::collect_byref`] runs after this and overwrites the entry.
+    fn seed_builtin_byref(&mut self) {
+        const BYREF_BUILTINS: &[(&str, &[usize])] = &[
+            ("preg_match", &[2]),
+            ("preg_match_all", &[2]),
+            ("preg_replace", &[4]),
+            ("preg_replace_callback", &[4]),
+            ("parse_str", &[1]),
+            ("similar_text", &[2]),
+            ("str_replace", &[3]),
+        ];
+        for (name, positions) in BYREF_BUILTINS {
+            self.byref_fns.insert(name.to_string(), positions.to_vec());
+        }
     }
 
     /// Pre-pass: record the by-reference parameter positions of every `function`
@@ -600,11 +624,16 @@ impl Compiler {
                 Ok(())
             })?;
         }
-        // $v = @arr[@k];
+        // $v = @arr[@k]. A by-value `foreach` binds a *copy* of each element, so
+        // writing through `$v` cannot reach the array; a by-reference one binds
+        // the element itself, which the write-back below relies on.
         self.emit_set_var(b, val_var, |c, b| {
             c.emit_get_var(b, &arr_t);
             c.emit_get_var(b, &k_t);
             b.emit(Op::CallBuiltin(ops::INDEX_GET, 2), 0);
+            if !by_ref {
+                b.emit(Op::CallBuiltin(ops::COPY, 1), 0);
+            }
             Ok(())
         })?;
 
@@ -1061,9 +1090,22 @@ impl Compiler {
                 // The by-reference array mutators take their array by variable
                 // name so the host can rewrite (and auto-vivify) it in place. A
                 // spread among the arguments falls through to the normal dispatch.
-                if let (false, Some(sub), Some(Expr::Var(vname))) =
-                    (has_spread, array_mutator_subop(name), args.first())
-                {
+                let mutator_target = match (has_spread, array_mutator_subop(name), args.first()) {
+                    (false, Some(sub), Some(Expr::Var(vname))) => Some((sub, vname.clone())),
+                    // `array_pop($this->stack)` and friends: the property's array
+                    // reaches the mutator through a temporary holding the handle
+                    // itself — a plain `SETVAR`, which does not copy — so the
+                    // mutation lands on the property.
+                    (false, Some(sub), Some(root @ (Expr::PropGet(..) | Expr::StaticProp(..)))) => {
+                        let tmp = self.tmp_name("mut");
+                        let root = root.clone();
+                        self.emit_set_var(b, &tmp, |c, b| c.compile_expr(b, &root))?;
+                        b.emit(Op::Pop, 0);
+                        Some((sub, tmp))
+                    }
+                    _ => None,
+                };
+                if let Some((sub, vname)) = mutator_target {
                     let nidx = b.add_constant(Value::str(vname.clone()));
                     b.emit(Op::LoadConst(nidx), 0);
                     b.emit(Op::LoadInt(sub), 0);
@@ -1150,6 +1192,15 @@ impl Compiler {
                 let mut captures = Vec::new();
                 collect_free_vars(body, &mut captures);
                 captures.retain(|n| !params.iter().any(|p| p.name == *n));
+                // An arrow function has no `use` clause, so every capture is by
+                // value — PHP has no by-reference form of it.
+                let captures: Vec<Capture> = captures
+                    .into_iter()
+                    .map(|name| Capture {
+                        name,
+                        by_ref: false,
+                    })
+                    .collect();
                 self.compile_closure(b, params, &captures, &ret)?;
             }
             Expr::New(class, args) if has_named(args) => {
@@ -1390,8 +1441,26 @@ impl Compiler {
             }
             Expr::Index(..) => {
                 let (root, segs) = Self::flatten_segments(t)?;
-                let Expr::Var(name) = root else {
-                    return Err("unset() supports only `$var` and `$var[...]` targets".into());
+                // `unset($o->p[k])`: the property's array is reached through a
+                // temporary that holds the handle itself — a plain `SETVAR`,
+                // which does not copy — so removing the key removes it from the
+                // property rather than from a copy of it.
+                let name = match root {
+                    Expr::Var(name) => name.clone(),
+                    Expr::PropGet(..) | Expr::StaticProp(..) => {
+                        let tmp = self.tmp_name("uns");
+                        let root = root.clone();
+                        self.emit_set_var(b, &tmp, |c, b| c.compile_expr(b, &root))?;
+                        b.emit(Op::Pop, 0);
+                        tmp
+                    }
+                    _ => {
+                        return Err(
+                            "unset() supports only `$var`, `$var[...]` and `$obj->prop[...]` \
+                             targets"
+                                .into(),
+                        )
+                    }
                 };
                 let nidx = b.add_constant(Value::str(name.clone()));
                 b.emit(Op::LoadConst(nidx), 0);
@@ -1598,6 +1667,17 @@ impl Compiler {
         Ok(())
     }
 
+    /// The right-hand side of an assignment: the value, then the copy PHP makes
+    /// of it. An array is a value in PHP — `$b = $a` and `$o->p = $a` each store
+    /// something the original cannot see writes to — and this is the one place
+    /// that is true, which is why the copy rides on the *assignment* rather than
+    /// on every write of a variable. See `ops::COPY`.
+    fn compile_rhs(&mut self, b: &mut ChunkBuilder, rhs: &Expr) -> Result<(), String> {
+        self.compile_expr(b, rhs)?;
+        b.emit(Op::CallBuiltin(ops::COPY, 1), 0);
+        Ok(())
+    }
+
     fn compile_assign(
         &mut self,
         b: &mut ChunkBuilder,
@@ -1610,11 +1690,11 @@ impl Compiler {
                 let nidx = b.add_constant(Value::str(name.clone()));
                 b.emit(Op::LoadConst(nidx), 0);
                 match op {
-                    None => self.compile_expr(b, rhs)?,
+                    None => self.compile_rhs(b, rhs)?,
                     Some(cop) => {
                         // $x <op>= rhs  ⇒  $x = $x <op> rhs
                         self.emit_get_var(b, name);
-                        self.compile_expr(b, rhs)?;
+                        self.compile_rhs(b, rhs)?;
                         self.emit_binop(b, cop);
                     }
                 }
@@ -1629,7 +1709,7 @@ impl Compiler {
                         self.compile_expr(b, recv)?;
                         let nidx = b.add_constant(Value::str(name.clone()));
                         b.emit(Op::LoadConst(nidx), 0);
-                        self.compile_expr(b, rhs)?;
+                        self.compile_rhs(b, rhs)?;
                         b.emit(Op::CallBuiltin(ops::PROP_SET, 3), 0);
                     }
                     Some(cop) => {
@@ -1643,7 +1723,7 @@ impl Compiler {
                         let gidx = b.add_constant(Value::str(name.clone()));
                         b.emit(Op::LoadConst(gidx), 0);
                         b.emit(Op::CallBuiltin(ops::PROP_GET, 2), 0);
-                        self.compile_expr(b, rhs)?;
+                        self.compile_rhs(b, rhs)?;
                         self.emit_binop(b, cop);
                         b.emit(Op::CallBuiltin(ops::PROP_SET, 3), 0);
                     }
@@ -1679,11 +1759,11 @@ impl Compiler {
                 let nidx = b.add_constant(Value::str(name.clone()));
                 b.emit(Op::LoadConst(nidx), 0);
                 match op {
-                    None => self.compile_expr(b, rhs)?,
+                    None => self.compile_rhs(b, rhs)?,
                     Some(cop) => {
                         // value = Class::$p op rhs
                         self.compile_expr(b, lhs)?;
-                        self.compile_expr(b, rhs)?;
+                        self.compile_rhs(b, rhs)?;
                         self.emit_binop(b, cop);
                     }
                 }
@@ -1702,7 +1782,7 @@ impl Compiler {
                     return Err("compound assignment cannot target a list()/[] pattern".into());
                 }
                 let src = self.tmp_name("list");
-                self.emit_set_var(b, &src, |c, b| c.compile_expr(b, rhs))?;
+                self.emit_set_var(b, &src, |c, b| c.compile_rhs(b, rhs))?;
                 let mut counter: i64 = 0;
                 for (k, target) in elems {
                     let key = match k {
@@ -1821,13 +1901,13 @@ impl Compiler {
             b.emit(Op::LoadConst(nidx), 0);
             if keys.is_empty() {
                 // Single-level `$a[] = rhs` keeps the compact ARR_APPEND lowering.
-                self.compile_expr(b, rhs)?;
+                self.compile_rhs(b, rhs)?;
                 b.emit(Op::CallBuiltin(ops::ARR_APPEND, 2), 0);
             } else {
                 for k in &keys {
                     self.compile_expr(b, k)?;
                 }
-                self.compile_expr(b, rhs)?;
+                self.compile_rhs(b, rhs)?;
                 b.emit(Op::CallBuiltin(ops::APPEND_PATH, (keys.len() + 2) as u8), 0);
             }
         } else if keys.len() == 1 && op.is_none() {
@@ -1835,7 +1915,7 @@ impl Compiler {
             let nidx = b.add_constant(Value::str(name.to_string()));
             b.emit(Op::LoadConst(nidx), 0);
             self.compile_expr(b, keys[0])?;
-            self.compile_expr(b, rhs)?;
+            self.compile_rhs(b, rhs)?;
             b.emit(Op::CallBuiltin(ops::INDEX_SET, 3), 0);
         } else {
             self.compile_index_assign(b, name, &keys, op, rhs)?;
@@ -1861,7 +1941,7 @@ impl Compiler {
                 for k in keys {
                     self.compile_expr(b, k)?;
                 }
-                self.compile_expr(b, rhs)?;
+                self.compile_rhs(b, rhs)?;
                 b.emit(Op::CallBuiltin(ops::SET_PATH, (keys.len() + 2) as u8), 0);
             }
             Some(cop) => {
@@ -1883,7 +1963,7 @@ impl Compiler {
                     Op::CallBuiltin(ops::GET_PATH, (key_tmps.len() + 1) as u8),
                     0,
                 );
-                self.compile_expr(b, rhs)?;
+                self.compile_rhs(b, rhs)?;
                 self.emit_binop(b, cop);
                 b.emit(
                     Op::CallBuiltin(ops::SET_PATH, (key_tmps.len() + 2) as u8),
@@ -1903,7 +1983,7 @@ impl Compiler {
         &mut self,
         b: &mut ChunkBuilder,
         params: &[Param],
-        captures: &[String],
+        captures: &[Capture],
         body: &[Stmt],
     ) -> Result<(), String> {
         let cparams = self.compile_params(params)?;
@@ -1926,9 +2006,18 @@ impl Compiler {
         let nidx = b.add_constant(Value::str(def_name));
         b.emit(Op::LoadConst(nidx), 0);
         for cap in captures {
-            let cidx = b.add_constant(Value::str(cap.clone()));
+            let cidx = b.add_constant(Value::str(cap.name.clone()));
             b.emit(Op::LoadConst(cidx), 0);
-            self.emit_get_var(b, cap);
+            if cap.by_ref {
+                // `use (&$v)` captures a handle to the enclosing variable's
+                // reference cell, so the closure and the enclosing scope are
+                // two names for one value however either one writes it.
+                let nidx = b.add_constant(Value::str(cap.name.clone()));
+                b.emit(Op::LoadConst(nidx), 0);
+                b.emit(Op::CallBuiltin(ops::REF_CELL, 1), 0);
+            } else {
+                self.emit_get_var(b, &cap.name);
+            }
         }
         b.emit(
             Op::CallBuiltin(ops::MKCLOSURE, (1 + captures.len() * 2) as u8),
@@ -2219,7 +2308,7 @@ fn collect_free_vars(e: &Expr, out: &mut Vec<String>) {
         // A nested `use(...)` closure names the enclosing variables it captures.
         Expr::Closure { uses, .. } => {
             for u in uses {
-                push(u, out);
+                push(&u.name, out);
             }
         }
         Expr::New(_, args) | Expr::StaticCall(_, _, args) => {
