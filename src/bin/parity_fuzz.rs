@@ -211,9 +211,11 @@ fn run_with_timeout(mut cmd: Command, timeout: Duration) -> RunOut {
 
 fn run_oracle(script: &str, timeout: Duration) -> RunOut {
     let mut cmd = Command::new(oracle_path());
-    // `-d error_reporting=0` silences PHP notices/warnings so a deprecation note
-    // on stderr never perturbs the run; we compare stdout + success only.
-    cmd.args(["-d", "error_reporting=0", "-r", script]);
+    // No `-d error_reporting=0`: PHP writes Warning/Deprecated diagnostics to
+    // *stdout* under the CLI defaults, so they are part of the output being
+    // compared and silencing them on one side only would hide real divergences.
+    // stderr is discarded either way (see `run_with_timeout`).
+    cmd.args(["-r", script]);
     run_with_timeout(cmd, timeout)
 }
 
