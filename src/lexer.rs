@@ -344,6 +344,38 @@ impl<'a> Lexer<'a> {
                     lit.push(ch);
                     self.pos += 1;
                 }
+                // `{$expr}` — the complex form, any expression. Recorded as source
+                // for the parser; a `{` not followed by `$` is ordinary text.
+                b'{' if self.peek(1) == Some(b'$') => {
+                    if !lit.is_empty() {
+                        parts.push(StrPart::Lit(std::mem::take(&mut lit)));
+                    }
+                    match self.read_braced_interp() {
+                        Some(src) => parts.push(StrPart::Raw(src)),
+                        // Unbalanced: PHP would not have accepted it either, but
+                        // treat the brace as literal rather than lose the rest.
+                        None => {
+                            lit.push('{');
+                            self.pos += 1;
+                        }
+                    }
+                }
+                // `${name}` — the pre-8.2 form, deprecated but still substituted.
+                b'$' if self.peek(1) == Some(b'{') => {
+                    if !lit.is_empty() {
+                        parts.push(StrPart::Lit(std::mem::take(&mut lit)));
+                    }
+                    self.pos += 2; // `${`
+                    let start = self.pos;
+                    while self.pos < self.src.len() && is_ident(self.src[self.pos]) {
+                        self.pos += 1;
+                    }
+                    let name = String::from_utf8_lossy(&self.src[start..self.pos]).into_owned();
+                    if self.src.get(self.pos) == Some(&b'}') {
+                        self.pos += 1;
+                    }
+                    parts.push(StrPart::Var(name));
+                }
                 b'$' if matches!(self.peek(1), Some(b) if b == b'_' || b.is_ascii_alphabetic()) => {
                     if !lit.is_empty() {
                         parts.push(StrPart::Lit(std::mem::take(&mut lit)));
@@ -354,7 +386,13 @@ impl<'a> Lexer<'a> {
                         self.pos += 1;
                     }
                     let name = String::from_utf8_lossy(&self.src[start..self.pos]).into_owned();
-                    parts.push(StrPart::Var(name));
+                    // Simple syntax reaches exactly one level deep: `$a->p` and
+                    // `$a[k]`, and no further (`"$a->p->q"` interpolates `$a->p`
+                    // and leaves `->q` as text).
+                    match self.read_simple_interp_suffix(&name) {
+                        Some(src) => parts.push(StrPart::Raw(src)),
+                        None => parts.push(StrPart::Var(name)),
+                    }
                 }
                 b'\n' => {
                     self.line += 1;
@@ -371,6 +409,97 @@ impl<'a> Lexer<'a> {
             }
         }
         Err(format!("unterminated string (line {})", self.line))
+    }
+
+    /// Consume a `{$…}` interpolation and return the expression source between
+    /// the braces, or `None` if the braces are unbalanced.
+    ///
+    /// Braces nest (`"{$a[$b['{']]}"`), and a brace inside a quoted string in the
+    /// expression is not a delimiter, so both are tracked while scanning.
+    fn read_braced_interp(&mut self) -> Option<String> {
+        let start = self.pos + 1; // just past `{`
+        let mut i = start;
+        let mut depth = 1usize;
+        let mut quote: Option<u8> = None;
+        while i < self.src.len() {
+            let c = self.src[i];
+            match quote {
+                Some(q) => {
+                    if c == b'\\' {
+                        i += 1;
+                    } else if c == q {
+                        quote = None;
+                    }
+                }
+                None => match c {
+                    b'\'' | b'"' => quote = Some(c),
+                    b'{' => depth += 1,
+                    b'}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            let src = String::from_utf8_lossy(&self.src[start..i]).into_owned();
+                            self.line +=
+                                self.src[start..i].iter().filter(|&&b| b == b'\n').count() as u32;
+                            self.pos = i + 1;
+                            return Some(src);
+                        }
+                    }
+                    b'\n' => {}
+                    _ => {}
+                },
+            }
+            i += 1;
+        }
+        None
+    }
+
+    /// After a bare `$name` inside a string, consume PHP's *simple* interpolation
+    /// suffix if one follows, returning the expression source for it.
+    ///
+    /// `$a->prop` reads one property. `$a[k]` reads one element, and in this
+    /// syntax an unquoted key is a *string* — `"$a[k]"` means `$a['k']`, unlike
+    /// the same text outside a string, where `k` would be a constant. A `$var` or
+    /// a signed integer key is taken as written.
+    fn read_simple_interp_suffix(&mut self, name: &str) -> Option<String> {
+        if self.src.get(self.pos) == Some(&b'-') && self.peek(1) == Some(b'>') {
+            let after = self.pos + 2;
+            if !matches!(self.src.get(after), Some(&b) if b == b'_' || b.is_ascii_alphabetic()) {
+                return None;
+            }
+            let mut i = after;
+            while i < self.src.len() && is_ident(self.src[i]) {
+                i += 1;
+            }
+            let prop = String::from_utf8_lossy(&self.src[after..i]).into_owned();
+            self.pos = i;
+            return Some(format!("${name}->{prop}"));
+        }
+        if self.src.get(self.pos) != Some(&b'[') {
+            return None;
+        }
+        let key_start = self.pos + 1;
+        let mut i = key_start;
+        while i < self.src.len() && self.src[i] != b']' {
+            i += 1;
+        }
+        if i >= self.src.len() {
+            return None;
+        }
+        let key = String::from_utf8_lossy(&self.src[key_start..i]).into_owned();
+        if key.is_empty() {
+            return None;
+        }
+        let key_expr = if key.starts_with('$')
+            || key.parse::<i64>().is_ok()
+            || (key.starts_with('\'') && key.ends_with('\''))
+            || (key.starts_with('"') && key.ends_with('"'))
+        {
+            key
+        } else {
+            format!("'{}'", key.replace('\\', "\\\\").replace('\'', "\\'"))
+        };
+        self.pos = i + 1;
+        Some(format!("${name}[{key_expr}]"))
     }
 
     fn lex_operator(&mut self) -> Result<(), String> {

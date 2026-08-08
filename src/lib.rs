@@ -385,7 +385,18 @@ pub fn eval_str(src: &str) -> Result<Value, String> {
 pub fn eval_file(path: &str) -> Result<Value, String> {
     let src = std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?;
     host::reset_host();
+    set_script_name(path);
     run_compiled(compile(&src)?)
+}
+
+/// Name this run's source for diagnostics. PHP prints the script's *resolved*
+/// path in `Warning: … in <file> on line N`, so a relative argument is expanded;
+/// a fresh host defaults to `"Command line code"`, which is what `php -r` uses.
+fn set_script_name(path: &str) {
+    let resolved = std::fs::canonicalize(path)
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| path.to_string());
+    host::with_host(|h| h.set_script_name(resolved));
 }
 
 /// Read and run a `.php` file under the DAP debugger (per-statement line markers,
@@ -394,6 +405,7 @@ pub fn eval_file_debug(path: &str) -> Result<Value, String> {
     let src = std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?;
     let prog = compile_debug(&src)?;
     host::reset_host();
+    set_script_name(path);
     host::set_debug_mode(true);
     let r = run_compiled(prog);
     host::set_debug_mode(false);

@@ -32,6 +32,29 @@ pub fn parse(src: &str) -> Result<Vec<Stmt>, String> {
     Ok(stmts)
 }
 
+/// Turn the lexer's string segments into parsed ones: a bare `$name` becomes the
+/// expression that reads it, and a [`StrPart::Raw`] — `{$expr}`, `$a->p`, `$a[k]`
+/// — is lexed and parsed on its own, since each is a self-contained PHP
+/// expression. Anything left over after it means the recorded source was not one.
+fn resolve_interp_parts(parts: Vec<StrPart>) -> Result<Vec<InterpPart>, String> {
+    parts
+        .into_iter()
+        .map(|p| match p {
+            StrPart::Lit(s) => Ok(InterpPart::Lit(s)),
+            StrPart::Var(n) => Ok(InterpPart::Expr(Box::new(Expr::Var(n)))),
+            StrPart::Raw(src) => {
+                let toks = lexer::lex(&format!("<?php {src};"))?;
+                let mut inner = Parser { toks, pos: 0 };
+                let e = inner.expression()?;
+                if !inner.at_punct(";") {
+                    return Err(format!("unparsed interpolation `{{{src}}}`"));
+                }
+                Ok(InterpPart::Expr(Box::new(e)))
+            }
+        })
+        .collect()
+}
+
 struct Parser {
     toks: Vec<Spanned>,
     pos: usize,
@@ -456,6 +479,7 @@ impl Parser {
 
     fn function_stmt(&mut self) -> Result<StmtKind, String> {
         self.pos += 1; // function
+        let by_ref_return = self.eat_punct("&");
         let name = match self.next() {
             Some(Tok::Ident(n)) => n,
             other => {
@@ -468,7 +492,12 @@ impl Parser {
         let params = self.param_list()?;
         self.skip_return_type();
         let body = self.block()?;
-        Ok(StmtKind::Function { name, params, body })
+        Ok(StmtKind::Function {
+            name,
+            params,
+            body,
+            by_ref_return,
+        })
     }
 
     /// `namespace Name;` or `namespace Name { ... }`. phplang uses a flat
@@ -856,7 +885,7 @@ impl Parser {
                 self.expect_punct(";")?;
             } else if self.at_kw("function") {
                 self.pos += 1; // function
-                self.eat_punct("&"); // return-by-ref marker
+                let by_ref_return = self.eat_punct("&"); // return-by-ref marker
                 let mname = match self.next() {
                     Some(Tok::Ident(n)) => n,
                     other => {
@@ -880,6 +909,7 @@ impl Parser {
                     body,
                     is_static,
                     visibility,
+                    by_ref_return,
                 });
             } else {
                 // Property declaration(s): an optional type hint precedes the $var.
@@ -1131,11 +1161,13 @@ impl Parser {
                 }
             }
         }
-        // `@expr` — the error-suppression operator. phplang already returns
-        // false/null quietly where PHP would emit a warning/notice, so `@` is a
-        // pass-through: it evaluates its operand and discards the marker.
+        // `@expr` — the error-suppression operator. It silences the read
+        // diagnostics of its operand, the same suppression `isset()` applies.
+        // (PHP's `@` is dynamic and also silences diagnostics raised inside the
+        // functions the operand calls; phplang's builtins raise none, so the
+        // static form covers every case that currently differs.)
         if self.eat_punct("@") {
-            return self.unary();
+            return Ok(Expr::Quiet(Box::new(self.unary()?)));
         }
         if self.eat_punct("!") {
             return Ok(Expr::Unary(UnOp::Not, Box::new(self.unary()?)));
@@ -1292,7 +1324,7 @@ impl Parser {
             Some(Tok::Int(n)) => Ok(Expr::Int(n)),
             Some(Tok::Float(f)) => Ok(Expr::Float(f)),
             Some(Tok::Str(s)) => Ok(Expr::Str(s)),
-            Some(Tok::Interp(parts)) => Ok(Expr::Interp(parts)),
+            Some(Tok::Interp(parts)) => Ok(Expr::Interp(resolve_interp_parts(parts)?)),
             Some(Tok::Var(n)) => Ok(Expr::Var(n)),
             Some(Tok::Punct("(")) => {
                 let e = self.expression()?;
@@ -1400,20 +1432,21 @@ impl Parser {
                         // empty($x) ≡ !$x (both are false-on-truthy, quiet on unset).
                         return Ok(Expr::Unary(
                             UnOp::Not,
-                            Box::new(args.into_iter().next().unwrap()),
+                            Box::new(Expr::Quiet(Box::new(args.into_iter().next().unwrap()))),
                         ));
                     }
                     if name.eq_ignore_ascii_case("isset") && !args.is_empty() {
                         // isset($a, $b, …) ≡ ($a !== null) && ($b !== null) && …
                         let mut it = args.into_iter();
+                        let quiet = |e: Expr| Box::new(Expr::Quiet(Box::new(e)));
                         let mut expr = Expr::Binary(
                             BinOp::StrictNe,
-                            Box::new(it.next().unwrap()),
+                            quiet(it.next().unwrap()),
                             Box::new(Expr::Null),
                         );
                         for a in it {
                             let term =
-                                Expr::Binary(BinOp::StrictNe, Box::new(a), Box::new(Expr::Null));
+                                Expr::Binary(BinOp::StrictNe, quiet(a), Box::new(Expr::Null));
                             expr = Expr::Binary(BinOp::And, Box::new(expr), Box::new(term));
                         }
                         return Ok(expr);

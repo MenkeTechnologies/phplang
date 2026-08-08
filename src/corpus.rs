@@ -2599,6 +2599,13 @@ pub const CORPUS: &[Entry] = &[
     ),
     // ══ Core library — types and output ═════════════════════════════════════
     (
+        "settype",
+        "Core library — types and output",
+        "settype(mixed &$var, string $type): bool",
+        "Converts `$var` in place to `$type` and returns true. Accepts `bool`/`boolean`, `int`/`integer`, `float`/`double`, `string`, `array`, `object` and `null`; the conversion is the one the matching cast performs, so a non-numeric string becomes `0` and a scalar becomes a one-element array. Any other type name is a `ValueError`.",
+        "$n = \"12abc\"; settype($n, \"integer\"); var_dump($n);   // => int(12)",
+    ),
+    (
         "gettype",
         "Core library — types and output",
         "gettype(mixed $value): string",

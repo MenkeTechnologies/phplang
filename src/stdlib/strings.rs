@@ -269,11 +269,9 @@ fn strncasecmp(args: &[Value]) -> Result<Value, String> {
     let bb = &b.as_bytes()[..n.min(b.len())];
     let la: Vec<u8> = ab.iter().map(|c| c.to_ascii_lowercase()).collect();
     let lb: Vec<u8> = bb.iter().map(|c| c.to_ascii_lowercase()).collect();
-    Ok(Value::int(match la.cmp(&lb) {
-        std::cmp::Ordering::Less => -1,
-        std::cmp::Ordering::Greater => 1,
-        std::cmp::Ordering::Equal => 0,
-    }))
+    // PHP returns `memcmp`'s value: the difference of the first differing byte,
+    // not its sign. See `builtins::binary_strcmp`.
+    Ok(Value::int(crate::builtins::binary_strcmp(&la, &lb)))
 }
 
 // ── translation / replacement ────────────────────────────────────────────────

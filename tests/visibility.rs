@@ -137,3 +137,59 @@ fn protected_method_external_call_errors() {
         "Call to protected method C::m() from global scope"
     );
 }
+
+// ── what enumeration and casting expose ──────────────────────────────────────
+//
+// Verbatim stdout of the same program under the reference `php` 8.5.9.
+
+#[test]
+fn get_object_vars_returns_only_what_the_calling_scope_can_see() {
+    let src = r#"<?php
+        class V { public $pub = 1; protected $prot = 2; private $priv = 3;
+            function inside() { return get_object_vars($this); } }
+        $v = new V();
+        echo json_encode(get_object_vars($v)), "|", json_encode($v->inside());"#;
+    assert_eq!(run(src), r#"{"pub":1}|{"pub":1,"prot":2,"priv":3}"#);
+}
+
+#[test]
+fn casting_to_array_mangles_non_public_property_names() {
+    // A private `$p` declared by `C` becomes "\0C\0p" and a protected one
+    // "\0*\0p", so two same-named properties of different visibility cannot
+    // collide — and neither key is reachable as `$arr['p']`.
+    let src = r#"<?php
+        class V { public $pub = 1; protected $prot = 2; private $priv = 3; }
+        $arr = (array)(new V());
+        echo count($arr), "|", implode(",", array_keys($arr));"#;
+    assert_eq!(run(src), "3|pub,\0*\0prot,\0V\0priv");
+}
+
+#[test]
+fn a_mangled_key_carries_the_declaring_class_of_an_inherited_private() {
+    let src = r#"<?php
+        class Base { private $secret = 1; }
+        class Sub extends Base { public $open = 2; }
+        echo implode(",", array_keys((array)(new Sub())));"#;
+    assert_eq!(run(src), "\0Base\0secret,open");
+}
+
+#[test]
+fn settype_converts_through_its_by_reference_parameter() {
+    let src = r#"<?php
+        $s = "123"; settype($s, "integer");
+        $f = 1.9;   settype($f, "int");
+        $b = 0;     settype($b, "boolean");
+        $n = 5;     settype($n, "string");
+        $z = "x";   $ok = settype($z, "float");
+        var_dump($s, $f, $b, $n, $ok, $z);"#;
+    assert_eq!(
+        run(src),
+        "int(123)\nint(1)\nbool(false)\nstring(1) \"5\"\nbool(true)\nfloat(0)\n"
+    );
+}
+
+#[test]
+fn settype_to_array_wraps_a_scalar() {
+    let src = r#"<?php $a = 1; settype($a, "array"); var_dump($a);"#;
+    assert_eq!(run(src), "array(1) {\n  [0]=>\n  int(1)\n}\n");
+}

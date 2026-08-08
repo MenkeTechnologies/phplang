@@ -93,3 +93,115 @@ fn by_reference_parameter_forward_declared() {
         function bump(&$x) { $x = $x * 2; }"#;
     assert_eq!(run(src), "20");
 }
+
+// ── references to a container slot (`$r = &$a['x']['y']`) ────────────────────
+//
+// Each expectation below is the verbatim stdout of the same program under the
+// reference `php` 8.5.9.
+
+#[test]
+fn reference_to_a_nested_array_element_writes_both_ways() {
+    let src = r#"<?php $d = ['x' => ['y' => 1]];
+        $r = &$d['x']['y'];
+        $r = 99; echo $d['x']['y'], "|";
+        $d['x']['y'] = 7; echo $r;"#;
+    assert_eq!(run(src), "99|7");
+}
+
+#[test]
+fn an_array_copy_keeps_a_referenced_element_shared() {
+    // PHP's copy is deep in the arrays but a referenced slot is a reference in
+    // both copies, so a write through the alias is visible in the copy too.
+    let src = r#"<?php $a = [1,2,3]; $q = &$a[1]; $b = $a; $q = 55;
+        echo implode(",", $a), "|", implode(",", $b);"#;
+    assert_eq!(run(src), "1,55,3|1,55,3");
+}
+
+#[test]
+fn an_array_element_can_be_bound_to_a_variable() {
+    let src = r#"<?php $v = 10; $c = []; $c['k'] = &$v;
+        $v = 20; echo $c['k'], "|";
+        $c['k'] = 30; echo $v;"#;
+    assert_eq!(run(src), "20|30");
+}
+
+#[test]
+fn an_appended_element_can_be_bound_to_a_variable() {
+    let src = r#"<?php $w = 1; $e = []; $e[] = &$w; $w = 2; echo $e[0];"#;
+    assert_eq!(run(src), "2");
+}
+
+#[test]
+fn object_properties_can_be_referenced_in_both_directions() {
+    let src = r#"<?php class P { public $p = 1; }
+        $o = new P();
+        $pr = &$o->p; $pr = 42; echo $o->p, "|";
+        $o->p = 43; echo $pr, "|";
+        $z = 3; $o->p = &$z; $z = 4; echo $o->p;"#;
+    assert_eq!(run(src), "42|43|4");
+}
+
+#[test]
+fn a_reference_into_a_property_array_reaches_the_property() {
+    // The path is rooted on the property's own array, not on a copy of it.
+    let src = r#"<?php class P { public $items = []; }
+        $o = new P(); $o->items = [1,2];
+        $ir = &$o->items[1]; $ir = 9;
+        echo implode(",", $o->items);"#;
+    assert_eq!(run(src), "1,9");
+}
+
+#[test]
+fn taking_a_reference_vivifies_a_missing_element_as_null() {
+    let src = r#"<?php $m = []; $mr = &$m['new'];
+        echo json_encode($m), "|"; $mr = 5; echo json_encode($m);"#;
+    assert_eq!(run(src), r#"{"new":null}|{"new":5}"#);
+}
+
+#[test]
+fn unsetting_an_element_leaves_the_alias_holding_the_value() {
+    // `unset` removes the binding, not the cell: the alias keeps the value and
+    // writing through it no longer reaches the array.
+    let src = r#"<?php $i = [1,2]; $r = &$i[0]; unset($i[0]); $r = 7;
+        echo json_encode($i), "|", $r;"#;
+    assert_eq!(run(src), r#"{"1":2}|7"#);
+}
+
+#[test]
+fn an_array_element_binds_to_a_by_reference_parameter() {
+    let src = r#"<?php function bump(&$x) { $x++; }
+        $n = [1,2]; bump($n[0]); echo implode(",", $n);"#;
+    assert_eq!(run(src), "2,2");
+}
+
+#[test]
+fn var_dump_marks_a_referenced_element() {
+    let src = r#"<?php $a = [1,2,3]; $r = &$a[1]; var_dump($a);"#;
+    assert_eq!(
+        run(src),
+        "array(3) {\n  [0]=>\n  int(1)\n  [1]=>\n  &int(2)\n  [2]=>\n  int(3)\n}\n"
+    );
+}
+
+#[test]
+fn a_method_can_return_a_reference_to_a_property_element() {
+    let src = r#"<?php
+        class Box {
+            public $data = ['a' => 1];
+            public function &get($k) { return $this->data[$k]; }
+        }
+        $b = new Box(); $v = &$b->get('a'); $v = 42;
+        echo $b->data['a'];"#;
+    assert_eq!(run(src), "42");
+}
+
+#[test]
+fn a_by_value_call_of_a_by_reference_function_still_yields_the_value() {
+    let src = r#"<?php
+        function &pick(&$arr, $i) { return $arr[$i]; }
+        $z = [1,2,3];
+        echo pick($z, 1), "|";
+        $p = &pick($z, 1); $p = 77;
+        echo implode(",", $z);"#;
+    assert_eq!(run(src), "2|1,77,3");
+}

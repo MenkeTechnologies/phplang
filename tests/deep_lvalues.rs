@@ -65,8 +65,17 @@ fn compound_add_on_nested_element() {
 
 #[test]
 fn compound_add_autovivifies_from_null() {
-    // A compound op on an unset deep element starts from 0 (matches PHP).
-    assert_eq!(run("<?php $a['p']['q'] += 5; echo $a['p']['q'];"), "5");
+    // A compound op on an unset deep element starts from 0, and reports each
+    // missing step of the path. PHP fetches a read-modify-write path in write
+    // mode, so the unset `$a` is vivified into an array and the next segment
+    // reports its own missing key rather than an offset-on-null. Verbatim
+    // `php -r "$a['p']['q'] += 5; echo $a['p']['q'];"` on 8.5.9.
+    assert_eq!(
+        run("<?php $a['p']['q'] += 5; echo $a['p']['q'];"),
+        "\nWarning: Undefined variable $a in Command line code on line 1\n\
+         \nWarning: Undefined array key \"p\" in Command line code on line 1\n\
+         \nWarning: Undefined array key \"q\" in Command line code on line 1\n5"
+    );
 }
 
 #[test]
@@ -79,8 +88,14 @@ fn compound_concat_on_nested_element() {
 
 #[test]
 fn increment_on_nested_element() {
-    // Increment of an unset element yields 1 (matches PHP).
-    assert_eq!(run("<?php $a['n'][0]++; echo $a['n'][0];"), "1");
+    // Increment of an unset element yields 1, reporting each missing step.
+    // Verbatim `php -r "$a['n'][0]++; echo $a['n'][0];"` on 8.5.9.
+    assert_eq!(
+        run("<?php $a['n'][0]++; echo $a['n'][0];"),
+        "\nWarning: Undefined variable $a in Command line code on line 1\n\
+         \nWarning: Undefined array key \"n\" in Command line code on line 1\n\
+         \nWarning: Undefined array key 0 in Command line code on line 1\n1"
+    );
 }
 
 #[test]
@@ -92,11 +107,17 @@ fn post_increment_returns_old_value_on_element() {
 }
 
 #[test]
-fn decrement_on_unset_element_is_scaffold_negative_one() {
-    // SCAFFOLD DEVIATION: `--` on an unset element yields -1 here, consistent with
-    // `b_incdec` on a plain `$var`. Real PHP leaves it null (decrement of null is a
-    // no-op). This test pins the scaffold behavior, it does not claim PHP parity.
-    assert_eq!(run("<?php $a[0]--; echo $a[0];"), "-1");
+fn decrement_on_unset_element_leaves_it_null() {
+    // `--` on an unset element is a no-op: decrement of null does not reach -1,
+    // and PHP says so. (This previously yielded -1 — a documented scaffold
+    // deviation, now closed.) Verbatim `php -r "$a[0]--; echo $a[0];"` on 8.5.9.
+    assert_eq!(
+        run("<?php $a[0]--; echo $a[0];"),
+        "\nWarning: Undefined variable $a in Command line code on line 1\n\
+         \nWarning: Undefined array key 0 in Command line code on line 1\n\
+         \nWarning: Decrement on type null has no effect, this will change in the \
+         next major version of PHP in Command line code on line 1\n"
+    );
 }
 
 #[test]

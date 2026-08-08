@@ -105,8 +105,10 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
                 if !h.is_object(&a) {
                     return Value::bool(false);
                 }
+                // Only the properties the *calling scope* may see: public ones
+                // from outside the class, everything from inside a method of it.
                 let arr = h.new_array();
-                for (k, val) in h.object_props(&a) {
+                for (k, val) in h.object_props_visible(&a) {
                     h.arr_set_key(&arr, &Value::str(k), val);
                 }
                 arr

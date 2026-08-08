@@ -51,6 +51,19 @@ pub enum StrPart {
     Lit(String),
     /// An interpolated `$name` variable.
     Var(String),
+    /// PHP source for an interpolation the lexer cannot resolve to a bare name:
+    /// the complex form `{$expr}`, and the simple forms `$a->p` and `$a[k]`.
+    /// The lexer only records the text — parsing it is the parser's job.
+    Raw(String),
+}
+
+/// One segment of a *parsed* interpolated string. The parser turns the lexer's
+/// [`StrPart`] list into this: a `Var` becomes the expression that reads it and a
+/// `Raw` is parsed, so the compiler sees only literal text and expressions.
+#[derive(Debug, Clone)]
+pub enum InterpPart {
+    Lit(String),
+    Expr(Box<Expr>),
 }
 
 /// An expression.
@@ -63,7 +76,7 @@ pub enum Expr {
     /// A single-quoted string (no interpolation).
     Str(String),
     /// A double-quoted / interpolated string.
-    Interp(Vec<StrPart>),
+    Interp(Vec<InterpPart>),
     /// A `$name` variable read.
     Var(String),
     /// An array literal: `[k => v, v, ...]` / `array(...)`. A `None` key means
@@ -161,6 +174,11 @@ pub enum Expr {
     InstanceOf(Box<Expr>, String),
     /// `$target = &$source` — bind `target` as a reference alias of `source`.
     RefAssign(Box<Expr>, Box<Expr>),
+    /// A read in PHP's "isset mode": the operand of `isset()`, `empty()` or `@`,
+    /// and the left operand of `??`. A missing variable, array element or object
+    /// property is the question being asked rather than a mistake, so the read
+    /// raises no diagnostic. Evaluates exactly as the wrapped expression does.
+    Quiet(Box<Expr>),
     /// `yield`, `yield $v`, or `yield $k => $v` — suspend the enclosing generator,
     /// handing a value (and optional key) to the resumer. Evaluates to the value
     /// passed by the next `->send($x)` (null for `->next()`). A function whose body
@@ -244,6 +262,9 @@ pub enum StmtKind {
         name: String,
         params: Vec<Param>,
         body: Vec<Stmt>,
+        /// `function &f()` — the function returns by reference, so `$r = &f()`
+        /// aliases the storage its `return` names rather than copying its value.
+        by_ref_return: bool,
     },
     /// `class Name [extends Parent] { ... }`.
     Class(ClassDecl),
@@ -360,6 +381,8 @@ pub struct Method {
     pub body: Vec<Stmt>,
     pub is_static: bool,
     pub visibility: Visibility,
+    /// `function &m()` — see `StmtKind::Function::by_ref_return`.
+    pub by_ref_return: bool,
 }
 
 /// One `case`/`default` label of a `switch` plus its (fall-through) body. `test`

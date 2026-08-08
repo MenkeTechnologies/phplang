@@ -115,6 +115,54 @@ pub mod ops {
     pub const GEN_NEXT: u16 = 80; // [gen] -> Undef (resume to the next yield)
 
     pub const SIG_LEVEL: u16 = 83; // [] -> Int, level of the last break/continue
+
+    // `&` bindings to a *container slot* (`$r = &$a['x']['y']`, `$a[] = &$x`,
+    // `$o->p = &$x`). Split into an ACQUIRE half, which returns the reference
+    // cell the right-hand side denotes — promoting the element/property into a
+    // reference if it was a plain value — and a BIND half, which points the
+    // left-hand side at that cell. Composing the two halves covers every
+    // combination of variable / element / property on either side without an
+    // opcode per pair. The slot travels between them as a plain `Int`; it is a
+    // compiler-internal value that never reaches a PHP expression.
+    pub const REF_SLOT_VAR: u16 = 84; // [name] -> Int slot of $name
+    pub const REF_SLOT_ELEM: u16 = 85; // [name, k1..kN] -> Int slot of $name[k1]..[kN]
+    pub const REF_SLOT_PROP: u16 = 86; // [recv, prop] -> Int slot of $recv->prop
+    pub const REF_TO_VAR: u16 = 87; // [name, slot] -> Undef ($name = &<slot>)
+    pub const REF_TO_ELEM: u16 = 88; // [name, k1..kN, slot] -> Undef
+    pub const REF_TO_APPEND: u16 = 89; // [name, k1..kM, slot] -> Undef ($name[..][] = &…)
+    pub const REF_TO_PROP: u16 = 90; // [recv, prop, slot] -> Undef
+    /// `[slot]` — a `function &f()` body's `return <lvalue>`: publish the slot as
+    /// the call's returned reference and leave its value, which is what a plain
+    /// (non-`&`) call of the function sees.
+    pub const RET_REF: u16 = 91;
+    /// `[]` — the reference cell the last call returned, for `$r = &f()`. A call
+    /// that did not return by reference yields a fresh detached cell holding the
+    /// returned value, so the binding degrades to a private copy rather than
+    /// aliasing something arbitrary.
+    pub const REF_SLOT_RET: u16 = 92;
+
+    // Diagnostic-free reads. PHP fetches a variable / element / property in
+    // "isset mode" (`BP_VAR_IS`) inside `isset()`, `empty()` and the left operand
+    // of `??`, where a missing one is the question being asked rather than a
+    // mistake, and raises no diagnostic. These are the same reads as their loud
+    // twins with the warning suppressed; the compiler picks between them
+    // statically, so a function call nested in a key still warns normally.
+    pub const GETVAR_Q: u16 = 93; // [name] -> value, no "Undefined variable"
+    pub const INDEX_GET_Q: u16 = 94; // [recv, key] -> value, no "Undefined array key"
+    pub const PROP_GET_Q: u16 = 95; // [recv, name] -> value, no "Undefined property"
+
+    // Late static binding. `static::` names the class the call was made *on*, not
+    // the class the running method was declared in, so it can only be resolved at
+    // run time — a method inherited by two subclasses sees a different
+    // `static::` in each.
+    /// `[fallback]` -> the running frame's late-static-binding class. The
+    /// compiler supplies the enclosing class as the fallback, which is what the
+    /// name means outside any call (and what `self::` always means).
+    pub const LSB_CLASS: u16 = 96;
+    /// `[]` -> Undef. Marks the next call as *forwarding*: `self::m()`,
+    /// `parent::m()` and `static::m()` keep the caller's late-static-binding
+    /// class, whereas naming a class explicitly (`Base::m()`) replaces it.
+    pub const LSB_FORWARD: u16 = 97;
 }
 
 /// Sub-ops for the by-reference array mutators lowered through `ops::ARR_MUT`
@@ -312,6 +360,9 @@ struct Scope {
     /// The function name for a call frame, `None` for the global scope. Reported
     /// as the frame name in a DAP `stackTrace`.
     name: Option<String>,
+    /// The late-static-binding class of this frame — the class the call named,
+    /// which `static::` resolves to. `None` outside a method call.
+    static_class: Option<String>,
 }
 
 /// The PHP runtime state for one thread.
@@ -360,6 +411,24 @@ pub struct PhpHost {
     /// Singleton `enum` case instances, keyed by `"enumlower::CaseName"`. Built
     /// once on first access so `E::Case === E::Case` holds by object identity.
     enum_case_cache: FxHashMap<String, Value>,
+    /// What a diagnostic names as the source: the script path, or
+    /// `"Command line code"` for `php -r`. Set once at startup.
+    script_name: String,
+    /// The source line a diagnostic raised right now belongs to. The builtin that
+    /// is about to warn records it from the line table of the op it is executing,
+    /// so the host never has to walk the VM.
+    warn_line: u32,
+    /// Nesting depth of `@expr` suppression regions; a warning raised while this
+    /// is non-zero is discarded.
+    suppress: usize,
+    /// The late-static-binding class the next call's frame will take. Set from
+    /// the called class name, or — for a forwarding call (`self::`, `parent::`,
+    /// `static::`) — from the caller's own, and taken when the frame is pushed.
+    pending_lsb: Option<String>,
+    /// The reference cell the most recent `function &f()` return published, for
+    /// the caller's `$r = &f()` to bind. Taken (not just read) by the binding so a
+    /// stale slot can never be picked up by a later plain call.
+    ret_ref_slot: Option<usize>,
     /// Live generators, indexed by the id a `PhpObj::Generator` handle carries.
     /// Each holds a suspended stackful coroutine plus its swapped-out execution
     /// context (its own call frame, in-flight signal/throw).
@@ -393,6 +462,11 @@ impl PhpHost {
             static_props: FxHashMap::default(),
             static_slots: FxHashMap::default(),
             enum_case_cache: FxHashMap::default(),
+            script_name: "Command line code".to_string(),
+            warn_line: 0,
+            suppress: 0,
+            pending_lsb: None,
+            ret_ref_slot: None,
             generators: Vec::new(),
         };
         h.init_superglobals();
@@ -638,6 +712,100 @@ impl PhpHost {
 
     // ── errors ─────────────────────────────────────────────────────────────
 
+    // ── diagnostics ────────────────────────────────────────────────────────
+
+    /// Name this run's source for diagnostics: the script path, or
+    /// `"Command line code"` for `php -r` (which is the default).
+    pub fn set_script_name(&mut self, name: impl Into<String>) {
+        self.script_name = name.into();
+    }
+
+    /// Record the line a diagnostic raised next belongs to. Called by the builtin
+    /// that is about to warn, from the line table of the op it is executing.
+    pub fn set_warn_line(&mut self, line: u32) {
+        self.warn_line = line;
+    }
+
+    /// Enter/leave an `@expr` suppression region.
+    pub fn suppress_push(&mut self) {
+        self.suppress += 1;
+    }
+
+    pub fn suppress_pop(&mut self) {
+        self.suppress = self.suppress.saturating_sub(1);
+    }
+
+    /// Emit a PHP `Warning` on the output stream.
+    ///
+    /// With the CLI defaults (`display_errors=STDOUT`, `html_errors=Off`) the
+    /// reference interpreter writes exactly
+    /// `"\nWarning: {msg} in {file} on line {n}\n"` to stdout, interleaved with
+    /// the script's own output — so it goes through [`write_out`] and lands in an
+    /// output buffer or a capture just as `echo` does. The copy `log_errors`
+    /// sends to stderr is not reproduced: nothing observes it.
+    pub fn warn(&mut self, msg: impl std::fmt::Display) {
+        if self.suppress > 0 {
+            return;
+        }
+        let text = format!(
+            "\nWarning: {msg} in {} on line {}\n",
+            self.script_name, self.warn_line
+        );
+        self.write_out(&text);
+    }
+
+    /// Emit a PHP `Deprecated` diagnostic. Same stream and shape as [`warn`],
+    /// which is the only thing that distinguishes the severities on output.
+    pub fn deprecated(&mut self, msg: impl std::fmt::Display) {
+        if self.suppress > 0 {
+            return;
+        }
+        let text = format!(
+            "\nDeprecated: {msg} in {} on line {}\n",
+            self.script_name, self.warn_line
+        );
+        self.write_out(&text);
+    }
+
+    /// The type name PHP uses inside a diagnostic — the short spelling (`int`,
+    /// `bool`), not `gettype`'s (`integer`, `boolean`).
+    pub fn diag_type(&self, v: &Value) -> &'static str {
+        match v {
+            Value::Undef => "null",
+            Value::Bool(_) => "bool",
+            Value::Int(_) => "int",
+            Value::Float(_) => "float",
+            Value::Str(_) => "string",
+            Value::Obj(_) => {
+                if self.is_array(v) {
+                    "array"
+                } else {
+                    "object"
+                }
+            }
+            _ => "null",
+        }
+    }
+
+    /// The type name `Trying to access array offset on …` uses. It differs from
+    /// [`diag_type`] for booleans, which it spells as the literal `true`/`false`.
+    fn diag_offset_type(&self, v: &Value) -> &'static str {
+        match v {
+            Value::Bool(true) => "true",
+            Value::Bool(false) => "false",
+            other => self.diag_type(other),
+        }
+    }
+
+    /// An array key as a diagnostic renders it: a string key is quoted, an
+    /// integer key is bare (`Undefined array key "k"` vs `Undefined array key 7`).
+    pub fn diag_key(&self, key: &Value) -> String {
+        match self.norm_key(key) {
+            ArrayKey::Int(n) => n.to_string(),
+            ArrayKey::Str(s) => format!("\"{s}\""),
+        }
+    }
+
     pub fn set_error(&mut self, msg: impl Into<String>) {
         if self.error.is_none() {
             self.error = Some(msg.into());
@@ -724,6 +892,40 @@ impl PhpHost {
         self.ref_cells.get(slot).cloned().unwrap_or(Value::Undef)
     }
 
+    /// The reference slot a value denotes, if it is a [`PhpObj::Ref`] handle.
+    ///
+    /// A stored `Ref` handle is how an array element or an object property that a
+    /// `&` binding has made into a reference is represented: the container keeps
+    /// the handle, every read derefs it, and every write goes through the cell, so
+    /// the element and the alias are one storage location — PHP's `IS_REFERENCE`
+    /// zval in the slot.
+    pub fn ref_slot_of_value(&self, v: &Value) -> Option<usize> {
+        match v {
+            Value::Obj(h) => match self.objs.get(*h as usize) {
+                Some(PhpObj::Ref { slot }) => Some(*slot),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Resolve a stored value: a `Ref` handle reads as its cell's contents,
+    /// everything else as itself. Applied on the way out of every container read
+    /// so a reference in a slot is invisible to code that only reads the value.
+    fn deref(&self, v: Value) -> Value {
+        match self.ref_slot_of_value(&v) {
+            Some(slot) => self.ref_cells.get(slot).cloned().unwrap_or(Value::Undef),
+            None => v,
+        }
+    }
+
+    /// Write `val` into the reference cell at `slot`.
+    fn ref_cell_set(&mut self, slot: usize, val: Value) {
+        if let Some(cell) = self.ref_cells.get_mut(slot) {
+            *cell = val;
+        }
+    }
+
     /// The reference cell `name` resolves to, creating one — and moving the
     /// variable's current value into it — if the variable is still a plain one.
     fn ref_slot_of(&mut self, name: &str) -> usize {
@@ -743,6 +945,169 @@ impl PhpHost {
             scope.refs.insert(name.to_string(), slot);
         }
         slot
+    }
+
+    /// The reference cell for the array element `$name[k1]..[kN]`, promoting the
+    /// element into a reference (and auto-vivifying the path, as PHP does for a
+    /// `&` lvalue) if it is not one already. `keys` must be non-empty.
+    ///
+    /// This is the storage half of `$r = &$a[k]`: the element slot keeps a
+    /// [`PhpObj::Ref`] handle to the returned cell, so a later write through
+    /// either name lands in the one cell.
+    pub fn elem_ref_slot(&mut self, name: &str, keys: &[Value]) -> usize {
+        let Some((last, inter)) = keys.split_last() else {
+            return self.ref_slot_of(name);
+        };
+        let arr = self.ensure_path_array(name, inter);
+        self.arr_elem_ref_slot(&arr, last)
+    }
+
+    /// The reference cell for `arr[key]` (a handle), promoting the element into a
+    /// reference if it is not one already.
+    pub fn arr_elem_ref_slot(&mut self, arr: &Value, key: &Value) -> usize {
+        let k = self.norm_key(key);
+        if let Some(slot) = self.entry_ref_slot(arr, &k) {
+            return slot;
+        }
+        // PHP vivifies a `&`-taken element to null when it does not exist yet.
+        let cur = match self.as_array(arr) {
+            Some(PhpObj::Array { entries, .. }) => entries.get(&k).cloned().unwrap_or(Value::Undef),
+            _ => Value::Undef,
+        };
+        self.ref_cells.push(cur);
+        let slot = self.ref_cells.len() - 1;
+        self.objs.push(PhpObj::Ref { slot });
+        let handle = Value::Obj((self.objs.len() - 1) as u32);
+        if let Some(PhpObj::Array {
+            entries,
+            next_index,
+        }) = self.as_array_mut(arr)
+        {
+            if let ArrayKey::Int(n) = k {
+                if n >= *next_index {
+                    *next_index = n + 1;
+                }
+            }
+            entries.insert(k, handle);
+        }
+        slot
+    }
+
+    /// The reference cell for `$obj->name`, promoting the property into a
+    /// reference if it is not one already.
+    pub fn prop_ref_slot_ensure(&mut self, recv: &Value, name: &str) -> usize {
+        if let Some(slot) = self.prop_ref_slot(recv, name) {
+            return slot;
+        }
+        let cur = match self.as_array(recv) {
+            Some(PhpObj::Object { props, .. }) => props.get(name).cloned().unwrap_or(Value::Undef),
+            _ => Value::Undef,
+        };
+        self.ref_cells.push(cur);
+        let slot = self.ref_cells.len() - 1;
+        self.objs.push(PhpObj::Ref { slot });
+        let handle = Value::Obj((self.objs.len() - 1) as u32);
+        if let Some(PhpObj::Object { props, .. }) = self.as_array_mut(recv) {
+            props.insert(name.to_string(), handle);
+        }
+        slot
+    }
+
+    /// Store a [`PhpObj::Ref`] handle for `slot` into `$name[k1]..[kN]` — the
+    /// `$a[k] = &$x` direction, where the *container slot* becomes the alias.
+    /// An empty `keys` binds the plain variable instead.
+    pub fn bind_elem_to_slot(&mut self, name: &str, keys: &[Value], slot: usize) {
+        let Some((last, inter)) = keys.split_last() else {
+            self.bind_ref_slot(name, slot);
+            return;
+        };
+        let arr = self.ensure_path_array(name, inter);
+        self.objs.push(PhpObj::Ref { slot });
+        let handle = Value::Obj((self.objs.len() - 1) as u32);
+        let k = self.norm_key(last);
+        if let Some(PhpObj::Array {
+            entries,
+            next_index,
+        }) = self.as_array_mut(&arr)
+        {
+            if let ArrayKey::Int(n) = k {
+                if n >= *next_index {
+                    *next_index = n + 1;
+                }
+            }
+            entries.insert(k, handle);
+        }
+    }
+
+    /// `$name[k1]..[kM][] = &$x` — append a [`PhpObj::Ref`] handle for `slot`.
+    pub fn append_elem_to_slot(&mut self, name: &str, keys: &[Value], slot: usize) {
+        let arr = self.ensure_path_array(name, keys);
+        self.objs.push(PhpObj::Ref { slot });
+        let handle = Value::Obj((self.objs.len() - 1) as u32);
+        if let Some(PhpObj::Array {
+            entries,
+            next_index,
+        }) = self.as_array_mut(&arr)
+        {
+            let k = ArrayKey::Int(*next_index);
+            *next_index += 1;
+            entries.insert(k, handle);
+        }
+    }
+
+    /// `$obj->p = &$x` — store a [`PhpObj::Ref`] handle for `slot` in a property.
+    pub fn bind_prop_to_slot(&mut self, recv: &Value, name: &str, slot: usize) {
+        self.objs.push(PhpObj::Ref { slot });
+        let handle = Value::Obj((self.objs.len() - 1) as u32);
+        if let Some(PhpObj::Object { props, .. }) = self.as_array_mut(recv) {
+            props.insert(name.to_string(), handle);
+        }
+    }
+
+    /// The running frame's late-static-binding class, or `fallback` (the
+    /// enclosing class the compiler baked in) outside any method call.
+    pub fn lsb_class(&self, fallback: &str) -> String {
+        self.scopes
+            .last()
+            .and_then(|s| s.static_class.clone())
+            .unwrap_or_else(|| fallback.to_string())
+    }
+
+    /// Mark the next call as forwarding: it inherits this frame's
+    /// late-static-binding class instead of taking the class it names.
+    pub fn lsb_forward(&mut self) {
+        self.pending_lsb = self.scopes.last().and_then(|s| s.static_class.clone());
+    }
+
+    /// Set the late-static-binding class the next call's frame takes, unless a
+    /// forwarding call has already claimed it.
+    pub fn lsb_set_for_next_call(&mut self, class: &str) {
+        if self.pending_lsb.is_none() {
+            self.pending_lsb = Some(class.to_string());
+        }
+    }
+
+    /// Take the late-static-binding class a pushed frame should carry.
+    fn lsb_take(&mut self) -> Option<String> {
+        self.pending_lsb.take()
+    }
+
+    /// Publish `slot` as the reference the running `function &f()` returns.
+    pub fn set_ret_ref_slot(&mut self, slot: usize) {
+        self.ret_ref_slot = Some(slot);
+    }
+
+    /// Take the reference cell the last call returned. A call that did not return
+    /// by reference has none, so `fallback` is parked in a fresh detached cell —
+    /// `$r = &f()` on a by-value function then aliases only its own copy.
+    pub fn take_ret_ref_slot(&mut self, fallback: Value) -> usize {
+        match self.ret_ref_slot.take() {
+            Some(slot) => slot,
+            None => {
+                self.ref_cells.push(fallback);
+                self.ref_cells.len() - 1
+            }
+        }
     }
 
     pub fn ref_bind(&mut self, target: &str, source: &str) {
@@ -1020,8 +1385,13 @@ impl PhpHost {
 
     /// The heap handle of any object/array/resource value — a stable per-instance
     /// id (`spl_object_id`). `None` for non-heap values.
+    ///
+    /// This is the same number `var_dump` prints as `#N`, as it is in PHP —
+    /// both are the object's handle — so it is [`object_ordinal`], not the raw
+    /// heap index, which also counts arrays, closures and resources.
     pub fn object_id(&self, v: &Value) -> Option<i64> {
         match v {
+            Value::Obj(_) if self.is_object(v) => Some(self.object_ordinal(v) as i64),
             Value::Obj(h) => Some(*h as i64),
             _ => None,
         }
@@ -1031,8 +1401,15 @@ impl PhpHost {
     ///
     /// PHP numbers class instances only, so count the `Object` entries up to and
     /// including this handle rather than using the raw heap index (which also
-    /// covers arrays, closures and resources). Unlike PHP the scaffold never
-    /// frees a handle, so a number is never reused.
+    /// covers arrays, closures and resources).
+    ///
+    /// KNOWN DIVERGENCE: PHP frees an object's handle when its refcount drops to
+    /// zero and hands the number to the next allocation, so a program that
+    /// discards an object sees a *lower* number afterwards than phplang, which
+    /// allocates from an append-only arena and never frees. Closing this needs
+    /// refcounted handles and a free list ordered the way PHP's allocator orders
+    /// its own — substrate that does not exist here — so the numbers agree only
+    /// while no object has become unreachable.
     pub fn object_ordinal(&self, v: &Value) -> usize {
         let Value::Obj(h) = v else { return 0 };
         self.objs
@@ -1134,9 +1511,80 @@ impl PhpHost {
     /// `get_object_vars`; empty if `v` is not an object.
     pub fn object_props(&self, v: &Value) -> Vec<(String, Value)> {
         match self.as_array(v) {
-            Some(PhpObj::Object { props, .. }) => {
-                props.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+            Some(PhpObj::Object { props, .. }) => props
+                .iter()
+                .map(|(k, v)| (k.clone(), self.deref(v.clone())))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// An object's properties that are *visible from the current scope* — what
+    /// `get_object_vars` returns. Called from outside the class, that is the
+    /// public ones only; called from inside a method of the class, the private
+    /// and protected ones as well.
+    pub fn object_props_visible(&self, v: &Value) -> Vec<(String, Value)> {
+        let Some(class) = self.object_class(v) else {
+            return Vec::new();
+        };
+        self.object_props(v)
+            .into_iter()
+            .filter(|(name, _)| match self.resolve_prop_vis(&class, name) {
+                Some((declaring, vis)) => self.visibility_allows(vis, &declaring),
+                // A dynamic property was never declared, so it is public.
+                None => true,
+            })
+            .collect()
+    }
+
+    /// An object's properties keyed the way `(array)` spells them: PHP mangles a
+    /// non-public name so the cast cannot silently collide two properties of the
+    /// same name from different visibilities. A private `$p` declared by `C`
+    /// becomes `"\0C\0p"`, a protected one `"\0*\0p"`, and a public one stays as
+    /// it is. The NUL bytes are why such a key cannot be reached with `$arr['p']`.
+    pub fn object_props_mangled(&self, v: &Value) -> Vec<(String, Value)> {
+        let class = self.object_class(v).unwrap_or_default();
+        self.object_props(v)
+            .into_iter()
+            .map(|(name, val)| {
+                let key = match self.declaring_class_of_prop(&class, &name) {
+                    // The mangled name carries the declaring class *as written*.
+                    Some((declaring, Visibility::Private)) => format!("\0{declaring}\0{name}"),
+                    Some((_, Visibility::Protected)) => format!("\0*\0{name}"),
+                    _ => name,
+                };
+                (key, val)
+            })
+            .collect()
+    }
+
+    /// [`resolve_prop_vis`] with the declaring class in its source spelling,
+    /// which is the form `(array)`'s mangled key needs. Class definitions are
+    /// keyed by lowercase name but the `parent` link keeps its original case, so
+    /// the walk carries the declared name alongside the lookup key.
+    fn declaring_class_of_prop(&self, class: &str, name: &str) -> Option<(String, Visibility)> {
+        let mut cur = Some(class.to_string());
+        while let Some(c) = cur {
+            let def = self.classes.get(&c.to_ascii_lowercase())?;
+            if let Some(v) = def.prop_vis.get(name) {
+                return Some((c, *v));
             }
+            cur = def.parent.clone();
+        }
+        None
+    }
+
+    /// The object's `(name, value, is_reference)` triples — the property form of
+    /// [`array_pairs_marked`], for `var_dump`'s `&` marker.
+    pub fn object_props_marked(&self, v: &Value) -> Vec<(String, Value, bool)> {
+        match self.as_array(v) {
+            Some(PhpObj::Object { props, .. }) => props
+                .iter()
+                .map(|(k, v)| {
+                    let is_ref = self.ref_slot_of_value(v).is_some();
+                    (k.clone(), self.deref(v.clone()), is_ref)
+                })
+                .collect(),
             _ => Vec::new(),
         }
     }
@@ -1294,16 +1742,33 @@ impl PhpHost {
     /// `$obj->name` read (`Undef` if the object lacks the property).
     pub fn prop_get(&self, recv: &Value, name: &str) -> Value {
         match self.as_array(recv) {
-            Some(PhpObj::Object { props, .. }) => props.get(name).cloned().unwrap_or(Value::Undef),
+            Some(PhpObj::Object { props, .. }) => {
+                let raw = props.get(name).cloned().unwrap_or(Value::Undef);
+                self.deref(raw)
+            }
             _ => Value::Undef,
         }
     }
 
-    /// `$obj->name = val` — mutates the shared instance behind the handle.
+    /// `$obj->name = val` — mutates the shared instance behind the handle. A
+    /// property a `&` binding has turned into a reference is written through its
+    /// cell rather than replaced, so the alias observes the write.
     pub fn prop_set(&mut self, recv: &Value, name: &str, val: Value) {
+        if let Some(slot) = self.prop_ref_slot(recv, name) {
+            self.ref_cell_set(slot, val);
+            return;
+        }
         if let Some(PhpObj::Object { props, .. }) = self.as_array_mut(recv) {
             props.insert(name.to_string(), val);
         }
+    }
+
+    /// The reference slot `$obj->name` holds, if that property is a reference.
+    fn prop_ref_slot(&self, recv: &Value, name: &str) -> Option<usize> {
+        let Some(PhpObj::Object { props, .. }) = self.as_array(recv) else {
+            return None;
+        };
+        self.ref_slot_of_value(props.get(name)?)
     }
 
     /// Ensure `$obj->name` holds an array and return its handle, creating an empty
@@ -1608,11 +2073,20 @@ impl PhpHost {
         }
     }
 
+    /// The reference slot the entry `arr[k]` holds, if that element is a reference.
+    fn entry_ref_slot(&self, arr: &Value, k: &ArrayKey) -> Option<usize> {
+        let Some(PhpObj::Array { entries, .. }) = self.as_array(arr) else {
+            return None;
+        };
+        self.ref_slot_of_value(entries.get(k)?)
+    }
+
     /// `$arr[key]` read. Also indexes strings (single-character substring).
     pub fn index_get(&self, recv: &Value, key: &Value) -> Value {
         if let Some(PhpObj::Array { entries, .. }) = self.as_array(recv) {
             let k = self.norm_key(key);
-            return entries.get(&k).cloned().unwrap_or(Value::Undef);
+            let raw = entries.get(&k).cloned().unwrap_or(Value::Undef);
+            return self.deref(raw);
         }
         if let Value::Str(s) = recv {
             // PHP string offsets are byte-indexed and accept negatives (`$s[-1]`
@@ -1632,22 +2106,94 @@ impl PhpHost {
         Value::Undef
     }
 
+    /// `$arr[key]` read in a *value* context, where a miss is a mistake rather
+    /// than a question. Same result as [`index_get`], plus PHP's diagnostic:
+    /// `Undefined array key K` for a missing element, `Uninitialized string
+    /// offset N` past the end of a string, and `Trying to access array offset on
+    /// <type>` when the receiver is not subscriptable at all.
+    pub fn index_get_warn(&mut self, recv: &Value, key: &Value) -> Value {
+        if let Some(PhpObj::Array { entries, .. }) = self.as_array(recv) {
+            let k = self.norm_key(key);
+            match entries.get(&k).cloned() {
+                Some(v) => return self.deref(v),
+                None => {
+                    let k = self.diag_key(key);
+                    self.warn(format_args!("Undefined array key {k}"));
+                    return Value::Undef;
+                }
+            }
+        }
+        if let Value::Str(s) = recv {
+            let len = s.len() as i64;
+            let mut i = key.to_int();
+            if i < 0 {
+                i += len;
+            }
+            if i >= 0 && i < len {
+                return self.index_get(recv, key);
+            }
+            let off = key.to_int();
+            self.warn(format_args!("Uninitialized string offset {off}"));
+            return Value::Undef;
+        }
+        // A closure/generator/resource handle is not an array either, but PHP
+        // raises an Error for those rather than a warning; only the scalars and
+        // null reach this warning.
+        if !matches!(recv, Value::Obj(_)) {
+            let t = self.diag_offset_type(recv);
+            self.warn(format_args!("Trying to access array offset on {t}"));
+        }
+        Value::Undef
+    }
+
+    /// `$name` read in a value context — [`get_var`] plus `Undefined variable $x`
+    /// when the name is not bound. Compiler temporaries (which are prefixed with
+    /// `@`, outside the PHP identifier space) never warn: they are not the user's
+    /// variables and are always written before they are read.
+    pub fn get_var_warn(&mut self, name: &str) -> Value {
+        let idx = self.scope_idx(name);
+        if let Some(scope) = self.scopes.get(idx) {
+            if let Some(&slot) = scope.refs.get(name) {
+                return self.ref_cells.get(slot).cloned().unwrap_or(Value::Undef);
+            }
+            if let Some(v) = scope.vars.get(name) {
+                return v.clone();
+            }
+        }
+        if !name.starts_with('@') {
+            self.warn(format_args!("Undefined variable ${name}"));
+        }
+        Value::Undef
+    }
+
+    /// `$obj->name` read in a value context — [`prop_get`] plus PHP's diagnostic:
+    /// `Undefined property: C::$p` when the instance has no such property, and
+    /// `Attempt to read property "p" on <type>` when the receiver is not an
+    /// object at all.
+    pub fn prop_get_warn(&mut self, recv: &Value, name: &str) -> Value {
+        match self.as_array(recv) {
+            Some(PhpObj::Object { class, props }) => match props.get(name).cloned() {
+                Some(v) => self.deref(v),
+                None => {
+                    let class = class.clone();
+                    self.warn(format_args!("Undefined property: {class}::${name}"));
+                    Value::Undef
+                }
+            },
+            // An array handle reads as a property-less value; PHP reports the
+            // same "read property on array" as for any other non-object.
+            _ => {
+                let t = self.diag_type(recv);
+                self.warn(format_args!("Attempt to read property \"{name}\" on {t}"));
+                Value::Undef
+            }
+        }
+    }
+
     /// `$var[key] = val` on the named scope variable, auto-vivifying an array.
     pub fn index_set_var(&mut self, name: &str, key: &Value, val: Value) {
         let arr = self.ensure_array_var(name);
-        let k = self.norm_key(key);
-        if let Some(PhpObj::Array {
-            entries,
-            next_index,
-        }) = self.as_array_mut(&arr)
-        {
-            if let ArrayKey::Int(n) = k {
-                if n >= *next_index {
-                    *next_index = n + 1;
-                }
-            }
-            entries.insert(k, val);
-        }
+        self.arr_set_key(&arr, key, val);
     }
 
     /// `$var[] = val` append on the named scope variable, auto-vivifying.
@@ -1684,7 +2230,11 @@ impl PhpHost {
         for key in keys {
             let k = self.norm_key(key);
             let child = match self.as_array(&arr) {
-                Some(PhpObj::Array { entries, .. }) => entries.get(&k).cloned(),
+                // A referenced element descends into whatever its cell holds, so
+                // `$r = &$a['x']; $a['x']['y'] = 1;` writes through the alias.
+                Some(PhpObj::Array { entries, .. }) => {
+                    entries.get(&k).cloned().map(|v| self.deref(v))
+                }
                 _ => None,
             };
             arr = match child {
@@ -1733,6 +2283,31 @@ impl PhpHost {
         cur
     }
 
+    /// [`index_get_path`] for the read half of a read-modify-write — `$a[k] += 1`,
+    /// `$a[k]++` — which diagnoses every step of the path.
+    ///
+    /// PHP fetches an RW path in write mode: an unset container is reported and
+    /// then *auto-vivified* into an empty array, so the next segment reports its
+    /// own missing key rather than "array offset on null". That is what makes
+    /// `$a['p']['q'] += 5` on a fresh `$a` print `Undefined variable $a`,
+    /// `Undefined array key "p"`, `Undefined array key "q"` — three misses, not a
+    /// miss followed by two null-offset complaints, which is what a plain read of
+    /// the same path prints.
+    pub fn index_get_path_warn(&mut self, name: &str, keys: &[Value]) -> Value {
+        let mut cur = self.get_var_warn(name);
+        for key in keys {
+            if matches!(cur, Value::Undef) {
+                // The write-mode fetch put an empty array here; the key is still
+                // missing from it.
+                let k = self.diag_key(key);
+                self.warn(format_args!("Undefined array key {k}"));
+                continue;
+            }
+            cur = self.index_get_warn(&cur, key);
+        }
+        cur
+    }
+
     /// Append a fresh empty array as a new element of `$name[k1]..[kN]` and return
     /// its handle — the pivot for a mid-path append (`$a[][k] = v`): the caller
     /// keeps writing through the returned child handle, so each `[]` in the chain
@@ -1757,9 +2332,15 @@ impl PhpHost {
         }
     }
 
-    /// Insert `v` under `key` in the array `arr` (a handle).
+    /// Insert `v` under `key` in the array `arr` (a handle). An element that a `&`
+    /// binding has turned into a reference is written *through* — the alias sees
+    /// the new value and the slot stays a reference — instead of being replaced.
     pub fn arr_set_key(&mut self, arr: &Value, key: &Value, v: Value) {
         let k = self.norm_key(key);
+        if let Some(slot) = self.entry_ref_slot(arr, &k) {
+            self.ref_cell_set(slot, v);
+            return;
+        }
         if let Some(PhpObj::Array {
             entries,
             next_index,
@@ -2020,14 +2601,36 @@ impl PhpHost {
     /// The array's `(key, value)` pairs, cloned (for `print_r`/`implode`/etc.).
     pub fn array_pairs(&self, recv: &Value) -> Option<Vec<(Value, Value)>> {
         match self.as_array(recv) {
-            Some(PhpObj::Array { entries, .. }) => Some(
-                entries
+            Some(PhpObj::Array { entries, .. }) => {
+                let raw: Vec<(Value, Value)> = entries
                     .iter()
                     .map(|(k, v)| (k.to_value(), v.clone()))
-                    .collect(),
-            ),
+                    .collect();
+                Some(raw.into_iter().map(|(k, v)| (k, self.deref(v))).collect())
+            }
             _ => None,
         }
+    }
+
+    /// The array's `(key, value, is_reference)` triples, values still raw. Only
+    /// `var_dump`, which prints a `&` before a referenced element, needs to see
+    /// which slots are references; every other reader wants [`array_pairs`].
+    pub fn array_pairs_marked(&self, recv: &Value) -> Option<Vec<(Value, Value, bool)>> {
+        let Some(PhpObj::Array { entries, .. }) = self.as_array(recv) else {
+            return None;
+        };
+        let raw: Vec<(Value, Value)> = entries
+            .iter()
+            .map(|(k, v)| (k.to_value(), v.clone()))
+            .collect();
+        Some(
+            raw.into_iter()
+                .map(|(k, v)| {
+                    let is_ref = self.ref_slot_of_value(&v).is_some();
+                    (k, self.deref(v), is_ref)
+                })
+                .collect(),
+        )
     }
 
     pub fn is_array(&self, v: &Value) -> bool {
@@ -2061,6 +2664,75 @@ impl PhpHost {
             Value::Str(s) => s.to_string(),
             Value::Obj(_) => "Array".to_string(),
             _ => String::new(),
+        }
+    }
+
+    /// `++`/`--` applied to one value, with the diagnostics PHP raises for the
+    /// operand types the operators do not actually change.
+    ///
+    /// The operators are not arithmetic on `$x + 1`: `null--` and `true++` leave
+    /// the value alone, `""++` produces the *string* `"1"`, and `++` on a
+    /// non-numeric string is Perl-style alphanumeric succession (`"Az"` → `"Ba"`,
+    /// `"zz"` → `"aaa"`) rather than a numeric coercion. Only a numeric string
+    /// goes through the number path.
+    pub fn incdec_value(&mut self, old: &Value, inc: bool) -> Value {
+        let delta = if inc { 1 } else { -1 };
+        match old {
+            // null++ is 1; null-- is a no-op PHP has announced it will change.
+            Value::Undef => {
+                if inc {
+                    Value::int(1)
+                } else {
+                    self.warn(
+                        "Decrement on type null has no effect, this will change in the next \
+                         major version of PHP",
+                    );
+                    Value::Undef
+                }
+            }
+            // Neither operator has ever affected a bool.
+            Value::Bool(_) => {
+                let word = if inc { "Increment" } else { "Decrement" };
+                self.warn(format_args!(
+                    "{word} on type bool has no effect, this will change in the next major \
+                     version of PHP"
+                ));
+                old.clone()
+            }
+            Value::Int(n) => Value::int(n + delta),
+            Value::Float(f) => Value::float(f + delta as f64),
+            Value::Str(s) if is_numeric_string(s) => match parse_php_number(s) {
+                Value::Float(f) => Value::float(f + delta as f64),
+                Value::Int(n) => Value::int(n + delta),
+                other => other,
+            },
+            Value::Str(s) if s.is_empty() => {
+                if inc {
+                    self.deprecated(
+                        "Increment on non-numeric string is deprecated, use str_increment() \
+                         instead",
+                    );
+                    Value::str("1")
+                } else {
+                    self.deprecated("Decrement on empty string is deprecated as non-numeric");
+                    Value::int(-1)
+                }
+            }
+            Value::Str(s) => {
+                if inc {
+                    self.deprecated(
+                        "Increment on non-numeric string is deprecated, use str_increment() \
+                         instead",
+                    );
+                    Value::str(increment_alnum_string(s))
+                } else {
+                    self.deprecated(
+                        "Decrement on non-numeric string has no effect and is deprecated",
+                    );
+                    old.clone()
+                }
+            }
+            other => other.clone(),
         }
     }
 
@@ -2817,6 +3489,33 @@ pub fn run_main(chunk: Chunk) -> Result<Value, String> {
 /// Invoke a user function (or fall through to the builtin library) by name.
 /// Pushes a fresh scope, binds positional parameters, runs the body chunk, and
 /// returns the `return` value (or null if the body fell off the end).
+/// PHP's string conversion with `__toString` honoured.
+///
+/// [`PhpHost::to_str`] takes `&self` and so cannot run PHP code; an object that
+/// defines `__toString` therefore has to be converted *outside* the host borrow,
+/// which is what this free function is for. It must not be called from inside a
+/// `with_host` closure — invoking the method re-enters the host and the
+/// `RefCell` would be borrowed twice.
+///
+/// Every other value takes the ordinary cast, and the probe for the method is a
+/// single class lookup, so the non-object path costs one `with_host` round trip
+/// and nothing else.
+pub fn to_str_ext(v: &Value) -> String {
+    let class = with_host(|h| {
+        h.object_class(v)
+            .filter(|c| h.class_has_method(c, "__tostring"))
+    });
+    let Some(class) = class else {
+        return with_host(|h| h.to_str(v));
+    };
+    match call_method(&class, "__toString", Some(v.clone()), Vec::new()) {
+        Ok(r) => with_host(|h| h.to_str(&r)),
+        // A throwing `__toString` leaves the exception pending for the caller's
+        // dispatcher; the conversion itself yields the empty string.
+        Err(_) => String::new(),
+    }
+}
+
 pub fn call_function(name: &str, args: Vec<Value>) -> Result<Value, String> {
     // Inline Rust FFI: the `rust { ... }` desugar emits `__rust_compile(b64,
     // line)`; compile + register the block's exported functions.
@@ -2895,6 +3594,7 @@ fn invoke(
     let bound = with_host(|h| {
         let scope = Scope {
             name: Some(frame.to_string()),
+            static_class: h.lsb_take(),
             ..Scope::default()
         };
         h.scopes.push(scope);
@@ -3223,6 +3923,9 @@ pub fn new_object(class: &str, args: Vec<Value>) -> Result<Value, String> {
     });
     // Run the constructor if one exists anywhere in the chain.
     if with_host(|h| h.resolve_method(&cl, "__construct").is_some()) {
+        // `static::` inside the constructor is the instantiated class in its
+        // declared spelling, not the lowercased lookup key.
+        with_host(|h| h.lsb_set_for_next_call(class));
         call_method(&cl, "__construct", Some(obj.clone()), args)?;
     }
     Ok(obj)
@@ -3254,6 +3957,7 @@ pub fn new_object_named(
         Value::Obj((h.objs.len() - 1) as u32)
     });
     if with_host(|h| h.resolve_method(&cl, "__construct").is_some()) {
+        with_host(|h| h.lsb_set_for_next_call(class));
         call_method_named(&cl, "__construct", Some(obj.clone()), args, named)?;
     }
     Ok(obj)
@@ -3299,6 +4003,11 @@ pub fn call_method(
         Some(t) => vec![("this".to_string(), t)],
         None => Vec::new(),
     };
+    // `static::` inside the body resolves to the class the call NAMED, which is
+    // not `def_class` — the method may have been inherited from an ancestor. A
+    // forwarding call (`self::`, `parent::`, `static::`) has already claimed the
+    // slot with the caller's own, and keeps it.
+    with_host(|h| h.lsb_set_for_next_call(class));
     invoke(
         &format!("{def_class}::{method}"),
         &def.params,
@@ -3358,6 +4067,11 @@ pub fn call_method_named(
         Some(t) => vec![("this".to_string(), t)],
         None => Vec::new(),
     };
+    // `static::` inside the body resolves to the class the call NAMED, which is
+    // not `def_class` — the method may have been inherited from an ancestor. A
+    // forwarding call (`self::`, `parent::`, `static::`) has already claimed the
+    // slot with the caller's own, and keeps it.
+    with_host(|h| h.lsb_set_for_next_call(class));
     invoke(
         &format!("{def_class}::{method}"),
         &def.params,
@@ -3777,6 +4491,59 @@ fn parse_php_number(s: &str) -> Value {
 }
 
 /// Whether a string is a fully numeric PHP string (for loose comparison).
+/// PHP's alphanumeric string succession, the `++` operator on a non-numeric
+/// string (`"a"` → `"b"`, `"z"` → `"aa"`, `"Az"` → `"Ba"`, `"a9"` → `"b0"`).
+///
+/// Carry propagates right to left through `[a-zA-Z0-9]` only: the first
+/// non-alphanumeric character stops it outright, leaving the rest of the string
+/// untouched (`"a-z"` → `"a-a"`, `"a_"` unchanged). A carry that runs off the
+/// front prepends a character of the same class as the one it left — `a`, `A` or
+/// `1`.
+fn increment_alnum_string(s: &str) -> String {
+    let mut b = s.as_bytes().to_vec();
+    let mut i = b.len();
+    let mut carry = false;
+    while i > 0 {
+        i -= 1;
+        match b[i] {
+            b'z' => {
+                b[i] = b'a';
+                carry = true;
+            }
+            b'Z' => {
+                b[i] = b'A';
+                carry = true;
+            }
+            b'9' => {
+                b[i] = b'0';
+                carry = true;
+            }
+            c if c.is_ascii_alphanumeric() => {
+                b[i] = c + 1;
+                carry = false;
+                break;
+            }
+            // A non-alphanumeric character ends the succession entirely.
+            _ => {
+                carry = false;
+                break;
+            }
+        }
+        if !carry {
+            break;
+        }
+    }
+    if carry {
+        let lead = match b.first() {
+            Some(b'0') => b'1',
+            Some(b'A') => b'A',
+            _ => b'a',
+        };
+        b.insert(0, lead);
+    }
+    String::from_utf8_lossy(&b).into_owned()
+}
+
 pub fn is_numeric_string(s: &str) -> bool {
     let t = s.trim();
     if t.is_empty() {

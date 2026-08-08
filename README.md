@@ -100,7 +100,10 @@ end-to-end (see `tests/basic.rs`):
 
 - `<?php … ?>` tags with inline-HTML passthrough; `<?=` short echo; `#`, `//`,
   and `/* */` comments.
-- Scalars, single- and double-quoted strings with `$var` interpolation, escapes.
+- Scalars, single- and double-quoted strings with escapes and the full set of
+  interpolation forms — `"$v"`, the simple one-level `"$o->p"` / `"$a[key]"` (where
+  an unquoted key is a string, not a constant), the complex `"{$expr}"` for any
+  expression, and the legacy `"${v}"`.
 - Variables, arithmetic (`+ - * / % **`), string concat (`.`), compound
   assignment (`+= .=` …), pre/post `++`/`--`.
 - Loose/strict comparison (`== != === !== < > <= >=`, PHP-8 string↔number
@@ -143,12 +146,19 @@ end-to-end (see `tests/basic.rs`):
   switch and no VM change.
 - Classes/OOP: `new`, instance properties and methods, `$this`, constructors
   (with property promotion), class constants, `::class`, static methods/constants,
-  `self::`/`parent::`, single inheritance, **interfaces** (`implements`, interface
+  `self::`/`parent::`, **late static binding** (`static::` — `static::class`,
+  `new static`, `static::CONST`, `static::$prop`, `static::m()` — resolves to the
+  class the call was made on, and `self::`/`parent::`/`static::` calls forward
+  it), single inheritance, **interfaces** (`implements`, interface
   `extends`), the **`instanceof`** operator, and **traits** (`use Trait;` member
   merging). `abstract` classes and interfaces reject direct instantiation
-  (`new` on either is a `Cannot instantiate …` error). References — `$b = &$a`,
-  `foreach ($a as &$v)`, and by-reference
-  parameters (`function f(&$x)`). Namespaces are accepted in a flat model
+  (`new` on either is a `Cannot instantiate …` error). **References** — `$b = &$a`,
+  references to a container slot in either direction (`$r = &$a['x']['y']`,
+  `$r = &$o->p`, `$a[] = &$v`, `$o->p = &$v`), return-by-reference
+  (`function &f()`), `foreach ($a as &$v)`, and by-reference parameters
+  (`function f(&$x)`); a referenced element stays shared across an array copy and
+  `var_dump` marks it with `&`, as PHP does.
+  Namespaces are accepted in a flat model
   (`namespace X;` / `use A\B\C;`; qualified names fold to their short name).
 - **Enums** (PHP 8.1): pure enums (`enum Suit { case Hearts; … }` with
   `Suit::Hearts`, `->name`, `Suit::cases()`, singleton `===` identity) and backed
@@ -162,6 +172,15 @@ end-to-end (see `tests/basic.rs`):
   `RuntimeException`, `LogicException`, `InvalidArgumentException`, `TypeError`,
   `ValueError`, `UnhandledMatchError`, `DivisionByZeroError`) that user classes
   can subclass, and `getMessage()`/`getCode()`/`getPrevious()`/`__toString()`.
+- **Diagnostics.** `Warning` and `Deprecated` notices go to *stdout*, interleaved
+  with the program's output exactly as PHP's CLI defaults put them: undefined
+  variables, array keys and properties, array offsets on a non-array, string
+  offsets past the end, and the `++`/`--` cases that have no effect. `isset()`,
+  `empty()`, `??` and `@` read in PHP's isset mode and stay silent, as do writes,
+  auto-vivification and by-reference output arguments.
+- **`__toString`** is invoked wherever a value becomes a string: `echo`, `print`,
+  `.` concatenation, interpolation, the `(string)` cast / `strval`, `implode`'s
+  elements, and the library functions whose parameters PHP declares as `string`.
 - Integer literals in every base (`0xFF` hex, `0755`/`0o17` octal, `0b101` binary,
   `1_000` separators); predefined constants (`PHP_INT_MAX`, `PHP_EOL`, `M_PI`, the
   `SORT_*`/`FILTER_*`/`JSON_*`/… flag families) plus `define`/`defined`/`constant`;
@@ -217,12 +236,30 @@ end-to-end (see `tests/basic.rs`):
 Strict typed-parameter enforcement (type hints are parsed but not enforced —
 phplang follows PHP's coercive/weak-typing mode) and true (non-flat) namespaces
 with `as` alias remapping. A few current deviations, documented
-in-code: loose
-comparison follows a simplified model; default parameter values are not restricted to
-constant expressions; the by-reference OUT parameter is implemented for
-`preg_match`/`preg_match_all`/`preg_replace`(`_callback`)/`parse_str`/
-`similar_text`/`str_replace` and not for the rest of the library
-(`settype`, `array_multisort`, `sscanf`'s trailing arguments). Persistent bytecode caching and AOT (`--build`) —
+in-code:
+
+- Default parameter values are not restricted to constant expressions.
+- The by-reference OUT parameter is implemented for `preg_match`/
+  `preg_match_all`/`preg_replace`(`_callback`)/`parse_str`/`similar_text`/
+  `str_replace`/`settype` and not for the rest of the library
+  (`array_multisort`, `sscanf`'s trailing arguments).
+- A diagnostic names the *statement's* line. PHP names the line of the
+  expression, so a statement spanning several lines reports its first.
+- An **uncaught exception** prints a terse `php: …` line on stderr rather than
+  PHP's `Fatal error: Uncaught …` block on stdout with a stack trace: the frames
+  carry no call-site line outside `--dap`, so the trace cannot be reproduced.
+  A **parse error** likewise has no stdout rendering, and phplang accepts a few
+  things PHP's grammar rejects (`--$literal`).
+- `Deprecated: Creation of dynamic property …` is not emitted: `#[…]` attributes
+  lex as comments, so `#[AllowDynamicProperties]` cannot be seen and the notice
+  would fire on classes that opted out.
+- `var_dump`'s `#N` object number and `spl_object_id` agree with each other, but
+  PHP reuses a freed object's number and phplang's arena never frees, so the two
+  agree only until an object becomes unreachable.
+- `error_reporting` / `-d` ini settings are not implemented; diagnostics are
+  always displayed.
+
+Persistent bytecode caching and AOT (`--build`) —
 present in the sibling frontends — are not wired yet; an LSP server (`--lsp`) and
 a DAP debug adapter (`--dap`, with source-line and function breakpoints, stepping,
 call stack, locals, and expression `evaluate`) are.
@@ -232,7 +269,9 @@ call stack, locals, and expression `evaluate`) are.
 `parity-fuzz` is a differential fuzzer: it generates seed-deterministic PHP
 snippets, runs each through both the reference `php` and phplang, and reports
 every case where stdout or success/failure diverges. It is a development tool —
-it needs a reference `php` on `PATH`, so CI never runs it.
+it needs a reference `php` on `PATH`, so CI never runs it. Neither side is run
+with `error_reporting` turned down: PHP writes `Warning`/`Deprecated`/`Fatal
+error` to stdout, so those are part of the output being compared.
 
 ```sh
 cargo build --bin parity-fuzz

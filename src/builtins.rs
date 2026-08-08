@@ -1,4 +1,4 @@
-//! The phplang builtins: the `CallBuiltin` handlers the compiler emits, the
+//! Te phplang builtins: the `CallBuiltin` handlers the compiler emits, the
 //! strict numeric hook, and the PHP standard-library functions reached through
 //! `CALL`.
 //!
@@ -77,6 +77,20 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::INSTANCEOF, b_instanceof);
     vm.register_builtin(ops::REF_BIND, b_ref_bind);
     vm.register_builtin(ops::REF_CELL, b_ref_cell);
+    vm.register_builtin(ops::REF_SLOT_VAR, b_ref_slot_var);
+    vm.register_builtin(ops::REF_SLOT_ELEM, b_ref_slot_elem);
+    vm.register_builtin(ops::REF_SLOT_PROP, b_ref_slot_prop);
+    vm.register_builtin(ops::REF_TO_VAR, b_ref_to_var);
+    vm.register_builtin(ops::REF_TO_ELEM, b_ref_to_elem);
+    vm.register_builtin(ops::REF_TO_APPEND, b_ref_to_append);
+    vm.register_builtin(ops::REF_TO_PROP, b_ref_to_prop);
+    vm.register_builtin(ops::GETVAR_Q, b_getvar_q);
+    vm.register_builtin(ops::INDEX_GET_Q, b_index_get_q);
+    vm.register_builtin(ops::PROP_GET_Q, b_prop_get_q);
+    vm.register_builtin(ops::LSB_CLASS, b_lsb_class);
+    vm.register_builtin(ops::LSB_FORWARD, b_lsb_forward);
+    vm.register_builtin(ops::RET_REF, b_ret_ref);
+    vm.register_builtin(ops::REF_SLOT_RET, b_ref_slot_ret);
     vm.register_builtin(ops::BYREF_OUT, b_byref_out);
     vm.register_builtin(ops::SPROP_GET, b_sprop_get);
     vm.register_builtin(ops::SPROP_SET, b_sprop_set);
@@ -323,12 +337,8 @@ fn b_sprop_incdec(vm: &mut VM, _: u8) -> Value {
         Ok(v) => v,
         Err(e) => return fail(vm, e),
     };
-    let delta = if inc { 1 } else { -1 };
-    let newv = with_host(|h| match h.to_number(&old) {
-        Value::Int(n) => Value::int(n + delta),
-        Value::Float(f) => Value::float(f + delta as f64),
-        _ => Value::int(delta),
-    });
+    mark_warn_site(vm);
+    let newv = with_host(|h| h.incdec_value(&old, inc));
     if let Err(e) = host::static_prop_set(&class, &name, newv.clone()) {
         return fail(vm, e);
     }
@@ -372,6 +382,109 @@ fn b_ref_bind(vm: &mut VM, _: u8) -> Value {
         h.ref_bind(&target, &source);
         h.get_var(&target)
     })
+}
+
+// ── `&` bindings to a container slot ────────────────────────────────────────
+//
+// The ACQUIRE half (`REF_SLOT_*`) returns the reference cell the right-hand side
+// of a `&` denotes, promoting the element/property into a reference if it was a
+// plain value; the BIND half (`REF_TO_*`) points the left-hand side at that
+// cell. The slot travels between them as an `Int` the compiler never lets reach
+// a PHP expression. See `ops::REF_SLOT_VAR`.
+
+/// Stack `[name]` → the reference slot of `$name`.
+fn b_ref_slot_var(vm: &mut VM, _: u8) -> Value {
+    let name = pop_name(vm);
+    Value::int(with_host(|h| h.elem_ref_slot(&name, &[])) as i64)
+}
+
+/// Stack `[name, k1..kN]`, `N = argc-1` → the reference slot of `$name[k1]..[kN]`.
+fn b_ref_slot_elem(vm: &mut VM, argc: u8) -> Value {
+    let keys = pop_args(vm, argc as usize - 1);
+    let name = pop_name(vm);
+    Value::int(with_host(|h| h.elem_ref_slot(&name, &keys)) as i64)
+}
+
+/// Stack `[recv, prop]` → the reference slot of `$recv->prop`.
+fn b_ref_slot_prop(vm: &mut VM, _: u8) -> Value {
+    let prop = pop_name(vm);
+    let recv = vm.pop();
+    Value::int(with_host(|h| h.prop_ref_slot_ensure(&recv, &prop)) as i64)
+}
+
+/// Stack `[name, slot]` — bind `$name` to the cell at `slot`.
+fn b_ref_to_var(vm: &mut VM, _: u8) -> Value {
+    let slot = vm.pop().to_int() as usize;
+    let name = pop_name(vm);
+    with_host(|h| {
+        h.bind_ref_slot(&name, slot);
+        h.get_var(&name)
+    })
+}
+
+/// Stack `[name, k1..kN, slot]`, `N = argc-2` — make `$name[k1]..[kN]` a
+/// reference to the cell at `slot`.
+fn b_ref_to_elem(vm: &mut VM, argc: u8) -> Value {
+    let slot = vm.pop().to_int() as usize;
+    let keys = pop_args(vm, argc as usize - 2);
+    let name = pop_name(vm);
+    with_host(|h| {
+        h.bind_elem_to_slot(&name, &keys, slot);
+        h.ref_cell_value(slot)
+    })
+}
+
+/// Stack `[name, k1..kM, slot]`, `M = argc-2` — append a reference to the cell at
+/// `slot` to `$name[k1]..[kM]`.
+fn b_ref_to_append(vm: &mut VM, argc: u8) -> Value {
+    let slot = vm.pop().to_int() as usize;
+    let keys = pop_args(vm, argc as usize - 2);
+    let name = pop_name(vm);
+    with_host(|h| {
+        h.append_elem_to_slot(&name, &keys, slot);
+        h.ref_cell_value(slot)
+    })
+}
+
+/// Stack `[recv, prop, slot]` — make `$recv->prop` a reference to `slot`'s cell.
+fn b_ref_to_prop(vm: &mut VM, _: u8) -> Value {
+    let slot = vm.pop().to_int() as usize;
+    let prop = pop_name(vm);
+    let recv = vm.pop();
+    with_host(|h| {
+        h.bind_prop_to_slot(&recv, &prop, slot);
+        h.ref_cell_value(slot)
+    })
+}
+
+/// Stack `[slot]` — publish the running by-reference function's returned cell and
+/// leave its value (what a plain call of the function sees).
+fn b_ret_ref(vm: &mut VM, _: u8) -> Value {
+    let slot = vm.pop().to_int() as usize;
+    with_host(|h| {
+        h.set_ret_ref_slot(slot);
+        h.ref_cell_value(slot)
+    })
+}
+
+/// Stack `[value]` — the cell the last call returned by reference, as an `Int`
+/// slot. `value` is the call's result, used as the fallback cell's contents when
+/// the callee did not return by reference.
+fn b_ref_slot_ret(vm: &mut VM, _: u8) -> Value {
+    let v = vm.pop();
+    Value::int(with_host(|h| h.take_ret_ref_slot(v)) as i64)
+}
+
+/// Stack `[fallback]` — the running frame's late-static-binding class.
+fn b_lsb_class(vm: &mut VM, _: u8) -> Value {
+    let fallback = pop_name(vm);
+    Value::str(with_host(|h| h.lsb_class(&fallback)))
+}
+
+/// Mark the next call as forwarding its caller's late-static-binding class.
+fn b_lsb_forward(_: &mut VM, _: u8) -> Value {
+    with_host(|h| h.lsb_forward());
+    Value::Undef
 }
 
 /// `$obj instanceof Class` — true if `$obj` is an object whose class is, or
@@ -513,9 +626,9 @@ fn b_bitxor(vm: &mut VM, _: u8) -> Value {
 
 fn b_shl(vm: &mut VM, _: u8) -> Value {
     let (a, b) = pop_two_ints(vm);
-    // PHP throws ArithmeticError on a negative shift.
+    // PHP throws a catchable ArithmeticError on a negative shift, not a fatal.
     if b < 0 {
-        return fail(vm, "Bit shift by negative number");
+        return throw_php(vm, "ArithmeticError", "Bit shift by negative number");
     }
     // A left shift by >= 64 bits yields 0. Within range PHP wraps on overflow
     // (`1 << 63` = INT_MIN) — `wrapping_shl` matches that where a plain `<<`
@@ -529,7 +642,7 @@ fn b_shl(vm: &mut VM, _: u8) -> Value {
 fn b_shr(vm: &mut VM, _: u8) -> Value {
     let (a, b) = pop_two_ints(vm);
     if b < 0 {
-        return fail(vm, "Bit shift by negative number");
+        return throw_php(vm, "ArithmeticError", "Bit shift by negative number");
     }
     // A right shift by >= 63 is a full arithmetic sign-fill in PHP (0 for
     // non-negative, -1 for negative); Rust's `>>` on i64 is arithmetic, so
@@ -633,16 +746,39 @@ fn pending_php_throw(class: &str, message: &str) -> Result<Value, String> {
 
 fn b_echo(vm: &mut VM, argc: u8) -> Value {
     let args = pop_args(vm, argc as usize);
-    with_host(|h| {
-        for a in &args {
-            let s = h.to_str(a);
-            h.write_out(&s);
-        }
-    });
+    for a in &args {
+        // Conversion first, *outside* the host borrow: an object with
+        // `__toString` runs PHP code to produce its string.
+        let s = host::to_str_ext(a);
+        with_host(|h| h.write_out(&s));
+    }
     Value::Undef
 }
 
+/// Tell the host which source line a diagnostic raised from here belongs to.
+///
+/// `VM::ip` has already been advanced past the instruction being dispatched, so
+/// the executing op — the `CallBuiltin` that reached this handler — is at
+/// `ip - 1`, and the chunk's parallel line table gives its line. Reading it here
+/// costs nothing on the paths that never warn.
+fn mark_warn_site(vm: &VM) {
+    let line = vm
+        .ip
+        .checked_sub(1)
+        .and_then(|i| vm.chunk.lines.get(i))
+        .copied()
+        .unwrap_or(0);
+    with_host(|h| h.set_warn_line(line));
+}
+
 fn b_getvar(vm: &mut VM, _: u8) -> Value {
+    let name = pop_name(vm);
+    mark_warn_site(vm);
+    with_host(|h| h.get_var_warn(&name))
+}
+
+/// `$name` read with no `Undefined variable` diagnostic — see `ops::GETVAR_Q`.
+fn b_getvar_q(vm: &mut VM, _: u8) -> Value {
     let name = pop_name(vm);
     with_host(|h| h.get_var(&name))
 }
@@ -667,7 +803,10 @@ fn b_copy(vm: &mut VM, _: u8) -> Value {
 fn b_concat(vm: &mut VM, _: u8) -> Value {
     let b = vm.pop();
     let a = vm.pop();
-    with_host(|h| Value::str(format!("{}{}", h.to_str(&a), h.to_str(&b))))
+    // Both conversions happen outside the host borrow so an operand with
+    // `__toString` can run it. String interpolation lowers to this op too.
+    let (a, b) = (host::to_str_ext(&a), host::to_str_ext(&b));
+    Value::str(format!("{a}{b}"))
 }
 
 fn b_truthy(vm: &mut VM, _: u8) -> Value {
@@ -770,6 +909,14 @@ fn b_mkarray(vm: &mut VM, argc: u8) -> Value {
 fn b_index_get(vm: &mut VM, _: u8) -> Value {
     let key = vm.pop();
     let recv = vm.pop();
+    mark_warn_site(vm);
+    with_host(|h| h.index_get_warn(&recv, &key))
+}
+
+/// `$a[k]` read with no missing-key diagnostic — see `ops::INDEX_GET_Q`.
+fn b_index_get_q(vm: &mut VM, _: u8) -> Value {
+    let key = vm.pop();
+    let recv = vm.pop();
     with_host(|h| h.index_get(&recv, &key))
 }
 
@@ -811,7 +958,8 @@ fn b_append_path(vm: &mut VM, argc: u8) -> Value {
 fn b_get_path(vm: &mut VM, argc: u8) -> Value {
     let keys = pop_args(vm, argc as usize - 1);
     let name = pop_name(vm);
-    with_host(|h| h.index_get_path(&name, &keys))
+    mark_warn_site(vm);
+    with_host(|h| h.index_get_path_warn(&name, &keys))
 }
 
 /// `++`/`--` on `$a[k1]..[kN]` — stack `[name, k1..kN, code]`, `N = argc-2`. The
@@ -824,14 +972,10 @@ fn b_incdec_path(vm: &mut VM, argc: u8) -> Value {
     let name = pop_name(vm);
     let inc = code & 1 != 0;
     let prefix = code & 2 != 0;
+    mark_warn_site(vm);
     with_host(|h| {
-        let old = h.index_get_path(&name, &keys);
-        let delta = if inc { 1 } else { -1 };
-        let newv = match h.to_number(&old) {
-            Value::Int(n) => Value::int(n + delta),
-            Value::Float(f) => Value::float(f + delta as f64),
-            _ => Value::int(delta),
-        };
+        let old = h.index_get_path_warn(&name, &keys);
+        let newv = h.incdec_value(&old, inc);
         h.index_set_path(&name, &keys, newv.clone());
         if prefix {
             newv
@@ -862,14 +1006,11 @@ fn b_incdec(vm: &mut VM, _: u8) -> Value {
     let name = pop_name(vm);
     let inc = code & 1 != 0;
     let prefix = code & 2 != 0;
+    mark_warn_site(vm);
     with_host(|h| {
-        let old = h.get_var(&name);
-        let delta = if inc { 1 } else { -1 };
-        let newv = match h.to_number(&old) {
-            Value::Int(n) => Value::int(n + delta),
-            Value::Float(f) => Value::float(f + delta as f64),
-            _ => Value::int(delta),
-        };
+        // `$x++` on an unset variable reports it, exactly as reading it would.
+        let old = h.get_var_warn(&name);
+        let newv = h.incdec_value(&old, inc);
         h.set_var(&name, newv.clone());
         if prefix {
             newv
@@ -927,6 +1068,17 @@ fn b_prop_get(vm: &mut VM, _: u8) -> Value {
     if let Err(e) = with_host(|h| h.check_prop_access(&recv, &name)) {
         return fail(vm, e);
     }
+    mark_warn_site(vm);
+    with_host(|h| h.prop_get_warn(&recv, &name))
+}
+
+/// `$o->p` read with no missing-property diagnostic — see `ops::PROP_GET_Q`.
+fn b_prop_get_q(vm: &mut VM, _: u8) -> Value {
+    let name = pop_name(vm);
+    let recv = vm.pop();
+    if let Err(e) = with_host(|h| h.check_prop_access(&recv, &name)) {
+        return fail(vm, e);
+    }
     with_host(|h| h.prop_get(&recv, &name))
 }
 
@@ -963,14 +1115,10 @@ fn b_prop_incdec(vm: &mut VM, _: u8) -> Value {
     if let Err(e) = with_host(|h| h.check_prop_access(&recv, &name)) {
         return fail(vm, e);
     }
+    mark_warn_site(vm);
     with_host(|h| {
-        let old = h.prop_get(&recv, &name);
-        let delta = if inc { 1 } else { -1 };
-        let newv = match h.to_number(&old) {
-            Value::Int(n) => Value::int(n + delta),
-            Value::Float(f) => Value::float(f + delta as f64),
-            _ => Value::int(delta),
-        };
+        let old = h.prop_get_warn(&recv, &name);
+        let newv = h.incdec_value(&old, inc);
         h.prop_set(&recv, &name, newv.clone());
         if prefix {
             newv
@@ -1389,9 +1537,114 @@ pub(crate) fn arg(args: &[Value], i: usize) -> Value {
     args.get(i).cloned().unwrap_or(Value::Undef)
 }
 
+/// Library functions whose parameters PHP declares as `string`, so an object
+/// argument with a `__toString` method is converted before the call — PHP does
+/// this from the function's arginfo, and this list is that arginfo.
+///
+/// It is an allow-list on purpose. The complement — listing the functions that
+/// legitimately *take* an object (`get_class`, `var_dump`, `json_encode`, every
+/// callable-taking function, …) — would turn one forgotten entry into an object
+/// silently flattened to a string. Here a forgotten entry only means
+/// `__toString` is not applied to that function's arguments yet, which shows up
+/// as a visible difference rather than a wrong answer.
+const STRING_PARAM_BUILTINS: &[&str] = &[
+    "addslashes",
+    "base64_decode",
+    "base64_encode",
+    "bin2hex",
+    "chunk_split",
+    "crc32",
+    "explode",
+    "hex2bin",
+    "html_entity_decode",
+    "htmlentities",
+    "htmlspecialchars",
+    "htmlspecialchars_decode",
+    "lcfirst",
+    "levenshtein",
+    "ltrim",
+    "md5",
+    "metaphone",
+    "nl2br",
+    "ord",
+    "preg_quote",
+    "printf",
+    "quotemeta",
+    "rawurldecode",
+    "rawurlencode",
+    "rtrim",
+    "sha1",
+    "similar_text",
+    "soundex",
+    "sprintf",
+    "str_contains",
+    "str_ends_with",
+    "str_pad",
+    "str_repeat",
+    "str_split",
+    "str_starts_with",
+    "str_word_count",
+    "strcasecmp",
+    "strcmp",
+    "stripos",
+    "stripslashes",
+    "stristr",
+    "strlen",
+    "strnatcasecmp",
+    "strnatcmp",
+    "strncasecmp",
+    "strncmp",
+    "strpbrk",
+    "strpos",
+    "strrchr",
+    "strrev",
+    "strripos",
+    "strrpos",
+    "strstr",
+    "strtolower",
+    "strtoupper",
+    "strtr",
+    "substr",
+    "substr_count",
+    "substr_replace",
+    "trim",
+    "ucfirst",
+    "ucwords",
+    "urldecode",
+    "urlencode",
+    "vprintf",
+    "vsprintf",
+    "wordwrap",
+];
+
+/// Apply `__toString` to the arguments of a string-parameter library function.
+///
+/// Runs before any host borrow is taken: converting calls the object's method,
+/// which re-enters the host. Costs one list lookup unless an object argument is
+/// actually present.
+fn coerce_stringable_args(lname: &str, args: Vec<Value>) -> Vec<Value> {
+    if !args.iter().any(|a| matches!(a, Value::Obj(_))) || !STRING_PARAM_BUILTINS.contains(&lname) {
+        return args;
+    }
+    args.into_iter()
+        .map(|a| {
+            let stringable = with_host(|h| {
+                h.object_class(&a)
+                    .is_some_and(|c| h.class_has_method(&c, "__tostring"))
+            });
+            if stringable {
+                Value::str(host::to_str_ext(&a))
+            } else {
+                a
+            }
+        })
+        .collect()
+}
+
 /// Dispatch a PHP library function by (case-insensitive) name.
 pub fn call_library(name: &str, args: Vec<Value>) -> Result<Value, String> {
     let lname = name.to_ascii_lowercase();
+    let args = coerce_stringable_args(&lname, args);
     // A builtin with a by-reference OUT parameter publishes its value for the
     // call site to write back (see `BYREF_BUILTINS`); clearing first means a
     // call that writes none cannot be read as having written the last one's.
@@ -1458,10 +1711,14 @@ pub fn call_library(name: &str, args: Vec<Value>) -> Result<Value, String> {
         "floatval" | "doubleval" => {
             with_host(|h| Value::float(h.to_number(&arg(&args, 0)).to_float()))
         }
-        "strval" => with_host(|h| Value::str(h.to_str(&arg(&args, 0)))),
+        // `(string)$x` desugars to `strval($x)`, so this is the explicit cast too.
+        "strval" => Value::str(host::to_str_ext(&arg(&args, 0))),
         "max" => with_host(|h| fold_cmp(h, &args, true)),
         "min" => with_host(|h| fold_cmp(h, &args, false)),
         "gettype" => with_host(|h| Value::str(h.type_name(&arg(&args, 0)).to_string())),
+        // `settype($var, $type)` converts IN PLACE through its by-reference first
+        // parameter (published for the call site to write back) and returns true.
+        "settype" => php_settype(&args)?,
         "is_array" => with_host(|h| Value::bool(h.is_array(&arg(&args, 0)))),
         "is_int" | "is_integer" | "is_long" => Value::bool(matches!(arg(&args, 0), Value::Int(_))),
         "is_float" | "is_double" => Value::bool(matches!(arg(&args, 0), Value::Float(_))),
@@ -1473,7 +1730,7 @@ pub fn call_library(name: &str, args: Vec<Value>) -> Result<Value, String> {
             Value::Str(s) => host::is_numeric_string(&s),
             _ => false,
         }),
-        "implode" | "join" => with_host(|h| php_implode(h, &args)),
+        "implode" | "join" => php_implode(&args),
         "explode" => with_host(|h| php_explode(h, &args)),
         "in_array" => with_host(|h| php_in_array(h, &args)),
         "array_keys" => with_host(|h| h.array_keys(&arg(&args, 0))),
@@ -1534,21 +1791,23 @@ pub fn call_library(name: &str, args: Vec<Value>) -> Result<Value, String> {
             with_host(|h| Value::str(html_special_chars(&h.to_str(&arg(&args, 0)))))
         }
         "strcmp" => with_host(|h| {
-            Value::int(sign(
-                h.to_str(&arg(&args, 0)).cmp(&h.to_str(&arg(&args, 1))),
-            ))
+            let (a, b) = (h.to_str(&arg(&args, 0)), h.to_str(&arg(&args, 1)));
+            Value::int(binary_strcmp(a.as_bytes(), b.as_bytes()))
         }),
         "strcasecmp" => with_host(|h| {
-            let a = h.to_str(&arg(&args, 0)).to_lowercase();
-            let b = h.to_str(&arg(&args, 1)).to_lowercase();
-            Value::int(sign(a.cmp(&b)))
+            let a = ascii_lower(&h.to_str(&arg(&args, 0)));
+            let b = ascii_lower(&h.to_str(&arg(&args, 1)));
+            Value::int(binary_strcmp(a.as_bytes(), b.as_bytes()))
         }),
         "strncmp" => with_host(|h| {
             let a = h.to_str(&arg(&args, 0));
             let b = h.to_str(&arg(&args, 1));
             let n = arg(&args, 2).to_int().max(0) as usize;
             let (ab, bb) = (a.as_bytes(), b.as_bytes());
-            Value::int(sign(ab[..n.min(ab.len())].cmp(&bb[..n.min(bb.len())])))
+            Value::int(binary_strcmp(
+                &ab[..n.min(ab.len())],
+                &bb[..n.min(bb.len())],
+            ))
         }),
         "substr_compare" => with_host(|h| php_substr_compare(h, &args)),
         // `str_word_count` is served by `stdlib::misc`, which implements the
@@ -1827,13 +2086,43 @@ fn php_cast_array(h: &mut host::PhpHost, v: &Value) -> Value {
         return out;
     }
     if h.is_object(v) {
-        for (name, val) in h.object_props(v) {
+        // Non-public property names are mangled with NUL separators, as PHP's
+        // cast does — see `PhpHost::object_props_mangled`.
+        for (name, val) in h.object_props_mangled(v) {
             h.arr_set_key(&out, &Value::str(name), val);
         }
         return out;
     }
     h.arr_push_auto(&out, v.clone());
     out
+}
+
+/// `settype($var, $type)` — convert `$var` in place to `$type` and return true.
+///
+/// The conversion is the same one the matching cast performs, so `settype($x,
+/// "integer")` and `$x = (int) $x` agree, including on the cases where they
+/// differ from arithmetic: a non-numeric string becomes `0`, a scalar becomes a
+/// one-element array, and `"null"` clears the value. An unrecognised type name is
+/// a `ValueError` in PHP 8.
+fn php_settype(args: &[Value]) -> Result<Value, String> {
+    let v = arg(args, 0);
+    let ty = with_host(|h| h.to_str(&arg(args, 1))).to_ascii_lowercase();
+    let out = match ty.as_str() {
+        "bool" | "boolean" => Value::bool(with_host(|h| h.is_truthy(&v))),
+        "int" | "integer" => Value::int(with_host(|h| h.to_number(&v)).to_int()),
+        "float" | "double" => Value::float(with_host(|h| h.to_number(&v)).to_float()),
+        "string" => Value::str(host::to_str_ext(&v)),
+        "array" => with_host(|h| php_cast_array(h, &v)),
+        "object" => php_cast_object(&v)?,
+        "null" => Value::Undef,
+        other => {
+            return Err(format!(
+                "settype(): Argument #2 ($type) must be a valid type, \"{other}\" given"
+            ))
+        }
+    };
+    with_host(|h| h.byref_out_put(0, out));
+    Ok(Value::bool(true))
 }
 
 /// `(object) $v` — an array becomes a `stdClass` with the same keys as
@@ -1914,19 +2203,22 @@ fn replace_all_pairs(subject: &str, pairs: &[(String, String)], count: &mut usiz
     cur
 }
 
-fn php_implode(h: &mut host::PhpHost, args: &[Value]) -> Value {
+fn php_implode(args: &[Value]) -> Value {
     // implode($glue, $array) or implode($array).
-    let (glue, arr) = if h.is_array(&arg(args, 0)) {
-        (String::new(), arg(args, 0))
-    } else {
-        (h.to_str(&arg(args, 0)), arg(args, 1))
-    };
-    let parts: Vec<String> = h
-        .array_pairs(&arr)
-        .unwrap_or_default()
+    let (glue, arr) = with_host(|h| {
+        if h.is_array(&arg(args, 0)) {
+            (String::new(), arg(args, 0))
+        } else {
+            (h.to_str(&arg(args, 0)), arg(args, 1))
+        }
+    });
+    let vals: Vec<Value> = with_host(|h| h.array_pairs(&arr).unwrap_or_default())
         .into_iter()
-        .map(|(_, v)| h.to_str(&v))
+        .map(|(_, v)| v)
         .collect();
+    // Each element is joined *as a string*, so one with `__toString` runs it —
+    // which re-enters the host, hence the conversion outside the borrow.
+    let parts: Vec<String> = vals.iter().map(host::to_str_ext).collect();
     Value::str(parts.join(&glue))
 }
 
@@ -2455,44 +2747,52 @@ fn php_print_r(h: &host::PhpHost, v: &Value, depth: usize) -> String {
 
 /// `var_dump` rendering for scalars and one level of arrays.
 fn php_var_dump(h: &host::PhpHost, v: &Value, depth: usize) -> String {
+    php_var_dump_ref(h, v, depth, false)
+}
+
+/// `var_dump` of one value. `is_ref` marks a slot a `&` binding has turned into a
+/// reference: PHP prefixes such a value's type with `&` (`&int(2)`), between the
+/// indentation and the type, at every nesting level.
+fn php_var_dump_ref(h: &host::PhpHost, v: &Value, depth: usize, is_ref: bool) -> String {
     let pad = "  ".repeat(depth);
+    let amp = if is_ref { "&" } else { "" };
     match v {
         Value::Undef => format!("{pad}NULL\n"),
-        Value::Bool(b) => format!("{pad}bool({})\n", if *b { "true" } else { "false" }),
-        Value::Int(n) => format!("{pad}int({n})\n"),
+        Value::Bool(b) => format!("{pad}{amp}bool({})\n", if *b { "true" } else { "false" }),
+        Value::Int(n) => format!("{pad}{amp}int({n})\n"),
         // var_dump reports floats at serialize_precision, not echo's precision=14.
         Value::Float(f) => format!(
-            "{pad}float({})\n",
+            "{pad}{amp}float({})\n",
             crate::stdlib::types::serialize_float(*f)
         ),
-        Value::Str(s) => format!("{pad}string({}) \"{s}\"\n", s.len()),
+        Value::Str(s) => format!("{pad}{amp}string({}) \"{s}\"\n", s.len()),
         // A class instance prints as `object(Class)#n (count) { ... }` with its
         // properties, not as the bare array its handle would otherwise yield.
         Value::Obj(_) if h.is_object(v) => {
-            let props = h.object_props(v);
+            let props = h.object_props_marked(v);
             let class = h.object_class(v).unwrap_or_else(|| "stdClass".to_string());
             let mut s = format!(
-                "{pad}object({class})#{} ({}) {{\n",
+                "{pad}{amp}object({class})#{} ({}) {{\n",
                 h.object_ordinal(v),
                 props.len()
             );
-            for (name, val) in props {
+            for (name, val, pref) in props {
                 s.push_str(&format!("{}  [\"{name}\"]=>\n", "  ".repeat(depth)));
-                s.push_str(&php_var_dump(h, &val, depth + 1));
+                s.push_str(&php_var_dump_ref(h, &val, depth + 1, pref));
             }
             s.push_str(&format!("{pad}}}\n"));
             s
         }
         Value::Obj(_) => {
-            let pairs = h.array_pairs(v).unwrap_or_default();
-            let mut s = format!("{pad}array({}) {{\n", pairs.len());
-            for (k, val) in pairs {
+            let pairs = h.array_pairs_marked(v).unwrap_or_default();
+            let mut s = format!("{pad}{amp}array({}) {{\n", pairs.len());
+            for (k, val, eref) in pairs {
                 let key = match k {
                     Value::Int(n) => format!("{}  [{n}]=>\n", "  ".repeat(depth)),
                     other => format!("{}  [\"{}\"]=>\n", "  ".repeat(depth), h.to_str(&other)),
                 };
                 s.push_str(&key);
-                s.push_str(&php_var_dump(h, &val, depth + 1));
+                s.push_str(&php_var_dump_ref(h, &val, depth + 1, eref));
             }
             s.push_str(&format!("{pad}}}\n"));
             s
@@ -2502,6 +2802,25 @@ fn php_var_dump(h: &host::PhpHost, v: &Value, depth: usize) -> String {
 }
 
 // ── string helpers (added stdlib wave) ───────────────────────────────────────
+
+/// PHP's `zend_binary_strcmp`, which is what `strcmp` and its relatives return.
+///
+/// It is *not* a sign: over the shared prefix the result is the difference of the
+/// first differing byte (`strcmp("a", "z")` is -25, not -1), because PHP returns
+/// `memcmp`'s value unchanged. Only when one string is a prefix of the other does
+/// it fall back to a three-way compare of the lengths, which is -1/0/1.
+pub(crate) fn binary_strcmp(a: &[u8], b: &[u8]) -> i64 {
+    for (x, y) in a.iter().zip(b) {
+        if x != y {
+            return *x as i64 - *y as i64;
+        }
+    }
+    match a.len().cmp(&b.len()) {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => 1,
+    }
+}
 
 /// Sign of an ordering as PHP's strcmp-style -1/0/1.
 fn sign(o: std::cmp::Ordering) -> i64 {

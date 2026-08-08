@@ -134,3 +134,71 @@ fn static_local_uninitialized_defaults_null() {
         "12"
     );
 }
+
+// ── late static binding ──────────────────────────────────────────────────────
+//
+// `static::` names the class the call was made *on*, which is why it cannot be
+// resolved when the method is compiled: one inherited body sees a different
+// class per subclass. Every expectation is the verbatim stdout of the same
+// program under the reference `php` 8.5.9.
+
+/// A three-deep hierarchy whose base methods all reach through `static::`.
+const H: &str = r#"class A {
+        public static $reg = "A";
+        const TAG = "A";
+        public static function name() { return static::class; }
+        public static function create() { return new static(); }
+        public static function viaSelf() { return self::name(); }
+        public static function viaStatic() { return static::name(); }
+        public function tag() { return static::TAG; }
+        public function reg() { return static::$reg; }
+    }
+    class B extends A {
+        public static $reg = "B";
+        const TAG = "B";
+        public static function viaParent() { return parent::name(); }
+    }
+    class C extends B { const TAG = "C"; public static $reg = "C"; }"#;
+
+#[test]
+fn static_class_is_the_called_class_not_the_declaring_one() {
+    let src = format!(r#"<?php {H} echo A::name(), "|", B::name(), "|", C::name();"#);
+    assert_eq!(run(&src), "A|B|C");
+}
+
+#[test]
+fn a_forwarding_call_keeps_the_callers_late_static_class() {
+    // `self::`, `parent::` and `static::` forward; naming a class does not.
+    let src = format!(r#"<?php {H} echo B::viaSelf(), "|", B::viaParent(), "|", C::viaStatic();"#);
+    assert_eq!(run(&src), "B|B|C");
+}
+
+#[test]
+fn new_static_instantiates_the_called_class() {
+    let src = format!(r#"<?php {H} echo get_class(C::create()), "|", get_class(A::create());"#);
+    assert_eq!(run(&src), "C|A");
+}
+
+#[test]
+fn static_reaches_constants_and_static_properties_of_the_called_class() {
+    let src = format!(
+        r#"<?php {H} $c = new C(); $a = new A();
+        echo $c->tag(), "|", $a->tag(), "|", $c->reg(), "|", $a->reg();"#
+    );
+    assert_eq!(run(&src), "C|A|C|A");
+}
+
+#[test]
+fn static_inside_a_constructor_is_the_instantiated_class() {
+    let src = r#"<?php class P { public function __construct() { echo static::class; } }
+        class Q extends P {}
+        new Q(); echo "|"; new P();"#;
+    assert_eq!(run(src), "Q|P");
+}
+
+#[test]
+fn a_later_call_does_not_inherit_an_earlier_ones_late_static_class() {
+    // The binding lives on the frame, so it cannot leak past the call.
+    let src = format!(r#"<?php {H} C::name(); echo A::name();"#);
+    assert_eq!(run(&src), "A");
+}

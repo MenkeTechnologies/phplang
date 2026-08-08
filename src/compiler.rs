@@ -81,6 +81,14 @@ pub struct Compiler {
     /// Emit per-statement DAP line markers (`php --dap`). Off for normal runs so
     /// the compiled chunk carries zero extra ops.
     debug: bool,
+    /// Set while lowering the body of a `function &f()`, so a `return` naming an
+    /// lvalue publishes that storage cell instead of copying its value.
+    ret_by_ref: bool,
+    /// The line of the statement currently being lowered, stamped onto the ops
+    /// that can raise a diagnostic so `Warning: … on line N` names it. Expression
+    /// granularity would need a line on every AST node; a statement that spans
+    /// several lines therefore reports its first.
+    cur_line: u32,
 }
 
 /// Compile a parsed program. `debug` enables per-statement DAP line markers.
@@ -150,6 +158,7 @@ impl Compiler {
             ("parse_str", &[1]),
             ("similar_text", &[2]),
             ("str_replace", &[3]),
+            ("settype", &[0]),
         ];
         for (name, positions) in BYREF_BUILTINS {
             self.byref_fns.insert(name.to_string(), positions.to_vec());
@@ -169,7 +178,9 @@ impl Compiler {
     fn collect_byref(&mut self, stmts: &[Stmt]) {
         for s in stmts {
             match &s.kind {
-                StmtKind::Function { name, params, body } => {
+                StmtKind::Function {
+                    name, params, body, ..
+                } => {
                     let positions: Vec<usize> = params
                         .iter()
                         .enumerate()
@@ -236,6 +247,9 @@ impl Compiler {
             b.emit(Op::Pop, s.line);
         }
         let line = s.line;
+        if line != 0 {
+            self.cur_line = line;
+        }
         match &s.kind {
             StmtKind::InlineHtml(text) => {
                 let idx = b.add_constant(Value::str(text.clone()));
@@ -279,7 +293,20 @@ impl Compiler {
                 }
             }
             StmtKind::Return(e) => {
+                // Inside a `function &f()`, a `return` naming an lvalue publishes
+                // that storage cell (and still leaves its value, which is what a
+                // plain call sees). A returned expression that is not an lvalue
+                // has no cell to publish and takes the by-value path.
+                let by_ref = self.ret_by_ref
+                    && matches!(
+                        e,
+                        Some(Expr::Var(_)) | Some(Expr::Index(..)) | Some(Expr::PropGet(..))
+                    );
                 match e {
+                    Some(e) if by_ref => {
+                        self.compile_ref_slot(b, e)?;
+                        b.emit(Op::CallBuiltin(ops::RET_REF, 1), line);
+                    }
                     Some(e) => self.compile_expr(b, e)?,
                     None => {
                         b.emit(Op::LoadUndef, line);
@@ -325,7 +352,12 @@ impl Compiler {
                 catches,
                 finally,
             } => self.compile_try(b, body, catches, finally.as_deref(), line)?,
-            StmtKind::Function { name, params, body } => {
+            StmtKind::Function {
+                name,
+                params,
+                body,
+                by_ref_return,
+            } => {
                 // Each default-value expression is lowered to its own tiny chunk,
                 // run in the callee frame when the argument is omitted (host).
                 let cparams = self.compile_params(params)?;
@@ -333,7 +365,9 @@ impl Compiler {
                 // A function body has its own loop scope: a break inside it must
                 // not target a loop at the call site.
                 let saved = std::mem::take(&mut self.loops);
+                let saved_ref = std::mem::replace(&mut self.ret_by_ref, *by_ref_return);
                 self.compile_seq(&mut fb, body)?;
+                self.ret_by_ref = saved_ref;
                 self.loops = saved;
                 self.functions.push((
                     name.to_ascii_lowercase(),
@@ -629,7 +663,7 @@ impl Compiler {
         self.emit_set_var(b, &k_t, |c, b| {
             c.emit_get_var(b, &keys_t);
             c.emit_get_var(b, &i_t);
-            b.emit(Op::CallBuiltin(ops::INDEX_GET, 2), 0);
+            b.emit(Op::CallBuiltin(ops::INDEX_GET_Q, 2), 0);
             Ok(())
         })?;
         if let Some(kv) = key_var {
@@ -644,7 +678,7 @@ impl Compiler {
         self.emit_set_var(b, val_var, |c, b| {
             c.emit_get_var(b, &arr_t);
             c.emit_get_var(b, &k_t);
-            b.emit(Op::CallBuiltin(ops::INDEX_GET, 2), 0);
+            b.emit(Op::CallBuiltin(ops::INDEX_GET_Q, 2), 0);
             if !by_ref {
                 b.emit(Op::CallBuiltin(ops::COPY, 1), 0);
             }
@@ -847,7 +881,9 @@ impl Compiler {
                     mb.emit(Op::Pop, 0);
                 }
             }
+            let saved_ref = std::mem::replace(&mut self.ret_by_ref, m.by_ref_return);
             self.compile_seq(&mut mb, &m.body)?;
+            self.ret_by_ref = saved_ref;
             self.loops = saved;
             methods.insert(
                 m.name.to_ascii_lowercase(),
@@ -899,6 +935,35 @@ impl Compiler {
 
     /// Resolve a class reference to a concrete name, expanding the `self`,
     /// `parent`, and `static` keywords against the class being compiled.
+    /// Push the class a `Class::…` / `new Class` names.
+    ///
+    /// `self` and `parent` are fixed at compile time, but `static` is *late* —
+    /// it names the class the running call was made on, which only the frame
+    /// knows — so it pushes a runtime lookup instead of a constant. The enclosing
+    /// class travels along as the fallback for a `static::` reached outside any
+    /// method call.
+    fn emit_class_name(&mut self, b: &mut ChunkBuilder, class: &str) -> Result<(), String> {
+        let cname = self.resolve_class_name(class)?;
+        let idx = b.add_constant(Value::str(cname));
+        b.emit(Op::LoadConst(idx), 0);
+        if class.eq_ignore_ascii_case("static") {
+            b.emit(Op::CallBuiltin(ops::LSB_CLASS, 1), 0);
+        }
+        Ok(())
+    }
+
+    /// Emit the forwarding marker for a `self::` / `parent::` / `static::` call,
+    /// which keeps the caller's late-static-binding class rather than replacing
+    /// it with the class the call names. Naming a class explicitly does not
+    /// forward, so nothing is emitted for it.
+    fn emit_lsb_forward(&mut self, b: &mut ChunkBuilder, class: &str) {
+        let lower = class.to_ascii_lowercase();
+        if matches!(lower.as_str(), "self" | "parent" | "static") {
+            b.emit(Op::CallBuiltin(ops::LSB_FORWARD, 0), 0);
+            b.emit(Op::Pop, 0);
+        }
+    }
+
     fn resolve_class_name(&self, name: &str) -> Result<String, String> {
         match name.to_ascii_lowercase().as_str() {
             "self" | "static" => self
@@ -1081,7 +1146,7 @@ impl Compiler {
                 let idx = b.add_constant(Value::str(s.clone()));
                 b.emit(Op::LoadConst(idx), 0);
             }
-            Expr::Interp(parts) => self.compile_interp(b, parts),
+            Expr::Interp(parts) => self.compile_interp(b, parts)?,
             Expr::Var(name) => self.emit_get_var(b, name),
             Expr::Array(elems) => {
                 for (k, v) in elems {
@@ -1098,7 +1163,7 @@ impl Compiler {
             Expr::Index(recv, idx) => {
                 self.compile_expr(b, recv)?;
                 self.compile_expr(b, idx)?;
-                b.emit(Op::CallBuiltin(ops::INDEX_GET, 2), 0);
+                b.emit(Op::CallBuiltin(ops::INDEX_GET, 2), self.cur_line);
             }
             Expr::Append(_) => {
                 return Err("'[]' append is only valid as an assignment target".into())
@@ -1191,22 +1256,53 @@ impl Compiler {
                 } else {
                     let idx = b.add_constant(Value::str(name.clone()));
                     b.emit(Op::LoadConst(idx), 0);
-                    for a in args {
-                        self.compile_expr(b, a)?;
+                    let byref = self.byref_fns.get(&name.to_ascii_lowercase()).cloned();
+                    for (i, a) in args.iter().enumerate() {
+                        // An argument in a by-reference position is an output
+                        // location, not a value the call reads, so an unset one is
+                        // not a mistake and PHP raises no diagnostic for it —
+                        // `preg_match($re, $s, $m)` with a fresh `$m` is the norm.
+                        match &byref {
+                            Some(p) if p.contains(&i) => self.compile_quiet(b, a)?,
+                            _ => self.compile_expr(b, a)?,
+                        }
                     }
                     b.emit(Op::CallBuiltin(ops::CALL, (args.len() + 1) as u8), 0);
                     // By-reference parameters: write the callee's final values back
                     // to the caller's argument variables (leaving the call result).
-                    if let Some(positions) = self.byref_fns.get(&name.to_ascii_lowercase()).cloned()
-                    {
+                    if let Some(positions) = byref {
                         for pos in positions {
-                            if let Some(Expr::Var(vname)) = args.get(pos) {
-                                let nidx = b.add_constant(Value::str(vname.clone()));
-                                b.emit(Op::LoadConst(nidx), 0);
-                                b.emit(Op::LoadInt(pos as i64), 0);
-                                b.emit(Op::CallBuiltin(ops::BYREF_OUT, 1), 0);
-                                b.emit(Op::CallBuiltin(ops::SETVAR, 2), 0);
-                                b.emit(Op::Pop, 0);
+                            let Some(arg) = args.get(pos) else { continue };
+                            match arg {
+                                Expr::Var(vname) => {
+                                    let nidx = b.add_constant(Value::str(vname.clone()));
+                                    b.emit(Op::LoadConst(nidx), 0);
+                                    b.emit(Op::LoadInt(pos as i64), 0);
+                                    b.emit(Op::CallBuiltin(ops::BYREF_OUT, 1), 0);
+                                    b.emit(Op::CallBuiltin(ops::SETVAR, 2), 0);
+                                    b.emit(Op::Pop, 0);
+                                }
+                                // `f($a[k])` / `f($o->p)` against a by-reference
+                                // parameter writes back into the element or the
+                                // property, so the OUT value is parked in a
+                                // temporary and assigned through the normal lvalue
+                                // path (which knows how to reach either).
+                                Expr::Index(..) | Expr::PropGet(..) | Expr::StaticProp(..) => {
+                                    let tmp = self.tmp_name("bo");
+                                    self.emit_set_var(b, &tmp, |_, b| {
+                                        b.emit(Op::LoadInt(pos as i64), 0);
+                                        b.emit(Op::CallBuiltin(ops::BYREF_OUT, 1), 0);
+                                        Ok(())
+                                    })?;
+                                    let back = Expr::Assign(
+                                        Box::new(arg.clone()),
+                                        None,
+                                        Box::new(Expr::Var(tmp)),
+                                    );
+                                    self.compile_expr(b, &back)?;
+                                    b.emit(Op::Pop, 0);
+                                }
+                                _ => {}
                             }
                         }
                     }
@@ -1256,9 +1352,7 @@ impl Compiler {
                 self.compile_closure(b, params, &captures, &ret)?;
             }
             Expr::New(class, args) if has_named(args) => {
-                let cname = self.resolve_class_name(class)?;
-                let idx = b.add_constant(Value::str(cname));
-                b.emit(Op::LoadConst(idx), 0);
+                self.emit_class_name(b, class)?;
                 self.compile_arg_pairs(b, args)?;
                 b.emit(
                     Op::CallBuiltin(ops::NEW_NAMED, (args.len() * 2 + 1) as u8),
@@ -1266,9 +1360,7 @@ impl Compiler {
                 );
             }
             Expr::New(class, args) => {
-                let cname = self.resolve_class_name(class)?;
-                let idx = b.add_constant(Value::str(cname));
-                b.emit(Op::LoadConst(idx), 0);
+                self.emit_class_name(b, class)?;
                 for a in args {
                     self.compile_expr(b, a)?;
                 }
@@ -1278,7 +1370,7 @@ impl Compiler {
                 self.compile_expr(b, recv)?;
                 let idx = b.add_constant(Value::str(name.clone()));
                 b.emit(Op::LoadConst(idx), 0);
-                b.emit(Op::CallBuiltin(ops::PROP_GET, 2), 0);
+                b.emit(Op::CallBuiltin(ops::PROP_GET, 2), self.cur_line);
             }
             Expr::MethodCall(recv, name, args) if has_named(args) => {
                 self.compile_expr(b, recv)?;
@@ -1302,10 +1394,11 @@ impl Compiler {
             // `$o?->prop` — evaluate the receiver once; short-circuit to null when
             // it is null, else read the property.
             Expr::NullsafePropGet(recv, name) => {
+                let warn_line = self.cur_line;
                 self.compile_nullsafe(b, recv, |c, b| {
                     let idx = b.add_constant(Value::str(name.clone()));
                     b.emit(Op::LoadConst(idx), 0);
-                    b.emit(Op::CallBuiltin(ops::PROP_GET, 2), 0);
+                    b.emit(Op::CallBuiltin(ops::PROP_GET, 2), warn_line);
                     let _ = c;
                     Ok(())
                 })?;
@@ -1329,32 +1422,27 @@ impl Compiler {
                 self.compile_expr(b, inner)?;
             }
             Expr::StaticGet(class, name) => {
-                let cname = self.resolve_class_name(class)?;
                 // `Class::class` / `self::class` yields the resolved class-name
-                // string, not a class constant.
+                // string, not a class constant — and `static::class` the one the
+                // running call was made on.
                 if name.eq_ignore_ascii_case("class") {
-                    let idx = b.add_constant(Value::str(cname));
-                    b.emit(Op::LoadConst(idx), 0);
+                    self.emit_class_name(b, class)?;
                 } else {
-                    let cidx = b.add_constant(Value::str(cname));
-                    b.emit(Op::LoadConst(cidx), 0);
+                    self.emit_class_name(b, class)?;
                     let nidx = b.add_constant(Value::str(name.clone()));
                     b.emit(Op::LoadConst(nidx), 0);
                     b.emit(Op::CallBuiltin(ops::SCONST, 2), 0);
                 }
             }
             Expr::StaticProp(class, name) => {
-                let cname = self.resolve_class_name(class)?;
-                let cidx = b.add_constant(Value::str(cname));
-                b.emit(Op::LoadConst(cidx), 0);
+                self.emit_class_name(b, class)?;
                 let nidx = b.add_constant(Value::str(name.clone()));
                 b.emit(Op::LoadConst(nidx), 0);
                 b.emit(Op::CallBuiltin(ops::SPROP_GET, 2), 0);
             }
             Expr::StaticCall(class, name, args) if has_named(args) => {
-                let cname = self.resolve_class_name(class)?;
-                let cidx = b.add_constant(Value::str(cname));
-                b.emit(Op::LoadConst(cidx), 0);
+                self.emit_lsb_forward(b, class);
+                self.emit_class_name(b, class)?;
                 let nidx = b.add_constant(Value::str(name.clone()));
                 b.emit(Op::LoadConst(nidx), 0);
                 self.compile_arg_pairs(b, args)?;
@@ -1364,9 +1452,8 @@ impl Compiler {
                 );
             }
             Expr::StaticCall(class, name, args) => {
-                let cname = self.resolve_class_name(class)?;
-                let cidx = b.add_constant(Value::str(cname));
-                b.emit(Op::LoadConst(cidx), 0);
+                self.emit_lsb_forward(b, class);
+                self.emit_class_name(b, class)?;
                 let nidx = b.add_constant(Value::str(name.clone()));
                 b.emit(Op::LoadConst(nidx), 0);
                 for a in args {
@@ -1399,9 +1486,12 @@ impl Compiler {
                 let end = b.current_pos();
                 b.patch_jump(jend, end);
             }
+            Expr::Quiet(inner) => self.compile_quiet(b, inner)?,
             Expr::Coalesce(a, els) => {
-                // `a ?? b` — use `b` only when `a` is null (=== null).
-                self.compile_expr(b, a)?; // [a]
+                // `a ?? b` — use `b` only when `a` is null (=== null). The left
+                // operand is an isset-mode read: `$a['k'] ?? $d` is exactly the
+                // question `isset($a['k'])` asks, and PHP raises no diagnostic.
+                self.compile_quiet(b, a)?; // [a]
                 b.emit(Op::Dup, 0); // [a, a]
                 b.emit(Op::LoadUndef, 0); // [a, a, null]
                 b.emit(Op::CallBuiltin(ops::STRICT_EQ, 2), 0); // [a, a===null]
@@ -1437,21 +1527,10 @@ impl Compiler {
             }
             Expr::InstanceOf(e, class) => {
                 self.compile_expr(b, e)?;
-                let cname = self.resolve_class_name(class)?;
-                let idx = b.add_constant(Value::str(cname));
-                b.emit(Op::LoadConst(idx), 0);
+                self.emit_class_name(b, class)?;
                 b.emit(Op::CallBuiltin(ops::INSTANCEOF, 2), 0);
             }
-            Expr::RefAssign(lhs, rhs) => {
-                let (Expr::Var(t), Expr::Var(s)) = (lhs.as_ref(), rhs.as_ref()) else {
-                    return Err("reference `= &` supports only `$a = &$b` between variables".into());
-                };
-                let ti = b.add_constant(Value::str(t.clone()));
-                b.emit(Op::LoadConst(ti), 0);
-                let si = b.add_constant(Value::str(s.clone()));
-                b.emit(Op::LoadConst(si), 0);
-                b.emit(Op::CallBuiltin(ops::REF_BIND, 2), 0);
-            }
+            Expr::RefAssign(lhs, rhs) => self.compile_ref_assign(b, lhs, rhs)?,
             Expr::Yield { key, value } => {
                 // Leave the yielded value (and, for the keyed form, the key) on the
                 // stack, then suspend the running generator. The YIELD builtin
@@ -1479,6 +1558,196 @@ impl Compiler {
             }
         }
         Ok(())
+    }
+
+    /// Compile a read in PHP's "isset mode" — the operand of `isset()`,
+    /// `empty()`, `@`, or the left side of `??`. A missing variable, element or
+    /// property is the question being asked, so the read raises no diagnostic.
+    ///
+    /// Only the chain of reads itself is quietened: an index expression, a method
+    /// argument or any other nested subexpression is compiled normally, so a
+    /// function call inside a key still reports its own diagnostics — which is
+    /// what PHP's compile-time `BP_VAR_IS` fetch mode does.
+    fn compile_quiet(&mut self, b: &mut ChunkBuilder, e: &Expr) -> Result<(), String> {
+        let line = self.cur_line;
+        match e {
+            Expr::Quiet(inner) => self.compile_quiet(b, inner)?,
+            Expr::Var(name) => {
+                let idx = b.add_constant(Value::str(name.clone()));
+                b.emit(Op::LoadConst(idx), line);
+                b.emit(Op::CallBuiltin(ops::GETVAR_Q, 1), line);
+            }
+            Expr::Index(recv, idx) => {
+                self.compile_quiet(b, recv)?;
+                self.compile_expr(b, idx)?;
+                b.emit(Op::CallBuiltin(ops::INDEX_GET_Q, 2), line);
+            }
+            Expr::PropGet(recv, name) => {
+                self.compile_quiet(b, recv)?;
+                let idx = b.add_constant(Value::str(name.clone()));
+                b.emit(Op::LoadConst(idx), line);
+                b.emit(Op::CallBuiltin(ops::PROP_GET_Q, 2), line);
+            }
+            Expr::NullsafePropGet(recv, name) => {
+                let name = name.clone();
+                self.compile_nullsafe(b, recv, |_, b| {
+                    let idx = b.add_constant(Value::str(name));
+                    b.emit(Op::LoadConst(idx), line);
+                    b.emit(Op::CallBuiltin(ops::PROP_GET_Q, 2), line);
+                    Ok(())
+                })?;
+            }
+            other => self.compile_expr(b, other)?,
+        }
+        Ok(())
+    }
+
+    /// `lhs = &rhs` — bind the left-hand side to the storage cell the right-hand
+    /// side denotes. Lowered in two halves (see `ops::REF_SLOT_VAR`): the
+    /// right-hand side is resolved to a reference cell, then the left-hand side is
+    /// pointed at it, so every combination of variable / array element / object
+    /// property on either side is covered by composing the two.
+    fn compile_ref_assign(
+        &mut self,
+        b: &mut ChunkBuilder,
+        lhs: &Expr,
+        rhs: &Expr,
+    ) -> Result<(), String> {
+        // `$a = &$b` between two plain variables keeps its compact lowering.
+        if let (Expr::Var(t), Expr::Var(s)) = (lhs, rhs) {
+            let ti = b.add_constant(Value::str(t.clone()));
+            b.emit(Op::LoadConst(ti), 0);
+            let si = b.add_constant(Value::str(s.clone()));
+            b.emit(Op::LoadConst(si), 0);
+            b.emit(Op::CallBuiltin(ops::REF_BIND, 2), 0);
+            return Ok(());
+        }
+        match lhs {
+            Expr::Var(name) => {
+                let ni = b.add_constant(Value::str(name.clone()));
+                b.emit(Op::LoadConst(ni), 0);
+                self.compile_ref_slot(b, rhs)?;
+                b.emit(Op::CallBuiltin(ops::REF_TO_VAR, 2), 0);
+            }
+            Expr::Index(..) | Expr::Append(..) => {
+                let (root, segs) = Self::flatten_segments(lhs)?;
+                let name = self.ref_root_name(b, root)?;
+                let append = matches!(segs.last(), Some(LvSeg::Append));
+                let key_segs = if append {
+                    &segs[..segs.len() - 1]
+                } else {
+                    &segs[..]
+                };
+                let ni = b.add_constant(Value::str(name));
+                b.emit(Op::LoadConst(ni), 0);
+                for s in key_segs {
+                    match s {
+                        LvSeg::Key(k) => self.compile_expr(b, k)?,
+                        LvSeg::Append => {
+                            return Err("`[]` may appear only as the last segment of a \
+                                        reference assignment"
+                                .into())
+                        }
+                    }
+                }
+                self.compile_ref_slot(b, rhs)?;
+                let op = if append {
+                    ops::REF_TO_APPEND
+                } else {
+                    ops::REF_TO_ELEM
+                };
+                b.emit(Op::CallBuiltin(op, (key_segs.len() + 2) as u8), 0);
+            }
+            Expr::PropGet(recv, prop) => {
+                self.compile_expr(b, recv)?;
+                let pi = b.add_constant(Value::str(prop.clone()));
+                b.emit(Op::LoadConst(pi), 0);
+                self.compile_ref_slot(b, rhs)?;
+                b.emit(Op::CallBuiltin(ops::REF_TO_PROP, 3), 0);
+            }
+            _ => {
+                return Err(
+                    "reference `= &` assigns only to a variable, an array element or \
+                     an object property"
+                        .into(),
+                )
+            }
+        }
+        Ok(())
+    }
+
+    /// Push the reference cell (an `Int` slot) that a `&` operand denotes,
+    /// promoting the variable / element / property into a reference if it is not
+    /// one already.
+    fn compile_ref_slot(&mut self, b: &mut ChunkBuilder, src: &Expr) -> Result<(), String> {
+        match src {
+            Expr::Var(name) => {
+                let ni = b.add_constant(Value::str(name.clone()));
+                b.emit(Op::LoadConst(ni), 0);
+                b.emit(Op::CallBuiltin(ops::REF_SLOT_VAR, 1), 0);
+            }
+            Expr::Index(..) => {
+                let (root, segs) = Self::flatten_segments(src)?;
+                let name = self.ref_root_name(b, root)?;
+                let ni = b.add_constant(Value::str(name));
+                b.emit(Op::LoadConst(ni), 0);
+                for s in &segs {
+                    match s {
+                        LvSeg::Key(k) => self.compile_expr(b, k)?,
+                        // `&$a[]` has no element to alias — PHP rejects it too.
+                        LvSeg::Append => return Err("cannot take a reference to `$a[]`".into()),
+                    }
+                }
+                b.emit(
+                    Op::CallBuiltin(ops::REF_SLOT_ELEM, (segs.len() + 1) as u8),
+                    0,
+                );
+            }
+            Expr::PropGet(recv, prop) => {
+                self.compile_expr(b, recv)?;
+                let pi = b.add_constant(Value::str(prop.clone()));
+                b.emit(Op::LoadConst(pi), 0);
+                b.emit(Op::CallBuiltin(ops::REF_SLOT_PROP, 2), 0);
+            }
+            // `$r = &f()` / `&$o->m()` — the cell a `function &f()` published on
+            // its way out. A callee that returned by value has none, and the
+            // binding falls back to a detached cell holding the result.
+            Expr::Call(..) | Expr::MethodCall(..) | Expr::StaticCall(..) | Expr::CallValue(..) => {
+                self.compile_expr(b, src)?;
+                b.emit(Op::CallBuiltin(ops::REF_SLOT_RET, 1), 0);
+            }
+            _ => {
+                return Err(
+                    "`&` takes a reference to a variable, an array element or an \
+                     object property"
+                        .into(),
+                )
+            }
+        }
+        Ok(())
+    }
+
+    /// The scope-variable name a reference path is rooted at. A path rooted at an
+    /// object property (`&$this->items[0]`) is re-rooted on a temporary holding
+    /// the property's array handle — a plain `SETVAR`, which does not copy — so
+    /// the reference lands in the property's own array, not in a copy of it.
+    fn ref_root_name(&mut self, b: &mut ChunkBuilder, root: &Expr) -> Result<String, String> {
+        match root {
+            Expr::Var(name) => Ok(name.clone()),
+            Expr::PropGet(recv, prop) => {
+                let tmp = self.tmp_name("ref");
+                let (recv, prop) = (recv.as_ref().clone(), prop.clone());
+                self.emit_set_var(b, &tmp, |c, b| {
+                    c.compile_expr(b, &recv)?;
+                    let pi = b.add_constant(Value::str(prop));
+                    b.emit(Op::LoadConst(pi), 0);
+                    b.emit(Op::CallBuiltin(ops::PROP_ENSURE_ARRAY, 2), 0);
+                    Ok(())
+                })?;
+                Ok(tmp)
+            }
+            _ => Err("a reference path must be rooted at a variable or a property".into()),
+        }
     }
 
     /// Compile one `unset()` target: a plain `$var` (remove the scope variable) or
@@ -1601,19 +1870,20 @@ impl Compiler {
     }
 
     /// A double-quoted string: concatenate its parts, always yielding a string.
-    fn compile_interp(&mut self, b: &mut ChunkBuilder, parts: &[StrPart]) {
+    fn compile_interp(&mut self, b: &mut ChunkBuilder, parts: &[InterpPart]) -> Result<(), String> {
         let empty = b.add_constant(Value::str(String::new()));
         b.emit(Op::LoadConst(empty), 0);
         for part in parts {
             match part {
-                StrPart::Lit(s) => {
+                InterpPart::Lit(s) => {
                     let idx = b.add_constant(Value::str(s.clone()));
                     b.emit(Op::LoadConst(idx), 0);
                 }
-                StrPart::Var(name) => self.emit_get_var(b, name),
+                InterpPart::Expr(e) => self.compile_expr(b, e)?,
             }
             b.emit(Op::CallBuiltin(ops::CONCAT, 2), 0);
         }
+        Ok(())
     }
 
     fn compile_binary(
@@ -1774,7 +2044,7 @@ impl Compiler {
                         self.emit_get_var(b, &r);
                         let gidx = b.add_constant(Value::str(name.clone()));
                         b.emit(Op::LoadConst(gidx), 0);
-                        b.emit(Op::CallBuiltin(ops::PROP_GET, 2), 0);
+                        b.emit(Op::CallBuiltin(ops::PROP_GET, 2), self.cur_line);
                         self.compile_rhs(b, rhs)?;
                         self.emit_binop(b, cop);
                         b.emit(Op::CallBuiltin(ops::PROP_SET, 3), 0);
@@ -1805,9 +2075,7 @@ impl Compiler {
             }
             Expr::StaticProp(class, name) => {
                 // `Class::$p = rhs` and its compound form `Class::$p op= rhs`.
-                let cname = self.resolve_class_name(class)?;
-                let cidx = b.add_constant(Value::str(cname.clone()));
-                b.emit(Op::LoadConst(cidx), 0);
+                self.emit_class_name(b, class)?;
                 let nidx = b.add_constant(Value::str(name.clone()));
                 b.emit(Op::LoadConst(nidx), 0);
                 match op {
@@ -2013,7 +2281,7 @@ impl Compiler {
                 }
                 b.emit(
                     Op::CallBuiltin(ops::GET_PATH, (key_tmps.len() + 1) as u8),
-                    0,
+                    self.cur_line,
                 );
                 self.compile_rhs(b, rhs)?;
                 self.emit_binop(b, cop);
@@ -2067,6 +2335,14 @@ impl Compiler {
                 let nidx = b.add_constant(Value::str(cap.name.clone()));
                 b.emit(Op::LoadConst(nidx), 0);
                 b.emit(Op::CallBuiltin(ops::REF_CELL, 1), 0);
+            } else if cap.name == "this" {
+                // `$this` is not a `use` capture in PHP: it is bound implicitly,
+                // at the closure's *call*, and an arrow function written outside a
+                // method is legal until `Closure::bind` supplies one. phplang
+                // carries it through the capture list, so this read has to be the
+                // quiet one — the loud twin would report a variable PHP never
+                // considers the closure to have read.
+                self.compile_quiet(b, &Expr::Var("this".to_string()))?;
             } else {
                 self.emit_get_var(b, &cap.name);
             }
@@ -2092,7 +2368,7 @@ impl Compiler {
                 let nidx = b.add_constant(Value::str(name.clone()));
                 b.emit(Op::LoadConst(nidx), 0);
                 b.emit(Op::LoadInt(code), 0);
-                b.emit(Op::CallBuiltin(ops::INCDEC, 2), 0);
+                b.emit(Op::CallBuiltin(ops::INCDEC, 2), self.cur_line);
             }
             Expr::PropGet(recv, name) => {
                 // `$o->p++` — read-modify-write a scalar property.
@@ -2100,17 +2376,15 @@ impl Compiler {
                 let nidx = b.add_constant(Value::str(name.clone()));
                 b.emit(Op::LoadConst(nidx), 0);
                 b.emit(Op::LoadInt(code), 0);
-                b.emit(Op::CallBuiltin(ops::PROP_INCDEC, 3), 0);
+                b.emit(Op::CallBuiltin(ops::PROP_INCDEC, 3), self.cur_line);
             }
             Expr::StaticProp(class, name) => {
                 // `Class::$p++` — read-modify-write a static property.
-                let cname = self.resolve_class_name(class)?;
-                let cidx = b.add_constant(Value::str(cname));
-                b.emit(Op::LoadConst(cidx), 0);
+                self.emit_class_name(b, class)?;
                 let nidx = b.add_constant(Value::str(name.clone()));
                 b.emit(Op::LoadConst(nidx), 0);
                 b.emit(Op::LoadInt(code), 0);
-                b.emit(Op::CallBuiltin(ops::SPROP_INCDEC, 3), 0);
+                b.emit(Op::CallBuiltin(ops::SPROP_INCDEC, 3), self.cur_line);
             }
             Expr::Index(..) => {
                 // `++$a[k1]..[kN]` — read-modify-write the deepest element. Roots
@@ -2144,7 +2418,10 @@ impl Compiler {
                     self.compile_expr(b, k)?;
                 }
                 b.emit(Op::LoadInt(code), 0);
-                b.emit(Op::CallBuiltin(ops::INCDEC_PATH, (keys.len() + 2) as u8), 0);
+                b.emit(
+                    Op::CallBuiltin(ops::INCDEC_PATH, (keys.len() + 2) as u8),
+                    self.cur_line,
+                );
             }
             _ => {
                 return Err(
@@ -2254,7 +2531,7 @@ impl Compiler {
     fn emit_get_var(&mut self, b: &mut ChunkBuilder, name: &str) {
         let idx = b.add_constant(Value::str(name.to_string()));
         b.emit(Op::LoadConst(idx), 0);
-        b.emit(Op::CallBuiltin(ops::GETVAR, 1), 0);
+        b.emit(Op::CallBuiltin(ops::GETVAR, 1), self.cur_line);
     }
 
     /// Emit `$name = <value produced by `f`>`, leaving the value on the stack.
@@ -2295,8 +2572,9 @@ fn collect_free_vars(e: &Expr, out: &mut Vec<String>) {
         Expr::Var(n) => push(n, out),
         Expr::Interp(parts) => {
             for p in parts {
-                if let StrPart::Var(n) = p {
-                    push(n, out);
+                match p {
+                    InterpPart::Expr(e) => collect_free_vars(e, out),
+                    InterpPart::Lit(_) => {}
                 }
             }
         }
@@ -2312,7 +2590,9 @@ fn collect_free_vars(e: &Expr, out: &mut Vec<String>) {
             collect_free_vars(a, out);
             collect_free_vars(b, out);
         }
-        Expr::Append(a) | Expr::Unary(_, a) | Expr::Spread(a) => collect_free_vars(a, out),
+        Expr::Append(a) | Expr::Unary(_, a) | Expr::Spread(a) | Expr::Quiet(a) => {
+            collect_free_vars(a, out)
+        }
         Expr::Assign(a, _, b) => {
             collect_free_vars(a, out);
             collect_free_vars(b, out);
@@ -2494,7 +2774,10 @@ fn expr_has_yield(e: &Expr) -> bool {
             .iter()
             .any(|(k, v)| k.as_ref().is_some_and(expr_has_yield) || expr_has_yield(v)),
         // `Interp` parts are only literals and bare `$var`s — neither holds a yield.
-        Expr::Interp(_) => false,
+        Expr::Interp(parts) => parts.iter().any(|p| match p {
+            InterpPart::Expr(e) => expr_has_yield(e),
+            InterpPart::Lit(_) => false,
+        }),
         Expr::Match { subj, arms } => {
             expr_has_yield(subj)
                 || arms.iter().any(|a| {
