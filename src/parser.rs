@@ -4,13 +4,17 @@ use crate::ast::*;
 use crate::lexer::{self, Spanned, Tok};
 
 /// Map a `(type)` cast keyword to the conversion function it desugars to.
-/// `(array)`/`(object)`/`(unset)` are not supported in the scaffold → `None`.
+/// `(array)` and `(object)` have no PHP-callable equivalent, so they lower to
+/// the internal `__cast_array`/`__cast_object` builtins. `(unset)` was removed
+/// in PHP 8 → `None`.
 fn cast_fn(t: &str) -> Option<&'static str> {
     match t.to_ascii_lowercase().as_str() {
         "int" | "integer" => Some("intval"),
         "float" | "double" | "real" => Some("floatval"),
         "string" => Some("strval"),
         "bool" | "boolean" => Some("boolval"),
+        "array" => Some("__cast_array"),
+        "object" => Some("__cast_object"),
         _ => None,
     }
 }
@@ -88,6 +92,17 @@ impl Parser {
                 self.line()
             ))
         }
+    }
+
+    /// The optional numeric level of a `break`/`continue` (`break 2;`),
+    /// defaulting to 1. PHP only accepts a literal integer here.
+    fn break_level(&mut self) -> u32 {
+        if let Some(Tok::Int(n)) = self.peek() {
+            let n = *n;
+            self.pos += 1;
+            return (n.max(1)) as u32;
+        }
+        1
     }
 
     /// True if the next token is the keyword `kw` (case-insensitive, as PHP).
@@ -213,21 +228,15 @@ impl Parser {
             }
             _ if self.at_kw("break") => {
                 self.pos += 1;
-                // An optional numeric level (`break 2;`) — accepted, level ignored
-                // in the scaffold (only one loop depth is unwound).
-                if let Some(Tok::Int(_)) = self.peek() {
-                    self.pos += 1;
-                }
+                let level = self.break_level();
                 self.expect_punct(";")?;
-                StmtKind::Break
+                StmtKind::Break(level)
             }
             _ if self.at_kw("continue") => {
                 self.pos += 1;
-                if let Some(Tok::Int(_)) = self.peek() {
-                    self.pos += 1;
-                }
+                let level = self.break_level();
                 self.expect_punct(";")?;
-                StmtKind::Continue
+                StmtKind::Continue(level)
             }
             _ => {
                 let e = self.expression()?;
@@ -628,7 +637,8 @@ impl Parser {
                     promoted,
                     by_ref,
                 });
-                if !self.eat_punct(",") {
+                // PHP 8.0+ allows a trailing comma in parameter lists too.
+                if !self.eat_punct(",") || self.at_punct(")") {
                     break;
                 }
             }
@@ -651,7 +661,8 @@ impl Parser {
                 } else {
                     args.push(self.expression()?);
                 }
-                if !self.eat_punct(",") {
+                // PHP 7.3+ allows a trailing comma before the `)`.
+                if !self.eat_punct(",") || self.at_punct(")") {
                     break;
                 }
             }

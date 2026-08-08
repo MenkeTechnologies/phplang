@@ -307,14 +307,33 @@ impl<'a> Lexer<'a> {
                 b'\\' => {
                     self.pos += 1;
                     let e = self.src.get(self.pos).copied().unwrap_or(b'\\');
+                    // The variable-length escapes consume their own digits and
+                    // push their own bytes, so they `continue` past the single
+                    // trailing `self.pos += 1` below.
+                    match e {
+                        b'x' if self.hex_digits_at(self.pos + 1) > 0 => {
+                            self.read_hex_escape(&mut lit);
+                            continue;
+                        }
+                        b'u' if self.peek(1) == Some(b'{') => {
+                            self.read_unicode_escape(&mut lit);
+                            continue;
+                        }
+                        b'0'..=b'7' => {
+                            self.read_octal_escape(&mut lit);
+                            continue;
+                        }
+                        _ => {}
+                    }
                     let ch = match e {
                         b'n' => '\n',
                         b't' => '\t',
                         b'r' => '\r',
+                        b'v' => '\x0b',
+                        b'f' => '\x0c',
                         b'"' => '"',
                         b'\\' => '\\',
                         b'$' => '$',
-                        b'0' => '\0',
                         b'e' => '\x1b',
                         other => {
                             // Unknown escape: PHP keeps the backslash verbatim.
@@ -381,6 +400,77 @@ impl<'a> Lexer<'a> {
 
     fn peek(&self, n: usize) -> Option<u8> {
         self.src.get(self.pos + n).copied()
+    }
+
+    /// How many hex digits (capped at 2) start at `at` — used to tell a real
+    /// `\xHH` escape from a literal `\x` that PHP leaves alone.
+    fn hex_digits_at(&self, at: usize) -> usize {
+        (0..2)
+            .take_while(|i| self.src.get(at + i).is_some_and(|b| b.is_ascii_hexdigit()))
+            .count()
+    }
+
+    /// `\xHH` — one or two hex digits. `self.pos` is on the `x`.
+    ///
+    /// The scaffold stores strings as Rust `String`, so a byte at or above 0x80
+    /// is appended as that Unicode scalar (its UTF-8 encoding) rather than the
+    /// single raw byte PHP would store.
+    fn read_hex_escape(&mut self, lit: &mut String) {
+        self.pos += 1; // past `x`
+        let n = self.hex_digits_at(self.pos);
+        let hex: String = self.src[self.pos..self.pos + n]
+            .iter()
+            .map(|b| *b as char)
+            .collect();
+        self.pos += n;
+        if let Some(c) = u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
+            lit.push(c);
+        }
+    }
+
+    /// `\u{HHH…}` — a Unicode code point. `self.pos` is on the `u`.
+    fn read_unicode_escape(&mut self, lit: &mut String) {
+        let close = self.src[self.pos..]
+            .iter()
+            .position(|b| *b == b'}')
+            .map(|i| self.pos + i);
+        let Some(close) = close else {
+            // No closing brace: not an escape, keep the backslash verbatim.
+            lit.push_str("\\u");
+            self.pos += 1;
+            return;
+        };
+        let hex: String = self.src[self.pos + 2..close]
+            .iter()
+            .map(|b| *b as char)
+            .collect();
+        self.pos = close + 1;
+        if let Some(c) = u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
+            lit.push(c);
+        }
+    }
+
+    /// `\NNN` — one to three octal digits. `self.pos` is on the first digit.
+    fn read_octal_escape(&mut self, lit: &mut String) {
+        let n = (0..3)
+            .take_while(|i| {
+                self.src
+                    .get(self.pos + i)
+                    .is_some_and(|b| (b'0'..=b'7').contains(b))
+            })
+            .count();
+        let oct: String = self.src[self.pos..self.pos + n]
+            .iter()
+            .map(|b| *b as char)
+            .collect();
+        self.pos += n;
+        // PHP truncates an out-of-range octal escape to a byte.
+        if let Some(c) = u32::from_str_radix(&oct, 8)
+            .ok()
+            .and_then(|v| char::from_u32(v & 0xff))
+        {
+            lit.push(c);
+        }
     }
 
     fn advance(&mut self, n: usize) {

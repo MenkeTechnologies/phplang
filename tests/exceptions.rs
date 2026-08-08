@@ -251,3 +251,55 @@ fn leading_backslash_global_namespace_prefix() {
         catch (\Throwable $e) { echo \strlen($e->getMessage()); }"#;
     assert_eq!(run(src), "4");
 }
+
+// ── engine-raised errors ────────────────────────────────────────────────────
+//
+// A zero divisor and a method call on a non-object used to abort with an
+// uncatchable host error; both are catchable Throwables now.
+
+#[test]
+fn zero_divisor_throws_a_catchable_division_by_zero_error() {
+    let src = r#"<?php
+        foreach ([1, 2, 3] as $k) {
+            try {
+                if ($k == 1) { $x = 1 / 0; }
+                if ($k == 2) { $x = 1 % 0; }
+                if ($k == 3) { intdiv(1, 0); }
+            } catch (DivisionByZeroError $e) { echo get_class($e), ":", $e->getMessage(), ";"; }
+        }"#;
+    assert_eq!(
+        run(src),
+        "DivisionByZeroError:Division by zero;DivisionByZeroError:Modulo by zero;\
+         DivisionByZeroError:Division by zero;"
+    );
+}
+
+#[test]
+fn method_call_on_a_non_object_throws_error_naming_the_type() {
+    // PHP spells booleans as `true`/`false` in this message, not `bool`.
+    let src = r#"<?php
+        foreach ([null, 1, "s", 1.5, true, []] as $v) {
+            try { $v->foo(); } catch (Error $e) { echo $e->getMessage(), ";"; }
+        }"#;
+    assert_eq!(
+        run(src),
+        "Call to a member function foo() on null;Call to a member function foo() on int;\
+         Call to a member function foo() on string;Call to a member function foo() on float;\
+         Call to a member function foo() on true;Call to a member function foo() on array;"
+    );
+}
+
+#[test]
+fn exceptions_carry_a_previous() {
+    let src = r#"<?php
+        try { throw new Exception("outer", 7, new RuntimeException("inner")); }
+        catch (Exception $e) { echo $e->getCode(), ":", $e->getPrevious()->getMessage(); }"#;
+    assert_eq!(run(src), "7:inner");
+    // With no previous supplied it is null.
+    assert_eq!(
+        run(
+            r#"<?php try { throw new Exception("x"); } catch (Exception $e) { var_dump($e->getPrevious()); }"#
+        ),
+        "NULL\n"
+    );
+}

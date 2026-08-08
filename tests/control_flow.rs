@@ -186,3 +186,76 @@ fn null_coalesce_only_falls_back_on_null() {
 fn null_coalesce_is_right_associative_chain() {
     assert_eq!(run(r#"<?php echo null ?? null ?? "third";"#), "third");
 }
+
+// ── break/continue levels ───────────────────────────────────────────────────
+//
+// `break n` / `continue n` used to discard the level and always leave the
+// innermost loop. All expectations below are byte-checked against reference
+// PHP 8.5.
+
+#[test]
+fn continue_with_level_skips_the_outer_loop() {
+    let src = r#"<?php
+        for ($i = 0; $i < 3; $i++) {
+            for ($j = 0; $j < 3; $j++) { if ($j == 1) continue 2; echo "$i$j "; }
+        }"#;
+    assert_eq!(run(src), "00 10 20 ");
+}
+
+#[test]
+fn break_with_level_leaves_the_outer_loop() {
+    let src = r#"<?php
+        for ($i = 0; $i < 3; $i++) {
+            for ($j = 0; $j < 3; $j++) { if ($i == 1) break 2; echo "$i$j "; }
+        }"#;
+    assert_eq!(run(src), "00 01 02 ");
+}
+
+#[test]
+fn switch_counts_as_a_break_level() {
+    // `break` leaves the switch; `break 2` leaves the switch *and* the loop.
+    let inner = r#"<?php for ($i = 0; $i < 3; $i++) {
+            switch ($i) { case 1: break; default: echo "s$i "; } }"#;
+    let outer = r#"<?php for ($i = 0; $i < 3; $i++) {
+            switch ($i) { case 1: break 2; default: echo "t$i "; } }"#;
+    assert_eq!(run(inner), "s0 s2 ");
+    assert_eq!(run(outer), "t0 ");
+}
+
+#[test]
+fn break_level_crosses_a_try_body() {
+    // The `try` body compiles to its own chunk, so the level has to survive the
+    // control signal that carries it back out to the enclosing loops.
+    let src = r#"<?php
+        for ($i = 0; $i < 3; $i++) {
+            for ($j = 0; $j < 3; $j++) {
+                try { if ($j == 1) continue 2; echo "$i$j "; } catch (Exception $e) {}
+            }
+        }"#;
+    assert_eq!(run(src), "00 10 20 ");
+}
+
+#[test]
+fn break_level_crosses_nested_try_bodies() {
+    let src = r#"<?php
+        for ($i = 0; $i < 3; $i++) {
+            for ($j = 0; $j < 3; $j++) {
+                try { try { if ($j == 1) break 2; echo "$i$j "; } finally { echo "f"; } }
+                catch (Exception $e) {}
+            }
+        }"#;
+    assert_eq!(run(src), "00 ff");
+}
+
+#[test]
+fn return_inside_try_inside_loop_terminates_the_function() {
+    // Regression guard: the return signal must halt the enclosing loop, not just
+    // the try chunk (which would spin forever).
+    let src = r#"<?php
+        function f() {
+            for ($i = 0; $i < 5; $i++) { try { if ($i == 2) return "r$i"; } catch (Exception $e) {} }
+            return "end";
+        }
+        echo f();"#;
+    assert_eq!(run(src), "r2");
+}

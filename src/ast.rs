@@ -248,8 +248,11 @@ pub enum StmtKind {
     /// `class Name [extends Parent] { ... }`.
     Class(ClassDecl),
     Return(Option<Expr>),
-    Break,
-    Continue,
+    /// `break [n];` — `n` is how many enclosing loop/switch levels to leave
+    /// (1 = the innermost, PHP's default).
+    Break(u32),
+    /// `continue [n];` — see [`StmtKind::Break`] for the level.
+    Continue(u32),
     /// `try { body } catch (T1 | T2 $e) { ... } ... [finally { ... }]`.
     Try {
         body: Vec<Stmt>,

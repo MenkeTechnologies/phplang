@@ -44,13 +44,14 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         "similar_text" => {
             let (a, b) = (str_arg(args, 0), str_arg(args, 1));
             let common = similar_text_bytes(a.as_bytes(), b.as_bytes());
-            // `$percent` is a by-reference OUT parameter, and PHP's formula is
-            // `sim * 2 / (len(a) + len(b)) * 100`.
+            // `$percent` is a by-reference OUT parameter. PHP computes it as the
+            // single expression `sim * 200.0 / (len(a) + len(b))`; splitting that
+            // into a divide and a multiply rounds differently in the last bit.
             let total = a.len() + b.len();
             let percent = if total == 0 {
                 0.0
             } else {
-                common as f64 * 2.0 / total as f64 * 100.0
+                common as f64 * 200.0 / total as f64
             };
             with_host(|h| h.byref_out_put(2, Value::float(percent)));
             Value::int(common as i64)

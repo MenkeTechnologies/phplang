@@ -452,14 +452,14 @@ pub const CORPUS: &[Entry] = &[
         "/",
         "Operator",
         "expr / expr",
-        "Division. Two integers that divide exactly yield an integer, otherwise a float. DIVERGENCE: a zero divisor aborts the script with the uncatchable host error `php: Division by zero` instead of throwing `DivisionByZeroError`.",
+        "Division. Two integers that divide exactly yield an integer, otherwise a float. A zero divisor throws a catchable `DivisionByZeroError` with the message `Division by zero`.",
         "echo 7 / 2;   // => 3.5",
     ),
     (
         "%",
         "Operator",
         "expr % expr",
-        "Integer remainder, taking the sign of the left operand. Both operands are cast to integers first, so `7.5 % 2` is `1`. A zero divisor aborts with the uncatchable host error `php: Modulo by zero`.",
+        "Integer remainder, taking the sign of the left operand. Both operands are cast to integers first, so `7.5 % 2` is `1`. A zero divisor throws a catchable `DivisionByZeroError` with the message `Modulo by zero`.",
         "echo 7 % 3;   // => 1",
     ),
     (
@@ -1840,7 +1840,7 @@ pub const CORPUS: &[Entry] = &[
         "Error",
         "Prelude class",
         "class Error {\n    protected $message = \"\"; protected $code = 0;\n    __construct($message = \"\", $code = 0)\n    getMessage(): string   getCode(): int   __toString(): string\n}",
-        "The other root of the hierarchy, for engine-level failures. It does NOT extend `Exception` — the two roots are disjoint, exactly as in PHP, so `catch (Exception)` never catches an `Error`. DIVERGENCE: the runtime does not throw these classes for its own failures. A division by zero, a bad standard-library argument, or a call to an undefined function aborts the script with a host-level `php: <message>` on stderr that no `catch` block can intercept; only an explicit `throw` and an unmatched `match` produce a catchable object.",
+        "The other root of the hierarchy, for engine-level failures. It does NOT extend `Exception` — the two roots are disjoint, exactly as in PHP, so `catch (Exception)` never catches an `Error`. A zero divisor throws `DivisionByZeroError`, and a method call on a non-object throws `Error`. DIVERGENCE: most other runtime failures — a bad standard-library argument, a call to an undefined function — still abort with a host-level `php: <message>` on stderr that no `catch` block can intercept.",
         "try { throw new TypeError(\"t\"); }\ncatch (Exception $e) { echo \"E\"; } catch (Error $e) { echo \"R\"; }   // => R",
     ),
     (
@@ -1875,7 +1875,7 @@ pub const CORPUS: &[Entry] = &[
         "DivisionByZeroError",
         "Prelude class",
         "class DivisionByZeroError extends ArithmeticError {}",
-        "The class PHP raises for a zero divisor. DIVERGENCE: phplang's `/`, `%`, and `intdiv()` do NOT throw it — they abort with the uncatchable host errors `php: Division by zero` and `php: Modulo by zero`. The class is declared so a program can throw and catch it itself.",
+        "The class raised for a zero divisor. `/` and `intdiv()` throw it with the message `Division by zero`, `%` with `Modulo by zero`, and a program may throw and catch it itself.",
         "try { throw new DivisionByZeroError(\"x\"); }\ncatch (ArithmeticError $e) { echo get_class($e); }   // => DivisionByZeroError",
     ),
     (
@@ -1924,7 +1924,7 @@ pub const CORPUS: &[Entry] = &[
         "stdClass",
         "Prelude class",
         "class stdClass {}",
-        "The empty generic object. Properties are added dynamically at assignment. DIVERGENCE: it is not produced by any cast or decode — `(object)` is not a supported cast and `json_decode` always yields arrays — so the only way to get one is `new stdClass`.",
+        "The empty generic object. Properties are added dynamically at assignment. Produced by `new stdClass` and by the `(object)` cast. DIVERGENCE: `json_decode` always yields arrays, so it never produces one.",
         "$o = new stdClass; $o->x = 1; echo $o->x, get_class($o);   // => 1stdClass",
     ),
     (
@@ -2018,7 +2018,7 @@ pub const CORPUS: &[Entry] = &[
         "strtoupper",
         "Core library — strings",
         "strtoupper(string $string): string",
-        "Uppercases the string with Rust's full Unicode `to_uppercase`. DIVERGENCE: PHP's `strtoupper` is ASCII-only and locale-bound, so non-ASCII letters change here where PHP leaves them untouched.",
+        "Uppercases the ASCII letters in the string, leaving every other byte alone — so `strtoupper(\"héllo\")` is `\"HéLLO\"`, as in PHP 8. Use `mb_strtoupper` for the Unicode-aware form.",
         "echo strtoupper(\"abc\");   // => ABC",
     ),
     (
@@ -2053,7 +2053,7 @@ pub const CORPUS: &[Entry] = &[
         "trim",
         "Core library — strings",
         "trim(string $string): string",
-        "Removes leading and trailing whitespace, using Rust's Unicode-aware `str::trim`. DIVERGENCE: the `$characters` argument is not read, so trimming a custom character set is not supported, and the NUL byte PHP also strips is not in Rust's whitespace set.",
+        "Removes leading and trailing characters, defaulting to PHP's set `\" \\t\\n\\r\\0\\x0B\"`. The optional `$characters` argument replaces that set and understands `a..z` ranges.",
         "echo trim(\"  hi  \");   // => hi",
     ),
     (
@@ -2116,7 +2116,7 @@ pub const CORPUS: &[Entry] = &[
         "str_replace",
         "Core library — strings",
         "str_replace(string $search, string $replace, string $subject): string",
-        "Replaces every occurrence of the search string. DIVERGENCE: only the all-scalar form is implemented — array arguments are string-cast rather than applied element-wise, and the by-reference `$count` out-parameter does not exist.",
+        "Replaces every occurrence of the search string. `$search`/`$replace` may be arrays (paired by position, or one replacement for every needle), an array `$subject` is processed element-wise, and the by-reference `$count` receives the number of replacements.",
         "echo str_replace(\"a\", \"b\", \"aaa\");   // => bbb",
     ),
     (
@@ -2390,7 +2390,7 @@ pub const CORPUS: &[Entry] = &[
         "sort",
         "Core library — arrays",
         "sort(array $array): bool",
-        "Sorts ascending in place and reindexes the keys from 0. DIVERGENCE: the `$flags` argument is not read, so the comparison is always the default one.",
+        "Sorts ascending in place and reindexes the keys from 0. The `$flags` argument selects the comparison (`SORT_REGULAR`, `SORT_NUMERIC`, `SORT_STRING`, `SORT_NATURAL`, optionally `|SORT_FLAG_CASE`). The sort is stable, as PHP 8's is.",
         "$a = [3, 1, 2]; sort($a); echo implode(\",\", $a);   // => 1,2,3",
     ),
     (
@@ -2474,7 +2474,7 @@ pub const CORPUS: &[Entry] = &[
         "explode",
         "Core library — arrays",
         "explode(string $separator, string $string): array",
-        "Splits the string on every occurrence of the separator. An empty separator returns a single-element array rather than raising `ValueError`. DIVERGENCE: the `$limit` argument is not read.",
+        "Splits the string on every occurrence of the separator. A positive `$limit` caps the number of parts with the last holding the remainder, a negative one drops that many parts off the end, and `0` behaves as `1`. An empty separator returns a single-element array rather than raising `ValueError`.",
         "echo explode(\",\", \"a,b\")[1];   // => b",
     ),
     // ══ Core library — math ═════════════════════════════════════════════════
@@ -2524,7 +2524,7 @@ pub const CORPUS: &[Entry] = &[
         "intdiv",
         "Core library — math",
         "intdiv(int $num1, int $num2): int",
-        "Integer division truncated toward zero. A zero divisor aborts with the uncatchable host error `php: Division by zero`.",
+        "Integer division truncated toward zero. A zero divisor throws a catchable `DivisionByZeroError` with the message `Division by zero`.",
         "echo intdiv(7, 2);   // => 3",
     ),
     (
@@ -2711,6 +2711,20 @@ pub const CORPUS: &[Entry] = &[
         "echo strval(42);   // => 42",
     ),
     (
+        "__cast_array",
+        "Core library — types and output",
+        "__cast_array(mixed $value): array",
+        "Internal target of the `(array)` cast — not a PHP function, and not meant to be called by name. An array passes through, `null` becomes the empty array, an object yields its properties keyed by name, and any other scalar becomes a one-element list. DIVERGENCE: PHP mangles private/protected property names in an object cast (`\\0Class\\0prop`, `\\0*\\0prop`); this returns the plain names.",
+        "var_dump((array)\"a\");   // => array(1) { [0]=> string(1) \"a\" }",
+    ),
+    (
+        "__cast_object",
+        "Core library — types and output",
+        "__cast_object(mixed $value): object",
+        "Internal target of the `(object)` cast — not a PHP function, and not meant to be called by name. An array becomes a `stdClass` whose keys are properties, `null` an empty `stdClass`, and any other scalar a `stdClass` with the value in a `scalar` property. An object passes through unchanged.",
+        "$o = (object)[\"a\" => 1]; echo $o->a;   // => 1",
+    ),
+    (
         "boolval",
         "Core library — types and output",
         "boolval(mixed $value): bool",
@@ -2749,7 +2763,7 @@ pub const CORPUS: &[Entry] = &[
         "json_encode",
         "Core library — types and output",
         "json_encode(mixed $value): string",
-        "Encodes a value as JSON. DIVERGENCE: the `$flags` and `$depth` arguments are not read, so `JSON_PRETTY_PRINT` and friends have no effect and the output is always compact. `json_decode` lives in the `json` module, not here.",
+        "Encodes a value as JSON, escaping `/` and non-ASCII characters by default and returning `false` (with `json_last_error()` set to `JSON_ERROR_INF_OR_NAN`) for a NAN or INF. `JSON_PRETTY_PRINT`, `JSON_UNESCAPED_SLASHES` and `JSON_UNESCAPED_UNICODE` are honoured. DIVERGENCE: the `$depth` argument is not read. `json_decode` lives in the `json` module, not here.",
         "echo json_encode([1, 2, 3]);   // => [1,2,3]",
     ),
     // ══ Strings (stdlib::strings) ═══════════════════════════════════════════
@@ -3322,7 +3336,7 @@ pub const CORPUS: &[Entry] = &[
         "array_walk",
         "Arrays",
         "array_walk(array $array, callable $callback, mixed $extra = null): bool",
-        "Calls `$callback($value, $key[, $extra])` for every element and returns true. DIVERGENCE: PHP's first callback parameter is by reference; phplang has no by-reference parameters, so mutating a SCALAR element inside the callback does not write back. Array and object elements do reflect mutations, because those are shared handles.",
+        "Calls `$callback($value, $key[, $extra])` for every element and returns true. The value is passed through a reference cell, so a `function (&$v)` callback writes back into the array, scalars included.",
         "$a = [1, 2]; array_walk($a, function ($v, $k) { echo $k . $v; });   // => 0112",
     ),
     (

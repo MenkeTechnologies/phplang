@@ -453,8 +453,8 @@ fn filter_var_array_per_field_specs() {
     ));"#;
     assert_eq!(
         run(src),
-        // phplang's json_encode does not escape "/" (PHP escapes it as "\/").
-        r#"{"age":25,"email":"x@y.com","name":"&lt;b&gt;bob&lt;/b&gt;"}"#
+        // json_encode escapes "/" as "\/", matching the reference interpreter.
+        r#"{"age":25,"email":"x@y.com","name":"&lt;b&gt;bob&lt;\/b&gt;"}"#
     );
 }
 

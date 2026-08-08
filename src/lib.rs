@@ -41,28 +41,34 @@ pub fn compile_debug(src: &str) -> Result<compiler::Program, String> {
 /// real class system: `throw`/`catch` resolve these as ordinary classes, and user
 /// code can subclass them. `Exception` and `Error` are the two disjoint roots
 /// (`catch (Throwable)` — handled in the host — matches either); the rest inherit
-/// their `__construct`/`getMessage`/`getCode`/`__toString`.
+/// their `__construct`/`getMessage`/`getCode`/`getPrevious`/`__toString`.
 const EXCEPTION_PRELUDE: &str = r#"<?php
 class Exception {
     protected $message = "";
     protected $code = 0;
-    public function __construct($message = "", $code = 0) {
+    protected $previous = null;
+    public function __construct($message = "", $code = 0, $previous = null) {
         $this->message = $message;
         $this->code = $code;
+        $this->previous = $previous;
     }
     public function getMessage() { return $this->message; }
     public function getCode() { return $this->code; }
+    public function getPrevious() { return $this->previous; }
     public function __toString() { return $this->message; }
 }
 class Error {
     protected $message = "";
     protected $code = 0;
-    public function __construct($message = "", $code = 0) {
+    protected $previous = null;
+    public function __construct($message = "", $code = 0, $previous = null) {
         $this->message = $message;
         $this->code = $code;
+        $this->previous = $previous;
     }
     public function getMessage() { return $this->message; }
     public function getCode() { return $this->code; }
+    public function getPrevious() { return $this->previous; }
     public function __toString() { return $this->message; }
 }
 class RuntimeException extends Exception {}

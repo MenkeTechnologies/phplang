@@ -161,7 +161,7 @@ end-to-end (see `tests/basic.rs`):
   exception hierarchy (`Exception`/`Error` disjoint roots under `Throwable`, plus
   `RuntimeException`, `LogicException`, `InvalidArgumentException`, `TypeError`,
   `ValueError`, `UnhandledMatchError`, `DivisionByZeroError`) that user classes
-  can subclass, and `getMessage()`/`getCode()`/`__toString()`.
+  can subclass, and `getMessage()`/`getCode()`/`getPrevious()`/`__toString()`.
 - Integer literals in every base (`0xFF` hex, `0755`/`0o17` octal, `0b101` binary,
   `1_000` separators); predefined constants (`PHP_INT_MAX`, `PHP_EOL`, `M_PI`, the
   `SORT_*`/`FILTER_*`/`JSON_*`/… flag families) plus `define`/`defined`/`constant`;

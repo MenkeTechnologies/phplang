@@ -31,13 +31,15 @@ const JSON_ERROR_DEPTH: i64 = 1;
 const JSON_ERROR_CTRL_CHAR: i64 = 3;
 const JSON_ERROR_SYNTAX: i64 = 4;
 const JSON_ERROR_UTF16: i64 = 10;
+/// `JSON_ERROR_INF_OR_NAN` — `json_encode` refuses non-finite floats.
+pub const JSON_ERROR_INF_OR_NAN: i64 = 7;
 
 thread_local! {
     /// Last `json_decode` error for this thread (see the module LIMITATION note).
     static LAST_ERROR: Cell<i64> = const { Cell::new(JSON_ERROR_NONE) };
 }
 
-fn set_last_error(code: i64) {
+pub fn set_last_error(code: i64) {
     LAST_ERROR.with(|c| c.set(code));
 }
 
@@ -55,6 +57,7 @@ fn error_msg(code: i64) -> &'static str {
         JSON_ERROR_SYNTAX => "Syntax error",
         5 => "Malformed UTF-8 characters, possibly incorrectly encoded",
         JSON_ERROR_UTF16 => "Single unpaired UTF-16 surrogate in unicode escape",
+        JSON_ERROR_INF_OR_NAN => "Inf and NaN cannot be JSON encoded",
         _ => "Unknown error",
     }
 }

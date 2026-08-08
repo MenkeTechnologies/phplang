@@ -209,3 +209,128 @@ fn serialize_float_special_values() {
     "#;
     assert_eq!(run(src), "d:INF; d:-INF; d:NAN;");
 }
+
+// ── float representation (serialize_precision vs precision) ─────────────────
+//
+// `echo` renders floats at precision=14, but `var_dump`, `var_export`,
+// `serialize` and `json_encode` all use the shortest round-tripping form. These
+// used to share the precision=14 path and silently lost digits.
+
+#[test]
+fn var_dump_uses_shortest_roundtrip_float() {
+    assert_eq!(
+        run(r#"<?php var_dump(1/3);"#),
+        "float(0.3333333333333333)\n"
+    );
+    assert_eq!(
+        run(r#"<?php var_dump(PHP_INT_MAX + 1);"#),
+        "float(9.223372036854776E+18)\n"
+    );
+    // echo keeps the lower precision=14 rendering.
+    assert_eq!(run(r#"<?php echo 1/3;"#), "0.33333333333333");
+}
+
+#[test]
+fn var_export_float_always_reads_back_as_float() {
+    // A whole-numbered float gains a ".0" tail so the output re-parses as float.
+    assert_eq!(run(r#"<?php echo var_export(1.0, true);"#), "1.0");
+    assert_eq!(run(r#"<?php echo var_export(100.0, true);"#), "100.0");
+    assert_eq!(run(r#"<?php echo var_export(-0.0, true);"#), "-0.0");
+    // Exponential and non-finite forms already contain a "." or are special.
+    assert_eq!(run(r#"<?php echo var_export(1e17, true);"#), "1.0E+17");
+    assert_eq!(run(r#"<?php echo var_export(NAN, true);"#), "NAN");
+}
+
+#[test]
+fn json_encode_float_and_escaping_match_reference() {
+    // JSON spells the exponent lowercase and escapes "/" and non-ASCII.
+    assert_eq!(
+        run(r#"<?php echo json_encode([1.0, 0.1, 1e100]);"#),
+        "[1,0.1,1.0e+100]"
+    );
+    assert_eq!(run(r#"<?php echo json_encode("a/b");"#), r#""a\/b""#);
+    assert_eq!(run(r#"<?php echo json_encode("é");"#), r#""\u00e9""#);
+    // Above the BMP JSON needs a surrogate pair.
+    assert_eq!(
+        run("<?php echo json_encode(\"\u{1F600}\");"),
+        r#""\ud83d\ude00""#
+    );
+    assert_eq!(
+        run(
+            r#"<?php echo json_encode("é", JSON_UNESCAPED_UNICODE), json_encode("a/b", JSON_UNESCAPED_SLASHES);"#
+        ),
+        r#""é""a/b""#
+    );
+}
+
+#[test]
+fn json_encode_rejects_non_finite_floats() {
+    assert_eq!(
+        run(r#"<?php var_dump(json_encode([1, INF])); echo json_last_error_msg();"#),
+        "bool(false)\nInf and NaN cannot be JSON encoded"
+    );
+}
+
+#[test]
+fn json_encode_distinguishes_objects_from_lists() {
+    // An empty object is `{}`; an empty array is `[]`.
+    assert_eq!(
+        run(r#"<?php echo json_encode(new stdClass()), json_encode([]);"#),
+        "{}[]"
+    );
+    assert_eq!(
+        run("<?php echo json_encode([\"a\"=>1], JSON_PRETTY_PRINT);"),
+        "{\n    \"a\": 1\n}"
+    );
+}
+
+// ── (array) / (object) casts ────────────────────────────────────────────────
+
+#[test]
+fn array_cast_wraps_scalars_and_unwraps_objects() {
+    assert_eq!(run(r#"<?php echo json_encode((array)"a");"#), r#"["a"]"#);
+    assert_eq!(run(r#"<?php echo json_encode((array)null);"#), "[]");
+    assert_eq!(run(r#"<?php echo json_encode((array)1);"#), "[1]");
+    assert_eq!(
+        run(r#"<?php echo json_encode((array)(object)["a"=>1]);"#),
+        r#"{"a":1}"#
+    );
+}
+
+#[test]
+fn object_cast_builds_a_stdclass() {
+    assert_eq!(
+        run(r#"<?php $o = (object)["a"=>1]; echo get_class($o), ":", $o->a;"#),
+        "stdClass:1"
+    );
+    // A non-array scalar lands in a `scalar` property; null gives an empty one.
+    assert_eq!(run(r#"<?php echo ((object)"s")->scalar;"#), "s");
+    assert_eq!(run(r#"<?php echo json_encode((object)null);"#), "{}");
+}
+
+#[test]
+fn var_dump_prints_objects_with_class_and_properties() {
+    assert_eq!(
+        run(r#"<?php $p = new stdClass; $p->z = 9; var_dump($p);"#),
+        "object(stdClass)#1 (1) {\n  [\"z\"]=>\n  int(9)\n}\n"
+    );
+}
+
+#[test]
+fn intval_honours_an_explicit_base() {
+    assert_eq!(
+        run(r#"<?php echo intval("0x1A", 16), ",", intval("1A", 16);"#),
+        "26,26"
+    );
+    assert_eq!(
+        run(r#"<?php echo intval("012", 8), ",", intval("z", 36);"#),
+        "10,35"
+    );
+    // Base 0 auto-detects from the prefix.
+    assert_eq!(
+        run(r#"<?php echo intval("0x1A", 0), ",", intval("012", 0), ",", intval("12", 0);"#),
+        "26,10,12"
+    );
+    // Base 10 keeps the ordinary numeric-string reading, exponents included.
+    assert_eq!(run(r#"<?php echo intval("1e3", 10);"#), "1000");
+}

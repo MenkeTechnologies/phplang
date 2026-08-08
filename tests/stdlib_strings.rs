@@ -227,3 +227,98 @@ fn multibyte() {
     assert_eq!(run(r#"<?php echo mb_substr("héllo", 1, 3);"#), "éll");
     assert_eq!(run(r#"<?php echo mb_substr("héllo", -2);"#), "lo");
 }
+
+// ── byte-wise case, charlists, and limits ───────────────────────────────────
+//
+// PHP's case family is ASCII-only, `ucwords`' separator argument *replaces* the
+// default set, `trim` takes a charlist with `a..z` ranges, and `explode` honours
+// a limit. All four were previously ignored or Unicode-aware by mistake.
+
+#[test]
+fn case_functions_are_ascii_only() {
+    // The multibyte "é" must survive untouched — mb_* is the Unicode-aware form.
+    assert_eq!(
+        run(r#"<?php echo strtoupper("héllo"), "|", strtolower("HÉLLO");"#),
+        "HéLLO|hÉllo"
+    );
+    assert_eq!(
+        run(r#"<?php echo ucfirst("élan"), "|", lcfirst("ÉLAN");"#),
+        "élan|ÉLAN"
+    );
+    assert_eq!(
+        run(r#"<?php echo ucfirst("abc"), "|", lcfirst("ABC");"#),
+        "Abc|aBC"
+    );
+}
+
+#[test]
+fn ucwords_separators_replace_the_default_set() {
+    // With "-" given, the space is no longer a separator.
+    assert_eq!(
+        run(r#"<?php echo ucwords("hello world-foo bar", "-");"#),
+        "Hello world-Foo bar"
+    );
+    assert_eq!(
+        run(r#"<?php echo ucwords("hello world_foo bar");"#),
+        "Hello World_foo Bar"
+    );
+    // Every byte following a separator is uppercased, runs included.
+    assert_eq!(run(r#"<?php echo ucwords("--a-b", "-");"#), "--A-B");
+}
+
+#[test]
+fn trim_accepts_a_charlist_with_ranges() {
+    assert_eq!(
+        run(r#"<?php echo rtrim("xayb", "ab"), "|", ltrim("00123", "0");"#),
+        "xay|123"
+    );
+    // "a..z" is the range a-z, not the three characters a, ., z.
+    assert_eq!(run(r#"<?php echo trim("a..z", "a..z");"#), "..");
+    // The default set includes NUL and \x0B but not the form feed \x0C.
+    assert_eq!(run("<?php echo trim(\"\\x00\\x0Bx \\t\\n\\r\");"), "x");
+}
+
+#[test]
+fn explode_honours_its_limit() {
+    assert_eq!(
+        run(r#"<?php echo implode("|", explode(",", "a,b,c", 2));"#),
+        "a|b,c"
+    );
+    // A negative limit drops that many trailing parts.
+    assert_eq!(
+        run(r#"<?php echo implode("|", explode(",", "a,b,c", -1));"#),
+        "a|b"
+    );
+    // Zero behaves as one.
+    assert_eq!(run(r#"<?php echo count(explode(",", "a,b,c", 0));"#), "1");
+}
+
+#[test]
+fn str_replace_handles_arrays_and_reports_a_count() {
+    assert_eq!(
+        run(r#"<?php echo str_replace(["a","b"], ["1","2"], "aabbc", $n), ":", $n;"#),
+        "1122c:4"
+    );
+    // An array search with a scalar replacement maps every needle to it.
+    assert_eq!(
+        run(r#"<?php echo str_replace(["a","b"], "X", "aabbc");"#),
+        "XXXXc"
+    );
+    // Searches apply in sequence to the running result, so "aa" finds nothing.
+    assert_eq!(
+        run(r#"<?php echo str_replace(["a","aa"], ["1","2"], "aaa");"#),
+        "111"
+    );
+    // An array subject is processed element-wise.
+    assert_eq!(
+        run(r#"<?php echo implode("|", str_replace("a", "X", ["aa", "ba"]));"#),
+        "XX|bX"
+    );
+}
+
+#[test]
+fn double_quoted_escapes_cover_hex_octal_and_unicode() {
+    assert_eq!(run(r#"<?php echo bin2hex("\x41\102\u{e9}");"#), "4142c3a9");
+    // \v and \f are real escapes; an unknown one keeps its backslash.
+    assert_eq!(run(r#"<?php echo bin2hex("\v\f\q");"#), "0b0c5c71");
+}

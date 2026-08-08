@@ -159,6 +159,13 @@ impl Compiler {
     /// Pre-pass: record the by-reference parameter positions of every `function`
     /// declaration (recursing into nested bodies) so call sites can write the
     /// callee's finals back to the caller — even for forward references.
+    /// Index into `self.loops` of the loop a `break`/`continue` of `level`
+    /// targets — level 1 is the innermost — or `None` when the chunk does not
+    /// have that many enclosing loops.
+    fn loop_at_level(&self, level: u32) -> Option<usize> {
+        self.loops.len().checked_sub(level.max(1) as usize)
+    }
+
     fn collect_byref(&mut self, stmts: &[Stmt]) {
         for s in stmts {
             match &s.kind {
@@ -281,29 +288,36 @@ impl Compiler {
                 b.emit(Op::CallBuiltin(ops::SIG_RETURN, 1), line);
                 b.emit(Op::Pop, line);
             }
-            StmtKind::Break => {
-                // Inside a loop in this chunk → an in-chunk jump. Inside a `try`
-                // body with no such loop → a control signal the orchestrator
-                // relays to the enclosing loop.
-                if let Some(ctx) = self.loops.last_mut() {
+            StmtKind::Break(level) => {
+                // `break n` leaves the n-th enclosing loop, so index the loop
+                // stack from the top: level 1 is the innermost. Inside a loop in
+                // this chunk → an in-chunk jump. Inside a `try` body with no such
+                // loop → a control signal the orchestrator relays to the
+                // enclosing loop.
+                if let Some(idx) = self.loop_at_level(*level) {
                     let j = b.emit(Op::Jump(0), line);
-                    ctx.breaks.push(j);
+                    self.loops[idx].breaks.push(j);
                 } else if self.in_try > 0 {
-                    b.emit(Op::CallBuiltin(ops::SIG_BREAK, 0), line);
+                    // No loop for it in this chunk: raise a signal carrying the
+                    // levels still to unwind, which the `try` dispatch in the
+                    // enclosing chunk resolves (or re-raises, decremented).
+                    b.emit(Op::LoadInt(*level as i64), line);
+                    b.emit(Op::CallBuiltin(ops::SIG_BREAK, 1), line);
                     b.emit(Op::Pop, line);
                 } else {
-                    return Err("'break' outside of a loop".into());
+                    return Err(break_level_error("break", *level, self.loops.len()));
                 }
             }
-            StmtKind::Continue => {
-                if let Some(ctx) = self.loops.last_mut() {
+            StmtKind::Continue(level) => {
+                if let Some(idx) = self.loop_at_level(*level) {
                     let j = b.emit(Op::Jump(0), line);
-                    ctx.continues.push(j);
+                    self.loops[idx].continues.push(j);
                 } else if self.in_try > 0 {
-                    b.emit(Op::CallBuiltin(ops::SIG_CONTINUE, 0), line);
+                    b.emit(Op::LoadInt(*level as i64), line);
+                    b.emit(Op::CallBuiltin(ops::SIG_CONTINUE, 1), line);
                     b.emit(Op::Pop, line);
                 } else {
-                    return Err("'continue' outside of a loop".into());
+                    return Err(break_level_error("continue", *level, self.loops.len()));
                 }
             }
             StmtKind::Try {
@@ -981,22 +995,60 @@ impl Compiler {
         let break_pos = b.current_pos();
         b.patch_jump(j_break, break_pos);
         b.emit(Op::Pop, line);
-        if self.loops.last().is_some() {
-            let j = b.emit(Op::Jump(0), line);
-            self.loops.last_mut().unwrap().breaks.push(j);
-        }
+        self.emit_break_dispatch(b, true, line);
 
         let cont_pos = b.current_pos();
         b.patch_jump(j_cont, cont_pos);
         b.emit(Op::Pop, line);
-        if self.loops.last().is_some() {
-            let j = b.emit(Op::Jump(0), line);
-            self.loops.last_mut().unwrap().continues.push(j);
-        }
+        self.emit_break_dispatch(b, false, line);
 
         let end = b.current_pos();
         b.patch_jump(j_end, end);
         Ok(())
+    }
+
+    /// Route a `break`/`continue` that escaped a `try` body to the loop it was
+    /// aimed at.
+    ///
+    /// The level is only known at run time here (the `break` lives in a separate
+    /// chunk), but the number of loops enclosing *this* `try` is known now — so
+    /// emit one equality test per enclosing loop and jump into that loop's fixup
+    /// list. A level deeper than this chunk's loops belongs to an outer frame:
+    /// re-raise the signal with the levels this chunk consumed subtracted off,
+    /// and halt so it keeps propagating.
+    fn emit_break_dispatch(&mut self, b: &mut ChunkBuilder, is_break: bool, line: u32) {
+        let depth = self.loops.len();
+        for level in 1..=depth {
+            b.emit(Op::CallBuiltin(ops::SIG_LEVEL, 0), line);
+            b.emit(Op::LoadInt(level as i64), line);
+            b.emit(Op::CallBuiltin(ops::STRICT_EQ, 2), line);
+            let j = b.emit(Op::JumpIfTrue(0), line);
+            // Fall through to the next level's test; the taken branch is patched
+            // below to a jump registered on the matching loop.
+            let target = b.current_pos();
+            b.patch_jump(j, target + 1);
+            let skip = b.emit(Op::Jump(0), line);
+            let hit = b.emit(Op::Jump(0), line);
+            let idx = depth - level;
+            if is_break {
+                self.loops[idx].breaks.push(hit);
+            } else {
+                self.loops[idx].continues.push(hit);
+            }
+            let after = b.current_pos();
+            b.patch_jump(skip, after);
+        }
+        // Deeper than this chunk's loops: hand the remainder to the outer frame.
+        b.emit(Op::CallBuiltin(ops::SIG_LEVEL, 0), line);
+        b.emit(Op::LoadInt(depth as i64), line);
+        b.emit(Op::Sub, line);
+        let sig = if is_break {
+            ops::SIG_BREAK
+        } else {
+            ops::SIG_CONTINUE
+        };
+        b.emit(Op::CallBuiltin(sig, 1), line);
+        b.emit(Op::Pop, line);
     }
 
     /// Emit `Dup; status === code; if true jump`, returning the pending jump idx.
@@ -2455,5 +2507,15 @@ fn expr_has_yield(e: &Expr) -> bool {
         Expr::Unset(targets) => targets.iter().any(expr_has_yield),
         // Nested function definitions own their own yields.
         _ => false,
+    }
+}
+
+/// PHP's compile-time error for a `break`/`continue` level that exceeds the
+/// number of enclosing loops, or that appears outside a loop entirely.
+fn break_level_error(kw: &str, level: u32, depth: usize) -> String {
+    if depth == 0 {
+        format!("'{kw}' outside of a loop")
+    } else {
+        format!("Cannot '{kw}' {level} levels")
     }
 }

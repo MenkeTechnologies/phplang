@@ -505,7 +505,7 @@ fn php_natsort(h: &mut host::PhpHost, args: &[Value], fold_case: bool) -> Value 
 
 /// Natural-order string comparison (PHP `strnatcmp`): digit runs compare
 /// numerically, everything else by code point; leading whitespace is skipped.
-fn nat_cmp(a: &str, b: &str, fold_case: bool) -> Ordering {
+pub fn nat_cmp(a: &str, b: &str, fold_case: bool) -> Ordering {
     let owned_a;
     let owned_b;
     let (a, b) = if fold_case {
@@ -685,7 +685,11 @@ fn php_array_walk(args: &[Value]) -> Result<Value, String> {
     let has_extra = args.len() > 2;
     let pairs = host::with_host(|h| h.array_pairs(&arr)).unwrap_or_default();
     for (k, v) in pairs {
-        let mut call_args = vec![v, k];
+        // The value goes in through a reference cell so a `function (&$v)`
+        // callback can write to it; anything it stores is copied back into the
+        // array under the same key.
+        let (cell, slot) = host::with_host(|h| h.new_ref_cell(v));
+        let mut call_args = vec![cell, k.clone()];
         if has_extra {
             call_args.push(extra.clone());
         }
@@ -693,6 +697,10 @@ fn php_array_walk(args: &[Value]) -> Result<Value, String> {
         if host::has_pending_throw() {
             return Ok(Value::Undef);
         }
+        host::with_host(|h| {
+            let updated = h.ref_cell_value(slot);
+            h.arr_set_key(&arr, &k, updated);
+        });
     }
     Ok(Value::bool(true))
 }

@@ -69,6 +69,7 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::SIG_HALT, b_sig_halt);
     vm.register_builtin(ops::SIG_BREAK, b_sig_break);
     vm.register_builtin(ops::SIG_CONTINUE, b_sig_continue);
+    vm.register_builtin(ops::SIG_LEVEL, b_sig_level);
     vm.register_builtin(ops::CONST_FETCH, b_const_fetch);
     vm.register_builtin(ops::UNSET_VAR, b_unset_var);
     vm.register_builtin(ops::UNSET_PATH, b_unset_path);
@@ -251,10 +252,14 @@ fn b_mcall_named(vm: &mut VM, argc: u8) -> Value {
                 Err(e) => fail(vm, e),
             }
         }
-        None => fail(
-            vm,
-            format!("call to a member function {method}() on a non-object"),
-        ),
+        None => {
+            let ty = with_host(|h| receiver_type_name(h, &recv));
+            throw_php(
+                vm,
+                "Error",
+                &format!("Call to a member function {method}() on {ty}"),
+            )
+        }
     }
 }
 
@@ -457,16 +462,33 @@ fn b_sig_halt(vm: &mut VM, _: u8) -> Value {
     Value::Undef
 }
 
-fn b_sig_break(vm: &mut VM, _: u8) -> Value {
-    host::set_break();
+fn b_sig_break(vm: &mut VM, argc: u8) -> Value {
+    let level = sig_level_arg(vm, argc);
+    host::set_break(level);
     vm.ip = vm.chunk.ops.len();
     Value::Undef
 }
 
-fn b_sig_continue(vm: &mut VM, _: u8) -> Value {
-    host::set_continue();
+fn b_sig_continue(vm: &mut VM, argc: u8) -> Value {
+    let level = sig_level_arg(vm, argc);
+    host::set_continue(level);
     vm.ip = vm.chunk.ops.len();
     Value::Undef
+}
+
+/// The level operand of a `break`/`continue` signal, defaulting to 1 when the
+/// compiler emitted the no-argument form.
+fn sig_level_arg(vm: &mut VM, argc: u8) -> u32 {
+    if argc == 0 {
+        return 1;
+    }
+    vm.pop().to_int().max(1) as u32
+}
+
+/// `SIG_LEVEL` — push the level of the `break`/`continue` that just ended a
+/// `try` body, so the dispatch code can pick the loop it was aimed at.
+fn b_sig_level(_: &mut VM, _: u8) -> Value {
+    Value::int(host::last_break_level() as i64)
 }
 
 /// Pop two operands as PHP integers (bitwise ops cast their operands to int).
@@ -562,6 +584,49 @@ fn fail(vm: &mut VM, msg: impl Into<String>) -> Value {
     with_host(|h| h.set_error(msg));
     vm.ip = vm.chunk.ops.len();
     Value::Undef
+}
+
+/// Raise a catchable PHP exception from inside a builtin: construct `class` with
+/// `message` and record it as the pending throw, then unwind this chunk exactly
+/// as the `throw` builtin does, so an enclosing `try`/`catch` can handle it.
+///
+/// Used by the zero-divisor arithmetic, which PHP 8 reports as a catchable
+/// `DivisionByZeroError` rather than a fatal error.
+fn throw_php(vm: &mut VM, class: &str, message: &str) -> Value {
+    match pending_php_throw(class, message) {
+        Ok(_) => {
+            vm.ip = vm.chunk.ops.len();
+            Value::Undef
+        }
+        // The prelude always defines these classes; if construction somehow
+        // fails there is no exception to throw, so fall back to a host error.
+        Err(e) => fail(vm, e),
+    }
+}
+
+/// PHP's name for a value's type in the "Call to a member function f() on X"
+/// error. Booleans are spelled `true`/`false` there rather than `bool`.
+fn receiver_type_name(h: &host::PhpHost, v: &Value) -> &'static str {
+    match v {
+        Value::Undef => "null",
+        Value::Bool(true) => "true",
+        Value::Bool(false) => "false",
+        Value::Int(_) => "int",
+        Value::Float(_) => "float",
+        Value::Str(_) => "string",
+        Value::Obj(_) if h.is_array(v) => "array",
+        _ => "mixed",
+    }
+}
+
+/// [`throw_php`] for library functions that return `Result` and have no VM
+/// handle. Recording the pending throw is enough: the `bubbled` helper on the
+/// calling side halts the chunk as soon as it sees one, so the `Ok(Undef)`
+/// returned here is never observed as a value.
+fn pending_php_throw(class: &str, message: &str) -> Result<Value, String> {
+    let exc = host::new_object(class, vec![Value::str(message.to_string())])?;
+    host::set_pending_throw(exc);
+    Ok(Value::Undef)
 }
 
 // ── core builtins ────────────────────────────────────────────────────────────
@@ -944,10 +1009,14 @@ fn b_mcall(vm: &mut VM, argc: u8) -> Value {
                 Err(e) => fail(vm, e),
             }
         }
-        None => fail(
-            vm,
-            format!("call to a member function {method}() on a non-object"),
-        ),
+        None => {
+            let ty = with_host(|h| receiver_type_name(h, &recv));
+            throw_php(
+                vm,
+                "Error",
+                &format!("Call to a member function {method}() on {ty}"),
+            )
+        }
     }
 }
 
@@ -983,7 +1052,7 @@ fn b_div(vm: &mut VM, _: u8) -> Value {
     let a = vm.pop();
     let (an, bn) = with_host(|h| (h.to_number(&a), h.to_number(&b)));
     if bn.to_float() == 0.0 {
-        return fail(vm, "Division by zero");
+        return throw_php(vm, "DivisionByZeroError", "Division by zero");
     }
     match (an, bn) {
         (Value::Int(x), Value::Int(y)) if x % y == 0 => Value::int(x / y),
@@ -996,7 +1065,7 @@ fn b_mod(vm: &mut VM, _: u8) -> Value {
     let a = vm.pop();
     let (x, y) = with_host(|h| (h.to_number(&a).to_int(), h.to_number(&b).to_int()));
     if y == 0 {
-        return fail(vm, "Modulo by zero");
+        return throw_php(vm, "DivisionByZeroError", "Modulo by zero");
     }
     Value::int(x % y)
 }
@@ -1169,11 +1238,35 @@ fn strict_eq(h: &host::PhpHost, a: &Value, b: &Value) -> bool {
     }
 }
 
-/// PHP ordering: -1 / 0 / 1. Numeric unless both operands are non-numeric
-/// strings (then byte comparison).
+/// PHP ordering: -1 / 0 / 1, following `zend_compare`'s operand-type table.
+///
+/// The table is applied in this order, which is what the reference interpreter
+/// does and is load-bearing — swapping any two arms changes results:
+/// 1. `null` vs string — `null` becomes `""` and the two compare as strings
+///    (so `null < "0"`, which the bool rule below would call equal).
+/// 2. `bool` or `null` on either side — both operands convert to bool
+///    (so `null < -1`, because `false < true`).
+/// 3. array vs array — fewer elements is smaller, otherwise element-wise over
+///    the left operand's keys; a key missing on the right is "uncomparable"
+///    and reports greater, matching `zend_hash_compare`.
+/// 4. array vs anything else — the array is always greater.
+/// 5. everything else — numeric unless both operands are non-numeric strings
+///    (then byte comparison).
 fn php_compare(h: &host::PhpHost, a: &Value, b: &Value) -> i32 {
     use Value::*;
     match (a, b) {
+        // 1. null vs string compares as "" vs the string.
+        (Undef, Str(y)) => strcmp_i32("", y),
+        (Str(x), Undef) => strcmp_i32(x, ""),
+        // 2. A bool or null operand drags both sides down to bool.
+        (Bool(_) | Undef, _) | (_, Bool(_) | Undef) => {
+            i32::from(h.is_truthy(a)) - i32::from(h.is_truthy(b))
+        }
+        // 3. Two arrays compare by size, then element-wise.
+        (Obj(_), Obj(_)) => compare_arrays(h, a, b),
+        // 4. An array outranks every non-array, non-bool, non-null operand.
+        (Obj(_), _) => 1,
+        (_, Obj(_)) => -1,
         (Str(x), Str(y)) => {
             if host::is_numeric_string(x) && host::is_numeric_string(y) {
                 cmp_f64(a.to_float(), b.to_float())
@@ -1198,9 +1291,32 @@ fn php_compare(h: &host::PhpHost, a: &Value, b: &Value) -> i32 {
                 strcmp_i32(&h.to_str(a), y)
             }
         }
-        (Obj(_), Obj(_)) => cmp_f64(h.array_len(a) as f64, h.array_len(b) as f64),
         _ => cmp_f64(h.to_number(a).to_float(), h.to_number(b).to_float()),
     }
+}
+
+/// Order two arrays the way `zend_hash_compare` does: the array with fewer
+/// elements is smaller; at equal size, walk the left operand's keys in order and
+/// compare the values. A key absent from the right operand makes the pair
+/// uncomparable, which the engine reports as "left is greater"
+/// (`['a'=>1] <=> ['b'=>1]` is `1`).
+fn compare_arrays(h: &host::PhpHost, a: &Value, b: &Value) -> i32 {
+    let (Some(pa), Some(pb)) = (h.array_pairs(a), h.array_pairs(b)) else {
+        return 0;
+    };
+    if pa.len() != pb.len() {
+        return if pa.len() < pb.len() { -1 } else { 1 };
+    }
+    for (ka, va) in &pa {
+        let Some((_, vb)) = pb.iter().find(|(kb, _)| strict_eq(h, ka, kb)) else {
+            return 1;
+        };
+        let ord = php_compare(h, va, vb);
+        if ord != 0 {
+            return ord;
+        }
+    }
+    0
 }
 
 fn strcmp_i32(x: &str, y: &str) -> i32 {
@@ -1290,14 +1406,12 @@ pub fn call_library(name: &str, args: Vec<Value>) -> Result<Value, String> {
                 1
             }
         })),
-        "strtoupper" => with_host(|h| Value::str(h.to_str(&arg(&args, 0)).to_uppercase())),
-        "strtolower" => with_host(|h| Value::str(h.to_str(&arg(&args, 0)).to_lowercase())),
+        "strtoupper" => with_host(|h| Value::str(ascii_upper(&h.to_str(&arg(&args, 0))))),
+        "strtolower" => with_host(|h| Value::str(ascii_lower(&h.to_str(&arg(&args, 0))))),
         "ucfirst" => with_host(|h| Value::str(ucfirst(&h.to_str(&arg(&args, 0))))),
-        "trim" => with_host(|h| Value::str(h.to_str(&arg(&args, 0)).trim().to_string())),
-        "ltrim" => with_host(|h| Value::str(h.to_str(&arg(&args, 0)).trim_start().to_string())),
-        "rtrim" | "chop" => {
-            with_host(|h| Value::str(h.to_str(&arg(&args, 0)).trim_end().to_string()))
-        }
+        "trim" => with_host(|h| php_trim(h, &args, true, true)),
+        "ltrim" => with_host(|h| php_trim(h, &args, true, false)),
+        "rtrim" | "chop" => with_host(|h| php_trim(h, &args, false, true)),
         "str_repeat" => with_host(|h| {
             let s = h.to_str(&arg(&args, 0));
             let n = arg(&args, 1).to_int().max(0) as usize;
@@ -1310,6 +1424,9 @@ pub fn call_library(name: &str, args: Vec<Value>) -> Result<Value, String> {
         "substr" => with_host(|h| Value::str(php_substr(&h.to_str(&arg(&args, 0)), &args))),
         "strpos" => with_host(|h| php_strpos(h, &args)),
         "str_replace" => with_host(|h| php_str_replace(h, &args)),
+        // The `(array)` / `(object)` casts, which have no PHP-callable spelling.
+        "__cast_array" => with_host(|h| php_cast_array(h, &arg(&args, 0))),
+        "__cast_object" => php_cast_object(&arg(&args, 0))?,
         "abs" => with_host(|h| match h.to_number(&arg(&args, 0)) {
             Value::Int(n) => Value::int(n.abs()),
             Value::Float(f) => Value::float(f.abs()),
@@ -1323,7 +1440,21 @@ pub fn call_library(name: &str, args: Vec<Value>) -> Result<Value, String> {
             let p = args.get(1).map(|v| v.to_int()).unwrap_or(0);
             Value::float(php_round(x, p as i32))
         }),
-        "intval" => with_host(|h| Value::int(h.to_number(&arg(&args, 0)).to_int())),
+        "intval" => with_host(|h| {
+            let v = arg(&args, 0);
+            match args.get(1) {
+                // A base only applies to strings, and base 10 keeps the ordinary
+                // numeric-string reading so `intval("1e3", 10)` is still 1000.
+                Some(b)
+                    if !matches!(b, Value::Undef)
+                        && matches!(v, Value::Str(_))
+                        && b.to_int() != 10 =>
+                {
+                    Value::int(intval_base(&h.to_str(&v), b.to_int()))
+                }
+                _ => Value::int(h.to_number(&v).to_int()),
+            }
+        }),
         "floatval" | "doubleval" => {
             with_host(|h| Value::float(h.to_number(&arg(&args, 0)).to_float()))
         }
@@ -1390,7 +1521,13 @@ pub fn call_library(name: &str, args: Vec<Value>) -> Result<Value, String> {
                     .ends_with(&h.to_str(&arg(&args, 1))),
             )
         }),
-        "ucwords" => with_host(|h| Value::str(ucwords(&h.to_str(&arg(&args, 0))))),
+        "ucwords" => with_host(|h| {
+            let seps = match args.get(1) {
+                Some(v) if !matches!(v, Value::Undef) => h.to_str(v),
+                _ => " \t\r\n\x0c\x0b".to_string(),
+            };
+            Value::str(ucwords(&h.to_str(&arg(&args, 0)), &seps))
+        }),
         "lcfirst" => with_host(|h| Value::str(lcfirst(&h.to_str(&arg(&args, 0))))),
         "number_format" => with_host(|h| Value::str(php_number_format(h, &args))),
         "htmlspecialchars" | "htmlentities" => {
@@ -1472,12 +1609,13 @@ pub fn call_library(name: &str, args: Vec<Value>) -> Result<Value, String> {
         "array_unique" => with_host(|h| php_array_unique(h, &arg(&args, 0))),
         "array_key_exists" | "key_exists" => with_host(|h| php_array_key_exists(h, &args)),
         "array_search" => with_host(|h| php_array_search(h, &args)),
-        "sort" => with_host(|h| php_sort(h, &arg(&args, 0), false)),
-        "rsort" => with_host(|h| php_sort(h, &arg(&args, 0), true)),
-        "asort" => with_host(|h| php_asort(h, &arg(&args, 0), false)),
-        "arsort" => with_host(|h| php_asort(h, &arg(&args, 0), true)),
-        "ksort" => with_host(|h| php_ksort(h, &arg(&args, 0), false)),
-        "krsort" => with_host(|h| php_ksort(h, &arg(&args, 0), true)),
+        // The sort family takes an optional `SORT_*` flags argument in position 1.
+        "sort" => with_host(|h| php_sort(h, &arg(&args, 0), false, sort_flags(&args))),
+        "rsort" => with_host(|h| php_sort(h, &arg(&args, 0), true, sort_flags(&args))),
+        "asort" => with_host(|h| php_asort(h, &arg(&args, 0), false, sort_flags(&args))),
+        "arsort" => with_host(|h| php_asort(h, &arg(&args, 0), true, sort_flags(&args))),
+        "ksort" => with_host(|h| php_ksort(h, &arg(&args, 0), false, sort_flags(&args))),
+        "krsort" => with_host(|h| php_ksort(h, &arg(&args, 0), true, sort_flags(&args))),
         "array_fill" => with_host(|h| php_array_fill(h, &args)),
         "array_combine" => with_host(|h| php_array_combine(h, &args))?,
         "array_diff" => with_host(|h| php_array_diff(h, &args, false)),
@@ -1503,7 +1641,18 @@ pub fn call_library(name: &str, args: Vec<Value>) -> Result<Value, String> {
                 Value::Undef
             }
         }),
-        "json_encode" => with_host(|h| Value::str(php_json_encode(h, &arg(&args, 0)))),
+        "json_encode" => with_host(|h| {
+            let v = arg(&args, 0);
+            // JSON has no NAN/INF literal, so the encoder bails out entirely and
+            // reports JSON_ERROR_INF_OR_NAN rather than emitting invalid JSON.
+            if has_nonfinite_float(h, &v) {
+                crate::stdlib::json::set_last_error(crate::stdlib::json::JSON_ERROR_INF_OR_NAN);
+                Value::bool(false)
+            } else {
+                crate::stdlib::json::set_last_error(0);
+                Value::str(php_json_encode(h, &v, arg(&args, 1).to_int(), 0))
+            }
+        }),
 
         // Extended standard library lives in `src/stdlib/*`, one module per
         // category, consulted only for names this core match does not handle.
@@ -1515,11 +1664,42 @@ pub fn call_library(name: &str, args: Vec<Value>) -> Result<Value, String> {
     Ok(v)
 }
 
+/// PHP's case functions are byte-wise and ASCII-only — they never touch a
+/// multibyte sequence, so `strtoupper("héllo")` is `"HéLLO"`, not `"HÉLLO"`.
+/// (The Unicode-aware behaviour lives in `mb_strtoupper`.)
+fn ascii_upper(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_ascii() {
+                c.to_ascii_uppercase()
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
+/// ASCII-only lowercase; see [`ascii_upper`].
+fn ascii_lower(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_ascii() {
+                c.to_ascii_lowercase()
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
 fn ucfirst(s: &str) -> String {
     let mut c = s.chars();
     match c.next() {
-        Some(first) => first.to_uppercase().chain(c).collect(),
-        None => String::new(),
+        // ASCII-only, so `ucfirst("élan")` leaves the "é" alone.
+        Some(first) if first.is_ascii() => std::iter::once(first.to_ascii_uppercase())
+            .chain(c)
+            .collect(),
+        _ => s.to_string(),
     }
 }
 
@@ -1584,18 +1764,154 @@ fn php_strpos(h: &host::PhpHost, args: &[Value]) -> Value {
     }
 }
 
-fn php_str_replace(h: &mut host::PhpHost, args: &[Value]) -> Value {
-    let search = h.to_str(&arg(args, 0));
-    let replace = h.to_str(&arg(args, 1));
-    let subject = h.to_str(&arg(args, 2));
-    // `$count` is a by-reference OUT parameter: the number of replacements.
-    let replacements = if search.is_empty() {
-        0
-    } else {
-        subject.matches(&search).count()
+/// `str_replace($search, $replace, $subject, &$count)`.
+///
+/// `$search` and `$replace` may each be an array: with two arrays the pairs line
+/// up by position (a missing replacement is `""`), and with an array search plus
+/// a string replacement every needle maps to that one string. An array
+/// `$subject` is processed element-wise and returns an array.
+///
+/// The searches are applied in sequence to the *running* result, which is why
+/// `str_replace(["a", "aa"], ["1", "2"], "aaa")` is `"111"` — by the time `"aa"`
+/// is tried, no `a` is left.
+/// `(array) $v` — an array stays itself, `null` becomes the empty array, an
+/// object yields its properties keyed by name, and any other scalar becomes a
+/// one-element list.
+/// `intval($string, $base)` for an explicit base.
+///
+/// Base 0 auto-detects from the prefix (`0x` hex, `0b` binary, a leading `0`
+/// octal, else decimal). Bases 16, 2 and 8 also accept — but do not require —
+/// their prefix. Parsing takes as many valid digits as it can and stops at the
+/// first one that is out of range, so `intval("42abc", 10)` is 42.
+fn intval_base(s: &str, base: i64) -> i64 {
+    let t = s.trim_start();
+    let (neg, t) = match t.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, t.strip_prefix('+').unwrap_or(t)),
     };
-    h.byref_out_put(3, Value::int(replacements as i64));
-    Value::str(subject.replace(&search, &replace))
+    let lower = t.to_ascii_lowercase();
+    // Strip a prefix when it agrees with the requested base (or picks it, at 0).
+    let (base, digits) = match base {
+        0 if lower.starts_with("0x") => (16, &t[2..]),
+        0 if lower.starts_with("0b") => (2, &t[2..]),
+        0 if t.len() > 1 && t.starts_with('0') => (8, &t[1..]),
+        0 => (10, t),
+        16 if lower.starts_with("0x") => (16, &t[2..]),
+        2 if lower.starts_with("0b") => (2, &t[2..]),
+        8 if lower.starts_with("0o") => (8, &t[2..]),
+        b => (b, t),
+    };
+    if !(2..=36).contains(&base) {
+        return 0;
+    }
+    let mut acc: i64 = 0;
+    for c in digits.chars() {
+        let Some(d) = c.to_digit(base as u32) else {
+            break;
+        };
+        acc = acc.saturating_mul(base).saturating_add(d as i64);
+    }
+    if neg {
+        -acc
+    } else {
+        acc
+    }
+}
+
+fn php_cast_array(h: &mut host::PhpHost, v: &Value) -> Value {
+    if h.is_array(v) {
+        return v.clone();
+    }
+    let out = h.new_array();
+    if matches!(v, Value::Undef) {
+        return out;
+    }
+    if h.is_object(v) {
+        for (name, val) in h.object_props(v) {
+            h.arr_set_key(&out, &Value::str(name), val);
+        }
+        return out;
+    }
+    h.arr_push_auto(&out, v.clone());
+    out
+}
+
+/// `(object) $v` — an array becomes a `stdClass` with the same keys as
+/// properties, `null` an empty `stdClass`, and any other scalar a `stdClass`
+/// whose single `scalar` property holds the value. An object passes through.
+fn php_cast_object(v: &Value) -> Result<Value, String> {
+    // `new_object` re-enters the host, so it must run outside `with_host`.
+    if with_host(|h| h.is_object(v)) {
+        return Ok(v.clone());
+    }
+    let obj = host::new_object("stdClass", Vec::new())?;
+    with_host(|h| {
+        if h.is_array(v) {
+            for (k, val) in h.array_pairs(v).unwrap_or_default() {
+                let name = h.to_str(&k);
+                h.prop_set(&obj, &name, val);
+            }
+        } else if !matches!(v, Value::Undef) {
+            h.prop_set(&obj, "scalar", v.clone());
+        }
+    });
+    Ok(obj)
+}
+
+fn php_str_replace(h: &mut host::PhpHost, args: &[Value]) -> Value {
+    let search = arg(args, 0);
+    let replace = arg(args, 1);
+    let subject = arg(args, 2);
+
+    // Normalise search/replace into parallel lists.
+    let pairs: Vec<(String, String)> = if h.is_array(&search) {
+        let searches = h.array_pairs(&search).unwrap_or_default();
+        let replaces = if h.is_array(&replace) {
+            h.array_pairs(&replace)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(_, v)| h.to_str(&v))
+                .collect()
+        } else {
+            vec![h.to_str(&replace); searches.len()]
+        };
+        searches
+            .into_iter()
+            .enumerate()
+            .map(|(i, (_, s))| (h.to_str(&s), replaces.get(i).cloned().unwrap_or_default()))
+            .collect()
+    } else {
+        vec![(h.to_str(&search), h.to_str(&replace))]
+    };
+
+    let mut count = 0usize;
+    // `$count` is a by-reference OUT parameter: the number of replacements.
+    let result = if h.is_array(&subject) {
+        let out = h.new_array();
+        for (k, v) in h.array_pairs(&subject).unwrap_or_default() {
+            let s = replace_all_pairs(&h.to_str(&v), &pairs, &mut count);
+            h.arr_set_key(&out, &k, Value::str(s));
+        }
+        out
+    } else {
+        Value::str(replace_all_pairs(&h.to_str(&subject), &pairs, &mut count))
+    };
+    h.byref_out_put(3, Value::int(count as i64));
+    result
+}
+
+/// Apply each `(search, replace)` pair in order to `subject`, accumulating the
+/// number of replacements. An empty needle matches nothing, as in PHP.
+fn replace_all_pairs(subject: &str, pairs: &[(String, String)], count: &mut usize) -> String {
+    let mut cur = subject.to_string();
+    for (needle, rep) in pairs {
+        if needle.is_empty() {
+            continue;
+        }
+        *count += cur.matches(needle.as_str()).count();
+        cur = cur.replace(needle.as_str(), rep);
+    }
+    cur
 }
 
 fn php_implode(h: &mut host::PhpHost, args: &[Value]) -> Value {
@@ -1614,6 +1930,52 @@ fn php_implode(h: &mut host::PhpHost, args: &[Value]) -> Value {
     Value::str(parts.join(&glue))
 }
 
+/// The set of characters a `trim` charlist denotes. PHP supports `a..z` ranges
+/// inside the list, so `"a..z"` means every lowercase letter rather than the
+/// three characters `a`, `.`, `z`.
+fn trim_char_set(list: &str) -> Vec<char> {
+    let cs: Vec<char> = list.chars().collect();
+    let mut out = Vec::with_capacity(cs.len());
+    let mut i = 0;
+    while i < cs.len() {
+        // `x..y` — expand to the inclusive range when it is well formed.
+        if i + 3 < cs.len() && cs[i + 1] == '.' && cs[i + 2] == '.' && cs[i + 3] >= cs[i] {
+            for c in cs[i]..=cs[i + 3] {
+                out.push(c);
+            }
+            i += 4;
+        } else {
+            out.push(cs[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// `trim`/`ltrim`/`rtrim` with PHP's optional `$characters` list. The default set
+/// is `" \t\n\r\0\x0B"` — note it does NOT include the form feed `\x0C`, which
+/// Rust's `str::trim` would strip.
+fn php_trim(h: &host::PhpHost, args: &[Value], start: bool, end: bool) -> Value {
+    let s = h.to_str(&arg(args, 0));
+    let set = match args.get(1) {
+        Some(v) if !matches!(v, Value::Undef) => trim_char_set(&h.to_str(v)),
+        _ => vec![' ', '\t', '\n', '\r', '\0', '\x0b'],
+    };
+    let mut out = s.as_str();
+    if start {
+        out = out.trim_start_matches(|c| set.contains(&c));
+    }
+    if end {
+        out = out.trim_end_matches(|c| set.contains(&c));
+    }
+    Value::str(out.to_string())
+}
+
+/// `explode($separator, $string, $limit = PHP_INT_MAX)`.
+///
+/// A positive limit caps the number of parts, the last one keeping the whole
+/// remainder; a negative limit drops that many parts off the end; `0` behaves
+/// as `1`.
 fn php_explode(h: &mut host::PhpHost, args: &[Value]) -> Value {
     let sep = h.to_str(&arg(args, 0));
     let subject = h.to_str(&arg(args, 1));
@@ -1622,8 +1984,27 @@ fn php_explode(h: &mut host::PhpHost, args: &[Value]) -> Value {
         h.arr_push_auto(&arr, Value::str(subject));
         return arr;
     }
-    for part in subject.split(&sep) {
-        h.arr_push_auto(&arr, Value::str(part.to_string()));
+    let limit = match args.get(2) {
+        Some(v) if !matches!(v, Value::Undef) => v.to_int(),
+        _ => i64::MAX,
+    };
+    let mut parts: Vec<String> = if limit > 0 && limit != i64::MAX {
+        subject
+            .splitn(limit as usize, sep.as_str())
+            .map(str::to_string)
+            .collect()
+    } else {
+        subject.split(sep.as_str()).map(str::to_string).collect()
+    };
+    if limit == 0 {
+        // PHP treats a zero limit as 1: everything in a single element.
+        parts = vec![subject];
+    } else if limit < 0 {
+        let drop = (-limit) as usize;
+        parts.truncate(parts.len().saturating_sub(drop));
+    }
+    for part in parts {
+        h.arr_push_auto(&arr, Value::str(part));
     }
     arr
 }
@@ -1777,7 +2158,6 @@ struct FmtSpec {
     argnum: Option<usize>,
     left: bool,
     plus: bool,
-    space: bool,
     pad: char,
     width: usize,
     precision: Option<usize>,
@@ -1832,12 +2212,15 @@ fn parse_spec(fmt: &[char], i: &mut usize) -> Option<FmtSpec> {
         j = k + 1;
     }
     // Flags.
-    let (mut left, mut plus, mut space, mut pad) = (false, false, false, ' ');
+    let (mut left, mut plus, mut pad) = (false, false, ' ');
     loop {
         match fmt.get(j) {
             Some('-') => left = true,
             Some('+') => plus = true,
-            Some(' ') => space = true,
+            // PHP treats a space as a padding-character flag (pad with spaces),
+            // not as C-style sign-space; the last padding flag in the run wins, so
+            // `% 05d` pads with zeros while `%0 5d` pads with spaces.
+            Some(' ') => pad = ' ',
             Some('0') => pad = '0',
             Some('\'') => {
                 pad = *fmt.get(j + 1)?;
@@ -1872,7 +2255,6 @@ fn parse_spec(fmt: &[char], i: &mut usize) -> Option<FmtSpec> {
         argnum,
         left,
         plus,
-        space,
         pad,
         width,
         precision,
@@ -1948,8 +2330,6 @@ fn signed(mag: String, neg: bool, s: &FmtSpec) -> String {
         format!("-{mag}")
     } else if s.plus {
         format!("+{mag}")
-    } else if s.space {
-        format!(" {mag}")
     } else {
         mag
     }
@@ -2080,8 +2460,29 @@ fn php_var_dump(h: &host::PhpHost, v: &Value, depth: usize) -> String {
         Value::Undef => format!("{pad}NULL\n"),
         Value::Bool(b) => format!("{pad}bool({})\n", if *b { "true" } else { "false" }),
         Value::Int(n) => format!("{pad}int({n})\n"),
-        Value::Float(_) => format!("{pad}float({})\n", h.to_str(v)),
+        // var_dump reports floats at serialize_precision, not echo's precision=14.
+        Value::Float(f) => format!(
+            "{pad}float({})\n",
+            crate::stdlib::types::serialize_float(*f)
+        ),
         Value::Str(s) => format!("{pad}string({}) \"{s}\"\n", s.len()),
+        // A class instance prints as `object(Class)#n (count) { ... }` with its
+        // properties, not as the bare array its handle would otherwise yield.
+        Value::Obj(_) if h.is_object(v) => {
+            let props = h.object_props(v);
+            let class = h.object_class(v).unwrap_or_else(|| "stdClass".to_string());
+            let mut s = format!(
+                "{pad}object({class})#{} ({}) {{\n",
+                h.object_ordinal(v),
+                props.len()
+            );
+            for (name, val) in props {
+                s.push_str(&format!("{}  [\"{name}\"]=>\n", "  ".repeat(depth)));
+                s.push_str(&php_var_dump(h, &val, depth + 1));
+            }
+            s.push_str(&format!("{pad}}}\n"));
+            s
+        }
         Value::Obj(_) => {
             let pairs = h.array_pairs(v).unwrap_or_default();
             let mut s = format!("{pad}array({}) {{\n", pairs.len());
@@ -2179,28 +2580,35 @@ fn php_str_pad(h: &host::PhpHost, args: &[Value]) -> String {
     }
 }
 
-fn ucwords(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
+/// `ucwords($string, $separators = " \t\r\n\f\v")` — uppercase the first byte and
+/// every byte that directly follows a separator.
+///
+/// The `$separators` argument *replaces* the default set rather than extending
+/// it, so `ucwords("hello world-foo bar", "-")` capitalises only after the dash
+/// and yields `"Hello world-Foo bar"`. Byte-wise and ASCII-only, like the rest of
+/// PHP's case family.
+fn ucwords(s: &str, separators: &str) -> String {
+    let delims: Vec<u8> = separators.bytes().collect();
+    let mut bytes = s.as_bytes().to_vec();
     let mut cap = true;
-    for c in s.chars() {
-        if cap && c.is_alphabetic() {
-            out.extend(c.to_uppercase());
-            cap = false;
-        } else {
-            out.push(c);
-            if c.is_whitespace() {
-                cap = true;
-            }
+    for b in &mut bytes {
+        if cap {
+            b.make_ascii_uppercase();
         }
+        cap = delims.contains(b);
     }
-    out
+    // Only ASCII bytes were altered, so the original UTF-8 structure survives.
+    String::from_utf8(bytes).unwrap_or_else(|_| s.to_string())
 }
 
 fn lcfirst(s: &str) -> String {
     let mut c = s.chars();
     match c.next() {
-        Some(first) => first.to_lowercase().chain(c).collect(),
-        None => String::new(),
+        // ASCII-only, mirroring `ucfirst`.
+        Some(first) if first.is_ascii() => std::iter::once(first.to_ascii_lowercase())
+            .chain(c)
+            .collect(),
+        _ => s.to_string(),
     }
 }
 
@@ -2314,7 +2722,7 @@ fn php_intdiv(args: &[Value]) -> Result<Value, String> {
         )
     });
     if y == 0 {
-        return Err("Division by zero".to_string());
+        return pending_php_throw("DivisionByZeroError", "Division by zero");
     }
     Ok(Value::int(x / y))
 }
@@ -2609,39 +3017,99 @@ fn php_array_search(h: &host::PhpHost, args: &[Value]) -> Value {
 /// `sort`/`rsort` — sorts by value in place and re-indexes (keys 0..n), returning
 /// `true`, like PHP. Arrays are reference handles here, so mutating the handle's
 /// target is visible through the caller's `$var`.
-fn php_sort(h: &mut host::PhpHost, arr: &Value, reverse: bool) -> Value {
+/// Compare two values under a `SORT_*` flag from the sort family's second
+/// argument.
+///
+/// `SORT_FLAG_CASE` (8) is a bit that combines with `SORT_STRING` or
+/// `SORT_NATURAL` to fold case; the remaining bits select the comparison.
+/// Anything unrecognised falls back to `SORT_REGULAR`, PHP's standard
+/// comparison.
+/// The `SORT_*` flags argument of the sort family (position 1), defaulting to
+/// `SORT_REGULAR`.
+fn sort_flags(args: &[Value]) -> i64 {
+    match args.get(1) {
+        Some(v) if !matches!(v, Value::Undef) => v.to_int(),
+        _ => 0,
+    }
+}
+
+fn sort_flag_compare(h: &host::PhpHost, a: &Value, b: &Value, flags: i64) -> i32 {
+    const SORT_FLAG_CASE: i64 = 8;
+    let fold_case = flags & SORT_FLAG_CASE != 0;
+    match flags & !SORT_FLAG_CASE {
+        // SORT_NUMERIC — compare both operands as floats.
+        1 => cmp_f64(h.to_number(a).to_float(), h.to_number(b).to_float()),
+        // SORT_STRING / SORT_LOCALE_STRING — byte comparison of the string forms.
+        // There is no locale support, so both behave as the C locale.
+        2 | 5 => {
+            let (x, y) = (h.to_str(a), h.to_str(b));
+            if fold_case {
+                strcmp_i32(&ascii_lower(&x), &ascii_lower(&y))
+            } else {
+                strcmp_i32(&x, &y)
+            }
+        }
+        // SORT_NATURAL — `natsort`'s digit-run-aware ordering.
+        6 => sign(crate::stdlib::arrays::nat_cmp(
+            &h.to_str(a),
+            &h.to_str(b),
+            fold_case,
+        )) as i32,
+        // SORT_REGULAR and anything unknown.
+        _ => php_compare(h, a, b),
+    }
+}
+
+fn php_sort(h: &mut host::PhpHost, arr: &Value, reverse: bool, flags: i64) -> Value {
     let mut vals: Vec<Value> = h
         .array_pairs(arr)
         .unwrap_or_default()
         .into_iter()
         .map(|(_, v)| v)
         .collect();
-    vals.sort_by(|a, b| php_compare(h, a, b).cmp(&0));
-    if reverse {
-        vals.reverse();
-    }
+    // Reverse by inverting the comparator, not by reversing after the fact:
+    // PHP sorts are stable, so equal elements must keep their original order in
+    // `rsort` too (`rsort([1, "1"])` leaves `1` before `"1"`).
+    vals.sort_by(|a, b| {
+        if reverse {
+            sort_flag_compare(h, b, a, flags)
+        } else {
+            sort_flag_compare(h, a, b, flags)
+        }
+        .cmp(&0)
+    });
     h.arr_set_reindexed(arr, vals);
     Value::bool(true)
 }
 
 /// `asort`/`arsort` — sorts by value in place, preserving keys; returns `true`.
-fn php_asort(h: &mut host::PhpHost, arr: &Value, reverse: bool) -> Value {
+fn php_asort(h: &mut host::PhpHost, arr: &Value, reverse: bool, flags: i64) -> Value {
     let mut pairs = h.array_pairs(arr).unwrap_or_default();
-    pairs.sort_by(|(_, a), (_, b)| php_compare(h, a, b).cmp(&0));
-    if reverse {
-        pairs.reverse();
-    }
+    // Stable reverse: invert the comparator rather than reversing the result.
+    pairs.sort_by(|(_, a), (_, b)| {
+        if reverse {
+            sort_flag_compare(h, b, a, flags)
+        } else {
+            sort_flag_compare(h, a, b, flags)
+        }
+        .cmp(&0)
+    });
     h.arr_set_pairs(arr, pairs);
     Value::bool(true)
 }
 
 /// `ksort`/`krsort` — sorts by key in place, preserving keys; returns `true`.
-fn php_ksort(h: &mut host::PhpHost, arr: &Value, reverse: bool) -> Value {
+fn php_ksort(h: &mut host::PhpHost, arr: &Value, reverse: bool, flags: i64) -> Value {
     let mut pairs = h.array_pairs(arr).unwrap_or_default();
-    pairs.sort_by(|(a, _), (b, _)| php_compare(h, a, b).cmp(&0));
-    if reverse {
-        pairs.reverse();
-    }
+    // Stable reverse: invert the comparator rather than reversing the result.
+    pairs.sort_by(|(a, _), (b, _)| {
+        if reverse {
+            sort_flag_compare(h, b, a, flags)
+        } else {
+            sort_flag_compare(h, a, b, flags)
+        }
+        .cmp(&0)
+    });
     h.arr_set_pairs(arr, pairs);
     Value::bool(true)
 }
@@ -2708,7 +3176,17 @@ fn php_var_export(h: &host::PhpHost, v: &Value, depth: usize) -> String {
         Value::Undef => "NULL".to_string(),
         Value::Bool(b) => if *b { "true" } else { "false" }.to_string(),
         Value::Int(n) => n.to_string(),
-        Value::Float(_) => h.to_str(v),
+        // var_export prints floats at serialize_precision and guarantees the
+        // result reads back as a float, so a whole number gains a ".0" tail
+        // (`var_export(1.0, true)` is `"1.0"`, not `"1"`). NAN/INF are exempt.
+        Value::Float(f) => {
+            let s = crate::stdlib::types::serialize_float(*f);
+            if f.is_finite() && !s.contains('.') {
+                format!("{s}.0")
+            } else {
+                s
+            }
+        }
         Value::Str(s) => format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'")),
         Value::Obj(_) => {
             let pad = "  ".repeat(depth);
@@ -2731,36 +3209,79 @@ fn php_var_export(h: &host::PhpHost, v: &Value, depth: usize) -> String {
     }
 }
 
-fn php_json_encode(h: &host::PhpHost, v: &Value) -> String {
+/// Whether `v` contains a NAN or INF anywhere, including nested in arrays.
+fn has_nonfinite_float(h: &host::PhpHost, v: &Value) -> bool {
+    match v {
+        Value::Float(f) => !f.is_finite(),
+        Value::Obj(_) => h
+            .array_pairs(v)
+            .unwrap_or_default()
+            .iter()
+            .any(|(_, val)| has_nonfinite_float(h, val)),
+        _ => false,
+    }
+}
+
+/// `json_encode` flags this encoder honours.
+const JSON_UNESCAPED_SLASHES: i64 = 64;
+const JSON_PRETTY_PRINT: i64 = 128;
+const JSON_UNESCAPED_UNICODE: i64 = 256;
+
+/// Encode `v` as JSON. `depth` is the current nesting level, used only for
+/// `JSON_PRETTY_PRINT` indentation (four spaces per level, as PHP emits).
+fn php_json_encode(h: &host::PhpHost, v: &Value, flags: i64, depth: usize) -> String {
+    let pretty = flags & JSON_PRETTY_PRINT != 0;
     match v {
         Value::Undef => "null".to_string(),
         Value::Bool(b) => if *b { "true" } else { "false" }.to_string(),
         Value::Int(n) => n.to_string(),
-        Value::Float(_) => h.to_str(v),
-        Value::Str(s) => json_string(s),
+        // JSON uses serialize_precision too, but spells the exponent lowercase
+        // (`1.0e+100`, where var_dump/serialize print `1.0E+100`).
+        Value::Float(f) => crate::stdlib::types::serialize_float(*f).replace('E', "e"),
+        Value::Str(s) => json_string(s, flags),
         Value::Obj(_) => {
             let pairs = h.array_pairs(v).unwrap_or_default();
-            if is_list(&pairs) {
-                let items: Vec<String> = pairs
-                    .iter()
-                    .map(|(_, val)| php_json_encode(h, val))
-                    .collect();
-                format!("[{}]", items.join(","))
+            // A real object always encodes as a JSON object, even with no
+            // properties — `json_encode(new stdClass())` is `{}`, not `[]`.
+            let as_list = is_list(&pairs) && !h.is_object(v);
+            let (open, close) = if as_list { ('[', ']') } else { ('{', '}') };
+            if pairs.is_empty() {
+                return format!("{open}{close}");
+            }
+            let items: Vec<String> = pairs
+                .iter()
+                .map(|(k, val)| {
+                    let encoded = php_json_encode(h, val, flags, depth + 1);
+                    if as_list {
+                        encoded
+                    } else {
+                        let key = json_string(&h.to_str(k), flags);
+                        let sep = if pretty { ": " } else { ":" };
+                        format!("{key}{sep}{encoded}")
+                    }
+                })
+                .collect();
+            if pretty {
+                let inner = "    ".repeat(depth + 1);
+                let outer = "    ".repeat(depth);
+                format!(
+                    "{open}\n{inner}{}\n{outer}{close}",
+                    items.join(&format!(",\n{inner}"))
+                )
             } else {
-                let items: Vec<String> = pairs
-                    .iter()
-                    .map(|(k, val)| {
-                        format!("{}:{}", json_string(&h.to_str(k)), php_json_encode(h, val))
-                    })
-                    .collect();
-                format!("{{{}}}", items.join(","))
+                format!("{open}{}{close}", items.join(","))
             }
         }
         _ => "null".to_string(),
     }
 }
 
-fn json_string(s: &str) -> String {
+/// JSON-escape `s`. By default PHP escapes `/` as `\/` and every non-ASCII
+/// character as a `\uXXXX` sequence (surrogate pairs above the BMP);
+/// `JSON_UNESCAPED_SLASHES` and `JSON_UNESCAPED_UNICODE` turn those off.
+fn json_string(s: &str, flags: i64) -> String {
+    let escape_slashes = flags & JSON_UNESCAPED_SLASHES == 0;
+    let escape_unicode = flags & JSON_UNESCAPED_UNICODE == 0;
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
     for c in s.chars() {
@@ -2770,7 +3291,17 @@ fn json_string(s: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
+            '\u{8}' => out.push_str("\\b"),
+            '\u{c}' => out.push_str("\\f"),
+            '/' if escape_slashes => out.push_str("\\/"),
             c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c if escape_unicode && !c.is_ascii() => {
+                // Above the BMP JSON needs an explicit UTF-16 surrogate pair.
+                let mut buf = [0u16; 2];
+                for unit in c.encode_utf16(&mut buf) {
+                    out.push_str(&format!("\\u{unit:04x}"));
+                }
+            }
             c => out.push(c),
         }
     }

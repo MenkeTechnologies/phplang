@@ -109,7 +109,11 @@ fn php_serialize(h: &crate::host::PhpHost, v: &Value) -> String {
     }
 }
 
-/// Format a float the way PHP's `serialize` does with `serialize_precision = -1`.
+/// Format a float at `serialize_precision = -1` — the shortest digit string that
+/// round-trips. This is the representation `serialize`, `var_dump`, `var_export`
+/// and `json_encode` all share; it is *not* the `precision = 14` rendering that
+/// `echo` and string casts use (`echo 1/3` gives `0.33333333333333` while
+/// `var_dump(1/3)` gives `float(0.3333333333333333)`).
 ///
 /// PHP calls `zend_gcvt` on the shortest round-tripping digit string (`zend_dtoa`
 /// mode 0) and switches to E-notation when the decimal point position `decpt`
@@ -118,7 +122,7 @@ fn php_serialize(h: &crate::host::PhpHost, v: &Value) -> String {
 /// `{:e}` already produces the shortest round-tripping mantissa (Ryu), so parse
 /// that and reformat PHP-style. Verified against reference PHP 8:
 /// `serialize(1e17)` = `d:1.0E+17;` but `serialize(1e16)` = `d:10000000000000000;`.
-fn serialize_float(f: f64) -> String {
+pub fn serialize_float(f: f64) -> String {
     if f.is_nan() {
         return "NAN".to_string();
     }

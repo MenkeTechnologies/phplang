@@ -95,7 +95,7 @@ fn parse_url_port_is_integer() {
     // The port key must be an int, not a string, so json_encode has no quotes.
     assert_eq!(
         run(r#"<?php echo json_encode(parse_url("http://h:80/"));"#),
-        r#"{"scheme":"http","host":"h","port":80,"path":"/"}"#
+        r#"{"scheme":"http","host":"h","port":80,"path":"\/"}"#
     );
 }
 
@@ -122,7 +122,7 @@ fn parse_url_scheme_only_and_mailto() {
 fn parse_url_relative_and_empty_path() {
     assert_eq!(
         run(r#"<?php echo json_encode(parse_url("path/only"));"#),
-        r#"{"path":"path/only"}"#
+        r#"{"path":"path\/only"}"#
     );
     // Empty input yields an empty path (not false).
     assert_eq!(
@@ -178,7 +178,7 @@ fn parse_url_port_with_trailing_junk() {
     // ("80abc" -> 80) instead of rejecting the whole URL as false.
     assert_eq!(
         run(r#"<?php echo json_encode(parse_url("http://host:80abc/"));"#),
-        r#"{"scheme":"http","host":"host","port":80,"path":"/"}"#
+        r#"{"scheme":"http","host":"host","port":80,"path":"\/"}"#
     );
 }
 

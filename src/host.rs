@@ -113,6 +113,8 @@ pub mod ops {
     pub const GEN_KEY: u16 = 78; // [gen] -> current key
     pub const GEN_CURRENT: u16 = 79; // [gen] -> current value
     pub const GEN_NEXT: u16 = 80; // [gen] -> Undef (resume to the next yield)
+
+    pub const SIG_LEVEL: u16 = 83; // [] -> Int, level of the last break/continue
 }
 
 /// Sub-ops for the by-reference array mutators lowered through `ops::ARR_MUT`
@@ -288,8 +290,12 @@ pub enum PhpObj {
 /// never confused with a `return`/`break`/`continue` and survives frame unwinding.
 enum Signal {
     Return(Value),
-    Break,
-    Continue,
+    /// `break n` — the payload is how many loop levels are still to be left,
+    /// so a `try` that sits inside fewer loops than that can decrement it and
+    /// re-raise for the next frame out.
+    Break(u32),
+    /// `continue n` — see [`Signal::Break`].
+    Continue(u32),
 }
 
 /// One variable scope (the global scope, or a function-call frame).
@@ -327,6 +333,9 @@ pub struct PhpHost {
     /// caught. Kept apart from `signal` so it survives function-frame unwinding
     /// and bubbles through nested VMs on its own.
     pending_throw: Option<Value>,
+    /// Level of the most recent `break`/`continue` signal — see
+    /// [`last_break_level`].
+    last_break_level: u32,
     /// Compiled `try`/`catch`/`finally` constructs, indexed by the id the
     /// compiler bakes into each `RUN_TRY` call.
     try_defs: Vec<TryDef>,
@@ -375,6 +384,7 @@ impl PhpHost {
             error: None,
             signal: None,
             pending_throw: None,
+            last_break_level: 1,
             try_defs: Vec::new(),
             constants: predefined_constants(),
             ob_stack: Vec::new(),
@@ -695,6 +705,25 @@ impl PhpHost {
         }
     }
 
+    /// Allocate a reference cell that no variable owns yet, holding `val`, and
+    /// return a [`PhpObj::Ref`] handle to it together with its slot.
+    ///
+    /// Builtins that hand an element to a user callback by reference
+    /// (`array_walk`) use this: pass the handle as the argument, let the callee's
+    /// by-ref parameter bind the slot, then read the slot back with
+    /// [`PhpHost::ref_cell_value`] to see what the callback wrote.
+    pub fn new_ref_cell(&mut self, val: Value) -> (Value, usize) {
+        self.ref_cells.push(val);
+        let slot = self.ref_cells.len() - 1;
+        self.objs.push(PhpObj::Ref { slot });
+        (Value::Obj((self.objs.len() - 1) as u32), slot)
+    }
+
+    /// Read the current contents of the reference cell at `slot`.
+    pub fn ref_cell_value(&self, slot: usize) -> Value {
+        self.ref_cells.get(slot).cloned().unwrap_or(Value::Undef)
+    }
+
     /// The reference cell `name` resolves to, creating one — and moving the
     /// variable's current value into it — if the variable is still a plain one.
     fn ref_slot_of(&mut self, name: &str) -> usize {
@@ -996,6 +1025,21 @@ impl PhpHost {
             Value::Obj(h) => Some(*h as i64),
             _ => None,
         }
+    }
+
+    /// The 1-based creation-order number PHP shows as `#N` in `var_dump`.
+    ///
+    /// PHP numbers class instances only, so count the `Object` entries up to and
+    /// including this handle rather than using the raw heap index (which also
+    /// covers arrays, closures and resources). Unlike PHP the scaffold never
+    /// frees a handle, so a number is never reused.
+    pub fn object_ordinal(&self, v: &Value) -> usize {
+        let Value::Obj(h) = v else { return 0 };
+        self.objs
+            .iter()
+            .take(*h as usize + 1)
+            .filter(|o| matches!(o, PhpObj::Object { .. }))
+            .count()
     }
 
     /// The class name of an object handle, or `None` if `v` is not an object.
@@ -2897,12 +2941,39 @@ fn invoke(
             } else if ai < args.len() {
                 // A by-value parameter takes a copy of an array argument; a
                 // by-reference one must see the caller's array itself.
-                let arg = if p.by_ref {
-                    args[ai].clone()
-                } else {
-                    h.copy_on_assign(args[ai].clone())
-                };
-                h.set_var(&p.name, arg);
+                match (p.by_ref, &args[ai]) {
+                    // A caller that supplied an explicit reference cell (a
+                    // builtin passing an array element to a callback, say) binds
+                    // the parameter to that cell, so scalar writes are visible to
+                    // the caller too — not just in-place array mutation.
+                    (true, Value::Obj(id))
+                        if matches!(h.objs.get(*id as usize), Some(PhpObj::Ref { .. })) =>
+                    {
+                        let Some(PhpObj::Ref { slot }) = h.objs.get(*id as usize) else {
+                            unreachable!("guarded by the match arm above")
+                        };
+                        let slot = *slot;
+                        h.bind_ref_slot(&p.name, slot);
+                    }
+                    (true, a) => h.set_var(&p.name, a.clone()),
+                    (false, a) => {
+                        // A by-value parameter never sees a reference cell: read
+                        // through it so a builtin that offers an element by
+                        // reference still works with a plain `function ($v)`.
+                        let a = match a {
+                            Value::Obj(id) => match h.objs.get(*id as usize) {
+                                Some(PhpObj::Ref { slot }) => {
+                                    let slot = *slot;
+                                    h.ref_cell_value(slot)
+                                }
+                                _ => a.clone(),
+                            },
+                            _ => a.clone(),
+                        };
+                        let copied = h.copy_on_assign(a);
+                        h.set_var(&p.name, copied);
+                    }
+                }
                 bound[i] = true;
                 ai += 1;
             }
@@ -2984,7 +3055,7 @@ fn invoke(
         Some(Signal::Return(v)) => Ok(v),
         // A `break`/`continue` that escapes a function body has no loop to
         // target; PHP treats it as falling off the end (null result).
-        Some(Signal::Break) | Some(Signal::Continue) | None => r.map(|_| Value::Undef),
+        Some(Signal::Break(_)) | Some(Signal::Continue(_)) | None => r.map(|_| Value::Undef),
     }
 }
 
@@ -3467,12 +3538,19 @@ pub fn set_return(v: Value) {
 
 /// Record a `break`/`continue` control signal for the enclosing `try` body (the
 /// orchestrator relays it to the loop the `try` sits inside).
-pub fn set_break() {
-    with_host(|h| h.signal = Some(Signal::Break));
+pub fn set_break(level: u32) {
+    with_host(|h| h.signal = Some(Signal::Break(level)));
 }
 
-pub fn set_continue() {
-    with_host(|h| h.signal = Some(Signal::Continue));
+pub fn set_continue(level: u32) {
+    with_host(|h| h.signal = Some(Signal::Continue(level)));
+}
+
+/// The level of the `break`/`continue` that ended the most recent `try` body.
+/// Read by the dispatch code the compiler emits after `RUN_TRY`, which needs to
+/// know which enclosing loop the signal was aimed at.
+pub fn last_break_level() -> u32 {
+    with_host(|h| h.last_break_level)
 }
 
 /// Record a thrown exception object; the caller's dispatcher then unwinds.
@@ -3511,8 +3589,14 @@ fn run_body(chunk: Chunk) -> TryStatus {
             }
             match h.signal.take() {
                 Some(Signal::Return(v)) => TryStatus::Return(v),
-                Some(Signal::Break) => TryStatus::Break,
-                Some(Signal::Continue) => TryStatus::Continue,
+                Some(Signal::Break(n)) => {
+                    h.last_break_level = n;
+                    TryStatus::Break
+                }
+                Some(Signal::Continue(n)) => {
+                    h.last_break_level = n;
+                    TryStatus::Continue
+                }
                 None => TryStatus::Normal,
             }
         }),

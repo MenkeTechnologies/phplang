@@ -461,3 +461,20 @@ fn pointer_no_cross_program_leak() {
     run("<?php $a=[7,8,9]; end($a);");
     assert_eq!(run("<?php $b=[100,200]; echo current($b);"), "100");
 }
+
+// ── array_walk by reference ─────────────────────────────────────────────────
+
+#[test]
+fn array_walk_by_reference_callback_writes_back_scalars() {
+    // The element travels through a reference cell, so `&$v` mutates the array
+    // even for scalars. The key is still passed by value.
+    assert_eq!(
+        run("<?php $a=[1,2,3]; array_walk($a, function(&$v,$k){ $v = $v*10 + $k; }); echo implode(',',$a);"),
+        "10,21,32"
+    );
+    // Keys are preserved, not reindexed.
+    assert_eq!(
+        run("<?php $b=['x'=>1,'y'=>2]; array_walk($b, function(&$v){ $v++; }); echo json_encode($b);"),
+        r#"{"x":2,"y":3}"#
+    );
+}
