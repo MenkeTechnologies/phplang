@@ -1530,6 +1530,154 @@ fn gen_pregerr(seed: u64) -> Vec<String> {
     }
 }
 
+/// Patterns built from the PCRE constructs the `regex` crate has no support
+/// for, so every one of them exercises the second engine: look-ahead and
+/// look-behind (positive and negative), backreferences (numbered and named),
+/// named groups, atomic groups and possessive quantifiers. Each was confirmed to
+/// COMPILE on the reference — a pattern PCRE itself rejects belongs in
+/// [`BAD_PATTERNS`], not here.
+///
+/// Written as PHP SINGLE-quoted literals: `'\1'` is a backreference, while
+/// `"\1"` would be the octal escape for byte 1 and would test nothing.
+const FANCY_PATTERNS: &[&str] = &[
+    // look-ahead / look-behind
+    "'/foo(?=bar)/'",
+    "'/foo(?!bar)/'",
+    "'/(?<=a)b/'",
+    "'/(?<!a)b/'",
+    "'/(?<=\\d)[a-z]/'",
+    "'/^(?=.*a)(?=.*1).{3,}$/'",
+    "'/\\b(?!x)\\w+/'",
+    "'/(?<=,)\\s*/'",
+    "'/(?=[A-Z])/'",
+    "'/(?<=\\w)(?=\\d)/'",
+    "'/(\\d)(?=(\\d{3})+$)/'",
+    // backreferences, numbered and named
+    "'/(\\w)\\1/'",
+    "'/(\\w+) \\1/'",
+    "'/(a|b)c\\1/'",
+    "'/(?<w>\\w+)-(?P=w)/'",
+    // named groups — the `$matches` keying, not the matching
+    "'/(?<k>[a-z]+)=(?<v>\\d+)/'",
+    "'/(?<h>\\d\\d):(?<m>\\d\\d)/'",
+    "'/(?P<x>a)(b)(?P<y>c)?/'",
+    // atomic group / possessive quantifier
+    "'/(?>a+)b/'",
+    "'/a++b/'",
+    "'/(?>\\w+)\\d/'",
+    // constructs that also reach the second engine, with a modifier attached
+    "'/x(?i)y/'",
+    "'/(?:(a)|(b))\\2?/'",
+    "'/a(?=b)/i'",
+    "'/^(?=\\w)/m'",
+    "'/(?<=a) b /x'",
+    "'/<(.+)>(?=<)/U'",
+    "'/a.(?=c)/s'",
+    "'/a(?=a)/A'",
+];
+
+/// Subjects chosen so each pattern above has both a hit and a miss among them.
+const FANCY_SUBJECTS: &[&str] = &[
+    "foobar",
+    "foobaz",
+    "ab",
+    "cb",
+    "1a",
+    "a1c",
+    "xy why",
+    "abba",
+    "the the",
+    "aca",
+    "hi-hi",
+    "k=12",
+    "09:45",
+    "abc",
+    "aaab",
+    "aaa1",
+    "a, b",
+    "fooBarBaz",
+    "a1b2",
+    "1234567",
+    "xY",
+    "<a><b>",
+];
+
+/// The PCRE constructs the first engine cannot compile, across every function
+/// that takes a pattern.
+///
+/// This mode exists because the generator was BLIND to them: every pattern in
+/// [`GOOD_PATTERNS`] and [`BAD_PATTERNS`] compiles on the `regex` crate or fails
+/// on PCRE too, so no case ever reached the fallback engine and a run could
+/// report zero divergences while look-around returned the error sentinel for
+/// every program in the corpus.
+///
+/// `$matches` is printed with `var_export`, not `count`: the named-group KEYS
+/// are half of what is under test, and a count agrees with an implementation
+/// that dropped every one of them.
+fn gen_pregfancy(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let p = *r.pick(FANCY_PATTERNS);
+    let p2 = *r.pick(FANCY_PATTERNS);
+    let s = *r.pick(FANCY_SUBJECTS);
+    let s2 = *r.pick(FANCY_SUBJECTS);
+    // The error state must stay clear: these patterns COMPILE on the reference,
+    // so nothing may be recorded for them.
+    let st = r#"echo "|", preg_last_error(), "|";"#;
+    match r.below(8) {
+        // The match itself, with the full `$matches` shape.
+        0 => vec![format!(
+            "var_dump(preg_match({p}, '{s}', $m), $m); {st} \
+             var_dump(preg_match({p}, '{s2}', $m2), $m2); {st}"
+        )],
+        // Both orders of preg_match_all, which key the named groups differently
+        // (outer keys in PATTERN_ORDER, inner keys in SET_ORDER).
+        1 => vec![format!(
+            "var_dump(preg_match_all({p}, '{s}', $m), $m); {st} \
+             var_dump(preg_match_all({p}, '{s}', $n, PREG_SET_ORDER), $n); {st}"
+        )],
+        // The replacement templates, whose group substitution runs off the same
+        // captures.
+        2 => vec![format!(
+            "var_dump(preg_replace({p}, 'X', '{s}')); {st} \
+             var_dump(preg_replace({p}, '[$1]', '{s}')); {st} \
+             var_dump(preg_replace({p}, '<\\1>', '{s}')); {st} \
+             var_dump(preg_replace({p}, '${{0}}!', '{s}')); {st}"
+        )],
+        // The replace LIMIT, which walks the match list rather than taking it
+        // whole.
+        3 => vec![format!(
+            "var_dump(preg_replace({p}, 'X', '{s}', 1)); {st} \
+             var_dump(preg_replace({p}, 'X', '{s}', 2)); {st} \
+             var_dump(preg_replace({p}, 'X', '{s}', 0)); {st}"
+        )],
+        // The callback form, which hands the keyed `$matches` to user code.
+        4 => vec![format!(
+            "var_dump(preg_replace_callback({p}, function($m) {{ return json_encode($m); }}, \
+             '{s}')); {st}"
+        )],
+        // Splitting on a zero-width or look-around delimiter, with the flags
+        // that change the piece list.
+        5 => vec![format!(
+            "var_dump(preg_split({p}, '{s}')); {st} \
+             var_dump(preg_split({p}, '{s}', -1, PREG_SPLIT_NO_EMPTY)); {st} \
+             var_dump(preg_split({p}, '{s}', -1, PREG_SPLIT_DELIM_CAPTURE)); {st} \
+             var_dump(preg_split({p}, '{s}', 2)); {st}"
+        )],
+        // preg_grep, the only one that answers per element.
+        6 => vec![format!(
+            "var_dump(preg_grep({p}, ['{s}', '{s2}', ''])); {st} \
+             var_dump(preg_grep({p}, ['{s}', '{s2}'], PREG_GREP_INVERT)); {st}"
+        )],
+        // Two different patterns in one program, so a compile that leaked state
+        // from the previous one shows up.
+        _ => vec![format!(
+            "var_dump(preg_match({p}, '{s}', $a), $a); {st} \
+             var_dump(preg_match({p2}, '{s2}', $b), $b); {st} \
+             var_dump(preg_match({p}, '{s2}', $c), $c); {st}"
+        )],
+    }
+}
+
 /// Property access against classes that DO and DO NOT define the magic methods.
 ///
 /// The operations are the point, not the declarations: each program writes,
@@ -1688,12 +1836,37 @@ fn gen_ini(seed: u64) -> Vec<String> {
 /// single most surprising corner of the rule.
 const JUGGLE_OPERANDS: &[&str] = &[
     // numeric
-    "5", "\"5\"", "\" 5 \"", "\"5.\"", "\".5\"", "\"-5\"", "\"5e3\"", "\"1e400\"", "2.5", "true",
-    "false", "null", "0",
+    "5",
+    "\"5\"",
+    "\" 5 \"",
+    "\"5.\"",
+    "\".5\"",
+    "\"-5\"",
+    "\"5e3\"",
+    "\"1e400\"",
+    "2.5",
+    "true",
+    "false",
+    "null",
+    "0",
     // leading-numeric
-    "\"5g\"", "\"5.5g\"", "\"-5g\"", "\".5g\"", "\"0x1A\"", "\"1_000\"", "\"5e\"", "\"5 x\"",
+    "\"5g\"",
+    "\"5.5g\"",
+    "\"-5g\"",
+    "\".5g\"",
+    "\"0x1A\"",
+    "\"1_000\"",
+    "\"5e\"",
+    "\"5 x\"",
     // no numeric reading
-    "\"g\"", "\"\"", "\"   \"", "\"INF\"", "\"NAN\"", "\"abc\"", "[1]", "[]",
+    "\"g\"",
+    "\"\"",
+    "\"   \"",
+    "\"INF\"",
+    "\"NAN\"",
+    "\"abc\"",
+    "[1]",
+    "[]",
 ];
 
 const JUGGLE_BINOPS: &[&str] = &["+", "-", "*", "/", "%", "**", "|", "&", "^", "<<", ">>"];
@@ -1946,6 +2119,10 @@ const MODES: &[Mode] = &[
         gen: gen_pregerr,
     },
     Mode {
+        name: "pregfancy",
+        gen: gen_pregfancy,
+    },
+    Mode {
         name: "propmagic",
         gen: gen_propmagic,
     },
@@ -2002,10 +2179,15 @@ enum Verdict {
     Same,
     Diverged(Box<(RunOut, RunOut)>),
     Skipped(Skip),
-    /// Both sides agreed, but only by failing with nothing on stdout. The case
-    /// ran and matched, so it is not a skip — but it proves nothing about the
-    /// behaviour it was written to exercise, and two *different* failures look
-    /// identical here. Counted separately so a mode cannot hide behind them.
+    /// Both sides agreed, but the REFERENCE printed nothing. The case ran and
+    /// matched, so it is not a skip — but it proves nothing about the behaviour
+    /// it was written to exercise, and two *different* silences look identical
+    /// here. Counted separately so a mode cannot hide behind them.
+    ///
+    /// The test is on stdout alone, not on stdout AND a failing exit: a program
+    /// that exits 0 having echoed nothing is exactly as empty a comparison as
+    /// one that died, and counting it as a pass is how a mode scores clean while
+    /// asserting nothing.
     Barren,
 }
 
@@ -2027,7 +2209,7 @@ fn judge(script: &str, bin: &Path, timeout: Duration) -> Verdict {
     if differs(&o, &r) {
         return Verdict::Diverged(Box::new((o, r)));
     }
-    if o.exit != 0 && o.stdout.is_empty() {
+    if o.stdout.is_empty() {
         return Verdict::Barren;
     }
     Verdict::Same
@@ -2231,6 +2413,11 @@ fn main() {
     // score zero divergences while testing nothing.
     let barren = Arc::new(AtomicUsize::new(0));
     let skipped: Arc<Mutex<Vec<(&'static str, Skip)>>> = Arc::new(Mutex::new(Vec::new()));
+    // Cases that agreed on a NON-empty reference output — the only bucket that
+    // is evidence of anything. Counted so the four buckets can be reconciled
+    // against `ran`: a case that reached a worker and landed in none of them was
+    // lost, and a lost case must not shrink the denominator in silence.
+    let scored = Arc::new(AtomicUsize::new(0));
 
     let mut handles = Vec::new();
     for _ in 0..args.jobs {
@@ -2238,6 +2425,7 @@ fn main() {
         let divergences = Arc::clone(&divergences);
         let ran = Arc::clone(&ran);
         let barren = Arc::clone(&barren);
+        let scored = Arc::clone(&scored);
         let skipped = Arc::clone(&skipped);
         let bin = bin.clone();
         let timeout = args.timeout;
@@ -2259,7 +2447,10 @@ fn main() {
             let prog = build_program(&stmts);
             let verdict = judge(&prog, &bin, timeout);
             let (o, r) = match verdict {
-                Verdict::Same => continue,
+                Verdict::Same => {
+                    scored.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
                 Verdict::Barren => {
                     barren.fetch_add(1, Ordering::Relaxed);
                     continue;
@@ -2294,8 +2485,14 @@ fn main() {
             }
         }));
     }
+    // A worker that panics takes its in-flight case with it. Join errors are
+    // counted rather than discarded, because the alternative is a run that
+    // reports a smaller corpus than it was asked for and calls it clean.
+    let mut dead_workers = 0usize;
     for h in handles {
-        let _ = h.join();
+        if h.join().is_err() {
+            dead_workers += 1;
+        }
     }
 
     let mut divs = Arc::try_unwrap(divergences).unwrap().into_inner().unwrap();
@@ -2356,9 +2553,56 @@ fn main() {
         }
     }
     println!(
-        "barren     : {barren} (agreed, but the reference produced no stdout and \
-         failed — proves nothing)"
+        "barren     : {barren} (agreed, but the reference produced no stdout — \
+         proves nothing)"
     );
+    let scored = scored.load(Ordering::Relaxed);
+    println!("scored     : {scored} (agreed on a non-empty reference output)");
+    // Reconcile: every case handed to a worker must have landed in exactly one
+    // bucket. Anything unaccounted for was lost — a panicked worker, or a
+    // verdict arm that forgot to count itself — and a lost case silently makes
+    // the corpus smaller than the one the run claims to have covered.
+    let missing = ran
+        .saturating_sub(scored)
+        .saturating_sub(barren)
+        .saturating_sub(skipped.len())
+        .saturating_sub(divs.len());
+    if missing > 0 || dead_workers > 0 {
+        println!("unaccounted: {missing} cases, {dead_workers} workers died");
+    }
+
+    // The exit status answers "did this run measure what it was asked to?", not
+    // just "did it find a disagreement?". Every arm below is a run that proved
+    // nothing while a plain divergence count would have read as clean:
+    //   - no cases ran at all (a mode filter that matches nothing, --count 0);
+    //   - every case that ran was skipped (the reference timing out on all of
+    //     them is the textbook way a frontend reports 0 divergences forever);
+    //   - a case reached a worker and produced no verdict;
+    //   - the reference printed nothing, so the two sides "agreed" on silence.
+    let compared = ran.saturating_sub(skipped.len());
+    let mut faults: Vec<String> = Vec::new();
+    if !divs.is_empty() {
+        faults.push(format!("{} divergences", divs.len()));
+    }
+    if ran == 0 {
+        faults.push("no cases ran".into());
+    } else if scored == 0 {
+        faults.push("no case produced a usable comparison".into());
+    }
+    if compared == 0 && ran > 0 {
+        faults.push("every case that ran was skipped".into());
+    }
+    if !skipped.is_empty() {
+        faults.push(format!("{} skipped", skipped.len()));
+    }
+    if barren > 0 {
+        faults.push(format!("{barren} barren"));
+    }
+    if missing > 0 || dead_workers > 0 {
+        faults.push(format!(
+            "{missing} unaccounted, {dead_workers} dead workers"
+        ));
+    }
 
     if !divs.is_empty() {
         let n = args.show.min(divs.len());
@@ -2388,12 +2632,15 @@ fn main() {
             );
         }
 
-        // Report file.
+        // Report file, named for THIS process. A constant name is a collision:
+        // several agents run this harness against the same checkout at once, and
+        // a shared name means the report you open belongs to whichever run
+        // finished last. Nothing here is ever deleted, for the same reason.
         let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("target")
             .join("parity-fuzz");
         let _ = std::fs::create_dir_all(&dir);
-        let path = dir.join("divergences.txt");
+        let path = dir.join(format!("divergences-{}.txt", std::process::id()));
         let mut report = String::new();
         report.push_str(&format!("oracle: {}\n", oracle_id()));
         report.push_str(&format!(
@@ -2421,11 +2668,15 @@ fn main() {
             let _ = f.write_all(report.as_bytes());
             println!("\nfull report: {}", path.display());
         }
-        std::process::exit(1);
-    } else {
+    }
+
+    if faults.is_empty() {
         println!(
-            "\nno divergences — phplang matches {} on this corpus.",
+            "\n{scored} cases compared clean — phplang matches {} on this corpus.",
             oracle_path()
         );
+        return;
     }
+    println!("\nRUN NOT CLEAN: {}", faults.join("; "));
+    std::process::exit(1);
 }
