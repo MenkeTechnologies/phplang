@@ -1770,9 +1770,21 @@ fn gen_pregoffset(seed: u64) -> Vec<String> {
         )],
         // The start-offset parameter, which shifts where matching begins but
         // NOT the origin the reported offsets are measured from.
+        //
+        // The out-of-range values are the sharp end and are not decorative. An
+        // offset PAST the end is an error — `false`, an emptied `$matches`, and
+        // `PREG_INTERNAL_ERROR` — while the end ITSELF is merely a no-match,
+        // and a negative one counts back from the end and clamps at zero rather
+        // than failing. An implementation that simply clamped everything into
+        // range would return 0 where the reference returns false.
         4 => vec![format!(
             "var_dump(preg_match({p}, '{s}', $m, PREG_OFFSET_CAPTURE, 1), $m); {st} \
-             var_dump(preg_match({p}, '{s}', $n, PREG_OFFSET_CAPTURE, 2), $n); {st}"
+             var_dump(preg_match({p}, '{s}', $n, PREG_OFFSET_CAPTURE, 2), $n); {st} \
+             var_dump(preg_match({p}, '{s}', $a, 0, strlen('{s}')), $a); {st} \
+             var_dump(preg_match({p}, '{s}', $b, 0, strlen('{s}') + 1), $b); {st} \
+             var_dump(preg_match({p}, '{s}', $c, PREG_OFFSET_CAPTURE, -2), $c); {st} \
+             var_dump(preg_match_all({p}, '{s}', $d, PREG_PATTERN_ORDER, 1), $d); {st} \
+             var_dump(preg_match_all({p}, '{s}', $e, PREG_PATTERN_ORDER, strlen('{s}') + 1)); {st}"
         )],
         // A miss: `$matches` must be emptied, not left holding a stale pair.
         5 => vec![format!(
