@@ -1143,7 +1143,10 @@ fn replace_reports_the_replacement_count() {
 fn an_offset_past_the_end_fails_but_the_end_itself_does_not() {
     // `$offset == strlen($subject)` is in range — that is where a trailing
     // zero-width match lives — so it is an ordinary no-match.
-    assert_eq!(run(r#"<?php var_dump(preg_match('/b/', 'abab', $m, 0, 4));"#), "int(0)\n");
+    assert_eq!(
+        run(r#"<?php var_dump(preg_match('/b/', 'abab', $m, 0, 4));"#),
+        "int(0)\n"
+    );
     // Past the end is an ERROR, not a no-match: false, an emptied $matches, and
     // PREG_INTERNAL_ERROR left behind.
     assert_eq!(
