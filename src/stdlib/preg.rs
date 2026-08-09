@@ -19,11 +19,24 @@
 //! diagnostic to copy, and inventing one would print what the reference never
 //! prints. See `compile` and `scan_body`.
 //!
-//! DIVERGENCE — the `A` modifier (PCRE2_ANCHORED) is accepted and ignored, so
-//! `preg_match("/a/A", "bar")` is 1 here and 0 in the reference. Anchoring each
-//! match attempt at the current offset is not something the Rust engine's safe
-//! API exposes; `D J S X r` are likewise accepted no-ops, but none of those four
-//! changes the result of a pattern this engine can otherwise run.
+//! The `A` modifier (PCRE2_ANCHORED) is applied by [`Pattern::captures_all`].
+//! The engine exposes no anchored-search flag, but it is leftmost-first, so a
+//! search started at `pos` yields the match beginning at `pos` when one exists
+//! — `start() == pos` is therefore exactly the anchored question, and the match
+//! returned is the anchored match.
+//!
+//! `J S X r` are accepted no-ops and none of them changes a result here: `S` and
+//! `X` carry no semantics for patterns this engine accepts, `r` has no
+//! observable effect, and `J` (duplicate group names) describes patterns the
+//! Rust engine rejects outright, so they take the silent `Unsupported` path
+//! rather than matching wrongly.
+//!
+//! DIVERGENCE — `D` (PCRE2_DOLLAR_ENDONLY) is accepted and ignored. It is the
+//! inverse of the usual engine-subset gap: Rust's `$` is already end-of-haystack
+//! only, so `/a$/D` is right by accident and the *unmodified* `/a$/` is what
+//! differs — `preg_match("/a$/", "a\n")` is 1 in the reference and 0 here.
+//! Fixing it means translating a trailing `$` to `(?:\n?\z)` in `scan_body`
+//! rather than honouring `D`.
 //!
 //! One further engine nuance affects `preg_split`: Rust's `regex` suppresses a
 //! zero-width match sitting immediately after a non-empty match, whereas PCRE
@@ -126,8 +139,75 @@ enum PatternError {
     Unsupported,
 }
 
+/// A compiled pattern plus the modifiers the engine cannot carry itself.
+///
+/// Only `A` (PCRE2_ANCHORED) needs this so far. It is not a property of the
+/// compiled regex but of every search made with it, so it has to travel
+/// alongside — see [`Pattern::captures_all`] for how it is applied.
+pub(crate) struct Pattern {
+    re: Regex,
+    /// `A`: each match attempt must begin exactly at the offset it starts from.
+    anchored: bool,
+}
+
+impl Pattern {
+    /// Every non-overlapping match, left to right.
+    ///
+    /// Unanchored, this is the engine's own iterator. Anchored, PCRE2 retries at
+    /// each *successive* offset and stops at the first one that does not match
+    /// there — which is why `preg_match_all("/a/A", "aab")` is 2 but
+    /// `"bab"` is 0.
+    ///
+    /// The engine exposes no anchored-search flag, but it is leftmost-first: a
+    /// search started at `pos` returns the match beginning at `pos` if one
+    /// exists, so `start() == pos` is exactly the anchored question, and the
+    /// match it returns is the anchored match.
+    fn captures_all<'h>(&self, hay: &'h [u8]) -> Vec<Captures<'h>> {
+        if !self.anchored {
+            return self.re.captures_iter(hay).collect();
+        }
+        let mut out = Vec::new();
+        let mut pos = 0usize;
+        // `captures_at` panics past `hay.len()`, and `len` itself is a valid
+        // start — that is where a trailing zero-width match lives.
+        while pos <= hay.len() {
+            let Some(caps) = self.re.captures_at(hay, pos) else {
+                break;
+            };
+            let m = caps.get(0).expect("group 0 always participates");
+            if m.start() != pos {
+                break;
+            }
+            let end = m.end();
+            out.push(caps);
+            // A zero-width match would otherwise spin on the same offset.
+            pos = if end == pos { pos + 1 } else { end };
+        }
+        out
+    }
+
+    /// The first match, honouring `A`.
+    fn captures_first<'h>(&self, hay: &'h [u8]) -> Option<Captures<'h>> {
+        if !self.anchored {
+            return self.re.captures(hay);
+        }
+        self.re
+            .captures_at(hay, 0)
+            .filter(|c| c.get(0).is_some_and(|m| m.start() == 0))
+    }
+
+    fn is_match(&self, hay: &[u8]) -> bool {
+        self.captures_first(hay).is_some()
+    }
+
+    /// Group count including group 0, for `preg_match_all`'s row shape.
+    fn captures_len(&self) -> usize {
+        self.re.captures_len()
+    }
+}
+
 /// Parse a PHP PCRE pattern (`/body/flags`, `#body#`, `~body~`, `{body}`, …)
-/// into a compiled `Regex`.
+/// into a compiled [`Pattern`].
 ///
 /// The accepted modifier set is `imnrsuxADJSUX`, established by running all 62
 /// alphanumerics through `preg_match("/a/$c", "a")` on the reference rather than
@@ -139,7 +219,7 @@ enum PatternError {
 /// a bracket delimiter it COUNTS NESTING (so `{a{b}` is unterminated even though
 /// it ends in `}`). Scanning backwards for the last delimiter character, which
 /// is the obvious implementation, gets both of those wrong.
-fn compile(pattern: &str) -> Result<Regex, PatternError> {
+fn compile(pattern: &str) -> Result<Pattern, PatternError> {
     let chars: Vec<char> = pattern.chars().collect();
     // Leading whitespace is allowed before the opening delimiter.
     let mut i = 0;
@@ -207,6 +287,7 @@ fn compile(pattern: &str) -> Result<Regex, PatternError> {
     let mut dot_all = false;
     let mut extended = false;
     let mut swap_greed = false;
+    let mut anchored = false;
     for f in flags.chars() {
         match f {
             'i' => case_insensitive = true,
@@ -216,8 +297,9 @@ fn compile(pattern: &str) -> Result<Regex, PatternError> {
             'U' => swap_greed = true,
             'u' => unicode = true,
             'n' => no_auto_capture = true,
+            'A' => anchored = true,
             // Accepted by the reference, no Rust-engine analogue → no-ops.
-            'r' | 'D' | 'A' | 'X' | 'S' | 'J' => {}
+            'r' | 'D' | 'X' | 'S' | 'J' => {}
             // PHP tolerates trailing whitespace/newlines after the pattern.
             c if c.is_whitespace() => {}
             other => {
@@ -236,7 +318,8 @@ fn compile(pattern: &str) -> Result<Regex, PatternError> {
     b.ignore_whitespace(extended);
     b.swap_greed(swap_greed);
     b.unicode(unicode);
-    b.build().map_err(|_| PatternError::Unsupported)
+    let re = b.build().map_err(|_| PatternError::Unsupported)?;
+    Ok(Pattern { re, anchored })
 }
 
 // ── pattern body: PCRE2 faults, and the PCRE→Rust differences ────────────────
@@ -467,7 +550,7 @@ fn brace_quantifier(c: &[char], open: usize) -> Option<(Option<u64>, Option<u64>
 /// is what makes it observable across calls: a successful compile clears it even
 /// when the match then fails, so `preg_last_error()` reports the LAST pattern
 /// the engine compiled and not the last one that failed.
-fn compile_for(func: &str, pat: &str) -> Option<Regex> {
+fn compile_for(func: &str, pat: &str) -> Option<Pattern> {
     match compile(pat) {
         Ok(re) => {
             with_host(|h| h.set_preg_error(PREG_NO_ERROR));
@@ -542,7 +625,7 @@ fn preg_match(args: &[Value]) -> Result<Value, String> {
     let Some(re) = compile_for("preg_match", &pat) else {
         return Ok(Value::bool(false));
     };
-    match re.captures(subject.as_bytes()) {
+    match re.captures_first(subject.as_bytes()) {
         Some(caps) => {
             if args.len() > 2 {
                 fill_out(&args[2], 2, caps_trimmed(&caps));
@@ -566,8 +649,9 @@ fn preg_match_all(args: &[Value]) -> Result<Value, String> {
         return Ok(Value::bool(false));
     };
     let all: Vec<Vec<Value>> = re
-        .captures_iter(subject.as_bytes())
-        .map(|c| caps_full(&c))
+        .captures_all(subject.as_bytes())
+        .iter()
+        .map(caps_full)
         .collect();
     let count = all.len();
 
@@ -653,12 +737,23 @@ fn translate_replacement(s: &str) -> String {
 
 /// Apply one (compiled pattern, translated replacement) over `subject` bytes up
 /// to `limit` times (`limit < 0` = unlimited).
-fn replace_one(re: &Regex, repl: &[u8], subject: &[u8], limit: i64) -> Vec<u8> {
-    if limit < 0 {
-        re.replace_all(subject, repl).into_owned()
-    } else {
-        re.replacen(subject, limit as usize, repl).into_owned()
+fn replace_one(re: &Pattern, repl: &[u8], subject: &[u8], limit: i64) -> Vec<u8> {
+    // Spliced by hand rather than through `replace_all`/`replacen`, which have
+    // no anchored form. `expand` still supplies the group substitution, so the
+    // replacement syntax is unchanged.
+    let mut out: Vec<u8> = Vec::new();
+    let mut last = 0usize;
+    for (n, caps) in re.captures_all(subject).into_iter().enumerate() {
+        if limit >= 0 && n as i64 >= limit {
+            break;
+        }
+        let whole = caps.get(0).expect("group 0 always participates");
+        out.extend_from_slice(&subject[last..whole.start()]);
+        caps.expand(repl, &mut out);
+        last = whole.end();
     }
+    out.extend_from_slice(&subject[last..]);
+    out
 }
 
 /// Collect a pattern argument that may be a single string or an array of
@@ -685,7 +780,7 @@ fn preg_replace(args: &[Value]) -> Result<Value, String> {
     let limit = args.get(3).map(|v| v.to_int()).unwrap_or(-1);
 
     // Pre-compile the patterns; a bad pattern makes the whole call return null.
-    let mut compiled: Vec<(Regex, String)> = Vec::with_capacity(pats.len());
+    let mut compiled: Vec<(Pattern, String)> = Vec::with_capacity(pats.len());
     for (idx, p) in pats.iter().enumerate() {
         let Some(re) = compile_for("preg_replace", p) else {
             return Ok(Value::Undef);
@@ -726,7 +821,7 @@ fn preg_replace_callback(args: &[Value]) -> Result<Value, String> {
     let cb = arg(args, 1);
     let limit = args.get(3).map(|v| v.to_int()).unwrap_or(-1);
 
-    let mut compiled: Vec<Regex> = Vec::with_capacity(pats.len());
+    let mut compiled: Vec<Pattern> = Vec::with_capacity(pats.len());
     for p in &pats {
         let Some(re) = compile_for("preg_replace_callback", p) else {
             return Ok(Value::Undef);
@@ -759,11 +854,11 @@ fn preg_replace_callback(args: &[Value]) -> Result<Value, String> {
 
 /// Replace every (up to `limit`) match of `re` in `s`, calling `cb($matches)`
 /// for each and substituting its string return. Propagates a thrown exception.
-fn replace_all_cb(re: &Regex, s: &str, cb: &Value, limit: i64) -> Result<String, String> {
+fn replace_all_cb(re: &Pattern, s: &str, cb: &Value, limit: i64) -> Result<String, String> {
     let bytes = s.as_bytes();
     let mut out: Vec<u8> = Vec::new();
     let mut last = 0;
-    for (n, caps) in re.captures_iter(bytes).enumerate() {
+    for (n, caps) in re.captures_all(bytes).into_iter().enumerate() {
         if limit >= 0 && n as i64 >= limit {
             break;
         }
@@ -814,7 +909,7 @@ fn preg_split(args: &[Value]) -> Result<Value, String> {
     // enumerate index `n` counts split PIECES only (one text segment per match);
     // the limit therefore ignores the captured delimiters that DELIM_CAPTURE
     // interleaves.
-    for (n, caps) in re.captures_iter(bytes).enumerate() {
+    for (n, caps) in re.captures_all(bytes).into_iter().enumerate() {
         let whole = caps.get(0).unwrap();
         // Honour the limit: once cap-1 pieces are emitted, stop splitting so the
         // final piece holds the remainder.

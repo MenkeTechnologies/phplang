@@ -446,3 +446,66 @@ fn suppression_and_the_error_reporting_mask_both_hide_the_warning() {
         "bool(false)\n1"
     );
 }
+
+// ── the `A` (anchored) modifier ──────────────────────────────────────────────
+
+#[test]
+fn anchored_modifier_matches_only_at_the_search_offset() {
+    // Anchored at offset 0, so a match further in does not count.
+    assert_eq!(run(r#"<?php var_dump(preg_match("/a/A", "bar"));"#), "int(0)\n");
+    assert_eq!(run(r#"<?php var_dump(preg_match("/a/A", "abr"));"#), "int(1)\n");
+}
+
+#[test]
+fn anchored_match_all_retries_at_each_successive_offset() {
+    // Two leading `a`s match at offsets 0 and 1; the `b` at 2 ends the walk.
+    assert_eq!(
+        run(r#"<?php var_dump(preg_match_all("/a/A", "aab"));"#),
+        "int(2)\n"
+    );
+    // A subject that does not match at offset 0 stops immediately.
+    assert_eq!(
+        run(r#"<?php var_dump(preg_match_all("/a/A", "bab"));"#),
+        "int(0)\n"
+    );
+    // A pattern that can match empty keeps going past the last `a`: offsets
+    // 0 ("aa"), 2 ("") and 3 ("").
+    assert_eq!(
+        run(r#"<?php var_dump(preg_match_all("/a*/A", "aab"));"#),
+        "int(3)\n"
+    );
+}
+
+#[test]
+fn anchored_replace_split_and_grep() {
+    assert_eq!(
+        run(r#"<?php var_dump(preg_replace("/a/A", "X", "aab"));"#),
+        "string(3) \"XXb\"\n"
+    );
+    assert_eq!(
+        run(r#"<?php var_dump(preg_replace_callback("/a/A", fn($m) => "X", "aab"));"#),
+        "string(3) \"XXb\"\n"
+    );
+    // Nothing matches at offset 0, so the subject comes back unsplit.
+    assert_eq!(
+        run(r#"<?php print_r(preg_split("/,/A", "a,b,c"));"#),
+        "Array\n(\n    [0] => a,b,c\n)\n"
+    );
+    assert_eq!(
+        run(r#"<?php print_r(preg_grep("/a/A", ["ab", "ba"]));"#),
+        "Array\n(\n    [0] => ab\n)\n"
+    );
+}
+
+#[test]
+fn unanchored_patterns_are_unaffected_by_the_anchoring_path() {
+    assert_eq!(run(r#"<?php var_dump(preg_match("/a/", "bar"));"#), "int(1)\n");
+    assert_eq!(
+        run(r#"<?php var_dump(preg_match_all("/a/", "bab"));"#),
+        "int(1)\n"
+    );
+    assert_eq!(
+        run(r#"<?php var_dump(preg_replace("/a/", "X", "aab"));"#),
+        "string(3) \"XXb\"\n"
+    );
+}
