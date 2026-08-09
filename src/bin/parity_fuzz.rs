@@ -15,9 +15,20 @@
 //! (float shortest-repr, integer division/modulo sign, `sprintf`/`number_format`,
 //! loose-vs-strict comparison, `sort` ordering, string coercion). Pure random
 //! bytes only produce mutual syntax errors that agree on both sides and teach
-//! nothing. Every program prints something deterministic so an empty-vs-empty run
-//! can never hide a gap. No `rand`, no time, no object ids — nothing whose output
-//! is nondeterministic for reasons unrelated to parity.
+//! nothing. No `rand`, no time, no object ids — nothing whose output is
+//! nondeterministic for reasons unrelated to parity.
+//!
+//! Every program is MEANT to print something deterministic, so that an
+//! empty-vs-empty run cannot hide a gap. That is an aspiration, not an enforced
+//! invariant, and the `Barren` verdict exists because it does not hold: an arm
+//! can echo a value that is legitimately empty (`str_repeat($s, 0)`,
+//! `strpbrk()` returning false, an `array_filter` that keeps nothing, `!!0`,
+//! `$x = ""; $x ?? "d"`). Measured over a 60k run, 281 cases in SEVEN of the 49
+//! modes — unary, strfns, coalesce, arr3, str2, stredge, closures — with no mode
+//! above 5.8% of its own cases. All incidental; none is a mode whose programs
+//! structurally lack an output construct. Wrapping those arms' values in a
+//! delimiter, the way `sprintf_rich` already does, would take the count to zero
+//! without weakening what they compare.
 //!
 //! Build:  cargo build --bin parity-fuzz
 //! Run:    ./target/debug/parity-fuzz --count 5000
