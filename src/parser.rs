@@ -633,22 +633,49 @@ impl Parser {
         }
         // A `&` before the value var marks by-reference iteration (writes back).
         let ref1 = self.eat_punct("&");
-        let first = self.expect_var()?;
-        let (key_var, val_var, by_ref) = if self.eat_punct("=>") {
+        let first = self.foreach_target()?;
+        let (key_var, val, by_ref) = if self.eat_punct("=>") {
+            // The key is always a plain variable. PHP rejects a pattern there
+            // ("Cannot use list as key element"), so `[$a] => $v` is an error
+            // rather than a second destructuring site.
+            let ForeachVal::Var(k) = first else {
+                return Err(self.syntax_error_at(self.pos - 1));
+            };
             let ref2 = self.eat_punct("&");
-            (Some(first), self.expect_var()?, ref2)
+            (Some(k), self.foreach_target()?, ref2)
         } else {
             (None, first, ref1)
         };
+        // `foreach ($a as &[$x, $y])` is a parse error in PHP: a pattern is not
+        // a place a reference can bind to. (An inner `[&$x, $y]` is a different
+        // construct and is not accepted here either — see `array_literal`.)
+        if by_ref && matches!(val, ForeachVal::Pattern(_)) {
+            return Err(self.syntax_error_at(self.pos - 1));
+        }
         self.expect_punct(")")?;
         let body = self.body()?;
         Ok(StmtKind::Foreach {
             arr,
             key_var,
-            val_var,
+            val,
             by_ref,
             body,
         })
+    }
+
+    /// A `foreach` value target: a plain `$v`, or a destructuring pattern in
+    /// either spelling — `[$x, $y]` and `list($x, $y)` produce the same
+    /// `Expr::Array`, which is also what `[$x, $y] = …` produces, so the two
+    /// forms cannot drift apart.
+    fn foreach_target(&mut self) -> Result<ForeachVal, String> {
+        if self.eat_punct("[") {
+            return Ok(ForeachVal::Pattern(self.array_literal("]")?));
+        }
+        if self.at_kw("list") && self.nth_is_punct(1, "(") {
+            self.pos += 2; // `list` `(`
+            return Ok(ForeachVal::Pattern(self.array_literal(")")?));
+        }
+        Ok(ForeachVal::Var(self.expect_var()?))
     }
 
     /// A property / method / constant name after `->` or `::` (a bare identifier).

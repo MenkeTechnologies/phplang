@@ -125,6 +125,11 @@ const SPLIT_OFFSET_CAPTURE: i64 = 4;
 const GREP_INVERT: i64 = 1;
 // PHP preg_match_all order flags.
 const SET_ORDER: i64 = 2;
+// PHP `$matches`-shaping flag bits, shared by preg_match, preg_match_all and
+// preg_replace_callback. They occupy their own high bits precisely so they can
+// be OR-ed with an order flag, so both must be tested with `&`.
+const OFFSET_CAPTURE: i64 = 256;
+const UNMATCHED_AS_NULL: i64 = 512;
 
 /// Dispatch a `preg`-category PHP function by lowercased name.
 pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
@@ -382,11 +387,23 @@ impl Pattern {
     /// `PREG_BACKTRACK_LIMIT_ERROR` and truncates the match list there, which is
     /// what PCRE reports for the same subject.
     fn captures_all<'h>(&self, hay: &'h [u8]) -> Vec<Caps<'h>> {
+        self.captures_all_from(hay, 0)
+    }
+
+    /// Every match at or after byte `from` — `preg_match_all`'s `$offset`.
+    ///
+    /// As in [`Pattern::captures_first_from`], the subject is not sliced: only
+    /// the starting position of the walk moves, so anchors and look-behind keep
+    /// seeing the whole string.
+    fn captures_all_from<'h>(&self, hay: &'h [u8], from: usize) -> Vec<Caps<'h>> {
+        if from > hay.len() {
+            return Vec::new();
+        }
         // Resolved once for the whole walk: it depends on the subject, not the
         // offset, and the test that picks it scans the subject.
         let dn = self.dollar_variant(hay);
         let mut out = Vec::new();
-        let mut pos = 0usize;
+        let mut pos = from;
         // PCRE's `g_notempty`: set after an empty match, it turns the next
         // attempt at the SAME offset into an anchored, non-empty one.
         let mut retry_nonempty = false;
@@ -482,9 +499,26 @@ impl Pattern {
 
     /// The first match, honouring `A`.
     fn captures_first<'h>(&self, hay: &'h [u8]) -> Option<Caps<'h>> {
+        self.captures_first_from(hay, 0)
+    }
+
+    /// The first match at or after byte `from` — `preg_match`'s `$offset`.
+    ///
+    /// `from` moves only where the SEARCH begins; the subject stays whole. That
+    /// distinction is the reason this is not `captures_first(&hay[from..])`:
+    /// PCRE keeps the full subject in view, so `^` still refers to the real
+    /// start and a look-behind can read the bytes before `from`. Slicing would
+    /// silently change both answers.
+    ///
+    /// An offset past the end matches nothing rather than panicking, and `A`
+    /// anchors to `from`, not to zero.
+    fn captures_first_from<'h>(&self, hay: &'h [u8], from: usize) -> Option<Caps<'h>> {
+        if from > hay.len() {
+            return None;
+        }
         let dn = self.dollar_variant(hay);
-        self.captures_at(dn, hay, 0)
-            .filter(|c| !self.anchored || c.get(0).is_some_and(|m| m.start() == 0))
+        self.captures_at(dn, hay, from)
+            .filter(|c| !self.anchored || c.get(0).is_some_and(|m| m.start() == from))
     }
 
     /// The leftmost match at or after `pos`, whichever engine holds the pattern.
@@ -1092,10 +1126,8 @@ pub(crate) fn compile_for(func: &str, pat: &str) -> Option<Pattern> {
 ///
 /// Values only: `preg_match_all`'s PATTERN_ORDER transposes these into per-group
 /// columns before keying them.
-fn caps_values(caps: &Caps<'_>) -> Vec<Value> {
-    (0..caps.len())
-        .map(|i| Value::str(caps.get(i).map(|m| bstr(m.as_bytes())).unwrap_or_default()))
-        .collect()
+fn caps_values(caps: &Caps<'_>, fmt: CellFmt) -> Vec<Value> {
+    (0..caps.len()).map(|i| fmt.cell(caps, i)).collect()
 }
 
 /// Index of the last group that took part in this match — where PHP truncates a
@@ -1104,6 +1136,68 @@ fn last_participating(caps: &Caps<'_>) -> usize {
     (0..caps.len())
         .rfind(|&i| caps.get(i).is_some())
         .unwrap_or(0)
+}
+
+/// How one `$matches` cell is shaped. Resolved once per call from the flag word
+/// so every cell of a result agrees, and threaded to each of the three functions
+/// that build rows.
+#[derive(Clone, Copy, Default)]
+struct CellFmt {
+    /// `PREG_OFFSET_CAPTURE` — the cell becomes `[text, byte-offset]`.
+    offset: bool,
+    /// `PREG_UNMATCHED_AS_NULL` — a group that did not participate reads `null`
+    /// rather than `''`.
+    as_null: bool,
+}
+
+impl CellFmt {
+    fn from_flags(flags: i64) -> Self {
+        Self {
+            offset: flags & OFFSET_CAPTURE != 0,
+            as_null: flags & UNMATCHED_AS_NULL != 0,
+        }
+    }
+
+    /// One cell of a `$matches` row.
+    ///
+    /// The offset is a BYTE position. That is what PHP reports even under `/u`,
+    /// where the subject is validated and walked as UTF-8 but the position is
+    /// still counted in bytes — verified against the reference rather than
+    /// assumed, because a codepoint counter agrees on every ASCII subject and
+    /// only ever differs where it matters.
+    ///
+    /// A group that did not participate reports `-1`, never `0`. Wrapping the
+    /// flagless value would give `['', 0]` and claim the group matched at the
+    /// start of the subject, which passes any check that only asserts the pair
+    /// shape.
+    fn cell(&self, caps: &Caps<'_>, i: usize) -> Value {
+        let m = caps.get(i);
+        let text = match &m {
+            Some(m) => Value::str(bstr(m.as_bytes())),
+            // PHP's null; phplang has no distinct Null variant.
+            None if self.as_null => Value::Undef,
+            None => Value::str(String::new()),
+        };
+        if !self.offset {
+            return text;
+        }
+        let at = m.map(|m| m.start() as i64).unwrap_or(-1);
+        make_list(vec![text, Value::int(at)])
+    }
+
+    /// The last group index a row carries.
+    ///
+    /// PHP normally truncates a `$matches` row at its last participating group,
+    /// but `PREG_UNMATCHED_AS_NULL` SUPPRESSES that trim: the whole point of the
+    /// flag is to report every group, so a trailing non-participating one must
+    /// survive as `null` instead of being dropped.
+    fn row_end(&self, caps: &Caps<'_>) -> usize {
+        if self.as_null {
+            caps.len().saturating_sub(1)
+        } else {
+            last_participating(caps)
+        }
+    }
 }
 
 /// A row of per-group values keyed the way PHP keys it — see [`push_keyed`].
@@ -1119,12 +1213,11 @@ fn key_row(values: Vec<Value>, names: &[Option<String>]) -> Vec<(Value, Value)> 
 /// `preg_replace_callback` behaviour. A group that did not participate but is
 /// followed by one that did is still emitted as the empty string. A group
 /// dropped here loses its NAME key with it.
-fn caps_trimmed(caps: &Caps<'_>, names: &[Option<String>]) -> Vec<(Value, Value)> {
-    let last = last_participating(caps);
+fn caps_trimmed(caps: &Caps<'_>, names: &[Option<String>], fmt: CellFmt) -> Vec<(Value, Value)> {
+    let last = fmt.row_end(caps);
     let mut out = Vec::with_capacity(last + 1);
     for i in 0..=last {
-        let v = Value::str(caps.get(i).map(|m| bstr(m.as_bytes())).unwrap_or_default());
-        push_keyed(&mut out, names, i, v);
+        push_keyed(&mut out, names, i, fmt.cell(caps, i));
     }
     out
 }
@@ -1167,13 +1260,15 @@ fn fill_out(target: &Value, pos: usize, rows: Vec<(Value, Value)>) {
 fn preg_match(args: &[Value]) -> Result<Value, String> {
     let pat = with_host(|h| h.to_str(&arg(args, 0)));
     let subject = with_host(|h| h.to_str(&arg(args, 1)));
+    let fmt = CellFmt::from_flags(args.get(3).map(|v| v.to_int()).unwrap_or(0));
+    let from = start_offset(args.get(4), subject.len());
     let Some(re) = compile_for("preg_match", &pat) else {
         return Ok(Value::bool(false));
     };
-    match re.captures_first(subject.as_bytes()) {
+    match re.captures_first_from(subject.as_bytes(), from) {
         Some(caps) => {
             if args.len() > 2 {
-                fill_out(&args[2], 2, caps_trimmed(&caps, &re.group_names()));
+                fill_out(&args[2], 2, caps_trimmed(&caps, &re.group_names(), fmt));
             }
             Ok(Value::int(1))
         }
@@ -1186,6 +1281,20 @@ fn preg_match(args: &[Value]) -> Result<Value, String> {
     }
 }
 
+/// Resolve a `$offset` argument to a byte position in a subject of `len` bytes.
+///
+/// A negative offset counts back from the end, as PHP's does. It is clamped to
+/// zero rather than wrapping, so `-100` on a short subject starts at the
+/// beginning instead of at a position that would reject the whole call.
+fn start_offset(v: Option<&Value>, len: usize) -> usize {
+    let raw = v.map(|v| v.to_int()).unwrap_or(0);
+    if raw < 0 {
+        (len as i64 + raw).max(0) as usize
+    } else {
+        raw as usize
+    }
+}
+
 fn preg_match_all(args: &[Value]) -> Result<Value, String> {
     let pat = with_host(|h| h.to_str(&arg(args, 0)));
     let subject = with_host(|h| h.to_str(&arg(args, 1)));
@@ -1194,13 +1303,15 @@ fn preg_match_all(args: &[Value]) -> Result<Value, String> {
         return Ok(Value::bool(false));
     };
     let names = re.group_names();
-    // Full-width values plus the index of the last group that participated:
+    let fmt = CellFmt::from_flags(flags);
+    let from = start_offset(args.get(4), subject.len());
+    // Full-width values plus the index of the last group each set carries:
     // PREG_SET_ORDER truncates each set THERE (its rows are ragged), while
     // PREG_PATTERN_ORDER keeps every column at full width.
     let all: Vec<(Vec<Value>, usize)> = re
-        .captures_all(subject.as_bytes())
+        .captures_all_from(subject.as_bytes(), from)
         .iter()
-        .map(|c| (caps_values(c), last_participating(c)))
+        .map(|c| (caps_values(c, fmt), fmt.row_end(c)))
         .collect();
     let count = all.len();
 
@@ -1297,7 +1408,10 @@ fn translate_replacement(s: &str) -> String {
 
 /// Apply one (compiled pattern, translated replacement) over `subject` bytes up
 /// to `limit` times (`limit < 0` = unlimited).
-fn replace_one(re: &Pattern, repl: &[u8], subject: &[u8], limit: i64) -> Vec<u8> {
+/// `count` ACCUMULATES across calls rather than being reset here, because
+/// `preg_replace` runs this once per pattern and PHP reports the total over all
+/// of them, not the last one's tally.
+fn replace_one(re: &Pattern, repl: &[u8], subject: &[u8], limit: i64, count: &mut i64) -> Vec<u8> {
     // Spliced by hand rather than through `replace_all`/`replacen`, which have
     // no anchored form. `expand` still supplies the group substitution, so the
     // replacement syntax is unchanged.
@@ -1311,6 +1425,7 @@ fn replace_one(re: &Pattern, repl: &[u8], subject: &[u8], limit: i64) -> Vec<u8>
         out.extend_from_slice(&subject[last..whole.start()]);
         caps.expand(repl, &mut out);
         last = whole.end();
+        *count += 1;
     }
     out.extend_from_slice(&subject[last..]);
     out
@@ -1355,25 +1470,32 @@ fn preg_replace(args: &[Value]) -> Result<Value, String> {
     }
 
     let subj = arg(args, 2);
-    let apply = |s: &str| -> String {
+    let mut count: i64 = 0;
+    let mut apply = |s: &str| -> String {
         let mut cur: Vec<u8> = s.as_bytes().to_vec();
         for (re, repl) in &compiled {
-            cur = replace_one(re, repl.as_bytes(), &cur, limit);
+            cur = replace_one(re, repl.as_bytes(), &cur, limit, &mut count);
         }
         bstr(&cur)
     };
 
-    if with_host(|h| h.is_array(&subj)) {
+    let out = if with_host(|h| h.is_array(&subj)) {
         let pairs = with_host(|h| h.array_pairs(&subj)).unwrap_or_default();
-        Ok(make_map(
+        make_map(
             pairs
                 .into_iter()
                 .map(|(k, v)| (k, Value::str(apply(&with_host(|h| h.to_str(&v))))))
                 .collect(),
-        ))
+        )
     } else {
-        Ok(Value::str(apply(&with_host(|h| h.to_str(&subj)))))
+        Value::str(apply(&with_host(|h| h.to_str(&subj))))
+    };
+    // `$count` is written unconditionally when the caller supplied it, including
+    // the zero-replacement case — PHP defines it there too.
+    if args.len() > 4 {
+        with_host(|h| h.byref_out_put(4, Value::int(count)));
     }
+    Ok(out)
 }
 
 fn preg_replace_callback(args: &[Value]) -> Result<Value, String> {
@@ -1390,31 +1512,45 @@ fn preg_replace_callback(args: &[Value]) -> Result<Value, String> {
     }
 
     let subj = arg(args, 2);
-    let run = |s: &str| -> Result<String, String> {
+    // `$flags` sits AFTER `$count` in the signature, so it is argument 5.
+    let fmt = CellFmt::from_flags(args.get(5).map(|v| v.to_int()).unwrap_or(0));
+    let mut count: i64 = 0;
+    let run = |s: &str, count: &mut i64| -> Result<String, String> {
         let mut cur = s.to_string();
         for re in &compiled {
-            cur = replace_all_cb(re, &cur, &cb, limit)?;
+            cur = replace_all_cb(re, &cur, &cb, limit, fmt, count)?;
         }
         Ok(cur)
     };
 
-    if with_host(|h| h.is_array(&subj)) {
+    let out = if with_host(|h| h.is_array(&subj)) {
         let pairs = with_host(|h| h.array_pairs(&subj)).unwrap_or_default();
         let mut out = Vec::with_capacity(pairs.len());
         for (k, v) in pairs {
             let s = with_host(|h| h.to_str(&v));
-            out.push((k, Value::str(run(&s)?)));
+            out.push((k, Value::str(run(&s, &mut count)?)));
         }
-        Ok(make_map(out))
+        make_map(out)
     } else {
         let s = with_host(|h| h.to_str(&subj));
-        Ok(Value::str(run(&s)?))
+        Value::str(run(&s, &mut count)?)
+    };
+    if args.len() > 4 {
+        with_host(|h| h.byref_out_put(4, Value::int(count)));
     }
+    Ok(out)
 }
 
 /// Replace every (up to `limit`) match of `re` in `s`, calling `cb($matches)`
 /// for each and substituting its string return. Propagates a thrown exception.
-fn replace_all_cb(re: &Pattern, s: &str, cb: &Value, limit: i64) -> Result<String, String> {
+fn replace_all_cb(
+    re: &Pattern,
+    s: &str,
+    cb: &Value,
+    limit: i64,
+    fmt: CellFmt,
+    count: &mut i64,
+) -> Result<String, String> {
     let bytes = s.as_bytes();
     let names = re.group_names();
     let mut out: Vec<u8> = Vec::new();
@@ -1425,7 +1561,8 @@ fn replace_all_cb(re: &Pattern, s: &str, cb: &Value, limit: i64) -> Result<Strin
         }
         let whole = caps.get(0).unwrap();
         out.extend_from_slice(&bytes[last..whole.start()]);
-        let matches = make_map(caps_trimmed(&caps, &names));
+        *count += 1;
+        let matches = make_map(caps_trimmed(&caps, &names, fmt));
         let ret = crate::host::call_value(cb.clone(), vec![matches])?;
         if crate::host::has_pending_throw() {
             return Ok(String::new());

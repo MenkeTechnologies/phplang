@@ -995,3 +995,126 @@ fn the_rewrite_does_not_change_byte_semantics_or_a_literal_dollar() {
     assert_eq!(run(r#"<?php echo preg_match('/a$/A', "a\n");"#), "1");
     assert_eq!(run(r#"<?php echo preg_match('/b$/A', "ab\n");"#), "0");
 }
+
+// ── PREG_OFFSET_CAPTURE / PREG_UNMATCHED_AS_NULL / $offset / $count ──────────
+
+#[test]
+fn offset_capture_wraps_each_cell_with_a_byte_offset() {
+    assert_eq!(
+        run(r#"<?php preg_match('/b(c)/', 'abcd', $m, PREG_OFFSET_CAPTURE); echo json_encode($m);"#),
+        r#"[["bc",1],["c",2]]"#
+    );
+}
+
+#[test]
+fn offset_capture_reports_minus_one_for_a_non_participating_group() {
+    // Not `["", 0]`: wrapping the flagless empty string would claim the group
+    // matched at the start of the subject.
+    assert_eq!(
+        run(r#"<?php preg_match('/a(x)?(c)/', 'ac', $m, PREG_OFFSET_CAPTURE); echo json_encode($m);"#),
+        r#"[["ac",0],["",-1],["c",1]]"#
+    );
+}
+
+#[test]
+fn offset_capture_offsets_are_bytes_not_codepoints() {
+    // "é" is two bytes, so 'b' sits at byte 2 and codepoint 1. PHP reports the
+    // BYTE offset — and reports it under `/u` as well, where the subject is
+    // walked as UTF-8 but positions are still counted in bytes.
+    assert_eq!(
+        run("<?php preg_match('/b/', \"\u{e9}b\", $m, PREG_OFFSET_CAPTURE); echo json_encode($m);"),
+        r#"[["b",2]]"#
+    );
+    assert_eq!(
+        run("<?php preg_match('/b/u', \"\u{e9}b\", $m, PREG_OFFSET_CAPTURE); echo json_encode($m);"),
+        r#"[["b",2]]"#
+    );
+}
+
+#[test]
+fn offset_capture_keys_a_named_group_under_both_slots() {
+    assert_eq!(
+        run(r#"<?php preg_match('/(?<w>b)/', 'ab', $m, PREG_OFFSET_CAPTURE); echo json_encode($m);"#),
+        r#"{"0":["b",1],"w":["b",1],"1":["b",1]}"#
+    );
+}
+
+#[test]
+fn offset_capture_in_both_match_all_orders() {
+    // PATTERN_ORDER keeps full-width columns; SET_ORDER truncates each row at
+    // its own last participating group, so `-1` can only appear in the former.
+    assert_eq!(
+        run(r#"<?php preg_match_all('/(a)(b)?/', 'aba', $m, PREG_PATTERN_ORDER|PREG_OFFSET_CAPTURE); echo json_encode($m);"#),
+        r#"[[["ab",0],["a",2]],[["a",0],["a",2]],[["b",1],["",-1]]]"#
+    );
+    assert_eq!(
+        run(r#"<?php preg_match_all('/(a)(b)?/', 'aba', $m, PREG_SET_ORDER|PREG_OFFSET_CAPTURE); echo json_encode($m);"#),
+        r#"[[["ab",0],["a",0],["b",1]],[["a",2],["a",2]]]"#
+    );
+}
+
+#[test]
+fn offset_capture_reaches_the_replace_callback() {
+    assert_eq!(
+        run(r#"<?php echo preg_replace_callback('/\d/', function($m){ return json_encode($m); }, 'a1b2', -1, $c, PREG_OFFSET_CAPTURE);"#),
+        r#"a[["1",1]]b[["2",3]]"#
+    );
+}
+
+#[test]
+fn unmatched_as_null_nulls_the_cell_and_suppresses_the_trailing_trim() {
+    // Without the flag the row stops at the last participating group; with it
+    // the trailing group survives as null, which is the whole point of it.
+    assert_eq!(
+        run(r#"<?php preg_match('/(a)(x)?/', 'a', $m); echo json_encode($m);"#),
+        r#"["a","a"]"#
+    );
+    assert_eq!(
+        run(r#"<?php preg_match('/(a)(x)?/', 'a', $m, PREG_UNMATCHED_AS_NULL); echo json_encode($m);"#),
+        r#"["a","a",null]"#
+    );
+    assert_eq!(
+        run(r#"<?php preg_match('/(a)(x)?/', 'a', $m, PREG_UNMATCHED_AS_NULL|PREG_OFFSET_CAPTURE); echo json_encode($m);"#),
+        r#"[["a",0],["a",0],[null,-1]]"#
+    );
+}
+
+#[test]
+fn match_honours_the_start_offset_without_slicing_the_subject() {
+    // The search starts later but the subject stays whole, so the reported
+    // offset is measured from the real start.
+    assert_eq!(
+        run(r#"<?php preg_match('/b/', 'abab', $m, PREG_OFFSET_CAPTURE, 2); echo json_encode($m);"#),
+        r#"[["b",3]]"#
+    );
+    // A start offset that skips an earlier match changes which one is found.
+    assert_eq!(
+        run(r#"<?php preg_match('/b(.)/', 'b1zb2', $m, 0, 2); echo $m[1];"#),
+        "2"
+    );
+}
+
+#[test]
+fn match_all_honours_the_start_offset() {
+    assert_eq!(
+        run(r#"<?php echo preg_match_all('/a/', 'aaa', $m, PREG_PATTERN_ORDER, 1);"#),
+        "2"
+    );
+}
+
+#[test]
+fn replace_reports_the_replacement_count() {
+    assert_eq!(
+        run(r#"<?php preg_replace('/a/', 'X', 'aaa', -1, $c); echo $c;"#),
+        "3"
+    );
+    assert_eq!(
+        run(r#"<?php preg_replace_callback('/a/', fn($m) => 'X', 'aaa', -1, $c); echo $c;"#),
+        "3"
+    );
+    // Defined even when nothing matched.
+    assert_eq!(
+        run(r#"<?php preg_replace('/z/', 'X', 'aaa', -1, $c); var_dump($c);"#),
+        "int(0)\n"
+    );
+}

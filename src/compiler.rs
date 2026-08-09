@@ -407,10 +407,10 @@ impl Compiler {
             StmtKind::Foreach {
                 arr,
                 key_var,
-                val_var,
+                val,
                 by_ref,
                 body,
-            } => self.compile_foreach(b, arr, key_var.as_deref(), val_var, *by_ref, body)?,
+            } => self.compile_foreach(b, arr, key_var.as_deref(), val, *by_ref, body)?,
         }
         Ok(())
     }
@@ -619,10 +619,22 @@ impl Compiler {
         b: &mut ChunkBuilder,
         arr: &Expr,
         key_var: Option<&str>,
-        val_var: &str,
+        val: &ForeachVal,
         by_ref: bool,
         body: &[Stmt],
     ) -> Result<(), String> {
+        // A destructuring target binds through a hidden temporary: the element
+        // is bound to it exactly as a plain `$v` would be, and the pattern is
+        // then assigned FROM it at the head of the body. Reusing the standalone
+        // `[$x, $y] = …` path is what makes a too-short element warn
+        // ("Undefined array key N") and then bind null, rather than binding null
+        // in silence.
+        let (val_name, pattern) = match val {
+            ForeachVal::Var(n) => (n.clone(), None),
+            ForeachVal::Pattern(p) => (self.tmp_name("fev"), Some(p)),
+        };
+        let val_var: &str = &val_name;
+
         // Evaluate the subject once into a hidden temporary, then branch: a lazy
         // generator loop, or the array/iterator index loop.
         let subj_t = self.tmp_name("subj");
@@ -632,7 +644,7 @@ impl Compiler {
         b.emit(Op::CallBuiltin(ops::IS_GENERATOR, 1), 0);
         b.emit(Op::CallBuiltin(ops::TRUTHY, 1), 0);
         let to_array = b.emit(Op::JumpIfFalse(0), 0);
-        self.compile_foreach_generator(b, &subj_t, key_var, val_var, body)?;
+        self.compile_foreach_generator(b, &subj_t, key_var, val_var, pattern, body)?;
         let after_gen = b.emit(Op::Jump(0), 0);
         let array_start = b.current_pos();
         b.patch_jump(to_array, array_start);
@@ -695,6 +707,8 @@ impl Compiler {
             Ok(())
         })?;
 
+        self.emit_foreach_destructure(b, pattern, val_var)?;
+
         self.loops.push(LoopCtx {
             breaks: vec![],
             continues: vec![],
@@ -745,6 +759,7 @@ impl Compiler {
         subj_t: &str,
         key_var: Option<&str>,
         val_var: &str,
+        pattern: Option<&Expr>,
         body: &[Stmt],
     ) -> Result<(), String> {
         // @subj->rewind();  (prime to the first yield)
@@ -772,6 +787,7 @@ impl Compiler {
             b.emit(Op::CallBuiltin(ops::GEN_CURRENT, 1), 0);
             Ok(())
         })?;
+        self.emit_foreach_destructure(b, pattern, val_var)?;
 
         self.loops.push(LoopCtx {
             breaks: vec![],
@@ -795,6 +811,26 @@ impl Compiler {
         for j in ctx.continues {
             b.patch_jump(j, cont_target);
         }
+        Ok(())
+    }
+
+    /// Assign a `foreach` destructuring pattern from the temporary the element
+    /// was bound to. Emitted at the head of each iteration by both the array and
+    /// the generator loop, so `foreach (gen() as [$x, $y])` destructures too.
+    ///
+    /// The assignment expression leaves its right-hand value on the stack (that
+    /// is what makes `$r = [$a, $b] = $src` work), so it is popped here.
+    fn emit_foreach_destructure(
+        &mut self,
+        b: &mut ChunkBuilder,
+        pattern: Option<&Expr>,
+        val_var: &str,
+    ) -> Result<(), String> {
+        let Some(p) = pattern else {
+            return Ok(());
+        };
+        self.compile_assign(b, p, None, &Expr::Var(val_var.to_string()))?;
+        b.emit(Op::Pop, 0);
         Ok(())
     }
 
@@ -1185,6 +1221,11 @@ impl Compiler {
                 self.compile_expr(b, recv)?;
                 self.compile_expr(b, idx)?;
                 b.emit(Op::CallBuiltin(ops::INDEX_GET, 2), self.cur_line);
+            }
+            Expr::ListElem(recv, idx) => {
+                self.compile_expr(b, recv)?;
+                self.compile_expr(b, idx)?;
+                b.emit(Op::CallBuiltin(ops::LIST_ELEM_GET, 2), self.cur_line);
             }
             Expr::Append(_) => {
                 return Err("'[]' append is only valid as an assignment target".into())
@@ -2244,7 +2285,7 @@ impl Compiler {
                     if matches!(target, Expr::Null) {
                         continue;
                     }
-                    let elem = Expr::Index(Box::new(Expr::Var(src.clone())), Box::new(key));
+                    let elem = Expr::ListElem(Box::new(Expr::Var(src.clone())), Box::new(key));
                     self.compile_assign(b, target, None, &elem)?;
                     b.emit(Op::Pop, 0);
                 }
@@ -2713,7 +2754,11 @@ fn collect_free_vars(e: &Expr, out: &mut Vec<String>) {
                 collect_free_vars(v, out);
             }
         }
-        Expr::Index(a, b) | Expr::Binary(_, a, b) | Expr::Elvis(a, b) | Expr::Coalesce(a, b) => {
+        Expr::Index(a, b)
+        | Expr::ListElem(a, b)
+        | Expr::Binary(_, a, b)
+        | Expr::Elvis(a, b)
+        | Expr::Coalesce(a, b) => {
             collect_free_vars(a, out);
             collect_free_vars(b, out);
         }

@@ -1008,12 +1008,12 @@ $o = new C; unset($o-&gt;zz);   // =&gt; unset:zz</code></pre>
         <article class="doc-entry" id="doc-predefined-constant-52">
           <h3><a class="doc-anchor" href="#doc-predefined-constant-52">#</a> <code>PREG_OFFSET_CAPTURE</code></h3>
           <pre><code class="lang-php">PREG_OFFSET_CAPTURE: int = 256</code></pre>
-          <p>Flag asking `preg_match`/`preg_match_all` to report byte offsets alongside each capture. DIVERGENCE: not implemented for those two functions — only `preg_split` honours its own offset flag.</p>
+          <p>Turns every `$matches` cell into a `[text, offset]` pair. The offset is a BYTE position, which is what PHP reports even under `/u`, where the subject is walked as UTF-8 but positions are still counted in bytes. A group that did not participate is `['', -1]`, not `['', 0]`. Honoured by `preg_match`, `preg_match_all` and `preg_replace_callback`; `preg_split` has its own separate `PREG_SPLIT_OFFSET_CAPTURE` bit.</p>
         </article>
         <article class="doc-entry" id="doc-predefined-constant-53">
           <h3><a class="doc-anchor" href="#doc-predefined-constant-53">#</a> <code>PREG_UNMATCHED_AS_NULL</code></h3>
           <pre><code class="lang-php">PREG_UNMATCHED_AS_NULL: int = 512</code></pre>
-          <p>Flag asking for non-participating groups to report null. DIVERGENCE: not implemented; unmatched interior groups report an empty string.</p>
+          <p>Reports a non-participating group as null rather than an empty string, and SUPPRESSES the trailing-unmatched trim so the row keeps its full width. Combined with `PREG_OFFSET_CAPTURE` such a cell is `[null, -1]`.</p>
         </article>
         <article class="doc-entry" id="doc-predefined-constant-54">
           <h3><a class="doc-anchor" href="#doc-predefined-constant-54">#</a> <code>PREG_SPLIT_NO_EMPTY</code></h3>
@@ -3500,26 +3500,26 @@ echo implode(",", array_keys($a));   // =&gt; a,b</code></pre>
         <h2>Regular expressions</h2>
         <article class="doc-entry" id="doc-regular-expressions-1">
           <h3><a class="doc-anchor" href="#doc-regular-expressions-1">#</a> <code>preg_match</code></h3>
-          <pre><code class="lang-php">preg_match(string $pattern, string $subject, array &amp;$matches = []): int|false</code></pre>
-          <p>Returns 1 on a match, 0 on none, or `false` for a pattern that will not compile — which also raises `Warning: preg_match(): &lt;reason&gt;` and leaves `preg_last_error()` at `PREG_INTERNAL_ERROR`. `$matches` is a real by-reference out-parameter and is written whether or not the caller initialised it. The `$flags` and `$offset` arguments are not read.</p>
+          <pre><code class="lang-php">preg_match(string $pattern, string $subject, array &amp;$matches = [], int $flags = 0, int $offset = 0): int|false</code></pre>
+          <p>Returns 1 on a match, 0 on none, or `false` for a pattern that will not compile — which also raises `Warning: preg_match(): &lt;reason&gt;` and leaves `preg_last_error()` at `PREG_INTERNAL_ERROR`. `$matches` is a real by-reference out-parameter and is written whether or not the caller initialised it. `PREG_OFFSET_CAPTURE` and `PREG_UNMATCHED_AS_NULL` are both honoured. `$offset` moves where the SEARCH starts without slicing the subject, so `^` still anchors to the real start and reported offsets are measured from it.</p>
           <pre><code class="lang-php">preg_match("/(\d+)/", "ab 42", $m); echo $m[1];   // =&gt; 42</code></pre>
         </article>
         <article class="doc-entry" id="doc-regular-expressions-2">
           <h3><a class="doc-anchor" href="#doc-regular-expressions-2">#</a> <code>preg_match_all</code></h3>
-          <pre><code class="lang-php">preg_match_all(string $pattern, string $subject, array &amp;$matches = [], int $flags = PREG_PATTERN_ORDER): int|false</code></pre>
-          <p>Returns the number of matches, or `false` for a pattern that will not compile, with the same `Warning` and `preg_last_error()` state as `preg_match`. `$matches` is a real by-reference out-parameter, keyed by group name as well as index. `PREG_SET_ORDER` truncates each set at its own last participating group, so its rows are ragged where `PREG_PATTERN_ORDER`'s columns are full width. Only the `PREG_SET_ORDER` bit is honoured — `PREG_OFFSET_CAPTURE` and `PREG_UNMATCHED_AS_NULL` are not, and there is no `$offset` parameter.</p>
+          <pre><code class="lang-php">preg_match_all(string $pattern, string $subject, array &amp;$matches = [], int $flags = PREG_PATTERN_ORDER, int $offset = 0): int|false</code></pre>
+          <p>Returns the number of matches, or `false` for a pattern that will not compile, with the same `Warning` and `preg_last_error()` state as `preg_match`. `$matches` is a real by-reference out-parameter, keyed by group name as well as index. `PREG_SET_ORDER` truncates each set at its own last participating group, so its rows are ragged where `PREG_PATTERN_ORDER`'s columns are full width. `PREG_OFFSET_CAPTURE` and `PREG_UNMATCHED_AS_NULL` are honoured alongside the order bit, and `$offset` moves where the search starts without slicing the subject.</p>
           <pre><code class="lang-php">$m = []; echo preg_match_all("/\d/", "a1b2", $m), $m[0][1];   // =&gt; 22</code></pre>
         </article>
         <article class="doc-entry" id="doc-regular-expressions-3">
           <h3><a class="doc-anchor" href="#doc-regular-expressions-3">#</a> <code>preg_replace</code></h3>
-          <pre><code class="lang-php">preg_replace(string|array $pattern, string|array $replacement, string|array $subject, int $limit = -1): string|array|null</code></pre>
-          <p>Applies each pattern in turn. `$replacement` may be one string for every pattern or an array index-matched to the patterns (surplus patterns replace with `""`). The `$1`, `${1}`, and `\1` back-reference forms all work in the REPLACEMENT even though back-references in the pattern do not. The first pattern that will not compile ends the whole call at null, raising `Warning: preg_replace(): &lt;reason&gt;`; the `&amp;$count` argument does not exist.</p>
+          <pre><code class="lang-php">preg_replace(string|array $pattern, string|array $replacement, string|array $subject, int $limit = -1, int &amp;$count = null): string|array|null</code></pre>
+          <p>Applies each pattern in turn. `$replacement` may be one string for every pattern or an array index-matched to the patterns (surplus patterns replace with `""`). The `$1`, `${1}`, and `\1` back-reference forms all work in the REPLACEMENT even though back-references in the pattern do not. The first pattern that will not compile ends the whole call at null, raising `Warning: preg_replace(): &lt;reason&gt;`; `&amp;$count` receives the total number of replacements across every pattern, and is written even when that total is zero.</p>
           <pre><code class="lang-php">echo preg_replace("/\d+/", "#", "a1b22");   // =&gt; a#b#</code></pre>
         </article>
         <article class="doc-entry" id="doc-regular-expressions-4">
           <h3><a class="doc-anchor" href="#doc-regular-expressions-4">#</a> <code>preg_replace_callback</code></h3>
-          <pre><code class="lang-php">preg_replace_callback(string|array $pattern, callable $callback, string|array $subject, int $limit = -1): string|array|null</code></pre>
-          <p>Calls the callback for each match with a fully POPULATED `$matches` array. `$limit` is honoured, and a pattern that will not compile returns null after raising `Warning: preg_replace_callback(): &lt;reason&gt;`.</p>
+          <pre><code class="lang-php">preg_replace_callback(string|array $pattern, callable $callback, string|array $subject, int $limit = -1, int &amp;$count = null, int $flags = 0): string|array|null</code></pre>
+          <p>Calls the callback for each match with a fully POPULATED `$matches` array. `$limit` is honoured, and a pattern that will not compile returns null after raising `Warning: preg_replace_callback(): &lt;reason&gt;`. `&amp;$count` receives the number of replacements, and `$flags` takes `PREG_OFFSET_CAPTURE`/`PREG_UNMATCHED_AS_NULL`, which reshape the `$matches` the callback receives.</p>
           <pre><code class="lang-php">echo preg_replace_callback("/\d/", fn($m) =&gt; $m[0] * 2, "a1b2");   // =&gt; a2b4</code></pre>
         </article>
         <article class="doc-entry" id="doc-regular-expressions-5">
@@ -4996,7 +4996,7 @@ var_dump(is_subclass_of(new B, "A"), is_subclass_of(new A, "A"));   // =&gt; boo
         <article class="doc-entry" id="doc-constants-3">
           <h3><a class="doc-anchor" href="#doc-constants-3">#</a> <code>constant</code></h3>
           <pre><code class="lang-php">constant(string $name): mixed</code></pre>
-          <p>The value of the named constant. DIVERGENCE: an UNDEFINED name returns the name itself as a string — PHP 7 leniency without even the notice — where PHP 8 throws `Error: Undefined constant`.</p>
+          <p>The value of the named constant. An UNDEFINED name throws `Error: Undefined constant "&lt;name&gt;"`, catchable, exactly as a bare reference to the same name does.</p>
           <pre><code class="lang-php">echo constant("NOPE");   // =&gt; NOPE</code></pre>
         </article>
       </section>

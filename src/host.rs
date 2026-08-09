@@ -152,6 +152,14 @@ pub mod ops {
     pub const INDEX_GET_Q: u16 = 94; // [recv, key] -> value, no "Undefined array key"
     pub const PROP_GET_Q: u16 = 95; // [recv, name] -> value, no "Undefined property"
 
+    /// `[recv, key] -> value` — one element of a `list()`/`[…]` destructuring.
+    ///
+    /// Separate from [`INDEX_GET`] because PHP treats a non-array subject
+    /// differently here: `null` yields null silently, a scalar warns
+    /// `Cannot use <type> as array`, and an object THROWS. Only an array
+    /// reaches the ordinary keyed read.
+    pub const LIST_ELEM_GET: u16 = 105;
+
     // Late static binding. `static::` names the class the call was made *on*, not
     // the class the running method was declared in, so it can only be resolved at
     // run time — a method inherited by two subclasses sees a different

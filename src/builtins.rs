@@ -93,6 +93,7 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::REF_TO_PROP, b_ref_to_prop);
     vm.register_builtin(ops::GETVAR_Q, b_getvar_q);
     vm.register_builtin(ops::INDEX_GET_Q, b_index_get_q);
+    vm.register_builtin(ops::LIST_ELEM_GET, b_list_elem_get);
     vm.register_builtin(ops::PROP_GET_Q, b_prop_get_q);
     vm.register_builtin(ops::LSB_CLASS, b_lsb_class);
     vm.register_builtin(ops::LSB_FORWARD, b_lsb_forward);
@@ -1149,6 +1150,48 @@ fn b_index_get_q(vm: &mut VM, _: u8) -> Value {
     let key = vm.pop();
     let recv = vm.pop();
     with_host(|h| h.index_get(&recv, &key))
+}
+
+/// One element of a destructuring assignment — see `ops::LIST_ELEM_GET`.
+///
+/// A list read is not an index read. PHP refuses to walk into anything that is
+/// not an array here, so the string case in particular differs sharply:
+/// `"ab"[0]` is `'a'`, while `[$x] = "ab"` warns and assigns null. Only the
+/// array case reaches the ordinary keyed read, which is what still supplies the
+/// `Undefined array key N` warning for a too-short element.
+fn b_list_elem_get(vm: &mut VM, _: u8) -> Value {
+    let key = vm.pop();
+    let recv = vm.pop();
+    // An object is a hard error, not a warning — including ArrayAccess, which
+    // PHP does not consult for destructuring.
+    let is_obj = with_host(|h| matches!(recv, Value::Obj(_)) && !h.is_array(&recv));
+    if is_obj {
+        let cls = with_host(|h| h.object_class(&recv).unwrap_or_else(|| "object".into()));
+        return throw_php(
+            vm,
+            "Error",
+            &format!("Cannot use object of type {cls} as array"),
+        );
+    }
+    if with_host(|h| h.is_array(&recv)) {
+        mark_warn_site(vm);
+        return with_host(|h| h.index_get_warn(&recv, &key));
+    }
+    // `null` destructures to null in silence — it is the one non-array subject
+    // PHP does not complain about.
+    if matches!(recv, Value::Undef) {
+        return Value::Undef;
+    }
+    let ty = match recv {
+        Value::Bool(_) => "bool",
+        Value::Int(_) => "int",
+        Value::Float(_) => "float",
+        Value::Str(_) => "string",
+        _ => "mixed",
+    };
+    mark_warn_site(vm);
+    with_host(|h| h.warn(format_args!("Cannot use {ty} as array")));
+    Value::Undef
 }
 
 fn b_index_set(vm: &mut VM, _: u8) -> Value {

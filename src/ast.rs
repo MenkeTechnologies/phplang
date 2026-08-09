@@ -84,6 +84,14 @@ pub enum Expr {
     Array(Vec<(Option<Expr>, Expr)>),
     /// `recv[index]`.
     Index(Box<Expr>, Box<Expr>),
+    /// One element read of a destructuring assignment — `[$a, $b] = $src` and
+    /// the `foreach` patterns, never written by the parser.
+    ///
+    /// This is NOT `Index`. PHP reads a list element through a different
+    /// operation, and the two disagree on every non-array subject: `"ab"[0]` is
+    /// `'a'`, but `[$x] = "ab"` warns `Cannot use string as array` and assigns
+    /// null. Reusing `Index` here silently turns a diagnostic into a character.
+    ListElem(Box<Expr>, Box<Expr>),
     /// `recv[]` — append target, only valid as an assignment LHS.
     Append(Box<Expr>),
     Unary(UnOp, Box<Expr>),
@@ -234,6 +242,21 @@ pub struct Stmt {
     pub kind: StmtKind,
 }
 
+/// The value target of a `foreach`.
+///
+/// The destructuring spellings all carry an [`Expr::Array`] — the very node the
+/// standalone `[$a, $b] = …` assignment uses as its target — so `foreach` gets
+/// keyed elements, holes, and nesting from the one destructuring implementation
+/// rather than a parallel copy of it. That shared path is also what makes a
+/// too-short element warn before binding null, instead of binding null silently.
+#[derive(Debug, Clone)]
+pub enum ForeachVal {
+    /// `foreach ($a as $v)`.
+    Var(String),
+    /// `foreach ($a as [$x, $y])` or the equivalent `as list($x, $y)`.
+    Pattern(Expr),
+}
+
 #[derive(Debug, Clone)]
 pub enum StmtKind {
     /// A run of literal text outside `<?php ... ?>` — echoed verbatim.
@@ -276,7 +299,7 @@ pub enum StmtKind {
     Foreach {
         arr: Expr,
         key_var: Option<String>,
-        val_var: String,
+        val: ForeachVal,
         by_ref: bool,
         body: Vec<Stmt>,
     },
