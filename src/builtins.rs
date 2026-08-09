@@ -65,6 +65,7 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::PROP_UNSET, b_prop_unset);
     vm.register_builtin(ops::PROP_ISSET, b_prop_isset);
     vm.register_builtin(ops::INDEX_ISSET, b_index_isset);
+    vm.register_builtin(ops::DECL_FATAL, b_decl_fatal);
     vm.register_builtin(ops::PROP_GET_EMPTY, b_prop_get_empty);
     vm.register_builtin(ops::PROP_INCDEC, b_prop_incdec);
     vm.register_builtin(ops::SUPPRESS_PUSH, b_suppress_push);
@@ -968,7 +969,10 @@ fn method_plan(vm: &mut VM, class: &str, method: &str, has_this: bool) -> Result
         host::MethodDispatch::Undefined => Err(throw_php(
             vm,
             "Error",
-            &format!("Call to undefined method {class}::{method}()"),
+            &format!(
+                "Call to undefined method {}::{method}()",
+                host::display_class(class)
+            ),
         )),
     }
 }
@@ -1317,6 +1321,28 @@ fn b_list_elem_get(vm: &mut VM, _: u8) -> Value {
     mark_warn_site(vm);
     with_host(|h| h.warn(format_args!("Cannot use {ty} as array")));
     Value::Undef
+}
+
+/// A declaration the reference refuses to link — see `ops::DECL_FATAL`.
+///
+/// Displayed like an uncaught error (message, then a stack trace) but *not*
+/// thrown: PHP raises these below the exception machinery, so no `try`/`catch`
+/// can see one and the program always stops here.
+fn b_decl_fatal(vm: &mut VM, _: u8) -> Value {
+    let msg = with_host(|h| h.to_str(&vm.pop()));
+    let line = cur_op_line(vm);
+    let body = with_host(|h| {
+        let trace = h.backtrace();
+        format!(
+            "{msg} in {} on line {line}\nStack trace:\n{trace}",
+            h.script_name()
+        )
+    });
+    with_host(|h| {
+        h.fatal("Fatal error", &body);
+        h.ob_flush_all();
+    });
+    fail(vm, format!("Fatal error:  {body}"))
 }
 
 /// `isset($a[k])` — see `ops::INDEX_ISSET`.
@@ -3733,10 +3759,12 @@ fn php_print_r_object(h: &host::PhpHost, v: &Value, depth: usize) -> String {
     let pad = "    ".repeat(depth);
     let inner = "    ".repeat(depth + 1);
     let class = h.object_class(v).unwrap_or_else(|| "stdClass".to_string());
+    // An anonymous class prints only the head of its name — see `display_class`.
+    let shown = host::display_class(&class);
     let head = match h.enum_case_of(v) {
-        Some((_, Some(backing))) => format!("{class} Enum:{}", enum_backing_type(&backing)),
-        Some((_, None)) => format!("{class} Enum"),
-        None => format!("{class} Object"),
+        Some((_, Some(backing))) => format!("{shown} Enum:{}", enum_backing_type(&backing)),
+        Some((_, None)) => format!("{shown} Enum"),
+        None => format!("{shown} Object"),
     };
     let mut s = format!("{head}\n{pad}(\n");
     for (name, val) in h.object_props(v) {
@@ -3799,7 +3827,8 @@ fn php_var_dump_ref(h: &host::PhpHost, v: &Value, depth: usize, is_ref: bool) ->
             let props = h.object_props_marked(v);
             let class = h.object_class(v).unwrap_or_else(|| "stdClass".to_string());
             let mut s = format!(
-                "{pad}{amp}object({class})#{} ({}) {{\n",
+                "{pad}{amp}object({})#{} ({}) {{\n",
+                host::display_class(&class),
                 h.object_ordinal(v),
                 props.len()
             );

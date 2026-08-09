@@ -92,9 +92,16 @@ pub const CORPUS: &[Entry] = &[
     (
         "as",
         "Keyword",
-        "foreach (expr as $v)   //  also: use T as alias, catch/trait adaptations",
-        "Binds the current element inside a `foreach` header. In a `use` import and a trait adaptation block the parser accepts `as` and discards the alias, because phplang resolves every name in one flat namespace.",
+        "foreach (expr as $v)\nuse A { m as [visibility] [alias]; }   //  trait adaptation\nuse Ns\\Name as Alias;   //  namespace import",
+        "Binds the current element inside a `foreach` header. In a trait adaptation block it binds a trait method under a second name, a new visibility, or both — `m as x;` adds `x` alongside `m`, `m as protected;` only re-marks `m`. In a namespace import the alias is accepted and discarded, because phplang resolves every name in one flat namespace.",
         "foreach ([9] as $k => $v) echo $k;   // => 0",
+    ),
+    (
+        "insteadof",
+        "Keyword",
+        "use A, B { A::m insteadof B[, C]; }   //  inside a class body",
+        "Resolves a trait method collision by EXCLUDING the named traits' version of the method, inside the `{ … }` block of a `use`. Two used traits declaring the same method with no `insteadof` between them is a fatal error, and excluding only one of three still leaves the other two colliding. The excluded method is not gone — an `as` alias in the same block can still bind it under another name.",
+        "trait A { function m() { return \"A\"; } }\ntrait B { function m() { return \"B\"; } }\nclass C { use A, B { A::m insteadof B; B::m as bm; } }\n$c = new C; echo $c->m(), $c->bm();   // => AB",
     ),
     (
         "switch",
@@ -148,8 +155,8 @@ pub const CORPUS: &[Entry] = &[
     (
         "use",
         "Keyword",
-        "function (…) use ($a, $b) { … }\nuse Ns\\Name [as Alias];\nuse TraitName;   //  inside a class body",
-        "Three unrelated roles. In a closure header it captures the named enclosing variables by value — DIVERGENCE: by-reference capture `use (&$v)` is rejected with a parse error rather than silently binding by value. As a statement it is a namespace import, accepted and discarded. Inside a class body it pulls a trait's members in.",
+        "function (…) use ($a, $b) { … }\nuse Ns\\Name [as Alias];\nuse T1, T2 [{ adaptations }];   //  inside a class body",
+        "Three unrelated roles. In a closure header it captures the named enclosing variables by value — DIVERGENCE: by-reference capture `use (&$v)` is rejected with a parse error rather than silently binding by value. As a statement it is a namespace import, accepted and discarded. Inside a class body it pulls the traits' members in, with an optional `{ … }` block of `insteadof`/`as` adaptations resolving collisions and binding extra names.",
         "$n = 10; $f = function () use ($n) { return $n; }; echo $f();   // => 10",
     ),
     (
@@ -212,7 +219,7 @@ pub const CORPUS: &[Entry] = &[
         "trait",
         "Keyword",
         "trait Name { members }   //  then: use Name; inside a class",
-        "Declares a reusable member bundle that a class pulls in with `use`. DIVERGENCE: `trait_exists()` is a hardcoded `false` even for a trait that was declared and successfully used.",
+        "Declares a reusable member bundle that a class pulls in with `use`, optionally adapted by an `insteadof`/`as` block. A `use` naming a trait that was never declared is a throwable `Error`; an unresolved method collision is a fatal raised when the declaration is reached, so output produced before it is still printed. DIVERGENCE: `trait_exists()` is a hardcoded `false` even for a trait that was declared and successfully used; two definitions of the same property with different defaults are merged silently rather than refused.",
         "trait T { function f() { return 3; } } class C { use T; } echo (new C)->f();   // => 3",
     ),
     (
@@ -239,8 +246,8 @@ pub const CORPUS: &[Entry] = &[
     (
         "new",
         "Keyword",
-        "new ClassName[(args)]",
-        "Instantiates a class, running `__construct` with the given arguments. The parentheses are optional when there are no arguments. The class name is a bareword — `new $className` is not parsed.",
+        "new ClassName[(args)]\nnew class[(args)] [extends P] [implements I, …] { members }",
+        "Instantiates a class, running `__construct` with the given arguments. The parentheses are optional when there are no arguments. The class name is a bareword — `new $className` is not parsed. `new class` declares the class inline: its arguments come BEFORE the `extends`/`implements` clauses, and the declaration is compiled once, so the same site in a loop yields instances of one class. Its generated name is `Base@anonymous\\0<script>:<line>$<n>` — the parent, else the first interface, else `class` — so `get_class` returns a unique string while `var_dump` and diagnostics print the readable head alone.",
         "class C { function __construct($x) { $this->x = $x; } } echo (new C(5))->x;   // => 5",
     ),
     (

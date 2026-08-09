@@ -131,6 +131,19 @@ pub enum Expr {
     /// `new Class(args)` — instantiate an object (class name literal, or the
     /// `self`/`parent`/`static` keyword resolved at compile time).
     New(String, Vec<Expr>),
+    /// `new class(args) [extends P] [implements I] { members }` — an anonymous
+    /// class. The declaration is compiled once, at the point the expression is
+    /// lowered, under a generated name; every evaluation of the expression then
+    /// instantiates that one class (PHP does the same — a `new class` in a loop
+    /// produces instances of a single class, not one class per iteration).
+    ///
+    /// `line` is the source line of the `class` keyword, which the generated
+    /// name embeds the way the reference does.
+    NewAnon {
+        decl: Box<ClassDecl>,
+        args: Vec<Expr>,
+        line: u32,
+    },
     /// `$obj->prop` — instance property read.
     PropGet(Box<Expr>, String),
     /// `$obj->method(args)` — instance method call.
@@ -390,6 +403,11 @@ pub struct ClassDecl {
     /// Traits pulled in via `use Trait;` inside the class body; their methods and
     /// properties are merged into the class at compile time.
     pub uses: Vec<String>,
+    /// `A::m insteadof B, C;` entries of the `use` adaptation block — the trait
+    /// whose `m` wins, and the traits whose `m` is dropped.
+    pub trait_insteadof: Vec<TraitInsteadof>,
+    /// `A::m as [visibility] [alias];` entries of the `use` adaptation block.
+    pub trait_aliases: Vec<TraitAlias>,
     /// Whether this is an `interface` (vs a `class`/`trait`).
     pub is_interface: bool,
     /// Whether the class is declared `abstract` (cannot be instantiated directly).
@@ -412,6 +430,32 @@ pub struct ClassDecl {
     /// Only `AllowDynamicProperties` changes behaviour today; the rest are carried
     /// so the declaration parses and so reflection has something to report.
     pub attributes: Vec<String>,
+}
+
+/// One `A::m insteadof B, C;` conflict resolution inside a `use` block. Without
+/// it, two used traits declaring the same method is a fatal error.
+#[derive(Debug, Clone)]
+pub struct TraitInsteadof {
+    /// The trait whose method is kept.
+    pub winner: String,
+    pub method: String,
+    /// The traits whose method of that name is dropped.
+    pub losers: Vec<String>,
+}
+
+/// One `[A::]m as [visibility] [alias];` adaptation inside a `use` block.
+///
+/// With an `alias`, the method is *additionally* bound under the new name (the
+/// original binding stays); without one, only the visibility of the existing
+/// binding changes. `from` is the qualifying trait, or `None` for the
+/// unqualified `m as …` form, which is an error when more than one used trait
+/// declares `m`.
+#[derive(Debug, Clone)]
+pub struct TraitAlias {
+    pub from: Option<String>,
+    pub method: String,
+    pub alias: Option<String>,
+    pub visibility: Option<Visibility>,
 }
 
 /// One `case Name [= value];` of an `enum`. `value` is the backing-value

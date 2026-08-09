@@ -480,3 +480,66 @@ fn stringable_is_implied_by_tostring() {
         var_dump(new S instanceof Stringable, new T instanceof Stringable);"#;
     assert_eq!(run(src), "bool(true)\nbool(false)\n");
 }
+
+#[test]
+fn anonymous_class_extends_implements_and_takes_constructor_args() {
+    let src = r#"<?php
+        interface I { public function f(); }
+        class P { public $a = 1; public function g() { return "P::g"; } }
+        $o = new class(42) extends P implements I {
+            public $b;
+            public function __construct($b) { $this->b = $b; }
+            public function f() { return "anon:" . $this->a . ":" . $this->b; }
+        };
+        echo $o->f(), "|", $o->g(), "|";
+        echo $o instanceof I ? "Y" : "N", $o instanceof P ? "Y" : "N";"#;
+    assert_eq!(run(src), "anon:1:42|P::g|YY");
+}
+
+#[test]
+fn one_anonymous_class_declaration_is_one_class_however_often_it_runs() {
+    // The declaration is compiled once, so a `new class` in a loop yields three
+    // instances of a single class — not three classes.
+    let src = r#"<?php
+        $seen = [];
+        for ($i = 0; $i < 3; $i++) { $seen[] = get_class(new class {}); }
+        echo count(array_unique($seen));"#;
+    assert_eq!(run(src), "1");
+}
+
+#[test]
+fn an_anonymous_class_is_named_for_its_base_then_its_site() {
+    // `Base@anonymous\0<script>:<line>$<n>` — the parent, else the first
+    // interface, else the literal `class`; then a per-compilation counter,
+    // numbered in SOURCE order rather than the order the sites run.
+    let src = "<?php\n\
+        interface I {}\n\
+        class P {}\n\
+        function late() { return new class extends P {}; }\n\
+        $first = new class implements I {};\n\
+        echo late() instanceof P ? '' : 'x';\n\
+        echo get_class($first), \"\\n\", get_class(late()), \"\\n\", get_class(new class {});";
+    assert_eq!(
+        run(src),
+        "I@anonymous\0Command line code:5$1\n\
+         P@anonymous\0Command line code:4$0\n\
+         class@anonymous\0Command line code:7$2"
+    );
+}
+
+#[test]
+fn an_anonymous_class_shows_only_the_head_of_its_name_in_a_message() {
+    // Everything that renders the name for a human stops at the NUL, the way
+    // the reference's C-string formatting does; `get_class` keeps the whole.
+    let src = r#"<?php
+        class P {}
+        $o = new class extends P { public $x = 1; };
+        var_dump($o);
+        echo get_debug_type($o), "|";
+        try { $o->nope(); } catch (Error $e) { echo $e->getMessage(); }"#;
+    assert_eq!(
+        run(src),
+        "object(P@anonymous)#1 (1) {\n  [\"x\"]=>\n  int(1)\n}\n\
+         P@anonymous|Call to undefined method P@anonymous::nope()"
+    );
+}

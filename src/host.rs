@@ -212,6 +212,15 @@ pub mod ops {
     /// NOTHING else — `offsetGet` is never called, so the answer cannot be
     /// recovered from a value the way it can for an array.
     pub const INDEX_ISSET: u16 = 106;
+
+    /// `[message] -> !`. A declaration the compiler read but the reference would
+    /// refuse to LINK — today, a `use Trait` whose adaptations do not resolve.
+    ///
+    /// It is an op rather than a compile error because PHP binds a
+    /// trait-using class at run time: everything the script printed before the
+    /// declaration is printed, and only then does the fatal land. Emitting it
+    /// where the declaration stood reproduces that ordering exactly.
+    pub const DECL_FATAL: u16 = 107;
 }
 
 /// Sub-ops for the by-reference array mutators lowered through `ops::ARR_MUT`
@@ -2009,9 +2018,15 @@ impl PhpHost {
     fn class_instantiation_error(&self, class: &str) -> Option<String> {
         let def = self.classes.get(&class.to_ascii_lowercase())?;
         if def.is_interface {
-            Some(format!("Cannot instantiate interface {class}"))
+            Some(format!(
+                "Cannot instantiate interface {}",
+                display_class(class)
+            ))
         } else if def.is_abstract {
-            Some(format!("Cannot instantiate abstract class {class}"))
+            Some(format!(
+                "Cannot instantiate abstract class {}",
+                display_class(class)
+            ))
         } else {
             None
         }
@@ -2586,10 +2601,11 @@ impl PhpHost {
     /// A class name as declared, recovered from the lowercased key the class
     /// table is indexed by, so a diagnostic prints `MyClass` and not `myclass`.
     fn class_display_name(&self, lowered: &str) -> String {
-        self.classes
+        let name = self
+            .classes
             .get(lowered)
-            .map(|d| d.name.clone())
-            .unwrap_or_else(|| lowered.to_string())
+            .map_or(lowered, |d| d.name.as_str());
+        display_class(name).to_string()
     }
 
     /// Remove `$obj->name` from the object's property table — `unset($o->p)`.
@@ -2962,7 +2978,7 @@ impl PhpHost {
             Some(PhpObj::Object { class, props }) => match props.get(name).cloned() {
                 Some(v) => self.deref(v),
                 None => {
-                    let class = class.clone();
+                    let class = display_class(class).to_string();
                     self.warn(format_args!("Undefined property: {class}::${name}"));
                     Value::Undef
                 }
@@ -5069,13 +5085,19 @@ fn call_magic_call_packed(
 ) -> Result<Value, String> {
     let has_this = this.is_some();
     let Some(magic) = with_host(|h| h.magic_call_name(class, has_this)) else {
-        return Err(format!("Call to undefined method {class}::{method}()"));
+        return Err(format!(
+            "Call to undefined method {}::{method}()",
+            display_class(class)
+        ));
     };
     let magic_args = vec![Value::str(method.to_string()), packed];
     let Some((def_class, def)) =
         with_host(|h| h.resolve_method(class, &magic.to_ascii_lowercase()))
     else {
-        return Err(format!("Call to undefined method {class}::{method}()"));
+        return Err(format!(
+            "Call to undefined method {}::{method}()",
+            display_class(class)
+        ));
     };
     let pre = match this {
         Some(t) => vec![("this".to_string(), t)],
@@ -5752,6 +5774,21 @@ pub fn classify_arith(h: &PhpHost, v: &Value) -> ArithOperand {
             let _ = h;
             ArithOperand::Unsupported
         }
+    }
+}
+
+/// A class name as a *message* shows it: everything up to the first NUL.
+///
+/// Only an anonymous class has one — its name is
+/// `Base@anonymous\0<script>:<line>$<n>`, a single string carrying both a
+/// readable head and the suffix that makes it unique. The reference passes that
+/// name to its diagnostics and dumpers as a C string, so they print the head
+/// alone, while `get_class`/`::class`/`var_export` hand back the whole thing.
+/// A name with no NUL — every other class — is returned unchanged.
+pub fn display_class(name: &str) -> &str {
+    match name.split_once('\0') {
+        Some((head, _)) => head,
+        None => name,
     }
 }
 

@@ -1031,6 +1031,25 @@ impl Parser {
         if is_enum && self.eat_punct(":") {
             enum_backing = Some(self.expect_type_name()?);
         }
+        let decl = self.class_rest(name, is_interface, is_enum, is_abstract, enum_backing)?;
+        Ok(StmtKind::Class(ClassDecl { attributes, ..decl }))
+    }
+
+    /// Everything of a class declaration after its name: the `extends` /
+    /// `implements` clauses and the `{ members }` body.
+    ///
+    /// Split out of [`Parser::class_stmt`] because an anonymous class
+    /// (`new class(args) extends P implements I { … }`) is exactly this tail
+    /// with a generated name, so both forms must parse the same body grammar.
+    /// The returned declaration carries no attributes; the caller attaches them.
+    fn class_rest(
+        &mut self,
+        name: String,
+        is_interface: bool,
+        is_enum: bool,
+        is_abstract: bool,
+        enum_backing: Option<String>,
+    ) -> Result<ClassDecl, String> {
         let mut parent = None;
         let mut implements = Vec::new();
         // `extends`: one parent for a class; an interface may extend several.
@@ -1062,6 +1081,8 @@ impl Parser {
         let mut props = Vec::new();
         let mut methods = Vec::new();
         let mut uses = Vec::new();
+        let mut trait_insteadof = Vec::new();
+        let mut trait_aliases = Vec::new();
         let mut cases = Vec::new();
         while !self.at_punct("}") && !self.at_end() {
             // Any member — const, property, method, enum case — may be attributed.
@@ -1091,10 +1112,11 @@ impl Parser {
                         break;
                     }
                 }
-                // A `{ ... }` adaptation block (insteadof/as) is accepted and
-                // skipped; otherwise a plain `;` terminates the use.
+                // A `{ ... }` adaptation block resolves conflicts between the
+                // used traits (`insteadof`) and binds extra names or
+                // visibilities (`as`); otherwise a plain `;` terminates the use.
                 if self.at_punct("{") {
-                    self.block()?;
+                    self.trait_adaptations(&mut trait_insteadof, &mut trait_aliases)?;
                 } else {
                     self.expect_punct(";")?;
                 }
@@ -1197,11 +1219,13 @@ impl Parser {
                 implements.push("BackedEnum".to_string());
             }
         }
-        Ok(StmtKind::Class(ClassDecl {
+        Ok(ClassDecl {
             name,
             parent,
             implements,
             uses,
+            trait_insteadof,
+            trait_aliases,
             is_interface,
             is_abstract,
             is_enum,
@@ -1210,8 +1234,94 @@ impl Parser {
             consts,
             props,
             methods,
-            attributes,
-        }))
+            attributes: Vec::new(),
+        })
+    }
+
+    /// The `{ … }` adaptation block of a `use Trait…` inside a class body:
+    ///
+    /// ```text
+    /// A::m insteadof B, C;      // keep A's m, drop B's and C's
+    /// A::m as alias;            // bind A's m under a second name
+    /// A::m as protected alias;  // …with a visibility of its own
+    /// m as protected;           // change the visibility of the existing m
+    /// ```
+    ///
+    /// The left-hand side may be qualified (`A::m`) or bare (`m`); a bare name
+    /// is only legal for `as`, and only when exactly one used trait declares it
+    /// — a check the compiler makes, because only it knows the traits' members.
+    fn trait_adaptations(
+        &mut self,
+        insteadof: &mut Vec<TraitInsteadof>,
+        aliases: &mut Vec<TraitAlias>,
+    ) -> Result<(), String> {
+        self.expect_punct("{")?;
+        while !self.at_punct("}") && !self.at_end() {
+            let first = self.expect_type_name()?;
+            // `A::m` qualifies the method with its trait; a bare `m` does not.
+            let (from, method) = if self.eat_punct("::") {
+                let m = match self.next() {
+                    Some(Tok::Ident(n)) => n,
+                    _ => return Err(self.syntax_error_at(self.pos - 1)),
+                };
+                (Some(first), m)
+            } else {
+                (None, first)
+            };
+            if self.eat_kw("insteadof") {
+                let mut losers = Vec::new();
+                loop {
+                    losers.push(self.expect_type_name()?);
+                    if !self.eat_punct(",") {
+                        break;
+                    }
+                }
+                // `insteadof` names which trait wins, so the left side must say
+                // which trait it is talking about.
+                let Some(winner) = from else {
+                    return Err(self.syntax_error_at(self.pos - 1));
+                };
+                insteadof.push(TraitInsteadof {
+                    winner,
+                    method,
+                    losers,
+                });
+            } else if self.eat_kw("as") {
+                let visibility = if self.eat_kw("public") {
+                    Some(Visibility::Public)
+                } else if self.eat_kw("protected") {
+                    Some(Visibility::Protected)
+                } else if self.eat_kw("private") {
+                    Some(Visibility::Private)
+                } else {
+                    None
+                };
+                // The new name is optional: `m as protected;` only re-marks the
+                // visibility of the binding the class already has.
+                let alias = match self.peek() {
+                    Some(Tok::Ident(n)) => {
+                        let n = n.clone();
+                        self.pos += 1;
+                        Some(n)
+                    }
+                    _ => None,
+                };
+                if visibility.is_none() && alias.is_none() {
+                    return Err(self.syntax_error_at(self.pos));
+                }
+                aliases.push(TraitAlias {
+                    from,
+                    method,
+                    alias,
+                    visibility,
+                });
+            } else {
+                return Err(self.syntax_error_at(self.pos));
+            }
+            self.expect_punct(";")?;
+        }
+        self.expect_punct("}")?;
+        Ok(())
     }
 
     // ── expressions (precedence climbing) ──────────────────────────────────
@@ -1619,6 +1729,25 @@ impl Parser {
             // `new Class(args)` — the class name is a bareword (or `self`/`parent`/
             // `static`); parentheses are optional when there are no arguments.
             Some(Tok::Ident(kw)) if kw.eq_ignore_ascii_case("new") => {
+                // `new class …` declares the class inline. Its arguments come
+                // BEFORE the `extends`/`implements` clauses, which is the one
+                // place the grammar differs from a named declaration.
+                if self.at_kw("class") {
+                    let line = self.line();
+                    self.pos += 1;
+                    let args = if self.eat_punct("(") {
+                        self.arg_list()?
+                    } else {
+                        Vec::new()
+                    };
+                    let decl =
+                        self.class_rest("class@anonymous".to_string(), false, false, false, None)?;
+                    return Ok(Expr::NewAnon {
+                        decl: Box::new(decl),
+                        args,
+                        line,
+                    });
+                }
                 self.eat_punct("\\"); // optional global-namespace prefix
                 let class = match self.next() {
                     Some(Tok::Ident(n)) => n,

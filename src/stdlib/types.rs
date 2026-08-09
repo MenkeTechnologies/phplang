@@ -128,7 +128,12 @@ pub fn debug_type(h: &crate::host::PhpHost, v: &Value) -> String {
             } else if h.is_closure(v) {
                 "Closure".to_string()
             } else {
-                h.object_class(v).unwrap_or_else(|| "object".to_string())
+                // Reported the way a message reports a class name, so an
+                // anonymous class shows its readable head alone.
+                h.object_class(v).map_or_else(
+                    || "object".to_string(),
+                    |c| crate::host::display_class(&c).to_string(),
+                )
             }
         }
         _ => "unknown".to_string(),

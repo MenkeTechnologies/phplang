@@ -85,3 +85,147 @@ fn catch_by_interface_via_hierarchy() {
         catch (Exception $e) { echo $e instanceof RuntimeException ? "Y" : "N", $e->getMessage(); }"#;
     assert_eq!(run(src), "Yboom");
 }
+
+#[test]
+fn insteadof_picks_the_winner_and_as_rebinds_the_loser() {
+    // The construct the whole adaptation block exists for: `insteadof` drops
+    // B's `hi` from the merge, and `as` still reaches it — so the class ends up
+    // with BOTH implementations, under different names.
+    let src = r#"<?php
+        trait A { public function hi() { return "A::hi"; } public function bye() { return "A::bye"; } }
+        trait B { public function hi() { return "B::hi"; } }
+        class C { use A, B { A::hi insteadof B; B::hi as bHi; } }
+        $c = new C;
+        echo $c->hi(), "|", $c->bHi(), "|", $c->bye();"#;
+    assert_eq!(run(src), "A::hi|B::hi|A::bye");
+}
+
+#[test]
+fn alias_adds_a_name_without_removing_the_original() {
+    let src = r#"<?php
+        trait A { public function hi() { return "A::hi"; } private function sec() { return "A::sec"; } }
+        class C { use A { hi as other; sec as public psec; } }
+        $c = new C;
+        echo $c->other(), "|", $c->psec(), "|", $c->hi();"#;
+    assert_eq!(run(src), "A::hi|A::sec|A::hi");
+}
+
+#[test]
+fn as_without_a_new_name_only_moves_the_visibility() {
+    // `hi as protected;` re-marks the binding the class already has; calling it
+    // from outside is then the ordinary protected-access Error.
+    let src = r#"<?php
+        trait A { public function hi() { return "A::hi"; } }
+        class C { use A { hi as protected; } }
+        try { (new C)->hi(); } catch (Error $e) { echo $e->getMessage(); }"#;
+    assert_eq!(
+        run(src),
+        "Call to protected method C::hi() from global scope"
+    );
+}
+
+#[test]
+fn qualified_alias_binds_the_named_trait_not_the_merged_method() {
+    let src = r#"<?php
+        trait A { public function hi() { return "A::hi " . static::class; } }
+        class D { use A { A::hi as dHi; } }
+        echo (new D)->dHi();"#;
+    assert_eq!(run(src), "A::hi D");
+}
+
+/// Run `src` and return everything it wrote, *including* a fatal-error block.
+///
+/// A refused `use` is a fatal, and `eval_capture` drops the captured output
+/// when the run fails — which is exactly the case under test here.
+fn output_of(src: &str) -> String {
+    phplang::host::reset_host();
+    phplang::host::with_host(|h| h.begin_capture());
+    if let Ok(prog) = phplang::compile(src) {
+        let _ = phplang::run_compiled(prog);
+    }
+    phplang::host::with_host(|h| h.end_capture())
+}
+
+#[test]
+fn an_unresolved_trait_collision_is_a_fatal_after_the_output_so_far() {
+    // The reference binds a trait-using class at RUN time, so everything echoed
+    // before the declaration is printed and only then does the link fail. Taken
+    // verbatim from `php` 8.5.9.
+    let src = r#"<?php
+echo "before\n";
+trait A { public function hi() { return "A"; } }
+trait B { public function hi() { return "B"; } }
+class K { use A, B; }
+echo "after\n";"#;
+    assert_eq!(
+        output_of(src),
+        "before\n\nFatal error: Trait method B::hi has not been applied as K::hi, because of \
+         collision with A::hi in Command line code on line 5\nStack trace:\n#0 {main}\n"
+    );
+}
+
+#[test]
+fn excluding_only_one_of_three_colliding_traits_still_collides() {
+    // `insteadof` excludes the loser rather than electing the winner, so A and C
+    // are both still in the running and the pair reported is (first, second).
+    let src = r#"<?php
+trait A { public function hi() { return "A"; } }
+trait B { public function hi() { return "B"; } }
+trait C { public function hi() { return "C"; } }
+class K { use A, B, C { A::hi insteadof B; } }"#;
+    assert_eq!(
+        output_of(src),
+        "\nFatal error: Trait method C::hi has not been applied as K::hi, because of collision \
+         with A::hi in Command line code on line 5\nStack trace:\n#0 {main}\n"
+    );
+}
+
+#[test]
+fn an_unqualified_alias_of_an_ambiguous_method_is_refused() {
+    let src = r#"<?php
+trait A { public function hi() { return "A"; } }
+trait B { public function hi() { return "B"; } }
+class K { use A, B { A::hi insteadof B; hi as x; } }"#;
+    assert_eq!(
+        output_of(src),
+        "\nFatal error: An alias was defined for method hi(), which exists in both A and B. Use \
+         A::hi or B::hi to resolve the ambiguity in Command line code on line 4\nStack \
+         trace:\n#0 {main}\n"
+    );
+}
+
+#[test]
+fn an_adaptation_may_only_name_a_trait_the_class_actually_uses() {
+    let src = r#"<?php
+trait A { public function f() {} }
+trait B { public function f() {} }
+class K { use A { B::f as z; } }"#;
+    assert_eq!(
+        output_of(src),
+        "\nFatal error: Required Trait B wasn't added to K in Command line code on line 4\n\
+         Stack trace:\n#0 {main}\n"
+    );
+}
+
+#[test]
+fn an_alias_of_a_method_no_trait_declares_is_refused() {
+    let src = r#"<?php
+trait A { public function f() {} }
+class K { use A { A::nope as z; } }"#;
+    assert_eq!(
+        output_of(src),
+        "\nFatal error: An alias was defined for A::nope but this method does not exist in \
+         Command line code on line 3\nStack trace:\n#0 {main}\n"
+    );
+}
+
+#[test]
+fn a_use_of_an_undeclared_trait_is_a_throwable_error() {
+    // Unlike every other link failure above, this one goes through the ordinary
+    // exception machinery, so it is catchable.
+    let src = r#"<?php
+        trait A { public function f() {} }
+        try { new class { use A, Nope; }; }
+        catch (Error $e) { echo get_class($e), ": ", $e->getMessage(); }"#;
+    assert_eq!(run(src), "Error: Trait \"Nope\" not found");
+}

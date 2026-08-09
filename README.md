@@ -159,8 +159,13 @@ end-to-end (see `tests/basic.rs`):
   `new static`, `static::CONST`, `static::$prop`, `static::m()` — resolves to the
   class the call was made on, and `self::`/`parent::`/`static::` calls forward
   it), single inheritance, **interfaces** (`implements`, interface
-  `extends`), the **`instanceof`** operator, and **traits** (`use Trait;` member
-  merging). `abstract` classes and interfaces reject direct instantiation
+  `extends`), the **`instanceof`** operator, **traits** (`use Trait;` member
+  merging, with `insteadof`/`as` adaptation blocks resolving collisions and
+  binding extra names or visibilities — an unresolved collision is a fatal error
+  raised when the declaration is reached, as the reference raises it), and
+  **anonymous classes** (`new class(args) extends P implements I { … }`, named
+  `Base@anonymous` after the parent, else the first interface, else `class`).
+  `abstract` classes and interfaces reject direct instantiation
   (`new` on either is a `Cannot instantiate …` error). **References** — `$b = &$a`,
   references to a container slot in either direction (`$r = &$a['x']['y']`,
   `$r = &$o->p`, `$a[] = &$v`, `$o->p = &$v`), return-by-reference

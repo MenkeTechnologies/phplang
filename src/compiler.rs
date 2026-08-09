@@ -14,6 +14,16 @@ use crate::lexer::CompileDiag;
 use fusevm::{Chunk, ChunkBuilder, Op, Value};
 use rustc_hash::FxHashMap;
 
+/// Why a declaration the compiler could read cannot be LINKED, and in which of
+/// the reference's two shapes it says so.
+enum LinkError {
+    /// A bare fatal error: displayed with a stack trace, but raised below the
+    /// exception machinery, so no `try`/`catch` can see it.
+    Fatal(String),
+    /// The message of an ordinary throwable `Error`.
+    Throw(String),
+}
+
 /// The full output of compiling a program.
 pub struct Program {
     pub main: Chunk,
@@ -95,6 +105,18 @@ pub struct Compiler {
     /// granularity would need a line on every AST node; a statement that spans
     /// several lines therefore reports its first.
     cur_line: u32,
+    /// Method names of each compiled class in their declared spelling and
+    /// declaration order, keyed by the lowercased class name.
+    ///
+    /// `ClassDef::methods` is a hash map keyed by the *lowercased* name, so it
+    /// keeps neither — and a trait-conflict diagnostic needs both: PHP echoes
+    /// the method back as the trait spelled it, and which of several collisions
+    /// it reports depends on the order the members were declared in.
+    method_order: FxHashMap<String, Vec<String>>,
+    /// How many anonymous classes have been given a name so far. PHP numbers
+    /// them from zero across the whole compilation unit, in source order, and
+    /// bakes the number into the generated class name.
+    anon_classes: usize,
 }
 
 /// Compile a parsed program. `debug` enables per-statement DAP line markers.
@@ -388,7 +410,7 @@ impl Compiler {
                     },
                 ));
             }
-            StmtKind::Class(decl) => self.compile_class(decl)?,
+            StmtKind::Class(decl) => self.compile_class(b, decl)?,
             StmtKind::If {
                 cond,
                 then,
@@ -839,7 +861,7 @@ impl Compiler {
     /// on the stack), and each method body compiles like a free function. A
     /// constructor with promoted parameters (`public int $x`) gets a synthetic
     /// `$this->x = $x;` prepended for each promoted parameter.
-    fn compile_class(&mut self, decl: &ClassDecl) -> Result<(), String> {
+    fn compile_class(&mut self, b: &mut ChunkBuilder, decl: &ClassDecl) -> Result<(), String> {
         let prev_class = self.current_class.take();
         let prev_parent = self.current_parent.take();
         self.current_class = Some(decl.name.clone());
@@ -853,27 +875,44 @@ impl Compiler {
         let mut methods: FxHashMap<String, FuncDef> = FxHashMap::default();
         let mut prop_vis: FxHashMap<String, Visibility> = FxHashMap::default();
         let mut method_vis: FxHashMap<String, Visibility> = FxHashMap::default();
-        for tname in &decl.uses {
-            let tl = tname.to_ascii_lowercase();
-            if let Some((_, tdef)) = self.classes.iter().find(|(n, _)| *n == tl) {
-                for (n, c) in &tdef.consts {
-                    consts.push((n.clone(), c.clone()));
+        let mut order: Vec<String> = Vec::new();
+        match self.seed_from_traits(
+            decl,
+            &mut consts,
+            &mut prop_defaults,
+            &mut static_prop_defaults,
+            &mut methods,
+            &mut prop_vis,
+            &mut method_vis,
+            &mut order,
+        ) {
+            Ok(()) => {}
+            // A bad `use` is a *link*-time failure in PHP, not a compile-time
+            // one: everything the script printed before the declaration is
+            // printed first. So it is emitted at the declaration's own place in
+            // the instruction stream rather than failing the compile, and the
+            // class is left unregistered — the program never gets past it.
+            Err(err) => {
+                match err {
+                    LinkError::Fatal(msg) => {
+                        let idx = b.add_constant(Value::str(msg));
+                        b.emit(Op::LoadConst(idx), self.cur_line);
+                        b.emit(Op::CallBuiltin(ops::DECL_FATAL, 1), self.cur_line);
+                    }
+                    // A missing trait, unlike a conflict, is an ordinary
+                    // throwable `Error` — an `eval`'d declaration can be caught.
+                    LinkError::Throw(msg) => {
+                        let e = Expr::Throw(Box::new(Expr::New(
+                            "Error".to_string(),
+                            vec![Expr::Str(msg)],
+                        )));
+                        self.compile_expr(b, &e)?;
+                    }
                 }
-                for (n, c) in &tdef.prop_defaults {
-                    prop_defaults.push((n.clone(), c.clone()));
-                }
-                for (n, c) in &tdef.static_prop_defaults {
-                    static_prop_defaults.push((n.clone(), c.clone()));
-                }
-                for (n, m) in &tdef.methods {
-                    methods.insert(n.clone(), m.clone());
-                }
-                for (n, v) in &tdef.prop_vis {
-                    prop_vis.insert(n.clone(), *v);
-                }
-                for (n, v) in &tdef.method_vis {
-                    method_vis.insert(n.clone(), *v);
-                }
+                b.emit(Op::Pop, self.cur_line);
+                self.current_class = prev_class;
+                self.current_parent = prev_parent;
+                return Ok(());
             }
         }
 
@@ -907,6 +946,8 @@ impl Compiler {
 
         for m in &decl.methods {
             method_vis.insert(m.name.to_ascii_lowercase(), m.visibility);
+            order.retain(|n| !n.eq_ignore_ascii_case(&m.name));
+            order.push(m.name.clone());
             let cparams = self.compile_params(&m.params)?;
             let mut mb = ChunkBuilder::new();
             // A method body has its own loop scope (as free functions do).
@@ -962,6 +1003,8 @@ impl Compiler {
             enum_cases.push((case.name.clone(), chunk));
         }
 
+        self.method_order
+            .insert(decl.name.to_ascii_lowercase(), order);
         self.classes.push((
             decl.name.to_ascii_lowercase(),
             ClassDef {
@@ -988,6 +1031,242 @@ impl Compiler {
         self.current_class = prev_class;
         self.current_parent = prev_parent;
         Ok(())
+    }
+
+    /// Merge the members of every trait named by `use` into the tables the class
+    /// is being built from, applying the `insteadof`/`as` adaptations.
+    ///
+    /// `Err` is the *body* of a PHP link-time fatal error (no severity, no
+    /// location — the caller's op adds those). Every one of them is a case PHP
+    /// refuses to link, so returning early with the class unregistered is right:
+    /// the program stops at the declaration.
+    ///
+    /// Two traits declaring the same method is such a case unless an `insteadof`
+    /// picks a winner — silently taking the last one, which is what a flat merge
+    /// does, hides a real conflict.
+    #[allow(clippy::too_many_arguments)]
+    fn seed_from_traits(
+        &self,
+        decl: &ClassDecl,
+        consts: &mut Vec<(String, Chunk)>,
+        prop_defaults: &mut Vec<(String, Chunk)>,
+        static_prop_defaults: &mut Vec<(String, Chunk)>,
+        methods: &mut FxHashMap<String, FuncDef>,
+        prop_vis: &mut FxHashMap<String, Visibility>,
+        method_vis: &mut FxHashMap<String, Visibility>,
+        order: &mut Vec<String>,
+    ) -> Result<(), LinkError> {
+        if decl.uses.is_empty() {
+            return Ok(());
+        }
+        // The used traits, in `use` order. A name that never got declared cannot
+        // be linked against at all.
+        let mut used: Vec<&ClassDef> = Vec::with_capacity(decl.uses.len());
+        for tname in &decl.uses {
+            match self.find_class(tname) {
+                Some(d) => used.push(d),
+                // A `use` naming something that was never declared is the one
+                // link failure the reference reports as a throwable `Error`.
+                None => return Err(LinkError::Throw(format!("Trait \"{tname}\" not found"))),
+            }
+        }
+        // Every trait named on either side of an adaptation must be one of them.
+        let mut named = Vec::new();
+        for ins in &decl.trait_insteadof {
+            named.push(&ins.winner);
+            named.extend(ins.losers.iter());
+        }
+        named.extend(decl.trait_aliases.iter().filter_map(|a| a.from.as_ref()));
+        for tname in named {
+            if !used.iter().any(|d| d.name.eq_ignore_ascii_case(tname)) {
+                return Err(LinkError::Fatal(match self.find_class(tname) {
+                    Some(_) => format!("Required Trait {tname} wasn't added to {}", decl.name),
+                    None => format!("Could not find trait {tname}"),
+                }));
+            }
+        }
+
+        // Non-method members merge flat: `insteadof`/`as` only ever speak about
+        // methods, and a class's own declaration overrides whatever a trait
+        // brought in (that override happens in the caller, after this).
+        for tdef in &used {
+            consts.extend(tdef.consts.iter().cloned());
+            prop_defaults.extend(tdef.prop_defaults.iter().cloned());
+            static_prop_defaults.extend(tdef.static_prop_defaults.iter().cloned());
+            for (n, v) in &tdef.prop_vis {
+                prop_vis.insert(n.clone(), *v);
+            }
+        }
+
+        // `A::m insteadof B` drops B's `m` from consideration; A's is not
+        // "chosen" so much as B's is excluded, which is why three traits still
+        // collide when only one of them is excluded.
+        let excluded: Vec<(String, String)> = decl
+            .trait_insteadof
+            .iter()
+            .flat_map(|ins| {
+                ins.losers
+                    .iter()
+                    .map(|l| (l.to_ascii_lowercase(), ins.method.to_ascii_lowercase()))
+            })
+            .collect();
+        let is_excluded = |tdef: &ClassDef, m: &str| {
+            excluded
+                .iter()
+                .any(|(t, em)| tdef.name.eq_ignore_ascii_case(t) && em == m)
+        };
+
+        // Every method name any used trait declares, in trait order then
+        // declaration order, so the collision reported is the first one PHP
+        // would reach.
+        let mut seen: Vec<String> = Vec::new();
+        for tdef in &used {
+            for spelling in self.declared_methods(&tdef.name) {
+                let key = spelling.to_ascii_lowercase();
+                if !seen.contains(&key) {
+                    seen.push(key);
+                }
+            }
+        }
+        for m in &seen {
+            let candidates: Vec<&&ClassDef> = used
+                .iter()
+                .filter(|t| t.methods.contains_key(m) && !is_excluded(t, m))
+                .collect();
+            let Some(winner) = candidates.first() else {
+                continue;
+            };
+            // PHP names the SECOND candidate as the one not applied and the
+            // first as the one it collided with, whatever the pair's position.
+            if let Some(loser) = candidates.get(1) {
+                let kept = self.method_spelling(&winner.name, m);
+                let dropped = self.method_spelling(&loser.name, m);
+                return Err(LinkError::Fatal(format!(
+                    "Trait method {}::{dropped} has not been applied as {}::{dropped}, \
+                     because of collision with {}::{kept}",
+                    loser.name, decl.name, winner.name
+                )));
+            }
+            methods.insert(m.clone(), winner.methods[m].clone());
+            if let Some(v) = winner.method_vis.get(m) {
+                method_vis.insert(m.clone(), *v);
+            }
+            order.push(self.method_spelling(&winner.name, m));
+        }
+
+        // Aliases resolve against each trait's OWN method table, not the merged
+        // one: `A::hi insteadof B; B::hi as bHi;` is the whole point of the
+        // construct, and B's `hi` is excluded from the merge.
+        for al in &decl.trait_aliases {
+            let key = al.method.to_ascii_lowercase();
+            let source = match &al.from {
+                Some(tname) => {
+                    let tdef = used
+                        .iter()
+                        .find(|d| d.name.eq_ignore_ascii_case(tname))
+                        .expect("adaptation trait names were checked above");
+                    if !tdef.methods.contains_key(&key) {
+                        return Err(LinkError::Fatal(format!(
+                            "An alias was defined for {tname}::{} but this method does not exist",
+                            al.method
+                        )));
+                    }
+                    *tdef
+                }
+                None => {
+                    let found: Vec<&&ClassDef> = used
+                        .iter()
+                        .filter(|d| d.methods.contains_key(&key))
+                        .collect();
+                    match found.as_slice() {
+                        [one] => **one,
+                        [] => {
+                            let alias = al.alias.clone().unwrap_or_else(|| al.method.clone());
+                            return Err(LinkError::Fatal(format!(
+                                "An alias ({alias}) was defined for method {}(), but this \
+                                 method does not exist",
+                                al.method
+                            )));
+                        }
+                        [a, b, ..] => {
+                            let m = self.method_spelling(&a.name, &key);
+                            return Err(LinkError::Fatal(format!(
+                                "An alias was defined for method {m}(), which exists in both \
+                                 {} and {}. Use {}::{m} or {}::{m} to resolve the ambiguity",
+                                a.name, b.name, a.name, b.name
+                            )));
+                        }
+                    }
+                }
+            };
+            match &al.alias {
+                // With a new name the method gains a SECOND binding; the
+                // original one stays exactly as it was.
+                Some(alias) => {
+                    let ak = alias.to_ascii_lowercase();
+                    methods.insert(ak.clone(), source.methods[&key].clone());
+                    let vis = al
+                        .visibility
+                        .or_else(|| source.method_vis.get(&key).copied())
+                        .unwrap_or(Visibility::Public);
+                    method_vis.insert(ak, vis);
+                    order.push(alias.clone());
+                }
+                // Without one, only the visibility of the existing binding moves.
+                None => {
+                    if let Some(v) = al.visibility {
+                        method_vis.insert(key, v);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The name PHP gives an anonymous class:
+    /// `Base@anonymous\0<script>:<line>$<n>`, where `Base` is the parent class,
+    /// else the first implemented interface, else the literal `class`, and `n`
+    /// is a hexadecimal per-compilation counter.
+    ///
+    /// The NUL is not a quirk of this port — the reference builds the name that
+    /// way so that everything printing it as a C string (`var_dump`, `print_r`)
+    /// shows only the readable head, while `get_class` returns the whole,
+    /// guaranteed-unique string.
+    fn anon_class_name(&mut self, decl: &ClassDecl, line: u32) -> String {
+        let base = decl
+            .parent
+            .as_deref()
+            .or(decl.implements.first().map(String::as_str))
+            .unwrap_or("class");
+        let n = self.anon_classes;
+        self.anon_classes += 1;
+        let script = host::with_host(|h| h.script_name().to_string());
+        format!("{base}@anonymous\0{script}:{line}${n:x}")
+    }
+
+    /// A declared class/interface/trait by name, case-insensitively.
+    fn find_class(&self, name: &str) -> Option<&ClassDef> {
+        let key = name.to_ascii_lowercase();
+        self.classes.iter().find(|(n, _)| *n == key).map(|(_, d)| d)
+    }
+
+    /// The method names a class declared, in their source spelling and source
+    /// order — see [`Compiler::method_order`].
+    fn declared_methods(&self, class: &str) -> &[String] {
+        self.method_order
+            .get(&class.to_ascii_lowercase())
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// How `class` spelled the method whose lowercased name is `key`. Falls back
+    /// to the lowercased form, which is only reachable for a method no
+    /// declaration recorded.
+    fn method_spelling(&self, class: &str, key: &str) -> String {
+        self.declared_methods(class)
+            .iter()
+            .find(|n| n.eq_ignore_ascii_case(key))
+            .cloned()
+            .unwrap_or_else(|| key.to_string())
     }
 
     /// Resolve a class reference to a concrete name, expanding the `self`,
@@ -1427,6 +1706,26 @@ impl Compiler {
                     })
                     .collect();
                 self.compile_closure(b, params, &captures, &ret)?;
+            }
+            // The declaration is compiled here, once, and the expression becomes
+            // an ordinary `new` on the name it was given — so re-evaluating it
+            // (in a loop, say) reuses the single class, as PHP does.
+            Expr::NewAnon { decl, args, line } => {
+                let name = self.anon_class_name(decl, *line);
+                let named = ClassDecl {
+                    name: name.clone(),
+                    ..(**decl).clone()
+                };
+                // Lowering the body walks its statements, which leaves
+                // `cur_line` on the class's last member. The `new` belongs to
+                // the `class` keyword's own line — an exception constructed
+                // there reports that line, not the enclosing statement's — and
+                // the rest of the statement belongs to where it started.
+                let site = self.cur_line;
+                self.compile_class(b, &named)?;
+                self.cur_line = *line;
+                self.compile_expr(b, &Expr::New(name, args.clone()))?;
+                self.cur_line = site;
             }
             Expr::New(class, args) if has_named(args) => {
                 self.emit_class_name(b, class)?;
@@ -2828,7 +3127,9 @@ fn collect_free_vars(e: &Expr, out: &mut Vec<String>) {
                 push(&u.name, out);
             }
         }
-        Expr::New(_, args) | Expr::StaticCall(_, _, args) => {
+        // Only the CONSTRUCTOR arguments of an anonymous class are in the
+        // enclosing scope; its body is a class body, which never reads one.
+        Expr::New(_, args) | Expr::StaticCall(_, _, args) | Expr::NewAnon { args, .. } => {
             for a in args {
                 collect_free_vars(a, out);
             }
@@ -2948,9 +3249,10 @@ fn expr_has_yield(e: &Expr) -> bool {
         Expr::Assign(a, _, b) => expr_has_yield(a) || expr_has_yield(b),
         Expr::Ternary(a, c, d) => expr_has_yield(a) || expr_has_yield(c) || expr_has_yield(d),
         Expr::IncDec { target, .. } => expr_has_yield(target),
-        Expr::Call(_, args) | Expr::New(_, args) | Expr::StaticCall(_, _, args) => {
-            args.iter().any(expr_has_yield)
-        }
+        Expr::Call(_, args)
+        | Expr::New(_, args)
+        | Expr::StaticCall(_, _, args)
+        | Expr::NewAnon { args, .. } => args.iter().any(expr_has_yield),
         Expr::CallValue(c, args) => expr_has_yield(c) || args.iter().any(expr_has_yield),
         Expr::MethodCall(r, _, args) | Expr::NullsafeMethodCall(r, _, args) => {
             expr_has_yield(r) || args.iter().any(expr_has_yield)
