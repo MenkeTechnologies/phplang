@@ -1689,6 +1689,241 @@ fn gen_pregfancy(seed: u64) -> Vec<String> {
     }
 }
 
+/// Multibyte (pattern, subject) pairs for the byte-offset question.
+///
+/// Every pattern here is free of `.`, `^` and `$`. That is deliberate, not
+/// incidental: a non-ASCII subject under a pattern containing those constructs
+/// is a SEPARATE, already-escalated disagreement about what a "character" is,
+/// and pulling it in here would make this mode fail for a reason that has
+/// nothing to do with offsets. Anchor-free literal patterns ask only the
+/// question this mode exists to ask.
+///
+/// Each subject is paired both with and without `/u`, because the answer is the
+/// same either way — PHP reports a BYTE offset even when the subject is walked
+/// as UTF-8 — and an implementation that counts codepoints under `/u` is wrong
+/// in exactly the cases where the two spellings would otherwise agree.
+const OFFSET_MB: &[(&str, &str)] = &[
+    ("'/b/'", "éb"),
+    ("'/b/u'", "éb"),
+    ("'/(c)/'", "éàc"),
+    ("'/(c)/u'", "éàc"),
+    ("'/(?<g>x)/'", "日本x"),
+    ("'/(?<g>x)/u'", "日本x"),
+    ("'/z(q)?(w)/'", "€zw"),
+    ("'/z(q)?(w)/u'", "€zw"),
+];
+
+/// `PREG_OFFSET_CAPTURE` across every function that honours it.
+///
+/// This mode exists because the generator was BLIND to the flag: a grep for
+/// `PREG_OFFSET_CAPTURE` over this file returned ZERO hits before it was added,
+/// so every previous "0 divergences" run scored the flag not at all. The engine
+/// accepted the constant and ignored it, returning the bare captured string
+/// where the reference returns a `[string, offset]` pair — a wrong answer that
+/// no amount of running the old corpus could ever have surfaced.
+///
+/// Three properties are under test and each fails independently:
+///   * the PAIR SHAPE — every captured slot becomes a two-element list;
+///   * the OFFSET UNIT — byte, not codepoint, including under `/u` (see
+///     [`OFFSET_MB`]);
+///   * the NON-PARTICIPATING SENTINEL — a group that did not take part is
+///     `['', -1]`, where the flagless form yields a bare `''`. An engine that
+///     wrapped the flagless value verbatim would emit `['', 0]` and pass every
+///     test that only checks the shape.
+///
+/// `var_export` is used rather than a count or an `implode`: the offsets ARE the
+/// answer, and any summary agrees with an implementation that computed them all
+/// wrongly.
+fn gen_pregoffset(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let p = *r.pick(FANCY_PATTERNS);
+    let s = *r.pick(FANCY_SUBJECTS);
+    let s2 = *r.pick(FANCY_SUBJECTS);
+    let (mp, ms) = *r.pick(OFFSET_MB);
+    // The error state must stay clear: these patterns COMPILE on the reference.
+    let st = r#"echo "|", preg_last_error(), "|";"#;
+    match r.below(8) {
+        // The plain match, with and without the flag, so the pair shape is
+        // pinned against the very same captures in their unwrapped form.
+        0 => vec![format!(
+            "var_dump(preg_match({p}, '{s}', $m), $m); {st} \
+             var_dump(preg_match({p}, '{s}', $n, PREG_OFFSET_CAPTURE), $n); {st}"
+        )],
+        // Byte offsets on a multibyte subject — the codepoint-counter killer.
+        1 => vec![format!(
+            "var_dump(preg_match({mp}, '{ms}', $m, PREG_OFFSET_CAPTURE), $m); {st} \
+             var_dump(preg_match_all({mp}, '{ms}', $n, PREG_OFFSET_CAPTURE), $n); {st}"
+        )],
+        // Both match_all orders under the flag. They nest the pair at different
+        // depths, and SET_ORDER additionally truncates each row at its own last
+        // participating group, so the two disagree about where `-1` can appear.
+        2 => vec![format!(
+            "var_dump(preg_match_all({p}, '{s}', $m, PREG_PATTERN_ORDER|PREG_OFFSET_CAPTURE), $m); \
+             {st} var_dump(preg_match_all({p}, '{s}', $n, PREG_SET_ORDER|PREG_OFFSET_CAPTURE), $n); \
+             {st}"
+        )],
+        // The callback form, which hands the wrapped `$matches` to user code —
+        // a separate call path from the out-parameter one above.
+        3 => vec![format!(
+            "var_dump(preg_replace_callback({p}, function($m) {{ return json_encode($m); }}, \
+             '{s}', -1, $c, PREG_OFFSET_CAPTURE)); var_dump($c); {st}"
+        )],
+        // The start-offset parameter, which shifts where matching begins but
+        // NOT the origin the reported offsets are measured from.
+        4 => vec![format!(
+            "var_dump(preg_match({p}, '{s}', $m, PREG_OFFSET_CAPTURE, 1), $m); {st} \
+             var_dump(preg_match({p}, '{s}', $n, PREG_OFFSET_CAPTURE, 2), $n); {st}"
+        )],
+        // A miss: `$matches` must be emptied, not left holding a stale pair.
+        5 => vec![format!(
+            "var_dump(preg_match({p}, '{s}', $m, PREG_OFFSET_CAPTURE), $m); {st} \
+             var_dump(preg_match('/\\bzzqq\\b/', '{s}', $m, PREG_OFFSET_CAPTURE), $m); {st}"
+        )],
+        // Named groups, whose pair must be stored under BOTH the name and the
+        // number — two slots that an implementation can easily wrap only once.
+        6 => vec![format!(
+            "var_dump(preg_match('/(?<a>\\w)(?<b>\\d)?/', '{s}', $m, PREG_OFFSET_CAPTURE), $m); \
+             {st} var_dump(preg_match_all('/(?<a>\\w)(?<b>\\d)?/', '{s2}', $n, \
+             PREG_OFFSET_CAPTURE), $n); {st}"
+        )],
+        // The flag combined with the one it is most often paired with, so a
+        // bitmask test that used `==` instead of `&` shows up.
+        _ => vec![format!(
+            "var_dump(preg_match({p}, '{s2}', $m, PREG_OFFSET_CAPTURE|PREG_UNMATCHED_AS_NULL), $m); \
+             {st} var_dump(preg_match({p}, '{s2}', $n, PREG_OFFSET_CAPTURE), $n); {st}"
+        )],
+    }
+}
+
+/// `foreach` with a destructuring target instead of a plain `$value`.
+///
+/// This mode exists because the generator was BLIND to the form: the only four
+/// `foreach` occurrences in this file bound `$v`, `&$v`, `$k => $v` and `$p`,
+/// so the bracket spelling was never emitted and the parse error it produced
+/// was invisible to every previous run.
+///
+/// The SHORT-ROW cases are the sharp end. When the element has fewer entries
+/// than the pattern, the reference does not bind null silently — it emits
+/// `Warning: Undefined array key N` and then assigns null, so an engine that
+/// quietly produces null passes a value check and still diverges on stdout.
+/// Warnings land on stdout under the CLI defaults, so they are compared here.
+fn gen_destructure(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let a = ii(r);
+    let b = ii(r);
+    let c = ii(r);
+    let w = ww(r);
+    match r.below(8) {
+        // The two spellings of the same pattern, which must agree with each
+        // other as well as with the reference.
+        0 => vec![format!(
+            "$a = [[{a},{b}],[{b},{c}]]; \
+             foreach ($a as [$x,$y]) {{ echo $x, '-', $y, ';'; }} echo '|'; \
+             foreach ($a as list($x,$y)) {{ echo $x, '=', $y, ';'; }} echo \"|\\n\";"
+        )],
+        // The keyed form, whose targets are looked up by string key rather than
+        // by successive integer index.
+        1 => vec![format!(
+            "$a = [['k'=>{a},'j'=>{b}],['k'=>{c},'j'=>{a}]]; \
+             foreach ($a as ['j'=>$v,'k'=>$u]) {{ echo $u, '/', $v, ';'; }} echo \"|\\n\";"
+        )],
+        // `$k => [pattern]` — a key binding AND a destructured value together.
+        2 => vec![format!(
+            "$a = ['p'=>[{a},{b}], 'q'=>[{b},{c}]]; \
+             foreach ($a as $k => [$x,$y]) {{ echo $k, ':', $x, ',', $y, ';'; }} echo \"|\\n\";"
+        )],
+        // Nesting, which recurses the same target machinery one level down.
+        3 => vec![format!(
+            "$a = [[{a},[{b},{c}]],[{c},[{a},{b}]]]; \
+             foreach ($a as [$p,[$q,$s]]) {{ echo $p, $q, $s, ';'; }} echo \"|\\n\";"
+        )],
+        // A hole, which binds nothing but still consumes its index.
+        4 => vec![format!(
+            "$a = [[{a},{b},{c}]]; \
+             foreach ($a as [, $second]) {{ echo $second, ';'; }} echo '|'; \
+             foreach ($a as [, , $third]) {{ echo $third, ';'; }} echo \"|\\n\";"
+        )],
+        // SHORT ROWS: a warning plus null, not a silent null.
+        5 => vec![format!(
+            "$a = [[{a}],[{a},{b}],[]]; \
+             foreach ($a as [$x,$y]) {{ var_dump($x, $y); }} echo \"|\\n\";"
+        )],
+        // A short row under the KEYED form, whose missing key is reported by
+        // name rather than by index.
+        6 => vec![format!(
+            "$a = [['k'=>{a}],['k'=>{b},'j'=>{c}]]; \
+             foreach ($a as ['k'=>$u,'j'=>$v]) {{ var_dump($u, $v); }} echo \"|\\n\";"
+        )],
+        // Destructuring a non-array element, and strings mixed in, so the
+        // element-is-not-a-list path is exercised too.
+        _ => vec![format!(
+            "$a = [[{a},{b}], '{w}', {c}]; \
+             foreach ($a as [$x,$y]) {{ var_dump($x, $y); }} echo \"|\\n\";"
+        )],
+    }
+}
+
+/// Constant references written with a namespace qualification.
+///
+/// This mode exists because the generator was BLIND to the form: the only two
+/// backslash-qualified names in this file sat in `catch` and attribute
+/// position, both of which take a CLASS name through a different parser path,
+/// so a qualified CONSTANT was never emitted.
+///
+/// The naming rule is the whole point and it is not the obvious one. A leading
+/// `\` is stripped — `\NOPE` is the constant `NOPE` — but inner separators are
+/// KEPT, so `Foo\BAR` is a constant literally named `Foo\BAR` and is a
+/// different constant from `BAR`. Both halves are asserted here, including in
+/// the failure message: an undefined `Foo\BAR` must name `Foo\BAR` in the
+/// thrown `Error`, and an undefined `\NOPE` must name `NOPE`.
+///
+/// The undefined cases matter as much as the defined ones. PHP 8 THROWS for an
+/// unknown constant where PHP 7 fell back to the bare name as a string, so a
+/// qualified reference that reached a second, older resolution path would
+/// silently produce the string `"Foo\BAR"` instead of an `Error`.
+fn gen_nsconst(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let v = ii(r);
+    let v2 = ii(r);
+    let w = ww(r);
+    match r.below(6) {
+        // Defined under a qualified name, read back both with and without the
+        // global-namespace prefix.
+        0 => vec![format!(
+            "define('Foo\\BAR', {v}); echo Foo\\BAR, '|', \\Foo\\BAR, '|', \
+             constant('Foo\\BAR'), \"|\\n\";"
+        )],
+        // A deep qualification, and `defined()` agreeing with the bare read.
+        1 => vec![format!(
+            "define('A\\B\\C', {v}); var_dump(defined('A\\B\\C'), A\\B\\C, \\A\\B\\C); \
+             var_dump(defined('C'));"
+        )],
+        // The qualified name is DISTINCT from its last segment — the case a
+        // last-segment fold gets wrong while passing everything above.
+        2 => vec![format!(
+            "define('BAR', {v}); define('Foo\\BAR', {v2}); \
+             var_dump(BAR, Foo\\BAR, \\BAR, \\Foo\\BAR);"
+        )],
+        // Undefined qualified: throws, and the message carries the FULL name.
+        3 => vec![format!(
+            "try {{ echo Foo\\NOPE_{w}; }} catch (Error $e) {{ echo get_class($e), ':', \
+             $e->getMessage(), \"|\\n\"; }}"
+        )],
+        // Undefined with only the global prefix: throws naming the BARE name.
+        4 => vec![format!(
+            "try {{ echo \\NOPE_{w}; }} catch (Error $e) {{ echo get_class($e), ':', \
+             $e->getMessage(), \"|\\n\"; }} \
+             try {{ echo NOPE_{w}; }} catch (Error $e) {{ echo $e->getMessage(), \"|\\n\"; }}"
+        )],
+        // Qualified constants in expression position, so the parse is exercised
+        // somewhere other than a bare statement head.
+        _ => vec![format!(
+            "define('N\\X', {v}); define('N\\Y', {v2}); \
+             var_dump(N\\X + N\\Y, [N\\X, \\N\\Y], N\\X <=> N\\Y);"
+        )],
+    }
+}
+
 /// Property access against classes that DO and DO NOT define the magic methods.
 ///
 /// The operations are the point, not the declarations: each program writes,
@@ -1945,6 +2180,18 @@ struct Mode {
 }
 
 const MODES: &[Mode] = &[
+    Mode {
+        name: "pregoffset",
+        gen: gen_pregoffset,
+    },
+    Mode {
+        name: "destructure",
+        gen: gen_destructure,
+    },
+    Mode {
+        name: "nsconst",
+        gen: gen_nsconst,
+    },
     Mode {
         name: "numjuggle",
         gen: gen_numjuggle,
