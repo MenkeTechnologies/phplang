@@ -1261,9 +1261,12 @@ fn preg_match(args: &[Value]) -> Result<Value, String> {
     let pat = with_host(|h| h.to_str(&arg(args, 0)));
     let subject = with_host(|h| h.to_str(&arg(args, 1)));
     let fmt = CellFmt::from_flags(args.get(3).map(|v| v.to_int()).unwrap_or(0));
-    let from = start_offset(args.get(4), subject.len());
     let Some(re) = compile_for("preg_match", &pat) else {
         return Ok(Value::bool(false));
+    };
+    // Checked AFTER the pattern compiles, so a bad pattern still reports itself.
+    let Some(from) = start_offset(args.get(4), subject.len()) else {
+        return bad_offset(args);
     };
     match re.captures_first_from(subject.as_bytes(), from) {
         Some(caps) => {
@@ -1281,18 +1284,30 @@ fn preg_match(args: &[Value]) -> Result<Value, String> {
     }
 }
 
-/// Resolve a `$offset` argument to a byte position in a subject of `len` bytes.
+/// Resolve a `$offset` argument to a byte position in a subject of `len` bytes,
+/// or `None` when it is out of range.
 ///
-/// A negative offset counts back from the end, as PHP's does. It is clamped to
-/// zero rather than wrapping, so `-100` on a short subject starts at the
-/// beginning instead of at a position that would reject the whole call.
-fn start_offset(v: Option<&Value>, len: usize) -> usize {
+/// A negative offset counts back from the end and CLAMPS at zero, so `-100` on a
+/// short subject starts at the beginning rather than failing. A positive offset
+/// PAST the end fails instead: the reference returns `false` and leaves
+/// `preg_last_error()` at `PREG_INTERNAL_ERROR`. `len` itself is in range — that
+/// is where a trailing zero-width match lives — so only `> len` is rejected.
+fn start_offset(v: Option<&Value>, len: usize) -> Option<usize> {
     let raw = v.map(|v| v.to_int()).unwrap_or(0);
     if raw < 0 {
-        (len as i64 + raw).max(0) as usize
-    } else {
-        raw as usize
+        return Some((len as i64 + raw).max(0) as usize);
     }
+    (raw as u64 <= len as u64).then_some(raw as usize)
+}
+
+/// The `false` an out-of-range `$offset` produces, with the error state and the
+/// emptied `$matches` that accompany it.
+fn bad_offset(args: &[Value]) -> Result<Value, String> {
+    with_host(|h| h.set_preg_error(PREG_INTERNAL_ERROR));
+    if args.len() > 2 {
+        fill_out(&args[2], 2, vec![]);
+    }
+    Ok(Value::bool(false))
 }
 
 fn preg_match_all(args: &[Value]) -> Result<Value, String> {
@@ -1304,7 +1319,9 @@ fn preg_match_all(args: &[Value]) -> Result<Value, String> {
     };
     let names = re.group_names();
     let fmt = CellFmt::from_flags(flags);
-    let from = start_offset(args.get(4), subject.len());
+    let Some(from) = start_offset(args.get(4), subject.len()) else {
+        return bad_offset(args);
+    };
     // Full-width values plus the index of the last group each set carries:
     // PREG_SET_ORDER truncates each set THERE (its rows are ragged), while
     // PREG_PATTERN_ORDER keeps every column at full width.

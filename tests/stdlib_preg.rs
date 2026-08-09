@@ -1118,3 +1118,37 @@ fn replace_reports_the_replacement_count() {
         "int(0)\n"
     );
 }
+
+#[test]
+fn an_offset_past_the_end_fails_but_the_end_itself_does_not() {
+    // `$offset == strlen($subject)` is in range — that is where a trailing
+    // zero-width match lives — so it is an ordinary no-match.
+    assert_eq!(run(r#"<?php var_dump(preg_match('/b/', 'abab', $m, 0, 4));"#), "int(0)\n");
+    // Past the end is an ERROR, not a no-match: false, an emptied $matches, and
+    // PREG_INTERNAL_ERROR left behind.
+    assert_eq!(
+        run(r#"<?php var_dump(preg_match('/b/', 'abab', $m, 0, 10), $m, preg_last_error());"#),
+        "bool(false)\narray(0) {\n}\nint(1)\n"
+    );
+    assert_eq!(
+        run(r#"<?php var_dump(preg_match_all('/a/', 'aaa', $m, PREG_PATTERN_ORDER, 10));"#),
+        "bool(false)\n"
+    );
+}
+
+#[test]
+fn a_negative_offset_counts_back_from_the_end_and_clamps() {
+    assert_eq!(
+        run(r#"<?php preg_match('/b/', 'abab', $m, PREG_OFFSET_CAPTURE, -2); echo $m[0][1];"#),
+        "3"
+    );
+    // Clamped to the start rather than rejected.
+    assert_eq!(
+        run(r#"<?php preg_match('/a/', 'abab', $m, PREG_OFFSET_CAPTURE, -100); echo $m[0][1];"#),
+        "0"
+    );
+    assert_eq!(
+        run(r#"<?php echo preg_match_all('/a/', 'aaa', $m, PREG_PATTERN_ORDER, -2);"#),
+        "2"
+    );
+}
