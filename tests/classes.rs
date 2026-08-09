@@ -382,3 +382,101 @@ fn magic_get_and_set_are_skipped_from_inside_the_class() {
         format!("{GET} {SET} function go() {{ $this->bag = [1]; return count($this->bag); }}");
     assert_eq!(with_magic(&src, "echo $o->go();"), "1");
 }
+
+// ── __call / __callStatic ────────────────────────────────────────────────────
+
+/// A method the class does not declare is handed to `__call` with its arguments
+/// packed into ONE array — not spread as parameters.
+#[test]
+fn call_catch_all_receives_the_name_and_an_argument_array() {
+    let src = r#"<?php class C {
+            public function __call($n, $a) { return "$n/" . count($a) . "/" . implode(",", $a); }
+        }
+        echo (new C)->whatever(1, 2, 3);"#;
+    assert_eq!(run(src), "whatever/3/1,2,3");
+}
+
+/// The static form is a DIFFERENT method: a class with only `__call` does not
+/// answer `C::m()`, and one with only `__callStatic` does not answer `$o->m()`.
+#[test]
+fn call_static_catch_all_is_separate_from_the_instance_one() {
+    let both = r#"class C {
+            public function __call($n, $a) { return "inst:$n"; }
+            public static function __callStatic($n, $a) { return "static:$n"; }
+        }"#;
+    assert_eq!(run(&format!("<?php {both} echo (new C)->m();")), "inst:m");
+    assert_eq!(run(&format!("<?php {both} echo C::m();")), "static:m");
+    // Only `__callStatic`: the instance call has no catch-all to fall back to.
+    let src = r#"<?php class D { public static function __callStatic($n, $a) { return "s"; } }
+        try { (new D)->m(); } catch (Error $e) { echo $e->getMessage(); }"#;
+    assert_eq!(run(src), "Call to undefined method D::m()");
+}
+
+/// `__call` is reached through every call form, not just `$o->m()`.
+#[test]
+fn call_catch_all_is_reached_through_call_user_func() {
+    let src = r#"<?php class C { public function __call($n, $a) { return "c:$n:" . ($a[0] ?? "-"); } }
+        $o = new C;
+        echo call_user_func([$o, "a"], 1), "|", call_user_func_array([$o, "b"], [2]);"#;
+    assert_eq!(run(src), "c:a:1|c:b:2");
+}
+
+/// A `__call`-backed method is callable but does NOT exist: the two predicates
+/// disagree on purpose, and the reference is what settles it.
+#[test]
+fn a_catch_all_method_is_callable_but_does_not_exist() {
+    let src = r#"<?php class C { public function __call($n, $a) {} }
+        $o = new C;
+        var_dump(method_exists($o, "nope"), is_callable([$o, "nope"]));"#;
+    assert_eq!(run(src), "bool(false)\nbool(true)\n");
+}
+
+/// Calling something that is not there at all is a catchable `Error`, not a
+/// host-level abort — the same class the reference throws.
+#[test]
+fn an_undefined_method_call_throws_a_catchable_error() {
+    let src = r#"<?php class C {}
+        try { (new C)->m(); } catch (Error $e) { echo get_class($e), "|", $e->getMessage(); }"#;
+    assert_eq!(run(src), "Error|Call to undefined method C::m()");
+    let stat = r#"<?php class C {}
+        try { C::m(); } catch (Error $e) { echo get_class($e), "|", $e->getMessage(); }"#;
+    assert_eq!(run(stat), "Error|Call to undefined method C::m()");
+}
+
+#[test]
+fn an_undefined_function_call_throws_a_catchable_error() {
+    let src = r#"<?php try { definitely_not_a_function(); }
+        catch (Error $e) { echo get_class($e), "|", $e->getMessage(); }"#;
+    assert_eq!(
+        run(src),
+        "Error|Call to undefined function definitely_not_a_function()"
+    );
+}
+
+// ── object comparison ────────────────────────────────────────────────────────
+
+/// `==` on objects compares CLASS plus properties, so two distinct instances can
+/// be equal; `===` is identity and never is. An array is equal to neither.
+#[test]
+fn loose_equality_compares_objects_by_class_and_properties() {
+    let src = r#"<?php class P { public $a = 1; protected $b = 2; }
+        class Q { public $a = 1; protected $b = 2; }
+        $x = new P; $y = new P; $z = new Q;
+        var_dump($x == $y, $x === $y, $x == $z);
+        $y->a = 9;
+        var_dump($x == $y);"#;
+    assert_eq!(
+        run(src),
+        "bool(true)\nbool(false)\nbool(false)\nbool(false)\n"
+    );
+}
+
+/// `Stringable` is implemented automatically by any class with `__toString`,
+/// whether or not the class names the interface.
+#[test]
+fn stringable_is_implied_by_tostring() {
+    let src = r#"<?php class S { public function __toString(): string { return "s"; } }
+        class T {}
+        var_dump(new S instanceof Stringable, new T instanceof Stringable);"#;
+    assert_eq!(run(src), "bool(true)\nbool(false)\n");
+}

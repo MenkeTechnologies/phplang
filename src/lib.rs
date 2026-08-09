@@ -240,7 +240,10 @@ class DateTimeImmutable {
 /// (offsetGet/push/…), with `getIterator` returning the backing array.
 const SPL_PRELUDE: &str = r#"
 class stdClass {}
-class SplDoublyLinkedList {
+// `unserialize` restores an object of an unknown class into this placeholder,
+// carrying the original name in `__PHP_Incomplete_Class_Name`.
+class __PHP_Incomplete_Class {}
+class SplDoublyLinkedList implements ArrayAccess, Countable, IteratorAggregate {
     public $dll = [];
     public function push($v) { $this->dll[] = $v; }
     public function pop() { return array_pop($this->dll); }
@@ -262,7 +265,7 @@ class SplQueue extends SplDoublyLinkedList {
     public function enqueue($v) { $this->dll[] = $v; }
     public function dequeue() { return array_shift($this->dll); }
 }
-class SplFixedArray {
+class SplFixedArray implements ArrayAccess, Countable, IteratorAggregate {
     public $data = [];
     public $sz = 0;
     public function __construct($size = 0) {
@@ -273,12 +276,24 @@ class SplFixedArray {
     public function offsetSet($i, $v) { $this->data[$i] = $v; }
     public function offsetExists($i) { return $i >= 0 && $i < $this->sz; }
     public function getSize() { return $this->sz; }
-    public function setSize($size) { $this->sz = $size; }
+    // Shrinking DISCARDS the elements past the new end and growing pads with
+    // null, so `toArray()` always has exactly `sz` entries.
+    public function setSize($size) {
+        for ($i = $size; $i < $this->sz; $i++) { unset($this->data[$i]); }
+        for ($i = $this->sz; $i < $size; $i++) { $this->data[$i] = null; }
+        $this->sz = $size;
+    }
     public function count() { return $this->sz; }
     public function toArray() { return $this->data; }
     public function getIterator() { return $this->data; }
+    public static function fromArray($array) {
+        $fa = new SplFixedArray(count($array));
+        $i = 0;
+        foreach ($array as $v) { $fa[$i] = $v; $i++; }
+        return $fa;
+    }
 }
-class ArrayObject {
+class ArrayObject implements ArrayAccess, Countable, IteratorAggregate {
     public $storage = [];
     public function __construct($array = []) { $this->storage = $array; }
     public function offsetGet($k) { return $this->storage[$k]; }
@@ -291,14 +306,18 @@ class ArrayObject {
     public function getIterator() { return $this->storage; }
 }
 class ArrayIterator extends ArrayObject {}
-class SplObjectStorage {
+class SplObjectStorage implements ArrayAccess, Countable {
     public $store = [];
     public function attach($obj, $data = null) { $this->store[spl_object_id($obj)] = $data; }
     public function detach($obj) { unset($this->store[spl_object_id($obj)]); }
     public function contains($obj) { return array_key_exists(spl_object_id($obj), $this->store); }
     public function count() { return count($this->store); }
+    public function offsetGet($obj) { return $this->store[spl_object_id($obj)] ?? null; }
+    public function offsetSet($obj, $data) { $this->store[spl_object_id($obj)] = $data; }
+    public function offsetExists($obj) { return array_key_exists(spl_object_id($obj), $this->store); }
+    public function offsetUnset($obj) { unset($this->store[spl_object_id($obj)]); }
 }
-class SplPriorityQueue {
+class SplPriorityQueue implements Countable {
     public $items = [];
     public function insert($value, $priority) { $this->items[] = [$priority, $value]; }
     public function count() { return count($this->items); }
@@ -320,7 +339,7 @@ class SplPriorityQueue {
         return $v;
     }
 }
-class SplHeap {
+class SplHeap implements Countable {
     public $items = [];
     public function insert($v) { $this->items[] = $v; }
     public function count() { return count($this->items); }

@@ -173,7 +173,12 @@ end-to-end (see `tests/basic.rs`):
   `Suit::Hearts`, `->name`, `Suit::cases()`, singleton `===` identity) and backed
   enums (`enum Status: string { case Active = 'active'; }` with `->value`,
   `Status::from()`, `Status::tryFrom()`); enums may declare methods and constants
-  and satisfy `instanceof UnitEnum`/`BackedEnum`.
+  and satisfy `instanceof UnitEnum`/`BackedEnum`. A case renders as the case, not
+  as the object behind it: `enum(Suit::Hearts)` from `var_dump`, `\Suit::Hearts`
+  from `var_export`, `Suit Enum:string ( … )` from `print_r`, its backing value
+  from `json_encode` (a pure enum fails the encode with
+  `JSON_ERROR_NON_BACKED_ENUM`), and `E:12:"Suit:Hearts";` from `serialize`,
+  which `unserialize` resolves back to the very same singleton.
 - Exceptions: `throw` as a statement and a PHP-8 expression (`$x ?? throw …`),
   `try` / `catch (A | B $e)` / `finally` with `finally`-always semantics (it runs
   on return, throw, break, and continue out of the guarded body), a built-in
@@ -224,6 +229,25 @@ end-to-end (see `tests/basic.rs`):
   property raises a catchable `Error: Cannot access private property C::$x`
   naming the class that DECLARED it, rather than aborting the process. `isset()`
   never throws — asking is always allowed.
+- **Method overloading** — `__call` and `__callStatic` catch a call to a method
+  the class does not declare *or* cannot reach, receiving the name plus one array
+  of the arguments. The instance and static forms are distinct: a class with only
+  `__call` does not answer `C::m()`. Every call form routes through them,
+  including `call_user_func([$o, 'm'])`, so `is_callable([$o, 'm'])` is true for
+  a name only the catch-all handles while `method_exists` stays false.
+- **Call errors throw.** `Call to undefined method C::m()`, `Call to undefined
+  function f()` and `Call to private method C::m() from global scope` are all
+  catchable `Error`s, with the trace starting at the call site (no frame is
+  invented for the callee that does not exist).
+- **`ArrayAccess`** — `$o[k]`, `$o[k] = v`, `$o[] = v`, `isset($o[k])` and
+  `unset($o[k])` dispatch to `offsetGet`/`offsetSet`/`offsetExists`/`offsetUnset`
+  on any class implementing it. `isset()` asks `offsetExists` and nothing else;
+  `??` follows a true `offsetExists` with `offsetGet`. **`Countable`** backs
+  `count()`, which rejects anything else with the reference's `TypeError` rather
+  than answering 1. The SPL prelude classes declare both, so `$fixedArray[0]`,
+  `$arrayObject['k']` and `count($storage)` work through the ordinary syntax.
+- **`Stringable`** is implied by `__toString`, whether or not a class names the
+  interface, exactly as PHP 8 implies it.
 - **`__toString`** is invoked wherever a value becomes a string: `echo`, `print`,
   `.` concatenation, interpolation, the `(string)` cast / `strval`, `implode`'s
   elements, and the library functions whose parameters PHP declares as `string`.
@@ -252,6 +276,14 @@ end-to-end (see `tests/basic.rs`):
     `rand`/`mt_rand`/`random_int`.
   - **ctype** — the `ctype_*` predicates. **types** — `is_*`, `gettype`,
     `get_debug_type`, `serialize`/`unserialize`, `var_dump`/`print_r`/`var_export`.
+    Objects render in full: `print_r` annotates a non-public property
+    (`[b:protected]`, `[c:P:private]`), `var_export` emits
+    `\P::__set_state(array( … ))` (`(object) array( … )` for a `stdClass`), and
+    `serialize` mangles the property keys the way the engine stores them
+    (`"\0*\0b"`, `"\0P\0c"`). `unserialize` restores an object WITHOUT running its
+    constructor, turns an unknown class into `__PHP_Incomplete_Class`, and
+    reproduces the reference's diagnostics — including the byte offset it blames
+    and the "Extra data" case, where trailing bytes warn but keep the value.
   - **preg** — `preg_match`/`match_all`/`replace`/`replace_callback`/`split`/
     `quote`/`grep` (byte-mode by default, Unicode with `/u`). Look-around,
     backreferences, atomic groups and possessive quantifiers all work: a pattern

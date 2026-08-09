@@ -391,6 +391,74 @@ fn invoke_callable(callee: Value, args: Vec<Value>) -> Result<Value, String> {
     call_value(callee, args)
 }
 
+/// Whether a bare function name resolves — a user-defined function or a builtin
+/// this engine implements. Same authority as `function_exists`, so the two can
+/// never disagree about a name; builtin coverage is PARTIAL (see
+/// [`KNOWN_BUILTINS`]).
+fn function_resolves(name: &str) -> bool {
+    with_host(|h| h.function_defined(name))
+        || KNOWN_BUILTINS.contains(&name.to_ascii_lowercase().as_str())
+}
+
+/// Whether `class::method` is reachable from the current scope, either directly
+/// or through the magic catch-all. `has_this` distinguishes the instance form
+/// (`[$obj, "m"]`, which may fall back to `__call`) from the static one
+/// (`["C", "m"]` / `"C::m"`, which falls back to `__callStatic`).
+fn method_resolves(class: &str, method: &str, has_this: bool) -> bool {
+    with_host(|h| {
+        matches!(
+            h.method_dispatch(class, method, has_this),
+            crate::host::MethodDispatch::Direct | crate::host::MethodDispatch::Magic
+        )
+    })
+}
+
+/// `is_callable($v)` — whether the value names something invocable.
+///
+/// The rules are the reference's, and the two that are easy to miss are that a
+/// method out of reach is NOT callable while one backed by `__call` IS, and that
+/// an object is callable exactly when its class defines `__invoke`. A closure
+/// handle is always callable.
+fn callable_resolves(v: &Value) -> bool {
+    if with_host(|h| h.is_closure(v)) {
+        return true;
+    }
+    // Array callable: PHP requires exactly two elements, [target, method].
+    if with_host(|h| h.is_array(v)) {
+        let pairs = with_host(|h| h.array_pairs(v)).unwrap_or_default();
+        if pairs.len() != 2 {
+            return false;
+        }
+        let target = pairs[0].1.clone();
+        let method = with_host(|h| h.to_str(&pairs[1].1));
+        if with_host(|h| h.is_object(&target)) {
+            let Some(class) = with_host(|h| h.object_class(&target)) else {
+                return false;
+            };
+            return method_resolves(&class, &method, true);
+        }
+        let class = with_host(|h| h.to_str(&target));
+        return with_host(|h| h.class_exists(&class)) && method_resolves(&class, &method, false);
+    }
+    // A non-array object is callable through `__invoke`.
+    if with_host(|h| h.is_object(v)) {
+        return with_host(|h| {
+            h.object_class(v)
+                .is_some_and(|c| h.class_has_method(&c, "__invoke"))
+        });
+    }
+    // Only a string can name a function; every other scalar is not callable.
+    let Value::Str(s) = v else {
+        return false;
+    };
+    match s.as_str().split_once("::") {
+        Some((class, method)) => {
+            with_host(|h| h.class_exists(class)) && method_resolves(class, method, false)
+        }
+        None => function_resolves(s.as_str()),
+    }
+}
+
 /// Dispatch a `callable`-category PHP function by lowercased name. Returns `None`
 /// for names this category does not handle.
 pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
@@ -417,6 +485,10 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
                 .collect::<Vec<_>>();
             Some(invoke_callable(callee, call_args))
         }
+
+        // is_callable(value): whether the value names something this engine could
+        // actually invoke — see `callable_resolves`.
+        "is_callable" => Some(Ok(Value::bool(callable_resolves(&arg(args, 0))))),
 
         // function_exists(name): true for a defined user function, or for a
         // recognized builtin. Builtin coverage is PARTIAL — see KNOWN_BUILTINS.

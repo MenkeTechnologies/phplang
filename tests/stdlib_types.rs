@@ -106,15 +106,78 @@ fn unserialize_scalars() {
         run(r#"<?php var_dump(unserialize('s:5:"hello";'));"#),
         "string(5) \"hello\"\n"
     );
-    // A malformed payload yields boolean false, as PHP does.
+    // A malformed payload yields boolean false, and PHP names the byte it gave
+    // up on. An unrecognized tag is blamed at the value's own start.
     assert_eq!(
         run(r#"<?php var_dump(unserialize("garbage"));"#),
-        "bool(false)\n"
+        "\nWarning: unserialize(): Error at offset 0 of 7 bytes in Command line code \
+         on line 1\nbool(false)\n"
     );
-    // Trailing bytes after a complete value is a failure.
+    // Trailing bytes are NOT a failure: the value stands and PHP warns about
+    // what it did not read.
     assert_eq!(
         run(r#"<?php var_dump(unserialize("i:1;X"));"#),
-        "bool(false)\n"
+        "\nWarning: unserialize(): Extra data starting at offset 4 of 5 bytes in \
+         Command line code on line 1\nint(1)\n"
+    );
+    // An empty payload is the one malformed input rejected silently.
+    assert_eq!(run(r#"<?php var_dump(unserialize(""));"#), "bool(false)\n");
+}
+
+/// The offset PHP blames depends on the tag: a `s`/`O`/`E` payload is reported
+/// two bytes in (past `X:`), while every other tag is reported at its own start,
+/// and a bad element inside a container is reported at the ELEMENT.
+#[test]
+fn unserialize_failure_offsets_follow_the_tag() {
+    let at = |src: &str, msg: &str| {
+        assert_eq!(
+            run(&format!(r#"<?php var_dump(unserialize({src}));"#)),
+            format!(
+                "\nWarning: unserialize(): {msg} in Command line code on line 1\nbool(false)\n"
+            )
+        );
+    };
+    at(r#"'s:5:"ab";'"#, "Error at offset 2 of 9 bytes");
+    at(r#"'b:9;'"#, "Error at offset 0 of 4 bytes");
+    at(r#"'a:1:{i:0;b:9;}'"#, "Error at offset 9 of 14 bytes");
+    at(r#"'O:9:"P":1:{}'"#, "Error at offset 2 of 12 bytes");
+    // A container that claims more elements than it carries gets an extra note.
+    assert_eq!(
+        run(r#"<?php var_dump(unserialize('a:2:{i:0;i:1;}'));"#),
+        "\nWarning: unserialize(): Unexpected end of serialized data in Command line \
+         code on line 1\n\nWarning: unserialize(): Error at offset 13 of 14 bytes in \
+         Command line code on line 1\nbool(false)\n"
+    );
+}
+
+/// Objects round-trip through `O:`, WITHOUT running the constructor, and an
+/// `enum` case round-trips through `E:` back to the very same singleton.
+#[test]
+fn unserialize_restores_objects_and_enum_cases() {
+    assert_eq!(
+        run(
+            r#"<?php class P { public $a = 9; protected $b = 8; private $c = 7; }
+                var_dump(unserialize(serialize(new P)) == new P);"#
+        ),
+        "bool(true)\n"
+    );
+    assert_eq!(
+        run(
+            r#"<?php class C { public $v = 0; function __construct() { echo "CTOR"; $this->v = 1; } }
+                $s = serialize(new C); $r = unserialize($s); echo "|", $r->v;"#
+        ),
+        "CTOR|1"
+    );
+    assert_eq!(
+        run(r#"<?php enum E: string { case A = 'a'; }
+                var_dump(unserialize(serialize(E::A)) === E::A);"#),
+        "bool(true)\n"
+    );
+    // An unknown class becomes the placeholder, carrying its original name.
+    assert_eq!(
+        run(r#"<?php $o = unserialize('O:7:"Unknown":1:{s:1:"z";i:1;}');
+                echo get_class($o), "|", $o->__PHP_Incomplete_Class_Name, "|", $o->z;"#),
+        "__PHP_Incomplete_Class|Unknown|1"
     );
 }
 
@@ -170,20 +233,23 @@ fn serialize_float_e_notation() {
 
 #[test]
 fn unserialize_integer_overflow_saturates() {
-    // PHP clamps an out-of-range `i:` literal to PHP_INT_MAX / PHP_INT_MIN
-    // (with a warning) instead of returning false.
+    // PHP clamps an out-of-range `i:` literal to PHP_INT_MAX / PHP_INT_MIN and
+    // warns about the clamp, instead of returning false.
+    let clamped = "\nWarning: unserialize(): Numerical result out of range in \
+                   Command line code on line 1\n";
     assert_eq!(
         run(r#"<?php var_dump(unserialize("i:99999999999999999999;"));"#),
-        "int(9223372036854775807)\n"
+        format!("{clamped}int(9223372036854775807)\n")
     );
     assert_eq!(
         run(r#"<?php var_dump(unserialize("i:-99999999999999999999;"));"#),
-        "int(-9223372036854775808)\n"
+        format!("{clamped}int(-9223372036854775808)\n")
     );
-    // A non-numeric integer body still fails.
+    // A non-numeric integer body still fails, blamed at the tag.
     assert_eq!(
         run(r#"<?php var_dump(unserialize("i:12abc;"));"#),
-        "bool(false)\n"
+        "\nWarning: unserialize(): Error at offset 0 of 8 bytes in Command line code \
+         on line 1\nbool(false)\n"
     );
 }
 
@@ -192,7 +258,8 @@ fn unserialize_negative_array_count_fails() {
     // A negative element count is malformed and yields false, not an empty array.
     assert_eq!(
         run(r#"<?php var_dump(unserialize("a:-1:{}"));"#),
-        "bool(false)\n"
+        "\nWarning: unserialize(): Error at offset 0 of 7 bytes in Command line code \
+         on line 1\nbool(false)\n"
     );
 }
 

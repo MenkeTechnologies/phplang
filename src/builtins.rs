@@ -64,6 +64,7 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::PROP_SET_RW, b_prop_set_rw);
     vm.register_builtin(ops::PROP_UNSET, b_prop_unset);
     vm.register_builtin(ops::PROP_ISSET, b_prop_isset);
+    vm.register_builtin(ops::INDEX_ISSET, b_index_isset);
     vm.register_builtin(ops::PROP_GET_EMPTY, b_prop_get_empty);
     vm.register_builtin(ops::PROP_INCDEC, b_prop_incdec);
     vm.register_builtin(ops::SUPPRESS_PUSH, b_suppress_push);
@@ -268,10 +269,16 @@ fn b_mcall_named(vm: &mut VM, argc: u8) -> Value {
     }
     match with_host(|h| h.object_class(&recv)) {
         Some(c) => {
-            if let Err(e) = with_host(|h| h.check_method_access(&c, &method)) {
-                return fail(vm, e);
-            }
-            match host::call_method_named(&c, &method, Some(recv), pos, named) {
+            let magic = match method_plan(vm, &c, &method, true) {
+                Ok(m) => m,
+                Err(v) => return v,
+            };
+            let r = if magic {
+                host::call_magic_call_named(&c, &method, Some(recv), pos, named)
+            } else {
+                host::call_method_named(&c, &method, Some(recv), pos, named)
+            };
+            match r {
                 Ok(v) => bubbled(vm, v),
                 Err(e) => fail(vm, e),
             }
@@ -298,7 +305,16 @@ fn b_scall_named(vm: &mut VM, argc: u8) -> Value {
         matches!(t, Value::Obj(_)).then_some(t)
     });
     mark_frame_line(vm);
-    match host::call_method_named(&class, &method, this, pos, named) {
+    let magic = match static_method_plan(vm, &class, &method, &this) {
+        Ok(m) => m,
+        Err(v) => return v,
+    };
+    let r = if magic {
+        host::call_magic_call_named(&class, &method, this, pos, named)
+    } else {
+        host::call_method_named(&class, &method, this, pos, named)
+    };
+    match r {
         Ok(v) => bubbled(vm, v),
         Err(e) => fail(vm, e),
     }
@@ -563,6 +579,18 @@ fn b_unset_var(vm: &mut VM, _: u8) -> Value {
 fn b_unset_path(vm: &mut VM, argc: u8) -> Value {
     let keys = pop_args(vm, argc as usize - 1);
     let name = pop_name(vm);
+    // `unset($o[k])` on an `ArrayAccess` object is `offsetUnset(k)`. Only the
+    // single-key form reaches the object; a deeper path indexes whatever
+    // `offsetGet` returned, which this scaffold does not model.
+    let recv = with_host(|h| h.get_var(&name));
+    if keys.len() == 1 {
+        if let Some(r) = array_access_call(vm, &recv, "offsetUnset", vec![keys[0].clone()]) {
+            return match r {
+                Ok(_) => bubbled(vm, Value::Undef),
+                Err(e) => fail(vm, e),
+            };
+        }
+    }
     with_host(|h| h.unset_path(&name, &keys));
     Value::Undef
 }
@@ -924,6 +952,59 @@ fn throw_php(vm: &mut VM, class: &str, message: &str) -> Value {
     }
 }
 
+/// Screen a method call against the class's method table, visibility rules and
+/// magic catch-all before it is dispatched.
+///
+/// `Err(v)` means the chunk has been halted with a thrown `Error` — the two
+/// failing arms are both catchable `Error`s in PHP 8, not fatals. `Ok(true)`
+/// means the call must be re-dispatched through `__call`/`__callStatic` even
+/// though a method of that name may exist: an inaccessible one is the catch-all's
+/// business, not an access error.
+fn method_plan(vm: &mut VM, class: &str, method: &str, has_this: bool) -> Result<bool, Value> {
+    match with_host(|h| h.method_dispatch(class, method, has_this)) {
+        host::MethodDispatch::Direct => Ok(false),
+        host::MethodDispatch::Magic => Ok(true),
+        host::MethodDispatch::Denied(msg) => Err(throw_php(vm, "Error", &msg)),
+        host::MethodDispatch::Undefined => Err(throw_php(
+            vm,
+            "Error",
+            &format!("Call to undefined method {class}::{method}()"),
+        )),
+    }
+}
+
+/// [`method_plan`] for the `C::m()` form.
+///
+/// Three families of static call never reach the class method table and must be
+/// let through untouched: `Closure::bind`/`fromCallable`, the synthesized enum
+/// helpers `cases`/`from`/`tryFrom`, and a call on a class that was never
+/// declared (which reports "class not found", a different diagnostic).
+fn static_method_plan(
+    vm: &mut VM,
+    class: &str,
+    method: &str,
+    this: &Option<Value>,
+) -> Result<bool, Value> {
+    if class.eq_ignore_ascii_case("Closure") || !with_host(|h| h.class_exists(class)) {
+        return Ok(false);
+    }
+    if with_host(|h| h.is_enum_class(class))
+        && matches!(
+            method.to_ascii_lowercase().as_str(),
+            "cases" | "from" | "tryfrom"
+        )
+    {
+        return Ok(false);
+    }
+    // `__call` handles the static form only when `$this` is set AND is an
+    // instance of the named class; otherwise the fallback is `__callStatic`.
+    let has_this = this
+        .as_ref()
+        .and_then(|t| with_host(|h| h.object_class(t)))
+        .is_some_and(|c| with_host(|h| h.class_is_a_pub(&c, class)));
+    method_plan(vm, class, method, has_this)
+}
+
 /// PHP's name for a value's type in the "Call to a member function f() on X"
 /// error. Booleans are spelled `true`/`false` there rather than `bool`.
 fn receiver_type_name(h: &host::PhpHost, v: &Value) -> &'static str {
@@ -1138,9 +1219,35 @@ fn b_mkarray(vm: &mut VM, argc: u8) -> Value {
     })
 }
 
+/// Route `$o[k]` through an `ArrayAccess` object's `offsetX` method, if that is
+/// what the receiver is. `None` means the receiver is an ordinary array, string
+/// or scalar and the caller's own path applies.
+fn array_access_call(
+    vm: &mut VM,
+    recv: &Value,
+    method: &str,
+    args: Vec<Value>,
+) -> Option<Result<Value, String>> {
+    let class = with_host(|h| h.array_access_class(recv))?;
+    mark_frame_line(vm);
+    Some(host::call_method(&class, method, Some(recv.clone()), args))
+}
+
+/// The result of an `offsetX` dispatch, with a failure turned into a halted
+/// chunk the same way every other method call is.
+fn array_access_result(vm: &mut VM, r: Result<Value, String>) -> Value {
+    match r {
+        Ok(v) => bubbled(vm, v),
+        Err(e) => fail(vm, e),
+    }
+}
+
 fn b_index_get(vm: &mut VM, _: u8) -> Value {
     let key = vm.pop();
     let recv = vm.pop();
+    if let Some(r) = array_access_call(vm, &recv, "offsetGet", vec![key.clone()]) {
+        return array_access_result(vm, r);
+    }
     mark_warn_site(vm);
     with_host(|h| h.index_get_warn(&recv, &key))
 }
@@ -1149,6 +1256,24 @@ fn b_index_get(vm: &mut VM, _: u8) -> Value {
 fn b_index_get_q(vm: &mut VM, _: u8) -> Value {
     let key = vm.pop();
     let recv = vm.pop();
+    // `$o[k] ?? d` on an `ArrayAccess` asks `offsetExists` first and only reads
+    // through `offsetGet` once that says yes — the same two-step `??` uses for a
+    // magic property.
+    if with_host(|h| h.array_access_class(&recv)).is_some() {
+        let present = match array_access_call(vm, &recv, "offsetExists", vec![key.clone()]) {
+            Some(Ok(v)) => with_host(|h| h.is_truthy(&v)),
+            Some(Err(e)) => return fail(vm, e),
+            None => false,
+        };
+        if !present {
+            return Value::Undef;
+        }
+        let r = array_access_call(vm, &recv, "offsetGet", vec![key]);
+        return match r {
+            Some(r) => array_access_result(vm, r),
+            None => Value::Undef,
+        };
+    }
     with_host(|h| h.index_get(&recv, &key))
 }
 
@@ -1194,10 +1319,38 @@ fn b_list_elem_get(vm: &mut VM, _: u8) -> Value {
     Value::Undef
 }
 
+/// `isset($a[k])` — see `ops::INDEX_ISSET`.
+fn b_index_isset(vm: &mut VM, _: u8) -> Value {
+    let key = vm.pop();
+    let recv = vm.pop();
+    if let Some(r) = array_access_call(vm, &recv, "offsetExists", vec![key.clone()]) {
+        return match r {
+            Ok(v) => {
+                let b = with_host(|h| h.is_truthy(&v));
+                bubbled(vm, Value::bool(b))
+            }
+            Err(e) => fail(vm, e),
+        };
+    }
+    // Everything else: set means "reads as something other than null".
+    Value::bool(!matches!(
+        with_host(|h| h.index_get(&recv, &key)),
+        Value::Undef
+    ))
+}
+
 fn b_index_set(vm: &mut VM, _: u8) -> Value {
     let val = vm.pop();
     let key = vm.pop();
     let name = pop_name(vm);
+    // Writing through an `ArrayAccess` object must NOT replace it with an array.
+    let recv = with_host(|h| h.get_var(&name));
+    if let Some(r) = array_access_call(vm, &recv, "offsetSet", vec![key.clone(), val.clone()]) {
+        if let Err(e) = r {
+            return fail(vm, e);
+        }
+        return bubbled(vm, val);
+    }
     with_host(|h| h.index_set_var(&name, &key, val.clone()));
     val
 }
@@ -1205,6 +1358,15 @@ fn b_index_set(vm: &mut VM, _: u8) -> Value {
 fn b_arr_append(vm: &mut VM, _: u8) -> Value {
     let val = vm.pop();
     let name = pop_name(vm);
+    // `$o[] = v` is `offsetSet(null, v)` — the null offset is how the object
+    // learns the write had no key.
+    let recv = with_host(|h| h.get_var(&name));
+    if let Some(r) = array_access_call(vm, &recv, "offsetSet", vec![Value::Undef, val.clone()]) {
+        if let Err(e) = r {
+            return fail(vm, e);
+        }
+        return bubbled(vm, val);
+    }
     with_host(|h| h.append_var(&name, val.clone()));
     val
 }
@@ -1702,10 +1864,16 @@ fn b_mcall(vm: &mut VM, argc: u8) -> Value {
     let class = with_host(|h| h.object_class(&recv));
     match class {
         Some(c) => {
-            if let Err(e) = with_host(|h| h.check_method_access(&c, &method)) {
-                return fail(vm, e);
-            }
-            match host::call_method(&c, &method, Some(recv), args) {
+            let magic = match method_plan(vm, &c, &method, true) {
+                Ok(m) => m,
+                Err(v) => return v,
+            };
+            let r = if magic {
+                host::call_magic_call(&c, &method, Some(recv), args)
+            } else {
+                host::call_method(&c, &method, Some(recv), args)
+            };
+            match r {
                 Ok(v) => bubbled(vm, v),
                 Err(e) => fail(vm, e),
             }
@@ -1732,7 +1900,16 @@ fn b_scall(vm: &mut VM, argc: u8) -> Value {
         matches!(t, Value::Obj(_)).then_some(t)
     });
     mark_frame_line(vm);
-    match host::call_method(&class, &method, this, args) {
+    let magic = match static_method_plan(vm, &class, &method, &this) {
+        Ok(m) => m,
+        Err(v) => return v,
+    };
+    let r = if magic {
+        host::call_magic_call(&class, &method, this, args)
+    } else {
+        host::call_method(&class, &method, this, args)
+    };
+    match r {
         Ok(v) => bubbled(vm, v),
         Err(e) => fail(vm, e),
     }
@@ -1938,6 +2115,23 @@ fn num_eq(a: &Value, b: &Value) -> bool {
 }
 
 fn arrays_loose_eq(h: &host::PhpHost, a: &Value, b: &Value) -> bool {
+    // Two objects are `==` when they are of the SAME class and every property is
+    // loose-equal — a different pair of instances can compare equal, which is
+    // exactly what separates `==` from `===` on objects. An array is never `==`
+    // an object, so the mixed pair is rejected before the element walk.
+    if h.is_object(a) || h.is_object(b) {
+        let (Some(ca), Some(cb)) = (h.object_class(a), h.object_class(b)) else {
+            return false;
+        };
+        if !ca.eq_ignore_ascii_case(&cb) {
+            return false;
+        }
+        let (pa, pb) = (h.object_props(a), h.object_props(b));
+        return pa.len() == pb.len()
+            && pa
+                .iter()
+                .all(|(name, va)| pb.iter().any(|(n, vb)| n == name && loose_eq(h, va, vb)));
+    }
     let (Some(pa), Some(pb)) = (h.array_pairs(a), h.array_pairs(b)) else {
         return false;
     };
@@ -2364,6 +2558,25 @@ pub fn untag_throw(e: &str) -> Option<(&str, &str)> {
     e.strip_prefix(THROW_TAG)?.split_once(THROW_TAG)
 }
 
+/// Marker for a throw raised *at* the call site rather than inside the callee —
+/// see [`throws_bare`].
+const BARE_THROW_TAG: &str = "\u{1}bthrow\u{1}";
+
+/// [`throws`] for a failure the engine reports from the CALLING frame, with no
+/// trace entry for the function named in the message.
+///
+/// "Call to undefined function f()" is the case: there is no `f` to enter, so
+/// PHP's trace starts at the caller. Routing it through [`throws`] would invent
+/// a `#0 f()` frame the reference does not print.
+pub fn throws_bare(class: &str, message: impl std::fmt::Display) -> String {
+    format!("{BARE_THROW_TAG}{class}{BARE_THROW_TAG}{message}")
+}
+
+/// Split a [`throws_bare`] error back into `(class, message)`.
+pub fn untag_bare_throw(e: &str) -> Option<(&str, &str)> {
+    e.strip_prefix(BARE_THROW_TAG)?.split_once(BARE_THROW_TAG)
+}
+
 /// Dispatch a PHP library function by (case-insensitive) name.
 ///
 /// An argument error comes back as a [`throws`]-tagged `Err`, which
@@ -2381,14 +2594,28 @@ pub fn call_library(name: &str, args: &[Value]) -> Result<Value, String> {
     with_host(|h| h.byref_out_clear());
     let v = match lname.as_str() {
         "strlen" => Value::int(with_host(|h| h.to_str(&arg(args, 0)).len() as i64)),
-        "count" | "sizeof" => Value::int(with_host(|h| {
+        // `count` accepts an array or a `Countable`, and NOTHING else: PHP 8
+        // rejects a scalar with a TypeError rather than answering 1.
+        "count" | "sizeof" => {
             let a = arg(args, 0);
-            if h.is_array(&a) {
-                h.array_len(&a)
+            if with_host(|h| h.is_array(&a)) {
+                Value::int(with_host(|h| h.array_len(&a)))
+            } else if let Some(class) = with_host(|h| {
+                h.object_class(&a)
+                    .filter(|c| h.class_is_a_pub(c, "Countable"))
+            }) {
+                let n = host::call_method(&class, "count", Some(a), Vec::new())?;
+                Value::int(n.to_int())
             } else {
-                1
+                let t = with_host(|h| crate::stdlib::types::debug_type(h, &a));
+                return Err(throws(
+                    "TypeError",
+                    format!(
+                        "count(): Argument #1 ($value) must be of type Countable|array, {t} given"
+                    ),
+                ));
             }
-        })),
+        }
         "strtoupper" => with_host(|h| Value::str(ascii_upper(&h.to_str(&arg(args, 0))))),
         "strtolower" => with_host(|h| Value::str(ascii_lower(&h.to_str(&arg(args, 0))))),
         "ucfirst" => with_host(|h| Value::str(ucfirst(&h.to_str(&arg(args, 0))))),
@@ -2612,15 +2839,6 @@ pub fn call_library(name: &str, args: &[Value]) -> Result<Value, String> {
 
         // ── type / util ──────────────────────────────────────────────────
         "boolval" => with_host(|h| Value::bool(h.is_truthy(&arg(args, 0)))),
-        "is_callable" => {
-            // A closure handle is always callable; otherwise the scaffold treats
-            // any non-empty string name as callable (the host exposes no
-            // function-table accessor, so it cannot verify the name resolves).
-            let a = arg(args, 0);
-            Value::bool(
-                with_host(|h| h.is_closure(&a)) || matches!(&a, Value::Str(s) if !s.is_empty()),
-            )
-        }
         "var_export" => with_host(|h| {
             let s = php_var_export(h, &arg(args, 0), 0);
             if args.get(1).map(|v| h.is_truthy(v)).unwrap_or(false) {
@@ -2630,24 +2848,40 @@ pub fn call_library(name: &str, args: &[Value]) -> Result<Value, String> {
                 Value::Undef
             }
         }),
-        "json_encode" => with_host(|h| {
-            let v = arg(args, 0);
-            // JSON has no NAN/INF literal, so the encoder bails out entirely and
-            // reports JSON_ERROR_INF_OR_NAN rather than emitting invalid JSON.
-            if has_nonfinite_float(h, &v) {
-                crate::stdlib::json::set_last_error(crate::stdlib::json::JSON_ERROR_INF_OR_NAN);
-                Value::bool(false)
-            } else {
-                crate::stdlib::json::set_last_error(0);
-                Value::str(php_json_encode(h, &v, arg(args, 1).to_int(), 0))
-            }
-        }),
+        "json_encode" => {
+            // Objects are resolved to plain data FIRST, outside the host borrow:
+            // `jsonSerialize()` is PHP code and cannot run while the host is
+            // borrowed. See `json_prepare`.
+            let prepared = match json_prepare(&arg(args, 0)) {
+                Ok(v) => v,
+                Err(code) => {
+                    crate::stdlib::json::set_last_error(code);
+                    return Ok(Value::bool(false));
+                }
+            };
+            with_host(|h| {
+                // JSON has no NAN/INF literal, so the encoder bails out entirely
+                // and reports JSON_ERROR_INF_OR_NAN rather than emitting invalid
+                // JSON.
+                if has_nonfinite_float(h, &prepared) {
+                    crate::stdlib::json::set_last_error(crate::stdlib::json::JSON_ERROR_INF_OR_NAN);
+                    Value::bool(false)
+                } else {
+                    crate::stdlib::json::set_last_error(0);
+                    Value::str(php_json_encode(h, &prepared, arg(args, 1).to_int(), 0))
+                }
+            })
+        }
 
         // Extended standard library lives in `src/stdlib/*`, one module per
         // category, consulted only for names this core match does not handle.
         _ => {
-            return crate::stdlib::dispatch(&lname, args)
-                .unwrap_or_else(|| Err(format!("call to undefined function {name}()")))
+            return crate::stdlib::dispatch(&lname, args).unwrap_or_else(|| {
+                Err(throws_bare(
+                    "Error",
+                    format!("Call to undefined function {name}()"),
+                ))
+            })
         }
     };
     Ok(v)
@@ -3481,8 +3715,53 @@ fn php_print_r(h: &host::PhpHost, v: &Value, depth: usize) -> String {
         }
         s.push_str(&format!("{pad})\n"));
         s
+    } else if h.is_object(v) {
+        php_print_r_object(h, v, depth)
     } else {
         h.to_str(v)
+    }
+}
+
+/// `print_r` of an object: the same parenthesised block an array gets, headed by
+/// the class name rather than `Array`, and with each non-public property name
+/// annotated — `[b:protected]`, `[c:Declaring:private]`.
+///
+/// An `enum` case heads its block `Suit Enum:string` (a backed enum, naming the
+/// backing type) or `Suit Enum` (a pure one), which is why it cannot simply reuse
+/// the object path.
+fn php_print_r_object(h: &host::PhpHost, v: &Value, depth: usize) -> String {
+    let pad = "    ".repeat(depth);
+    let inner = "    ".repeat(depth + 1);
+    let class = h.object_class(v).unwrap_or_else(|| "stdClass".to_string());
+    let head = match h.enum_case_of(v) {
+        Some((_, Some(backing))) => format!("{class} Enum:{}", enum_backing_type(&backing)),
+        Some((_, None)) => format!("{class} Enum"),
+        None => format!("{class} Object"),
+    };
+    let mut s = format!("{head}\n{pad}(\n");
+    for (name, val) in h.object_props(v) {
+        let label = match h.prop_visibility(&class, &name) {
+            Some((_, crate::ast::Visibility::Protected)) => format!("{name}:protected"),
+            Some((declaring, crate::ast::Visibility::Private)) => {
+                format!("{name}:{declaring}:private")
+            }
+            _ => name,
+        };
+        s.push_str(&format!(
+            "{inner}[{label}] => {}\n",
+            php_print_r(h, &val, depth + 2)
+        ));
+    }
+    s.push_str(&format!("{pad})\n"));
+    s
+}
+
+/// The name `print_r` gives a backed enum's backing type in its header line.
+/// Only `int` and `string` can back an enum, so anything else cannot arise.
+fn enum_backing_type(backing: &Value) -> &'static str {
+    match backing {
+        Value::Int(_) => "int",
+        _ => "string",
     }
 }
 
@@ -3509,6 +3788,13 @@ fn php_var_dump_ref(h: &host::PhpHost, v: &Value, depth: usize, is_ref: bool) ->
         Value::Str(s) => format!("{pad}{amp}string({}) \"{s}\"\n", s.len()),
         // A class instance prints as `object(Class)#n (count) { ... }` with its
         // properties, not as the bare array its handle would otherwise yield.
+        // An `enum` case is one line naming the case, not the two-property
+        // object it is implemented as.
+        Value::Obj(_) if h.enum_case_of(v).is_some() => {
+            let class = h.object_class(v).unwrap_or_default();
+            let (case, _) = h.enum_case_of(v).unwrap_or_default();
+            format!("{pad}{amp}enum({class}::{case})\n")
+        }
         Value::Obj(_) if h.is_object(v) => {
             let props = h.object_props_marked(v);
             let class = h.object_class(v).unwrap_or_else(|| "stdClass".to_string());
@@ -3518,7 +3804,18 @@ fn php_var_dump_ref(h: &host::PhpHost, v: &Value, depth: usize, is_ref: bool) ->
                 props.len()
             );
             for (name, val, pref) in props {
-                s.push_str(&format!("{}  [\"{name}\"]=>\n", "  ".repeat(depth)));
+                // A non-public property carries its visibility in the key, and a
+                // private one also names the class that declared it.
+                let label = match h.prop_visibility(&class, &name) {
+                    Some((_, crate::ast::Visibility::Protected)) => {
+                        format!("\"{name}\":protected")
+                    }
+                    Some((declaring, crate::ast::Visibility::Private)) => {
+                        format!("\"{name}\":\"{declaring}\":private")
+                    }
+                    _ => format!("\"{name}\""),
+                };
+                s.push_str(&format!("{}  [{label}]=>\n", "  ".repeat(depth)));
                 s.push_str(&php_var_dump_ref(h, &val, depth + 1, pref));
             }
             s.push_str(&format!("{pad}}}\n"));
@@ -4248,7 +4545,8 @@ fn php_var_export(h: &host::PhpHost, v: &Value, depth: usize) -> String {
             }
         }
         Value::Str(s) => format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'")),
-        Value::Obj(_) => {
+        Value::Obj(_) if h.is_object(v) => php_var_export_object(h, v, depth),
+        Value::Obj(_) if h.is_array(v) => {
             let pad = "  ".repeat(depth);
             let inner = "  ".repeat(depth + 1);
             let mut out = "array (\n".to_string();
@@ -4259,7 +4557,7 @@ fn php_var_export(h: &host::PhpHost, v: &Value, depth: usize) -> String {
                 };
                 out.push_str(&format!(
                     "{inner}{key} => {},\n",
-                    php_var_export(h, &val, depth + 1)
+                    var_export_item(h, &val, depth + 1)
                 ));
             }
             out.push_str(&format!("{pad})"));
@@ -4269,10 +4567,57 @@ fn php_var_export(h: &host::PhpHost, v: &Value, depth: usize) -> String {
     }
 }
 
-/// Whether `v` contains a NAN or INF anywhere, including nested in arrays.
+/// A value in an item position (`key => value`). PHP keeps a scalar on the key's
+/// line but breaks BEFORE a nested array or object and starts its block at the
+/// item's own indent, which is why the two cannot share one renderer.
+fn var_export_item(h: &host::PhpHost, v: &Value, depth: usize) -> String {
+    let body = php_var_export(h, v, depth);
+    if h.is_array(v) || h.is_object(v) {
+        format!("\n{}{body}", "  ".repeat(depth))
+    } else {
+        body
+    }
+}
+
+/// `var_export` of an object. The reference emits code that would rebuild it:
+/// `\Class::__set_state(array( ... ))` for a declared class, the `(object)` cast
+/// of an array for a `stdClass`, and the case constant itself for an `enum`.
+///
+/// Object bodies indent one space deeper than array bodies — three per level
+/// rather than two — which is the engine's own inconsistency, not a typo.
+fn php_var_export_object(h: &host::PhpHost, v: &Value, depth: usize) -> String {
+    let class = h.object_class(v).unwrap_or_else(|| "stdClass".to_string());
+    if let Some((case, _)) = h.enum_case_of(v) {
+        return format!("\\{class}::{case}");
+    }
+    let pad = "  ".repeat(depth);
+    let inner = format!("{pad}   ");
+    let std = class == "stdClass";
+    let mut out = if std {
+        "(object) array(\n".to_string()
+    } else {
+        format!("\\{class}::__set_state(array(\n")
+    };
+    for (name, val) in h.object_props(v) {
+        out.push_str(&format!(
+            "{inner}'{}' => {},\n",
+            name.replace('\'', "\\'"),
+            var_export_item(h, &val, depth + 1)
+        ));
+    }
+    out.push_str(&format!("{pad}{}", if std { ")" } else { "))" }));
+    out
+}
+
+/// Whether `v` contains a NAN or INF anywhere, including nested in arrays and
+/// object properties.
 fn has_nonfinite_float(h: &host::PhpHost, v: &Value) -> bool {
     match v {
         Value::Float(f) => !f.is_finite(),
+        Value::Obj(_) if h.is_object(v) => h
+            .object_props(v)
+            .iter()
+            .any(|(_, val)| has_nonfinite_float(h, val)),
         Value::Obj(_) => h
             .array_pairs(v)
             .unwrap_or_default()
@@ -4280,6 +4625,59 @@ fn has_nonfinite_float(h: &host::PhpHost, v: &Value) -> bool {
             .any(|(_, val)| has_nonfinite_float(h, val)),
         _ => false,
     }
+}
+
+/// Resolve every object in `v` down to the plain data `json_encode` can render,
+/// recursively. Runs BEFORE the encoder and outside the host borrow, because two
+/// of its cases execute PHP.
+///
+/// The reference's rules, in the order it applies them:
+/// * A `JsonSerializable` encodes whatever `jsonSerialize()` returns, and that
+///   result is resolved in turn (it may itself contain objects).
+/// * A backed `enum` case encodes as its backing value; a pure one has no
+///   representation at all and fails the whole encode with
+///   `JSON_ERROR_NON_BACKED_ENUM`.
+/// * Any other object encodes its PUBLIC properties only, which is why it is
+///   rebuilt here as a fresh `stdClass` holding just those — private and
+///   protected state never reaches the encoder.
+///
+/// `Err(code)` is a `JSON_ERROR_*` code: the encode yields `false`.
+fn json_prepare(v: &Value) -> Result<Value, i64> {
+    if with_host(|h| h.is_array(v)) {
+        let pairs = with_host(|h| h.array_pairs(v)).unwrap_or_default();
+        let mut out = Vec::with_capacity(pairs.len());
+        for (k, val) in pairs {
+            out.push((k, json_prepare(&val)?));
+        }
+        return Ok(with_host(|h| {
+            let arr = h.new_array();
+            h.arr_set_pairs(&arr, out);
+            arr
+        }));
+    }
+    if !with_host(|h| h.is_object(v)) {
+        return Ok(v.clone());
+    }
+    let class = with_host(|h| h.object_class(v)).unwrap_or_default();
+    if with_host(|h| h.is_enum_class(&class)) {
+        return match with_host(|h| h.enum_case_of(v)) {
+            Some((_, Some(backing))) => Ok(backing),
+            _ => Err(crate::stdlib::json::JSON_ERROR_NON_BACKED_ENUM),
+        };
+    }
+    if with_host(|h| h.class_is_a_pub(&class, "JsonSerializable")) {
+        let produced = host::call_method(&class, "jsonSerialize", Some(v.clone()), Vec::new())
+            .map_err(|_| crate::stdlib::json::JSON_ERROR_NON_BACKED_ENUM)?;
+        return json_prepare(&produced);
+    }
+    let mut out = Vec::new();
+    for (name, val) in with_host(|h| h.object_props(v)) {
+        if with_host(|h| h.prop_visibility(&class, &name)).is_some() {
+            continue;
+        }
+        out.push((name, json_prepare(&val)?));
+    }
+    Ok(with_host(|h| h.new_transient_object(out)))
 }
 
 /// `json_encode` flags this encoder honours.
@@ -4300,7 +4698,14 @@ fn php_json_encode(h: &host::PhpHost, v: &Value, flags: i64, depth: usize) -> St
         Value::Float(f) => crate::stdlib::types::serialize_float(*f).replace('E', "e"),
         Value::Str(s) => json_string(s, flags),
         Value::Obj(_) => {
-            let pairs = h.array_pairs(v).unwrap_or_default();
+            let pairs = if h.is_object(v) {
+                h.object_props(v)
+                    .into_iter()
+                    .map(|(k, val)| (Value::str(k), val))
+                    .collect()
+            } else {
+                h.array_pairs(v).unwrap_or_default()
+            };
             // A real object always encodes as a JSON object, even with no
             // properties — `json_encode(new stdClass())` is `{}`, not `[]`.
             let as_list = is_list(&pairs) && !h.is_object(v);

@@ -1600,6 +1600,15 @@ impl Compiler {
                     b.emit(Op::LoadConst(idx), self.cur_line);
                     b.emit(Op::CallBuiltin(ops::PROP_ISSET, 2), self.cur_line);
                 }
+                // An index target gets its own opcode for the same reason a
+                // property does: `isset($o[k])` on an `ArrayAccess` asks
+                // `offsetExists` and NOTHING else, so the answer cannot be
+                // recovered by comparing a read value against null.
+                Expr::Index(recv, key) => {
+                    self.compile_quiet(b, recv)?;
+                    self.compile_expr(b, key)?;
+                    b.emit(Op::CallBuiltin(ops::INDEX_ISSET, 2), self.cur_line);
+                }
                 other => {
                     // Everything else: set means "reads as something other than
                     // null", which an isset-mode read answers directly.

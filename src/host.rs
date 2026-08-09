@@ -12,7 +12,7 @@ use crate::ast::Visibility;
 use crate::errlevel;
 use fusevm::{Chunk, VMResult, Value, VM};
 use indexmap::IndexMap;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::cell::RefCell;
 
 /// Builtin ids emitted by the compiler and registered on every VM.
@@ -207,6 +207,11 @@ pub mod ops {
     /// instead of falling back to `__get`, so a class with `__get` and no
     /// `__isset` is `empty()` without `__get` being called at all.
     pub const PROP_GET_EMPTY: u16 = 104;
+    /// `[recv, key] -> bool`. `isset($a[k])`. An array or string answers from its
+    /// own contents, but an `ArrayAccess` object answers with `offsetExists` and
+    /// NOTHING else — `offsetGet` is never called, so the answer cannot be
+    /// recovered from a value the way it can for an array.
+    pub const INDEX_ISSET: u16 = 106;
 }
 
 /// Sub-ops for the by-reference array mutators lowered through `ops::ARR_MUT`
@@ -513,6 +518,33 @@ pub struct PhpHost {
     /// finds no property, sees `__get` already in progress for that name, and
     /// takes the ordinary undefined-property path instead of recursing.
     magic_in_progress: Vec<(u32, String, &'static str)>,
+    /// Handles of objects a RENDERER allocated to stage a value (see
+    /// [`PhpHost::new_transient_object`]). They are never reachable from PHP, so
+    /// [`PhpHost::object_ordinal`] skips them — otherwise a `json_encode` would
+    /// silently bump the `#n` that a later `var_dump` prints.
+    transient_objs: FxHashSet<u32>,
+}
+
+/// What `$obj->m(...)` / `C::m(...)` should do, once the method table and the
+/// visibility rules have both been consulted. Returned by
+/// [`PhpHost::method_dispatch`], which every call opcode routes through so the
+/// instance and static forms cannot disagree about when `__call` fires.
+///
+/// The order is the reference's, and the interesting arm is `Magic` for a
+/// method that IS declared: PHP routes a call it cannot reach to `__call` just
+/// as readily as one that does not exist, so a private method plus a `__call`
+/// is handled by the magic method rather than reported as an access error.
+pub enum MethodDispatch {
+    /// Declared (somewhere up the chain) and reachable from here: call it.
+    Direct,
+    /// Undeclared, or declared but out of reach, and the class supplies the
+    /// magic catch-all — call `__call`/`__callStatic` with the argument list.
+    Magic,
+    /// Declared, out of reach, and no magic catch-all. Carries the reference's
+    /// `Call to <vis> method C::m() from <scope>` message.
+    Denied(String),
+    /// No such method anywhere up the chain and no magic catch-all.
+    Undefined,
 }
 
 /// What `$obj->name` should do, once the object's property table and the
@@ -720,6 +752,7 @@ impl PhpHost {
             ini: default_ini(),
             preg_error: 0,
             magic_in_progress: Vec::new(),
+            transient_objs: FxHashSet::default(),
         };
         h.init_superglobals();
         // `-d` overrides land before the program is read, so a compile-time
@@ -872,7 +905,19 @@ impl PhpHost {
 
     /// Whether `class` is `ancestor` or descends from it, walking the compiled
     /// class table's parent chain. `ancestor` must already be lowercased.
+    /// [`PhpHost::class_is_a`] for callers outside this module (the call opcodes
+    /// need it to decide whether a static call's `$this` belongs to the class).
+    pub fn class_is_a_pub(&self, class: &str, ancestor: &str) -> bool {
+        self.class_is_a(class, &ancestor.to_ascii_lowercase())
+    }
+
     fn class_is_a(&self, class: &str, ancestor: &str) -> bool {
+        // `Stringable` is implemented AUTOMATICALLY by any class with a
+        // `__toString`, whether or not it names the interface (PHP 8.0). No other
+        // interface behaves this way, so it is answered before the walk.
+        if ancestor == "stringable" && self.class_has_method(class, "__tostring") {
+            return true;
+        }
         // Traverse the parent chain AND implemented/extended interfaces
         // (transitively). A visited set + bound guards against malformed cycles.
         let mut stack = vec![class.to_ascii_lowercase()];
@@ -1727,6 +1772,29 @@ impl PhpHost {
 
     // ── arrays ─────────────────────────────────────────────────────────────
 
+    /// A fresh `stdClass` holding `props` in the given order, invisible to the
+    /// object counter. `json_encode` stages the public-only view of an object
+    /// here rather than mutating the real one; because PHP never allocated it,
+    /// it must not shift the `#n` handles `var_dump` prints.
+    pub fn new_transient_object(&mut self, props: Vec<(String, Value)>) -> Value {
+        let v = self.new_object_bare("stdClass", props);
+        if let Value::Obj(id) = v {
+            self.transient_objs.insert(id);
+        }
+        v
+    }
+
+    /// An instance of `class` carrying exactly `props`, with NO constructor and NO
+    /// property defaults. `unserialize` needs this: the reference restores the
+    /// recorded state verbatim and never runs `__construct`.
+    pub fn new_object_bare(&mut self, class: &str, props: Vec<(String, Value)>) -> Value {
+        self.objs.push(PhpObj::Object {
+            class: class.to_string(),
+            props: props.into_iter().collect(),
+        });
+        Value::Obj((self.objs.len() - 1) as u32)
+    }
+
     pub fn new_array(&mut self) -> Value {
         self.objs.push(PhpObj::Array {
             entries: IndexMap::new(),
@@ -1912,8 +1980,11 @@ impl PhpHost {
         let Value::Obj(h) = v else { return 0 };
         self.objs
             .iter()
+            .enumerate()
             .take(*h as usize + 1)
-            .filter(|o| matches!(o, PhpObj::Object { .. }))
+            .filter(|(i, o)| {
+                matches!(o, PhpObj::Object { .. }) && !self.transient_objs.contains(&(*i as u32))
+            })
             .count()
     }
 
@@ -2003,6 +2074,43 @@ impl PhpHost {
             cur = def.parent.as_ref().map(|p| p.to_ascii_lowercase());
         }
         false
+    }
+
+    /// How `print_r` and `serialize` decorate a property name that is not public:
+    /// `print_r` writes `[b:protected]` / `[c:Declaring:private]`, and `serialize`
+    /// writes `\0*\0b` / `\0Declaring\0c`. Both need the DECLARING class in its
+    /// source spelling, which is why this returns the name rather than a flag.
+    ///
+    /// `None` for a public or undeclared (dynamic) property — the two cases that
+    /// print bare.
+    pub fn prop_visibility(&self, class: &str, name: &str) -> Option<(String, Visibility)> {
+        let (declaring, vis) = self.resolve_prop_vis(class, name)?;
+        if matches!(vis, Visibility::Public) {
+            return None;
+        }
+        let spelled = self
+            .classes
+            .get(&declaring)
+            .map(|d| d.name.clone())
+            .unwrap_or(declaring);
+        Some((spelled, vis))
+    }
+
+    /// An `enum` case singleton's `(case name, backing value)`; the value is
+    /// `None` for a pure enum. `None` if `v` is not an enum case at all.
+    ///
+    /// Every renderer needs this: an enum does not print like the object it is
+    /// implemented as (`var_dump` writes `enum(Suit::Hearts)`, `json_encode`
+    /// writes the backing value, `serialize` writes `E:9:"Suit:Hearts";`).
+    pub fn enum_case_of(&self, v: &Value) -> Option<(String, Option<Value>)> {
+        let Some(PhpObj::Object { class, props }) = self.as_array(v) else {
+            return None;
+        };
+        if !self.is_enum_class(class) {
+            return None;
+        }
+        let name = props.get("name").map(|n| self.to_str(n))?;
+        Some((name, props.get("value").map(|x| self.deref(x.clone()))))
     }
 
     /// An object's `(name, value)` properties in insertion order. For
@@ -2533,6 +2641,38 @@ impl PhpHost {
         ))
     }
 
+    /// The magic catch-all a call to `class::method` would fall back to, if any:
+    /// `__call` for an instance call, `__callStatic` for a static one. A class
+    /// with only `__call` does NOT answer a static call, and vice versa.
+    fn magic_call_name(&self, class: &str, has_this: bool) -> Option<&'static str> {
+        let magic = if has_this { "__call" } else { "__callstatic" };
+        self.resolve_method(class, magic)
+            .map(|_| if has_this { "__call" } else { "__callStatic" })
+    }
+
+    /// Decide what `$obj->m(...)` (or `C::m(...)`) does, consulting the method
+    /// table, the visibility rules and the magic catch-all in the reference's
+    /// order. Every call opcode routes through this so the instance and static
+    /// forms answer identically.
+    pub fn method_dispatch(&self, class: &str, method: &str, has_this: bool) -> MethodDispatch {
+        let method_l = method.to_ascii_lowercase();
+        if self.resolve_method(class, &method_l).is_none() {
+            return match self.magic_call_name(class, has_this) {
+                Some(_) => MethodDispatch::Magic,
+                None => MethodDispatch::Undefined,
+            };
+        }
+        match self.check_method_access(class, method) {
+            Ok(()) => MethodDispatch::Direct,
+            // Out of reach, but a catch-all takes precedence over the access
+            // error — the reference calls `__call` for a private method too.
+            Err(msg) => match self.magic_call_name(class, has_this) {
+                Some(_) => MethodDispatch::Magic,
+                None => MethodDispatch::Denied(msg),
+            },
+        }
+    }
+
     /// The ordered property-default initializer chunks for a class, parent props
     /// first and child declarations overriding by name. `None` if unknown class.
     fn class_prop_default_chunks(&self, class: &str) -> Option<Vec<(String, Chunk)>> {
@@ -2714,6 +2854,18 @@ impl PhpHost {
             return None;
         };
         self.ref_slot_of_value(entries.get(k)?)
+    }
+
+    /// The class of `recv` when it is an object implementing `ArrayAccess`, so
+    /// `$o[k]` must route through `offsetGet`/`offsetSet`/`offsetExists`/
+    /// `offsetUnset` instead of touching an array.
+    ///
+    /// Returned as a name rather than a bool because every caller immediately
+    /// needs it to dispatch the method, and that dispatch runs PHP — it cannot
+    /// happen while the host is borrowed.
+    pub fn array_access_class(&self, recv: &Value) -> Option<String> {
+        let class = self.object_class(recv)?;
+        self.class_is_a_pub(&class, "ArrayAccess").then_some(class)
     }
 
     /// `$arr[key]` read. Also indexes strings (single-character substring).
@@ -4258,10 +4410,19 @@ pub fn call_function(name: &str, args: Vec<Value>) -> Result<Value, String> {
 /// `call_library` borrows it, so the owner has to be the one that reacts.
 fn call_library_throwing(name: &str, args: Vec<Value>) -> Result<Value, String> {
     match crate::builtins::call_library(name, &args) {
-        Err(e) => match crate::builtins::untag_throw(&e) {
-            Some((class, message)) => throw_from_internal(name, &args, class, message),
-            None => Err(e),
-        },
+        Err(e) => {
+            // A frameless throw is raised from the caller's own frame: no scope
+            // is pushed, so the trace starts where the call was written.
+            if let Some((class, message)) = crate::builtins::untag_bare_throw(&e) {
+                let exc = new_object(class, vec![Value::str(message.to_string())])?;
+                set_pending_throw(exc);
+                return Ok(Value::Undef);
+            }
+            match crate::builtins::untag_throw(&e) {
+                Some((class, message)) => throw_from_internal(name, &args, class, message),
+                None => Err(e),
+            }
+        }
         ok => ok,
     }
 }
@@ -4822,7 +4983,7 @@ pub fn call_method(
         }
     }
     let Some((def_class, def)) = with_host(|h| h.resolve_method(class, &method_l)) else {
-        return Err(format!("call to undefined method {class}::{method}()"));
+        return call_magic_call(class, method, this, args);
     };
     let pre = match this {
         Some(t) => vec![("this".to_string(), t)],
@@ -4839,6 +5000,94 @@ pub fn call_method(
         def.chunk,
         pre,
         args,
+        Vec::new(),
+        def.is_generator,
+    )
+}
+
+/// The `__call` / `__callStatic` fallback: a call that resolved to no method (or
+/// to one out of reach) is re-dispatched as `__call($name, $args)`, with the
+/// argument list packed into a PHP array exactly as the reference does.
+///
+/// Every entry point for a method call funnels here, so a `call_user_func`, a
+/// first-class callable and an ordinary `$o->m()` all reach the catch-all.
+pub fn call_magic_call(
+    class: &str,
+    method: &str,
+    this: Option<Value>,
+    args: Vec<Value>,
+) -> Result<Value, String> {
+    let packed = with_host(|h| {
+        let arr = h.new_array();
+        for a in &args {
+            let v = h.deref(a.clone());
+            let v = h.copy_on_assign(v);
+            h.arr_push_auto(&arr, v);
+        }
+        arr
+    });
+    call_magic_call_packed(class, method, this, packed)
+}
+
+/// [`call_magic_call`] for a call written with named arguments. PHP 8 hands
+/// `__call` a single array whose positional arguments keep their integer keys and
+/// whose named ones appear under their own parameter names.
+pub fn call_magic_call_named(
+    class: &str,
+    method: &str,
+    this: Option<Value>,
+    args: Vec<Value>,
+    named: Vec<(String, Value)>,
+) -> Result<Value, String> {
+    if named.is_empty() {
+        return call_magic_call(class, method, this, args);
+    }
+    let packed = with_host(|h| {
+        let arr = h.new_array();
+        for a in &args {
+            let v = h.deref(a.clone());
+            let v = h.copy_on_assign(v);
+            h.arr_push_auto(&arr, v);
+        }
+        for (k, v) in &named {
+            let v = h.deref(v.clone());
+            let v = h.copy_on_assign(v);
+            h.arr_set_key(&arr, &Value::str(k.clone()), v);
+        }
+        arr
+    });
+    call_magic_call_packed(class, method, this, packed)
+}
+
+/// [`call_magic_call`] with the argument array already built — the named-argument
+/// form needs to add string keys to it before the call.
+fn call_magic_call_packed(
+    class: &str,
+    method: &str,
+    this: Option<Value>,
+    packed: Value,
+) -> Result<Value, String> {
+    let has_this = this.is_some();
+    let Some(magic) = with_host(|h| h.magic_call_name(class, has_this)) else {
+        return Err(format!("Call to undefined method {class}::{method}()"));
+    };
+    let magic_args = vec![Value::str(method.to_string()), packed];
+    let Some((def_class, def)) =
+        with_host(|h| h.resolve_method(class, &magic.to_ascii_lowercase()))
+    else {
+        return Err(format!("Call to undefined method {class}::{method}()"));
+    };
+    let pre = match this {
+        Some(t) => vec![("this".to_string(), t)],
+        None => Vec::new(),
+    };
+    with_host(|h| h.lsb_set_for_next_call(class));
+    invoke(
+        &format!("{def_class}::{magic}"),
+        &def.params,
+        def.chunk,
+        pre,
+        magic_args,
         Vec::new(),
         def.is_generator,
     )
@@ -4886,7 +5135,7 @@ pub fn call_method_named(
 ) -> Result<Value, String> {
     let method_l = method.to_ascii_lowercase();
     let Some((def_class, def)) = with_host(|h| h.resolve_method(class, &method_l)) else {
-        return Err(format!("call to undefined method {class}::{method}()"));
+        return call_magic_call_named(class, method, this, args, named);
     };
     let pre = match this {
         Some(t) => vec![("this".to_string(), t)],
@@ -5022,6 +5271,23 @@ pub fn static_prop_set(class: &str, name: &str, val: Value) -> Result<Value, Str
 pub fn foreach_prep(v: Value) -> Result<Value, String> {
     if with_host(|h| h.is_array(&v)) {
         return Ok(v);
+    }
+    // A Generator is not a class instance — it has no entry in the class table —
+    // so it is driven through its own protocol before the object paths below.
+    // Materializing CONSUMES it, exactly as the reference's
+    // `iterator_to_array($gen)` does.
+    if with_host(|h| h.is_generator_val(&v)) {
+        let arr = with_host(|h| h.new_array());
+        while gen_valid(&v)? {
+            let cur = gen_current(&v)?;
+            let key = gen_key(&v)?;
+            with_host(|h| match key {
+                Value::Undef => h.arr_push_auto(&arr, cur),
+                k => h.arr_set_key(&arr, &k, cur),
+            });
+            gen_next(&v)?;
+        }
+        return Ok(arr);
     }
     let Some(class) = with_host(|h| h.object_class(&v)) else {
         return Ok(with_host(|h| h.new_array()));

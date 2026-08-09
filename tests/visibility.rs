@@ -2,12 +2,12 @@
 //! reachable; `private` is reachable only from the declaring class, `protected`
 //! only from the same inheritance line.
 //!
-//! An out-of-reach PROPERTY is a catchable `Error`, not a host-level abort: the
-//! reference throws, so `try { $o->priv; } catch (Error $e)` handles it and an
-//! uncaught one renders as an ordinary fatal-error block. Both halves are
-//! asserted below — the class and message a `catch` sees, and the verbatim
-//! rendering when nothing catches it, taken from the same program under the
-//! reference `php` 8.5.9.
+//! An out-of-reach PROPERTY or METHOD is a catchable `Error`, not a host-level
+//! abort: the reference throws, so `try { $o->priv(); } catch (Error $e)`
+//! handles it and an uncaught one renders as an ordinary fatal-error block. Both
+//! halves are asserted below — the class and message a `catch` sees, and the
+//! verbatim rendering when nothing catches it, taken from the same program under
+//! the reference `php` 8.5.9.
 
 use phplang::{compile, eval_capture, host, run_compiled};
 
@@ -146,10 +146,36 @@ fn public_method_reachable_externally() {
 }
 
 #[test]
-fn private_method_external_call_errors() {
+fn private_method_external_call_throws() {
     assert_eq!(
-        err(r#"<?php class C { private function m() { return 1; } } $o = new C(); echo $o->m();"#),
-        "Call to private method C::m() from global scope"
+        caught(r#"class C { private function m() { return 1; } } $o = new C(); echo $o->m();"#),
+        "Error|Call to private method C::m() from global scope"
+    );
+}
+
+#[test]
+fn an_uncaught_method_access_error_renders_as_a_fatal_block() {
+    // Verbatim stdout of the same program under the reference `php` 8.5.9.
+    assert_eq!(
+        output_of(
+            r#"<?php class C { private function m() { return 1; } } $o = new C(); echo $o->m();"#
+        ),
+        "\nFatal error: Uncaught Error: Call to private method C::m() from global scope in \
+         Command line code:1\nStack trace:\n#0 {main}\n  thrown in Command line code \
+         on line 1\n"
+    );
+}
+
+/// A class with a `__call` catch-all never reports an access error: the
+/// reference routes an unreachable method to the magic method instead, exactly
+/// as it does for an undeclared one.
+#[test]
+fn a_private_method_is_reached_through_the_call_catch_all() {
+    assert_eq!(
+        run(r#"<?php class C { private function m() { return 1; }
+                    public function __call($n, $a) { return "magic:$n"; } }
+                $o = new C(); echo $o->m();"#),
+        "magic:m"
     );
 }
 
@@ -174,12 +200,10 @@ fn protected_method_subclass_call_ok() {
 }
 
 #[test]
-fn protected_method_external_call_errors() {
+fn protected_method_external_call_throws() {
     assert_eq!(
-        err(
-            r#"<?php class C { protected function m() { return 1; } } $o = new C(); echo $o->m();"#
-        ),
-        "Call to protected method C::m() from global scope"
+        caught(r#"class C { protected function m() { return 1; } } $o = new C(); echo $o->m();"#),
+        "Error|Call to protected method C::m() from global scope"
     );
 }
 

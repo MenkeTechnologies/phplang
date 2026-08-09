@@ -33,6 +33,8 @@ const JSON_ERROR_SYNTAX: i64 = 4;
 const JSON_ERROR_UTF16: i64 = 10;
 /// `JSON_ERROR_INF_OR_NAN` — `json_encode` refuses non-finite floats.
 pub const JSON_ERROR_INF_OR_NAN: i64 = 7;
+/// `JSON_ERROR_NON_BACKED_ENUM` — a pure `enum` case has no value to encode.
+pub const JSON_ERROR_NON_BACKED_ENUM: i64 = 11;
 
 thread_local! {
     /// Last `json_decode` error for this thread (see the module LIMITATION note).
@@ -58,6 +60,7 @@ fn error_msg(code: i64) -> &'static str {
         5 => "Malformed UTF-8 characters, possibly incorrectly encoded",
         JSON_ERROR_UTF16 => "Single unpaired UTF-16 surrogate in unicode escape",
         JSON_ERROR_INF_OR_NAN => "Inf and NaN cannot be JSON encoded",
+        JSON_ERROR_NON_BACKED_ENUM => "Non-backed enums have no default serialization",
         _ => "Unknown error",
     }
 }
