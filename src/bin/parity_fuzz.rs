@@ -2411,7 +2411,7 @@ fn main() {
     let start = Instant::now();
     // A skip is not a pass: counted and reported separately so a mode cannot
     // score zero divergences while testing nothing.
-    let barren = Arc::new(AtomicUsize::new(0));
+    let barren: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
     let skipped: Arc<Mutex<Vec<(&'static str, Skip)>>> = Arc::new(Mutex::new(Vec::new()));
     // Cases that agreed on a NON-empty reference output — the only bucket that
     // is evidence of anything. Counted so the four buckets can be reconciled
@@ -2452,7 +2452,7 @@ fn main() {
                     continue;
                 }
                 Verdict::Barren => {
-                    barren.fetch_add(1, Ordering::Relaxed);
+                    barren.lock().unwrap().push(mode.name);
                     continue;
                 }
                 Verdict::Skipped(why) => {
@@ -2510,7 +2510,7 @@ fn main() {
         }
     }
 
-    let barren = barren.load(Ordering::Relaxed);
+    let barren = Arc::try_unwrap(barren).unwrap().into_inner().unwrap();
     let skipped = Arc::try_unwrap(skipped).unwrap().into_inner().unwrap();
 
     println!("\n=== parity-fuzz summary ===");
@@ -2553,9 +2553,40 @@ fn main() {
         }
     }
     println!(
-        "barren     : {barren} (agreed, but the reference produced no stdout — \
-         proves nothing)"
+        "barren     : {} (agreed, but the reference produced no stdout — \
+         proves nothing)",
+        barren.len()
     );
+    // BY MODE, because the total alone cannot be acted on. A mode that is
+    // barren for a few seeds has an `echo` whose argument happened to be empty;
+    // a mode that is barren for a large share of its cases is emitting programs
+    // with no output construct at all, which is a generator bug rather than a
+    // parity result. Only this breakdown tells the two apart.
+    if !barren.is_empty() {
+        let mut by_mode: Vec<(&str, usize)> = Vec::new();
+        for m in &barren {
+            match by_mode.iter_mut().find(|(name, _)| name == m) {
+                Some((_, n)) => *n += 1,
+                None => by_mode.push((m, 1)),
+            }
+        }
+        by_mode.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+        let ran_by_mode = |name: &str| {
+            (0..args.count)
+                .filter(|i| case_for(args.base_seed, *i).0.name == name)
+                .count()
+        };
+        println!("  barren by mode (share of that mode's cases):");
+        for (name, n) in by_mode {
+            let total = ran_by_mode(name);
+            let pct = if total == 0 {
+                0.0
+            } else {
+                100.0 * n as f64 / total as f64
+            };
+            println!("    {name:<12} {n:>5} of {total:<6} ({pct:.1}%)");
+        }
+    }
     let scored = scored.load(Ordering::Relaxed);
     println!("scored     : {scored} (agreed on a non-empty reference output)");
     // Reconcile: every case handed to a worker must have landed in exactly one
@@ -2564,7 +2595,7 @@ fn main() {
     // the corpus smaller than the one the run claims to have covered.
     let missing = ran
         .saturating_sub(scored)
-        .saturating_sub(barren)
+        .saturating_sub(barren.len())
         .saturating_sub(skipped.len())
         .saturating_sub(divs.len());
     if missing > 0 || dead_workers > 0 {
@@ -2595,8 +2626,8 @@ fn main() {
     if !skipped.is_empty() {
         faults.push(format!("{} skipped", skipped.len()));
     }
-    if barren > 0 {
-        faults.push(format!("{barren} barren"));
+    if !barren.is_empty() {
+        faults.push(format!("{} barren", barren.len()));
     }
     if missing > 0 || dead_workers > 0 {
         faults.push(format!(
