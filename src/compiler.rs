@@ -2020,8 +2020,27 @@ impl Compiler {
             return Ok(());
         }
 
-        self.compile_expr(b, l)?;
-        self.compile_expr(b, r)?;
+        // PCRE-style operand order is not the only thing a message can inherit
+        // from a compiler. The reference SWAPS the operands of `*` when the left
+        // is a compile-time constant and the right is not, so the constant lands
+        // in the second slot — and that swap is observable twice over, because
+        // the operands are also COERCED in slot order:
+        //
+        //     "g" * $t    →  Unsupported operand types: int * string   (swapped)
+        //     "5g" * $t   →  throws with NO "non-numeric value" warning for "5g",
+        //                    because $t is coerced first and throws before it
+        //
+        // Only `*`. `+` is not swapped even though it commutes on numbers —
+        // it is also array union, which does not. `-`, `/`, `%` and `**` all
+        // report in source order.
+        let swap = op == BinOp::Mul && is_const_operand(l) && is_definitely_runtime(r);
+        if swap {
+            self.compile_expr(b, r)?;
+            self.compile_expr(b, l)?;
+        } else {
+            self.compile_expr(b, l)?;
+            self.compile_expr(b, r)?;
+        }
         match op {
             BinOp::Add => {
                 b.emit(Op::Add, self.cur_line);
@@ -2913,4 +2932,159 @@ fn break_level_error(kw: &str, level: u32, depth: usize) -> String {
     } else {
         format!("Cannot '{kw}' {level} levels")
     }
+}
+
+// ── the `*` operand swap ─────────────────────────────────────────────────────
+//
+// The reference's compiler puts a constant operand of `*` in the second slot,
+// which shows up in `Unsupported operand types: X * Y` and in which operand is
+// coerced (and so warns) first. Reproducing it needs the same notion of
+// "constant" the reference's own folder uses, and the two predicates below
+// deliberately answer a NARROWER question than that in the safe direction.
+//
+// Being wrong costs nothing in one direction and a divergence in the other. If
+// something constant is called runtime, the swap happens where the reference did
+// not do one — a NEW divergence. If something runtime is called constant, the
+// swap is skipped and the old answer stands. So `is_definitely_runtime` returns
+// true only for forms that cannot possibly be folded, and everything it is
+// unsure about is treated as constant.
+//
+// A function call is exactly why that matters: `"g" * strlen("ab")` does NOT
+// swap in the reference, because it folds `strlen()` on a literal argument at
+// compile time. Calls are therefore not "definitely runtime" here.
+
+/// Whether `e` is a constant the reference would hold in an `IS_CONST` operand.
+///
+/// Literals, and the arithmetic over literals that folds without a diagnostic.
+fn is_const_operand(e: &Expr) -> bool {
+    match e {
+        Expr::Null | Expr::Bool(_) | Expr::Int(_) | Expr::Float(_) | Expr::Str(_) => true,
+        // A double-quoted string with no embedded expression is a literal; the
+        // lexer does not collapse it, so `"g"` arrives as a one-part `Interp`.
+        Expr::Interp(parts) => parts.iter().all(|p| matches!(p, InterpPart::Lit(_))),
+        Expr::Unary(UnOp::Neg | UnOp::Pos, x) => is_const_operand(x),
+        Expr::Binary(op, a, b) if is_foldable_arith(*op) => folds_without_diagnostic(*op, a, b),
+        _ => false,
+    }
+}
+
+/// Whether `e` cannot be a compile-time constant under ANY folding rule, so a
+/// swap against it is certainly what the reference did.
+fn is_definitely_runtime(e: &Expr) -> bool {
+    match e {
+        Expr::Var(_)
+        | Expr::Index(..)
+        | Expr::Append(_)
+        | Expr::Assign(..)
+        | Expr::IncDec { .. }
+        | Expr::RefAssign(..) => true,
+        // Arithmetic over constants that the reference would NOT fold, because
+        // folding it would have to emit the diagnostic at compile time.
+        Expr::Binary(op, a, b) if is_foldable_arith(*op) => {
+            is_const_operand(a) && is_const_operand(b) && !folds_without_diagnostic(*op, a, b)
+        }
+        _ => false,
+    }
+}
+
+/// The arithmetic operators whose constant folding this models. `Concat` and the
+/// comparisons fold too, but they never warn on constants, so they are always
+/// constant and need no separate test.
+fn is_foldable_arith(op: BinOp) -> bool {
+    matches!(
+        op,
+        BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod | BinOp::Pow
+    )
+}
+
+/// Whether `a <op> b` on two constants evaluates silently, which is the
+/// condition for the reference to fold it.
+///
+/// Arithmetic on a string constant that is only LEADING-numeric warns
+/// (`"0x1A" * 1`) and on a wholly non-numeric one throws, so neither folds. A
+/// division or modulo by a zero constant does not fold either.
+fn folds_without_diagnostic(op: BinOp, a: &Expr, b: &Expr) -> bool {
+    if !is_silently_numeric(a) || !is_silently_numeric(b) {
+        return false;
+    }
+    if matches!(op, BinOp::Div | BinOp::Mod) && is_literal_zero(b) {
+        return false;
+    }
+    true
+}
+
+/// Whether `e` is a constant with a numeric reading that costs no diagnostic.
+fn is_silently_numeric(e: &Expr) -> bool {
+    match e {
+        Expr::Null | Expr::Bool(_) | Expr::Int(_) | Expr::Float(_) => true,
+        Expr::Str(s) => is_fully_numeric(s),
+        Expr::Interp(parts) => match parts.as_slice() {
+            [] => is_fully_numeric(""),
+            [InterpPart::Lit(s)] => is_fully_numeric(s),
+            _ => false,
+        },
+        Expr::Unary(UnOp::Neg | UnOp::Pos, x) => is_silently_numeric(x),
+        Expr::Binary(op, a, b) if is_foldable_arith(*op) => folds_without_diagnostic(*op, a, b),
+        _ => false,
+    }
+}
+
+fn is_literal_zero(e: &Expr) -> bool {
+    match e {
+        Expr::Int(0) => true,
+        Expr::Float(f) => *f == 0.0,
+        Expr::Str(s) => {
+            is_fully_numeric(s) && s.trim().parse::<f64>().map(|v| v == 0.0) == Ok(true)
+        }
+        _ => false,
+    }
+}
+
+/// PHP's "numeric string": optional surrounding whitespace around a full
+/// integer or float. A string that merely STARTS with a number ("5g", "0x1A")
+/// is not one — it is the leading-numeric case that warns.
+fn is_fully_numeric(s: &str) -> bool {
+    let t = s.trim();
+    if t.is_empty() {
+        return false;
+    }
+    // `parse::<f64>` accepts forms PHP does not ("inf", "NaN", "1e", hex).
+    let bytes = t.as_bytes();
+    let mut i = 0;
+    if matches!(bytes[i], b'+' | b'-') {
+        i += 1;
+    }
+    let digits_before = {
+        let start = i;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        i - start
+    };
+    let mut digits_after = 0;
+    if i < bytes.len() && bytes[i] == b'.' {
+        i += 1;
+        let start = i;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        digits_after = i - start;
+    }
+    if digits_before + digits_after == 0 {
+        return false;
+    }
+    if i < bytes.len() && matches!(bytes[i], b'e' | b'E') {
+        i += 1;
+        if i < bytes.len() && matches!(bytes[i], b'+' | b'-') {
+            i += 1;
+        }
+        let start = i;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i == start {
+            return false;
+        }
+    }
+    i == bytes.len()
 }

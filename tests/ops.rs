@@ -152,7 +152,11 @@ fn non_numeric_string_is_a_type_error() {
         let src = format!(
             r#"<?php try {{ $x = {expr}; }} catch (TypeError $e) {{ echo $e->getMessage(); }}"#
         );
-        assert_eq!(run(&src), format!("Unsupported operand types: {want}"), "{expr}");
+        assert_eq!(
+            run(&src),
+            format!("Unsupported operand types: {want}"),
+            "{expr}"
+        );
     }
 }
 
@@ -189,11 +193,15 @@ fn operands_resolve_left_to_right() {
     // non-numeric right operand throws, and a non-numeric left operand throws
     // before the right is looked at at all.
     assert_eq!(
-        run(r#"<?php try { $x = "5g" + "g"; } catch (TypeError $e) { echo "|", $e->getMessage(); }"#),
+        run(
+            r#"<?php try { $x = "5g" + "g"; } catch (TypeError $e) { echo "|", $e->getMessage(); }"#
+        ),
         format!("{}|Unsupported operand types: string + string", warn(1))
     );
     assert_eq!(
-        run(r#"<?php try { $x = "g" + "5g"; } catch (TypeError $e) { echo "|", $e->getMessage(); }"#),
+        run(
+            r#"<?php try { $x = "g" + "5g"; } catch (TypeError $e) { echo "|", $e->getMessage(); }"#
+        ),
         "|Unsupported operand types: string + string"
     );
     // Two leading-numeric operands warn twice and still produce a value.
@@ -225,7 +233,11 @@ fn unary_plus_and_minus_report_as_multiplication() {
         let src = format!(
             r#"<?php try {{ $x = {expr}; }} catch (TypeError $e) {{ echo $e->getMessage(); }}"#
         );
-        assert_eq!(run(&src), "Unsupported operand types: string * int", "{expr}");
+        assert_eq!(
+            run(&src),
+            "Unsupported operand types: string * int",
+            "{expr}"
+        );
     }
     assert_eq!(run(r#"<?php echo -"5g";"#), format!("{}-5", warn(1)));
     assert_eq!(run(r#"<?php echo +"5g";"#), format!("{}5", warn(1)));
@@ -239,7 +251,10 @@ fn compound_assignment_follows_the_same_rules() {
         run(r#"<?php $x = "g"; try { $x += 9; } catch (TypeError $e) { echo $e->getMessage(); }"#),
         "Unsupported operand types: string + int"
     );
-    assert_eq!(run(r#"<?php $x = "5g"; $x += 1; echo $x;"#), format!("{}6", warn(1)));
+    assert_eq!(
+        run(r#"<?php $x = "5g"; $x += 1; echo $x;"#),
+        format!("{}6", warn(1))
+    );
     // `.=` is concatenation, which the change did not touch.
     assert_eq!(run(r#"<?php $x = "g"; $x .= 9; echo $x;"#), "g9");
 }
@@ -262,7 +277,10 @@ fn exponent_without_digits_reads_as_the_mantissa() {
     assert_eq!(run(r#"<?php echo "5e+" + 0;"#), format!("{}5", warn(1)));
     assert_eq!(run(r#"<?php var_dump(is_numeric("5e"));"#), "bool(false)\n");
     // An exponent that overflows is still a fully numeric string.
-    assert_eq!(run(r#"<?php var_dump(is_numeric("1e400"));"#), "bool(true)\n");
+    assert_eq!(
+        run(r#"<?php var_dump(is_numeric("1e400"));"#),
+        "bool(true)\n"
+    );
     assert_eq!(run(r#"<?php echo "1e400" + 0;"#), "INF");
 }
 
@@ -274,12 +292,16 @@ fn type_error_is_catchable_and_ignores_error_reporting() {
         "6"
     );
     assert_eq!(
-        run(r#"<?php error_reporting(0); try { $x = "g" + 1; } catch (TypeError $e) { echo "caught"; }"#),
+        run(
+            r#"<?php error_reporting(0); try { $x = "g" + 1; } catch (TypeError $e) { echo "caught"; }"#
+        ),
         "caught"
     );
     // Catchable from inside a function, through the call unwind.
     assert_eq!(
-        run(r#"<?php function f() { return "g" + 1; } try { f(); } catch (TypeError $e) { echo "caught"; }"#),
+        run(
+            r#"<?php function f() { return "g" + 1; } try { f(); } catch (TypeError $e) { echo "caught"; }"#
+        ),
         "caught"
     );
 }
@@ -287,7 +309,10 @@ fn type_error_is_catchable_and_ignores_error_reporting() {
 #[test]
 fn array_plus_array_is_union_not_arithmetic() {
     // The left operand's entries win; the right contributes only missing keys.
-    assert_eq!(run(r#"<?php print_r([1] + [2]);"#), "Array\n(\n    [0] => 1\n)\n");
+    assert_eq!(
+        run(r#"<?php print_r([1] + [2]);"#),
+        "Array\n(\n    [0] => 1\n)\n"
+    );
     assert_eq!(
         run(r#"<?php print_r([1] + [9, 8]);"#),
         "Array\n(\n    [0] => 1\n    [1] => 8\n)\n"
@@ -372,4 +397,110 @@ fn increment_and_decrement_refuse_arrays_and_objects() {
     }
     // The types `++`/`--` merely leave alone still only warn.
     assert_eq!(run(r#"<?php $x = 1.5; $x++; echo $x;"#), "2.5");
+}
+
+// ── the `*` operand swap ─────────────────────────────────────────────────────
+
+/// The reference's compiler puts a CONSTANT operand of `*` in the second slot,
+/// so `"g" * $t` reports `int * string` rather than the source order. Only `*`
+/// does this; `+` commutes on numbers but is also array union, and the reference
+/// leaves it alone.
+#[test]
+fn multiplication_swaps_a_constant_left_operand() {
+    let catch = |e: &str| {
+        format!(
+            r#"<?php $t = 1; $s = "g"; try {{ $x = {e}; }} catch (TypeError $er) {{ echo $er->getMessage(); }}"#
+        )
+    };
+    // Constant left, runtime right — swapped.
+    assert_eq!(
+        run(&catch(r#""g" * $t"#)),
+        "Unsupported operand types: int * string"
+    );
+    assert_eq!(
+        run(&catch(r#""g" * [1][0]"#)),
+        "Unsupported operand types: int * string"
+    );
+    // Not `*` — no swap, source order.
+    assert_eq!(
+        run(&catch(r#""g" + $t"#)),
+        "Unsupported operand types: string + int"
+    );
+    assert_eq!(
+        run(&catch(r#""g" - $t"#)),
+        "Unsupported operand types: string - int"
+    );
+    assert_eq!(
+        run(&catch(r#""g" / $t"#)),
+        "Unsupported operand types: string / int"
+    );
+    assert_eq!(
+        run(&catch(r#""g" ** $t"#)),
+        "Unsupported operand types: string ** int"
+    );
+    // Left already runtime, or both runtime — no swap either way.
+    assert_eq!(
+        run(&catch(r#"$t * "g""#)),
+        "Unsupported operand types: int * string"
+    );
+    assert_eq!(
+        run(&catch(r#"$s * $t"#)),
+        "Unsupported operand types: string * int"
+    );
+}
+
+/// The swap tracks the reference's constant FOLDING, not just "is it a literal".
+#[test]
+fn the_swap_follows_what_the_reference_would_fold() {
+    let catch = |e: &str| {
+        format!(r#"<?php try {{ $x = {e}; }} catch (TypeError $er) {{ echo $er->getMessage(); }}"#)
+    };
+    // Arithmetic over numeric literals folds to a constant → no swap.
+    assert_eq!(
+        run(&catch(r#""g" * (1*1)"#)),
+        "Unsupported operand types: string * int"
+    );
+    assert_eq!(
+        run(&catch(r#""g" * ("2"+1)"#)),
+        "Unsupported operand types: string * int"
+    );
+    assert_eq!(
+        run(&catch(r#""g" * (2.5*2)"#)),
+        "Unsupported operand types: string * float"
+    );
+    // A LEADING-numeric string constant would warn if folded, so the reference
+    // does not fold it — the operand stays runtime and the swap happens.
+    assert_eq!(
+        run(&catch(r#""g" * ("0x1A"*1)"#)),
+        format!("{}Unsupported operand types: int * string", warn(1))
+    );
+    // A call is NOT treated as runtime: the reference folds `strlen()` on a
+    // literal, and swapping there would invent a divergence.
+    assert_eq!(
+        run(&catch(r#""g" * strlen("ab")"#)),
+        "Unsupported operand types: string * int"
+    );
+}
+
+/// The swap is observable in the WARNINGS too, not only the message, because the
+/// operands are coerced in slot order: the swapped-in right operand throws
+/// before the constant left one is ever coerced, so its warning never fires.
+#[test]
+fn the_swap_decides_which_operand_warns_first() {
+    // Constant left is coerced SECOND, so "5g" never warns — the throw from $g
+    // comes first.
+    let swapped = r#"<?php $g = "g"; try { $x = "5g" * $g; } catch (TypeError $e) { echo $e->getMessage(); }"#;
+    assert_eq!(run(swapped), "Unsupported operand types: string * string");
+    // Both runtime: no swap, so the left IS coerced first and does warn.
+    let plain = r#"<?php $g = "g"; $n = "5g"; try { $x = $n * $g; } catch (TypeError $e) { echo $e->getMessage(); }"#;
+    assert_eq!(
+        run(plain),
+        format!("{}Unsupported operand types: string * string", warn(1))
+    );
+    // `+` is not swapped, so the constant left warns there.
+    let plus = r#"<?php $g = "g"; try { $x = "5g" + $g; } catch (TypeError $e) { echo $e->getMessage(); }"#;
+    assert_eq!(
+        run(plus),
+        format!("{}Unsupported operand types: string + string", warn(1))
+    );
 }
