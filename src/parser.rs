@@ -712,8 +712,12 @@ impl Parser {
     }
 
     /// `namespace Name;` or `namespace Name { ... }`. phplang uses a flat
-    /// namespace (qualified names fold to their last segment), so the declaration
-    /// is accepted and the name discarded; a block form runs its body inline.
+    /// namespace (qualified CLASS names fold to their last segment), so the
+    /// declaration is accepted and the name discarded; a block form runs its
+    /// body inline.
+    ///
+    /// Constants do not fold — see `primary`, where `Foo\BAR` resolves as the
+    /// constant of that exact name.
     fn namespace_stmt(&mut self) -> Result<StmtKind, String> {
         self.pos += 1; // namespace
         if matches!(self.peek(), Some(Tok::Ident(_))) || self.at_punct("\\") {
@@ -1670,6 +1674,39 @@ impl Parser {
                 })
             }
             Some(Tok::Ident(name)) => {
+                // A `\`-qualified name — `Foo\BAR`, `A\B\C`. Any LEADING `\` was
+                // already eaten at the top of `primary`, which is what makes
+                // `\NOPE` the constant `NOPE` rather than `\NOPE`.
+                //
+                // A CONSTANT keeps the whole name: `Foo\BAR` is a constant
+                // literally called `Foo\BAR`, a different one from `BAR`, which
+                // is exactly what `define('Foo\BAR', …)` creates.
+                let mut qualified = name.clone();
+                let mut qualified_segments = 0usize;
+                while self.at_punct("\\") {
+                    let Some(Tok::Ident(seg)) = self.toks.get(self.pos + 1).map(|s| &s.tok) else {
+                        break;
+                    };
+                    let seg = seg.clone();
+                    self.pos += 2; // `\` and the segment
+                    qualified.push('\\');
+                    qualified.push_str(&seg);
+                    qualified_segments += 1;
+                }
+                // A qualified CALL is left as the syntax error it already was.
+                // There is no answer here that is not a divergence: the
+                // reference resolves a qualified name relative to the current
+                // namespace, which this flat model does not track, so
+                // `namespace A; A\f()` is `A\A\f` (undefined) upstream. Folding
+                // to the last segment would return a value where the reference
+                // fatals — trading an error for a silently wrong answer — and
+                // keeping the full name would break `\A\f()`, which resolves
+                // today. Constants have no such conflict, so only they are
+                // resolved here. (A bare leading `\` consumes no segment and is
+                // unaffected, so `\strlen(…)` still calls `strlen`.)
+                if qualified_segments > 0 && self.at_punct("(") {
+                    return Err(self.syntax_error_at(self.pos));
+                }
                 // A bareword followed by `(` is a function call.
                 if self.eat_punct("(") {
                     // `name(...)` — first-class callable syntax → a `Closure`.
@@ -1707,10 +1744,15 @@ impl Parser {
                     }
                     Ok(Expr::Call(name, args))
                 } else {
-                    // A bare constant reference — resolved against the constant
-                    // table at runtime, falling back to the bare name as a string
-                    // when undefined (PHP 7 leniency for undefined constants).
-                    Ok(Expr::ConstFetch(name))
+                    // A constant reference, resolved against the constant table
+                    // at run time. An undefined name throws
+                    // `Error: Undefined constant "<name>"` — PHP 8 behaviour;
+                    // the PHP 7 fallback to the bare name as a string is gone.
+                    //
+                    // The QUALIFIED name is what is looked up, so `Foo\BAR`
+                    // reaches that same throw naming `Foo\BAR`, rather than
+                    // quietly resolving some other constant.
+                    Ok(Expr::ConstFetch(qualified))
                 }
             }
             _ => Err(self.syntax_error_at(self.pos - 1)),
