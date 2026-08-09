@@ -406,6 +406,16 @@ fn glob_only_dir_flag() {
     let src =
         format!("<?php $g = glob('{dirs}/*', GLOB_ONLYDIR); echo count($g), ':', basename($g[0]);");
     assert_eq!(run(&src), "1:subdir");
+    // By VALUE, not by name. `GLOB_ONLYDIR` used to be undefined: the bareword
+    // resolved to the string "GLOB_ONLYDIR" and was matched by substring, so the
+    // bit the matcher tested was never exercised — and it was `0x2000` (glibc's)
+    // while the reference on this platform reports 1073741824.
+    let by_value =
+        format!("<?php $g = glob('{dirs}/*', 1073741824); echo count($g), ':', basename($g[0]);");
+    assert_eq!(run(&by_value), "1:subdir");
+    // No flags: both entries come back, so the filter is really the flag's doing.
+    let no_flag = format!("<?php echo count(glob('{dirs}/*'));");
+    assert_eq!(run(&no_flag), "2");
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -462,12 +472,21 @@ fn fnmatch_wildcards() {
 
 #[test]
 fn fnmatch_casefold_flag() {
-    // Bareword FNM_CASEFOLD (unseeded → name string) folds ASCII case.
+    // `FNM_CASEFOLD` is a seeded constant (16, as the reference reports) and
+    // folds ASCII case. It used to resolve to the STRING "FNM_CASEFOLD" under
+    // the pre-PHP-8 bareword fallback and was matched by name, so this passed
+    // without the flag's value ever being read.
     assert_eq!(run("<?php echo fnmatch('FOO', 'foo') ? '1' : '0';"), "0");
     assert_eq!(
         run("<?php echo fnmatch('FOO', 'foo', FNM_CASEFOLD) ? '1' : '0';"),
         "1"
     );
+    // The value, not just the name, is what selects the behaviour now.
+    assert_eq!(
+        run("<?php echo fnmatch('FOO', 'foo', 16) ? '1' : '0';"),
+        "1"
+    );
+    assert_eq!(run("<?php echo fnmatch('FOO', 'foo', 0) ? '1' : '0';"), "0");
 }
 
 // ── stat / lstat / fileperms / filetype ─────────────────────────────────────

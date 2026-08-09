@@ -5833,7 +5833,7 @@ pub const CORPUS: &[Entry] = &[
         "constant",
         "Constants",
         "constant(string $name): mixed",
-        "The value of the named constant. DIVERGENCE: an UNDEFINED name returns the name itself as a string — PHP 7 leniency without even the notice — where PHP 8 throws `Error: Undefined constant`.",
+        "The value of the named constant. An UNDEFINED name throws `Error: Undefined constant \"<name>\"`, catchable, exactly as a bare reference to the same name does.",
         "echo constant(\"NOPE\");   // => NOPE",
     ),
     // ══ Input filtering (stdlib::filter) ════════════════════════════════════

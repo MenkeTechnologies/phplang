@@ -1608,7 +1608,9 @@ impl Compiler {
             Expr::ConstFetch(name) => {
                 let idx = b.add_constant(Value::str(name.clone()));
                 b.emit(Op::LoadConst(idx), 0);
-                b.emit(Op::CallBuiltin(ops::CONST_FETCH, 1), 0);
+                // Sited: an undefined constant throws from here, and the `Error`
+                // reports this op's line.
+                b.emit(Op::CallBuiltin(ops::CONST_FETCH, 1), self.cur_line);
             }
             Expr::Unset(targets) => {
                 for t in targets {

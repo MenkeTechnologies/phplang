@@ -803,13 +803,14 @@ impl PhpHost {
 
     // ── constants ───────────────────────────────────────────────────────────
 
-    /// `constant(name)` / a bare constant reference: the defined value, or the
-    /// bare name as a string when undefined (PHP 7 leniency, minus the notice).
-    pub fn const_fetch(&self, name: &str) -> Value {
-        self.constants
-            .get(name)
-            .cloned()
-            .unwrap_or_else(|| Value::str(name.to_string()))
+    /// `constant(name)` / a bare constant reference, or `None` when no constant
+    /// of that name is defined.
+    ///
+    /// An undefined one is an `Error` in PHP 8, not the bare name as a string —
+    /// that leniency was PHP 7's and was removed. Raising it needs a throw, which
+    /// this cannot do, so both callers turn the `None` into one themselves.
+    pub fn const_fetch(&self, name: &str) -> Option<Value> {
+        self.constants.get(name).cloned()
     }
 
     /// Whether a constant of this name is defined.
@@ -3570,12 +3571,35 @@ fn predefined_constants() -> FxHashMap<String, Value> {
     si("SCANDIR_SORT_ASCENDING", 0);
     si("SCANDIR_SORT_DESCENDING", 1);
     si("SCANDIR_SORT_NONE", 2);
+    // glob / fnmatch. The values live next to the matcher that reads them, in
+    // `stdlib::fileio`, so a flag cannot be seeded with one bit and tested with
+    // another — which is what had happened before these were seeded at all.
+    si("GLOB_ERR", crate::stdlib::fileio::GLOB_ERR);
+    si("GLOB_MARK", crate::stdlib::fileio::GLOB_MARK);
+    si("GLOB_NOCHECK", crate::stdlib::fileio::GLOB_NOCHECK);
+    si("GLOB_NOSORT", crate::stdlib::fileio::GLOB_NOSORT);
+    si("GLOB_BRACE", crate::stdlib::fileio::GLOB_BRACE);
+    si("GLOB_NOESCAPE", crate::stdlib::fileio::GLOB_NOESCAPE);
+    si("GLOB_ONLYDIR", crate::stdlib::fileio::GLOB_ONLYDIR);
+    si(
+        "GLOB_AVAILABLE_FLAGS",
+        crate::stdlib::fileio::GLOB_AVAILABLE_FLAGS,
+    );
+    si("FNM_NOESCAPE", crate::stdlib::fileio::FNM_NOESCAPE);
+    si("FNM_PATHNAME", crate::stdlib::fileio::FNM_PATHNAME);
+    si("FNM_PERIOD", crate::stdlib::fileio::FNM_PERIOD);
+    si("FNM_CASEFOLD", crate::stdlib::fileio::FNM_CASEFOLD);
     si("PATHINFO_DIRNAME", 1);
     si("PATHINFO_BASENAME", 2);
     si("PATHINFO_EXTENSION", 4);
     si("PATHINFO_FILENAME", 8);
     si("PATHINFO_ALL", 15);
+    // array_change_key_case
+    si("CASE_LOWER", 0);
+    si("CASE_UPPER", 1);
     // html entities
+    si("HTML_SPECIALCHARS", 0);
+    si("HTML_ENTITIES", 1);
     si("ENT_NOQUOTES", 0);
     si("ENT_COMPAT", 2);
     si("ENT_QUOTES", 3);

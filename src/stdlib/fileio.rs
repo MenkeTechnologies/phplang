@@ -284,8 +284,38 @@ fn wildcard_match(pattern: &str, text: &str, casefold: bool) -> bool {
     pi == p.len()
 }
 
+// The `glob`/`fnmatch` flag bits, and the values the host seeds the matching
+// constants with — one definition, so the two cannot disagree.
+//
+// PHP takes these from libc, so they are PLATFORM-dependent; every value here
+// was read off the reference `php` on macOS. The matcher below is hand-rolled
+// rather than a libc `glob(3)` call, so it only needs to agree with the
+// constants phplang itself seeds — which it now does by construction. A script
+// hardcoding a numeric literal from a different platform's libc is the one case
+// that would still differ.
+//
+// The bits were previously written inline and were a MIXTURE of two platforms'
+// values (`ONLYDIR` was glibc's `0x2000`, `NOSORT` glibc's `4`, `MARK` macOS's
+// `8`), matching neither. Nothing caught it because an unseeded bareword
+// resolved to its own NAME under the pre-PHP-8 fallback and took the string
+// branch of `has_flag`, so the int branch was never reached.
+pub(crate) const GLOB_ERR: i64 = 4;
+pub(crate) const GLOB_MARK: i64 = 8;
+pub(crate) const GLOB_NOCHECK: i64 = 16;
+pub(crate) const GLOB_NOSORT: i64 = 32;
+pub(crate) const GLOB_BRACE: i64 = 128;
+pub(crate) const GLOB_NOESCAPE: i64 = 4096;
+pub(crate) const GLOB_ONLYDIR: i64 = 1073741824;
+pub(crate) const GLOB_AVAILABLE_FLAGS: i64 = 1073746108;
+pub(crate) const FNM_NOESCAPE: i64 = 1;
+pub(crate) const FNM_PATHNAME: i64 = 2;
+pub(crate) const FNM_PERIOD: i64 = 4;
+pub(crate) const FNM_CASEFOLD: i64 = 16;
+
 /// Whether a `glob`/`fnmatch` flag argument requests the behavior named by
-/// `name` (matched against the seeded int bit `bit` or an unseeded bareword).
+/// `name` (matched against the seeded int bit `bit`, or a literal string
+/// argument — a bareword no longer reaches here, since an undefined constant is
+/// an `Error` in PHP 8).
 fn has_flag(v: &Value, name: &str, bit: i64) -> bool {
     match v {
         Value::Int(n) => n & bit != 0,
@@ -538,9 +568,9 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         "glob" => {
             let pattern = str_arg(args, 0);
             let flags = arg(args, 1);
-            let only_dir = has_flag(&flags, "ONLYDIR", 0x2000);
-            let mark = has_flag(&flags, "MARK", 8);
-            let no_sort = has_flag(&flags, "NOSORT", 4);
+            let only_dir = has_flag(&flags, "ONLYDIR", GLOB_ONLYDIR);
+            let mark = has_flag(&flags, "MARK", GLOB_MARK);
+            let no_sort = has_flag(&flags, "NOSORT", GLOB_NOSORT);
             let (dir_read, prefix, name_pat) = match pattern.rfind('/') {
                 Some(i) => {
                     let dir = &pattern[..i];
@@ -585,7 +615,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         "fnmatch" => {
             let pattern = str_arg(args, 0);
             let subject = str_arg(args, 1);
-            let casefold = has_flag(&arg(args, 2), "CASEFOLD", 0x10);
+            let casefold = has_flag(&arg(args, 2), "CASEFOLD", FNM_CASEFOLD);
             Value::bool(wildcard_match(&pattern, &subject, casefold))
         }
 

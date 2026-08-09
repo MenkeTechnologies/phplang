@@ -63,13 +63,34 @@ fn define_does_not_redefine() {
     assert_eq!(run(src), "bool(true)\nbool(false)\n1");
 }
 
+/// An undefined constant is a catchable `Error`, not its own name as a string.
+///
+/// This test previously asserted the PHP 7 fallback (`echo NOT_DEFINED` echoing
+/// `"NOT_DEFINED"`). That leniency was removed in PHP 8 and the reference has
+/// raised `Error: Undefined constant "…"` since; the old expectation described
+/// phplang's behaviour rather than the oracle's, so it is replaced here by what
+/// PHP 8.5.9 actually does. Both ways of reaching a constant are covered — the
+/// bareword and `constant()` — because they resolve through the same table and
+/// only one of them used to throw.
 #[test]
-fn undefined_constant_falls_back_to_name() {
-    // PHP 7 leniency (minus the notice): an undefined bareword is its own name.
+fn undefined_constant_is_a_catchable_error() {
+    let bare = r#"<?php try { echo THIS_IS_NOT_DEFINED; }
+        catch (Error $e) { echo get_class($e), ": ", $e->getMessage(); }"#;
     assert_eq!(
-        run("<?php echo THIS_IS_NOT_DEFINED;"),
-        "THIS_IS_NOT_DEFINED"
+        run(bare),
+        r#"Error: Undefined constant "THIS_IS_NOT_DEFINED""#
     );
+    let via_fn = r#"<?php try { echo constant('THIS_IS_NOT_DEFINED'); }
+        catch (Error $e) { echo get_class($e), ": ", $e->getMessage(); }"#;
+    assert_eq!(
+        run(via_fn),
+        r#"Error: Undefined constant "THIS_IS_NOT_DEFINED""#
+    );
+    // A DEFINED constant still resolves through both, and `defined()` answers
+    // without throwing for either name.
+    let ok = r#"<?php define('IS_HERE', 5); echo IS_HERE, constant('IS_HERE'),
+        (int) defined('IS_HERE'), (int) defined('THIS_IS_NOT_DEFINED');"#;
+    assert_eq!(run(ok), "5510");
 }
 
 #[test]

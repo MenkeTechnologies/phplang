@@ -22,10 +22,17 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             let cname = with_host(|h| h.to_str(args.first().unwrap_or(&Value::Undef)));
             Some(Ok(Value::bool(with_host(|h| h.const_defined(&cname)))))
         }
-        // constant(name) — the value of the named constant (bare name if undefined).
+        // constant(name) — the value of the named constant. Undefined is the same
+        // catchable `Error` a bare reference raises, with the same message.
         "constant" => {
             let cname = with_host(|h| h.to_str(args.first().unwrap_or(&Value::Undef)));
-            Some(Ok(with_host(|h| h.const_fetch(&cname))))
+            Some(match with_host(|h| h.const_fetch(&cname)) {
+                Some(v) => Ok(v),
+                None => Err(crate::builtins::throws(
+                    "Error",
+                    crate::builtins::undefined_constant(&cname),
+                )),
+            })
         }
         _ => None,
     }

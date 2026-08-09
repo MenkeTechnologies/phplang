@@ -530,9 +530,24 @@ fn b_foreach_prep(vm: &mut VM, _: u8) -> Value {
 
 /// Resolve a bare constant reference to its value (or the bare name as a string
 /// when undefined, matching PHP 7 leniency).
+/// A bare constant reference. Undefined is an `Error` in PHP 8 — the bareword
+/// no longer falls back to its own name as a string.
 fn b_const_fetch(vm: &mut VM, _: u8) -> Value {
     let name = pop_name(vm);
-    with_host(|h| h.const_fetch(&name))
+    match with_host(|h| h.const_fetch(&name)) {
+        Some(v) => v,
+        None => {
+            mark_frame_line(vm);
+            throw_php(vm, "Error", &undefined_constant(&name))
+        }
+    }
+}
+
+/// The message PHP raises for a constant that is not defined, shared by the
+/// bareword reference and the `constant()` library function so the two cannot
+/// drift.
+pub(crate) fn undefined_constant(name: &str) -> String {
+    format!("Undefined constant \"{name}\"")
 }
 
 /// `unset($var)` — remove the scope variable.
