@@ -445,14 +445,14 @@ pub const CORPUS: &[Entry] = &[
         "+",
         "Operator",
         "expr + expr   //  binary;   +expr   //  unary",
-        "Numeric addition, with the unary form coercing its operand to a number. DIVERGENCE: it does not merge arrays — `[1] + [2]` goes through numeric coercion instead of PHP's union semantics.",
+        "Numeric addition, or array union when BOTH operands are arrays — the left operand's entries win and the right contributes only the keys it lacks. Under PHP 8 a string operand with no numeric prefix (`\"g\"`, `\"\"`, `\"   \"`) makes the whole operation a `TypeError: Unsupported operand types: string + int`, while one that merely trails garbage (`\"5g\"`) raises `Warning: A non-numeric value encountered` and continues with its prefix. Operands resolve left before right, so `\"5g\" + \"g\"` warns and then throws while `\"g\" + \"5g\"` throws without warning.",
         "echo 2 + 3;   // => 5",
     ),
     (
         "-",
         "Operator",
         "expr - expr   //  binary;   -expr   //  unary",
-        "Numeric subtraction and arithmetic negation. Unary minus binds looser than `**`, so `-2 ** 2` is `-(2 ** 2)`.",
+        "Numeric subtraction and arithmetic negation. Unary minus binds looser than `**`, so `-2 ** 2` is `-(2 ** 2)`. Both unary signs are multiplications to the engine, which is why `-\"g\"` and `+\"g\"` report `Unsupported operand types: string * int`.",
         "echo 7 - 2, \" \", -2 ** 2;   // => 5 -4",
     ),
     (
@@ -508,7 +508,7 @@ pub const CORPUS: &[Entry] = &[
         "+= -= *= /= %= .= **=",
         "Operator",
         "target op= expr",
-        "The arithmetic and string compound assignments. Each reads the target, applies the matching binary operator, and stores the result back.",
+        "The arithmetic and string compound assignments. Each reads the target, applies the matching binary operator, and stores the result back — including that operator's PHP 8 operand rules, so `$x = \"g\"; $x += 9;` is a `TypeError` just as `\"g\" + 9` is.",
         "$x = 10; $x += 5; $x .= \"!\"; echo $x;   // => 15!",
     ),
     (
@@ -4078,12 +4078,16 @@ pub const CORPUS: &[Entry] = &[
     //
     // Modifiers: the accepted set is `imnrsuxADJSUX`, matching the reference;
     // any other letter is `Unknown modifier '<c>'`. Of those, `i m s x U u` are
-    // implemented and `n` (no auto-capture) is applied by rewriting each
-    // capturing group. DIVERGENCE: `A D J S X r` are accepted as NO-OPS, and
-    // `A` (anchored) is the one whose absence is observable — `preg_match("/a/A",
-    // "bar")` is 0 in the reference and 1 here, because anchoring every match
-    // attempt at the current offset is not something the Rust engine's safe API
-    // exposes.
+    // implemented, `n` (no auto-capture) is applied by rewriting each capturing
+    // group, and `A` (anchored) is applied per search: the engine has no
+    // anchored flag, but it is leftmost-first, so a search from `pos` returns
+    // the match starting at `pos` when one exists. `A` retries at each
+    // successive offset and stops at the first failure, so
+    // `preg_match_all("/a/A", "aab")` is 2 while `"bab"` is 0.
+    // DIVERGENCE: `D J S X r` are accepted as NO-OPS. Only `D` is observable,
+    // and inversely — Rust's `$` is already end-of-haystack only, so `/a$/D` is
+    // right by accident and the unmodified `/a$/` is what differs:
+    // `preg_match("/a$/", "a\n")` is 1 in the reference and 0 here.
     //
     // A pattern the engine rejects is a `Warning` naming the calling function and
     // the function's error sentinel — NOT an exception — and leaves

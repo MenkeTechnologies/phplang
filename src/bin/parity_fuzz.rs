@@ -1971,6 +1971,68 @@ fn case_for(base: u64, i: u64) -> (Mode, Vec<String>) {
     (mode, (mode.gen)(case_seed))
 }
 
+/// Why a case produced no verdict. A skip is not a pass, and counting it as one
+/// is how a fuzz run reports a clean number while testing nothing: a mode whose
+/// programs all time out on the reference scores zero divergences forever.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Skip {
+    /// The reference did not finish in time — nothing to compare against.
+    OracleTimeout,
+    /// The reference could not be spawned or read.
+    OracleInfra,
+    /// Our binary did not finish in time.
+    OursTimeout,
+    /// Our binary could not be spawned or read.
+    OursInfra,
+}
+
+impl Skip {
+    fn label(self) -> &'static str {
+        match self {
+            Skip::OracleTimeout => "oracle timed out",
+            Skip::OracleInfra => "oracle failed to run",
+            Skip::OursTimeout => "ours timed out",
+            Skip::OursInfra => "ours failed to run",
+        }
+    }
+}
+
+/// The verdict for one case.
+enum Verdict {
+    Same,
+    Diverged(Box<(RunOut, RunOut)>),
+    Skipped(Skip),
+    /// Both sides agreed, but only by failing with nothing on stdout. The case
+    /// ran and matched, so it is not a skip — but it proves nothing about the
+    /// behaviour it was written to exercise, and two *different* failures look
+    /// identical here. Counted separately so a mode cannot hide behind them.
+    Barren,
+}
+
+fn judge(script: &str, bin: &Path, timeout: Duration) -> Verdict {
+    let o = run_oracle(script, timeout);
+    if o.timed_out {
+        return Verdict::Skipped(Skip::OracleTimeout);
+    }
+    if o.infra_fail {
+        return Verdict::Skipped(Skip::OracleInfra);
+    }
+    let r = run_ours(script, bin, timeout);
+    if r.timed_out {
+        return Verdict::Skipped(Skip::OursTimeout);
+    }
+    if r.infra_fail {
+        return Verdict::Skipped(Skip::OursInfra);
+    }
+    if differs(&o, &r) {
+        return Verdict::Diverged(Box::new((o, r)));
+    }
+    if o.exit != 0 && o.stdout.is_empty() {
+        return Verdict::Barren;
+    }
+    Verdict::Same
+}
+
 fn diverges(script: &str, bin: &Path, timeout: Duration) -> Option<(RunOut, RunOut)> {
     let o = run_oracle(script, timeout);
     if o.timed_out || o.infra_fail {
@@ -2165,12 +2227,18 @@ fn main() {
     let divergences = Arc::new(Mutex::new(Vec::<Divergence>::new()));
     let ran = Arc::new(AtomicUsize::new(0));
     let start = Instant::now();
+    // A skip is not a pass: counted and reported separately so a mode cannot
+    // score zero divergences while testing nothing.
+    let barren = Arc::new(AtomicUsize::new(0));
+    let skipped: Arc<Mutex<Vec<(&'static str, Skip)>>> = Arc::new(Mutex::new(Vec::new()));
 
     let mut handles = Vec::new();
     for _ in 0..args.jobs {
         let next = Arc::clone(&next);
         let divergences = Arc::clone(&divergences);
         let ran = Arc::clone(&ran);
+        let barren = Arc::clone(&barren);
+        let skipped = Arc::clone(&skipped);
         let bin = bin.clone();
         let timeout = args.timeout;
         let base = args.base_seed;
@@ -2189,7 +2257,20 @@ fn main() {
             }
             ran.fetch_add(1, Ordering::Relaxed);
             let prog = build_program(&stmts);
-            if let Some((o, r)) = diverges(&prog, &bin, timeout) {
+            let verdict = judge(&prog, &bin, timeout);
+            let (o, r) = match verdict {
+                Verdict::Same => continue,
+                Verdict::Barren => {
+                    barren.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
+                Verdict::Skipped(why) => {
+                    skipped.lock().unwrap().push((mode.name, why));
+                    continue;
+                }
+                Verdict::Diverged(pair) => *pair,
+            };
+            {
                 let min = minimize(stmts.clone(), &bin, timeout);
                 let min_prog = build_program(&min);
                 // Recompute both sides on the minimized reproducer for the report.
@@ -2232,12 +2313,51 @@ fn main() {
         }
     }
 
+    let barren = barren.load(Ordering::Relaxed);
+    let skipped = Arc::try_unwrap(skipped).unwrap().into_inner().unwrap();
+
     println!("\n=== parity-fuzz summary ===");
     println!("ran        : {ran} cases in {:.1}s", elapsed.as_secs_f64());
+    println!(
+        "compared   : {} (both sides produced a verdict)",
+        ran.saturating_sub(skipped.len())
+    );
     println!(
         "divergences: {} ({} distinct gap classes)",
         divs.len(),
         classes.len()
+    );
+    // Reported even at zero: "skipped: 0" is the evidence that a clean
+    // divergence count was earned rather than an artefact of cases that never
+    // reached a comparison.
+    println!("skipped    : {}", skipped.len());
+    for why in [
+        Skip::OracleTimeout,
+        Skip::OracleInfra,
+        Skip::OursTimeout,
+        Skip::OursInfra,
+    ] {
+        let n = skipped.iter().filter(|(_, w)| *w == why).count();
+        if n > 0 {
+            println!("  {n:>6}  {}", why.label());
+            // Which modes are affected matters more than the total: a skip
+            // concentrated in one mode means that mode is measuring nothing.
+            let mut by_mode: Vec<(&str, usize)> = Vec::new();
+            for (m, _) in skipped.iter().filter(|(_, w)| *w == why) {
+                match by_mode.iter_mut().find(|(name, _)| name == m) {
+                    Some((_, c)) => *c += 1,
+                    None => by_mode.push((m, 1)),
+                }
+            }
+            by_mode.sort_by_key(|c| std::cmp::Reverse(c.1));
+            for (m, n) in by_mode.iter().take(5) {
+                println!("          {n:>5}x {m}");
+            }
+        }
+    }
+    println!(
+        "barren     : {barren} (agreed, but the reference produced no stdout and \
+         failed — proves nothing)"
     );
 
     if !divs.is_empty() {

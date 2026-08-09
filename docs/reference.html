@@ -446,13 +446,13 @@ echo add(2, 3);   // =&gt; 5</code></pre>
         <article class="doc-entry" id="doc-operator-1">
           <h3><a class="doc-anchor" href="#doc-operator-1">#</a> <code>+</code></h3>
           <pre><code class="lang-php">expr + expr   //  binary;   +expr   //  unary</code></pre>
-          <p>Numeric addition, with the unary form coercing its operand to a number. DIVERGENCE: it does not merge arrays — `[1] + [2]` goes through numeric coercion instead of PHP's union semantics.</p>
+          <p>Numeric addition, or array union when BOTH operands are arrays — the left operand's entries win and the right contributes only the keys it lacks. Under PHP 8 a string operand with no numeric prefix (`"g"`, `""`, `"   "`) makes the whole operation a `TypeError: Unsupported operand types: string + int`, while one that merely trails garbage (`"5g"`) raises `Warning: A non-numeric value encountered` and continues with its prefix. Operands resolve left before right, so `"5g" + "g"` warns and then throws while `"g" + "5g"` throws without warning.</p>
           <pre><code class="lang-php">echo 2 + 3;   // =&gt; 5</code></pre>
         </article>
         <article class="doc-entry" id="doc-operator-2">
           <h3><a class="doc-anchor" href="#doc-operator-2">#</a> <code>-</code></h3>
           <pre><code class="lang-php">expr - expr   //  binary;   -expr   //  unary</code></pre>
-          <p>Numeric subtraction and arithmetic negation. Unary minus binds looser than `**`, so `-2 ** 2` is `-(2 ** 2)`.</p>
+          <p>Numeric subtraction and arithmetic negation. Unary minus binds looser than `**`, so `-2 ** 2` is `-(2 ** 2)`. Both unary signs are multiplications to the engine, which is why `-"g"` and `+"g"` report `Unsupported operand types: string * int`.</p>
           <pre><code class="lang-php">echo 7 - 2, " ", -2 ** 2;   // =&gt; 5 -4</code></pre>
         </article>
         <article class="doc-entry" id="doc-operator-3">
@@ -501,7 +501,7 @@ echo "x" . 1 + 2;   // =&gt; 2   (PHP 8 prints: x3)</code></pre>
         <article class="doc-entry" id="doc-operator-10">
           <h3><a class="doc-anchor" href="#doc-operator-10">#</a> <code>+= -= *= /= %= .= **=</code></h3>
           <pre><code class="lang-php">target op= expr</code></pre>
-          <p>The arithmetic and string compound assignments. Each reads the target, applies the matching binary operator, and stores the result back.</p>
+          <p>The arithmetic and string compound assignments. Each reads the target, applies the matching binary operator, and stores the result back — including that operator's PHP 8 operand rules, so `$x = "g"; $x += 9;` is a `TypeError` just as `"g" + 9` is.</p>
           <pre><code class="lang-php">$x = 10; $x += 5; $x .= "!"; echo $x;   // =&gt; 15!</code></pre>
         </article>
         <article class="doc-entry" id="doc-operator-11">

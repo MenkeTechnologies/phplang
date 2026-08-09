@@ -79,7 +79,16 @@ source ──▶ lexer ──▶ parser ──▶ compiler ──▶ fusevm::Chu
 - **Arithmetic** `+ - *` lowers to native fusevm ops so the JIT can trace hot
   loops; a strict **numeric hook** supplies PHP coercion when an operand is a
   string/array/null or an `i64` op overflows. `/ % **`, concatenation,
-  comparisons, and everything PHP-specific lower to `CallBuiltin` handlers.
+  comparisons, and everything PHP-specific lower to `CallBuiltin` handlers. The
+  hook is the *sited* form, so it can index the running chunk's line table and
+  report a warning against the operator's own line.
+- **PHP 8 operand rules** are applied by every operator that reads a number. A
+  string with no numeric prefix (`"g"`, `""`, `"   "`, `"INF"`) makes the
+  operation a `TypeError: Unsupported operand types: string + int`; one that
+  merely trails garbage (`"5g"`) raises `Warning: A non-numeric value
+  encountered` and continues with its prefix. Operands resolve left before right
+  and before each operator's own checks, so `"g" / 0` is a `TypeError` rather
+  than a `DivisionByZeroError`.
 
 ## [0x02] USAGE
 
@@ -285,11 +294,14 @@ in-code:
 - A `preg_*` pattern the REFERENCE also rejects reproduces its `Warning` and its
   `preg_last_error()` state. One the reference would have compiled but the Rust
   engine cannot (a backreference, look-around) still returns the error sentinel
-  SILENTLY — there is no diagnostic to copy. The `A` modifier is accepted and
-  ignored, so `preg_match("/a/A", "bar")` is 1 here and 0 in the reference.
-- **Arithmetic on a non-numeric string** does not raise. PHP 8 makes `"g" + 1` a
-  `TypeError: Unsupported operand types: string + int` and `"5g" + 1` a
-  `Warning: A non-numeric value encountered`; both are computed quietly here.
+  SILENTLY — there is no diagnostic to copy. The `D` modifier is accepted and
+  ignored; it is right by accident, because Rust's `$` is already
+  end-of-haystack only, so the *unmodified* `/a$/` is what differs —
+  `preg_match("/a$/", "a\n")` is 1 in the reference and 0 here.
+- `preg_split` with a pattern that can match both empty and non-empty text
+  (`/a*/`, `/\d*/`) drops the zero-width match sitting immediately after a
+  non-empty one, which PCRE emits. Ordinary delimiter patterns and the fully
+  empty `//` split identically.
 - A **stack trace** frame entered from inside a library function (an `array_map`
   callback) prints its call site rather than PHP's `[internal function]`, and a
   closure frame prints `{closure}` rather than PHP 8.4's `{closure:file:line}`.
@@ -333,6 +345,15 @@ loose-vs-strict comparison, `sort` ordering, `sprintf`/`number_format`, and
 string↔number coercion. Divergences are delta-debugged to a minimal reproducer
 and grouped by signature; a full report lands in
 `target/parity-fuzz/divergences.txt`.
+
+A clean divergence count only means something alongside the two numbers printed
+under it. `skipped` counts cases that never reached a comparison — the reference
+timed out, or either side failed to run — because a mode whose programs all time
+out on the reference would otherwise report zero divergences forever. `barren`
+counts cases where both sides agreed only by failing with nothing on stdout:
+those ran and matched, but prove nothing about the behaviour they were written
+to exercise, and two *different* failures are indistinguishable there. A run is
+worth quoting when both are `0`.
 
 ## [0x06] BUILD
 
