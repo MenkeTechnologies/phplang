@@ -71,23 +71,14 @@ fn qualified_name_folds_to_short_name() {
 
 #[test]
 fn qualified_constant_keeps_its_full_name() {
-    assert_eq!(
-        run(r#"<?php define('Foo\BAR', 5); echo Foo\BAR;"#),
-        "5"
-    );
-    assert_eq!(
-        run(r#"<?php define('A\B\C', 9); echo A\B\C;"#),
-        "9"
-    );
+    assert_eq!(run(r#"<?php define('Foo\BAR', 5); echo Foo\BAR;"#), "5");
+    assert_eq!(run(r#"<?php define('A\B\C', 9); echo A\B\C;"#), "9");
 }
 
 #[test]
 fn leading_backslash_is_stripped_from_a_constant() {
     assert_eq!(run(r#"<?php define('NS_C', 7); echo \NS_C;"#), "7");
-    assert_eq!(
-        run(r#"<?php define('Foo\BAR', 5); echo \Foo\BAR;"#),
-        "5"
-    );
+    assert_eq!(run(r#"<?php define('Foo\BAR', 5); echo \Foo\BAR;"#), "5");
 }
 
 #[test]
@@ -103,7 +94,9 @@ fn a_qualified_constant_is_not_its_last_segment() {
 #[test]
 fn qualified_constant_agrees_with_defined_and_constant() {
     assert_eq!(
-        run(r#"<?php define('A\B\C', 9); var_dump(defined('A\B\C'), constant('A\B\C'), defined('C'));"#),
+        run(
+            r#"<?php define('A\B\C', 9); var_dump(defined('A\B\C'), constant('A\B\C'), defined('C'));"#
+        ),
         "bool(true)\nint(9)\nbool(false)\n"
     );
 }

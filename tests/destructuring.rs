@@ -163,7 +163,9 @@ fn foreach_pattern_over_generator() {
     // The generator loop is a separate code path from the array loop and has to
     // destructure too.
     assert_eq!(
-        run(r#"<?php function g(){ yield [1,2]; yield [3,4]; } foreach (g() as [$x,$y]) { echo "$x$y;"; }"#),
+        run(
+            r#"<?php function g(){ yield [1,2]; yield [3,4]; } foreach (g() as [$x,$y]) { echo "$x$y;"; }"#
+        ),
         "12;34;"
     );
 }
