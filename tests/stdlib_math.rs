@@ -216,3 +216,40 @@ fn inverted_bounds_error_messages() {
         "random_int(): Argument #1 ($min) must be less than or equal to argument #2 ($max)"
     );
 }
+
+// ── `0 ** <negative>` ────────────────────────────────────────────────────────
+
+/// PHP 8.4 deprecated a zero base raised to a negative exponent. The value was
+/// already `INF`; only the diagnostic was missing, and it was missing from BOTH
+/// places a power is computed — the `**` operator and the `pow()` function.
+#[test]
+fn zero_base_and_a_negative_exponent_is_deprecated() {
+    const MSG: &str =
+        "\nDeprecated: Power of base 0 and negative exponent is deprecated in Command line code on line 1\n";
+    assert_eq!(run(r#"<?php echo 0 ** -1;"#), format!("{MSG}INF"));
+    assert_eq!(run(r#"<?php echo pow(0, -1);"#), format!("{MSG}INF"));
+    // `**=` compiles to the same opcode as `**`.
+    assert_eq!(
+        run(r#"<?php $x = 0; $x **= -1; echo $x;"#),
+        format!("{MSG}INF")
+    );
+    // The test is on the COERCED base, so a numeric string and `false` fire too.
+    assert_eq!(run(r#"<?php echo "0" ** -1;"#), format!("{MSG}INF"));
+    assert_eq!(run(r#"<?php echo false ** -1;"#), format!("{MSG}INF"));
+    // A `-0.0` base keeps `powf`'s sign for an odd exponent.
+    assert_eq!(run(r#"<?php echo (-0.0) ** -1;"#), format!("{MSG}-INF"));
+    assert_eq!(run(r#"<?php echo (-0.0) ** -2;"#), format!("{MSG}INF"));
+}
+
+/// The exponent test is `< 0`, not `<= 0`, and NAN is not negative — both of
+/// these are silent, and a non-zero base never fires at all.
+#[test]
+fn a_zero_or_nan_exponent_and_a_non_zero_base_stay_silent() {
+    assert_eq!(run(r#"<?php echo 0 ** 0;"#), "1");
+    assert_eq!(run(r#"<?php var_dump(0 ** -0.0);"#), "float(1)\n");
+    assert_eq!(run(r#"<?php echo 1 ** -1;"#), "1");
+    assert_eq!(run(r#"<?php echo 2 ** -1;"#), "0.5");
+    // Suppressed by the error-reporting mask like any other deprecation.
+    assert_eq!(run(r#"<?php error_reporting(0); echo 0 ** -1;"#), "INF");
+    assert_eq!(run(r#"<?php echo @(0 ** -1);"#), "INF");
+}

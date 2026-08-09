@@ -819,7 +819,11 @@ fn b_bitnot(vm: &mut VM, _: u8) -> Value {
         Value::Obj(_) => {
             let what = with_host(|h| host::arith_type_name(h, &v));
             mark_frame_line(vm);
-            throw_php(vm, "TypeError", &format!("Cannot perform bitwise not on {what}"))
+            throw_php(
+                vm,
+                "TypeError",
+                &format!("Cannot perform bitwise not on {what}"),
+            )
         }
         _ => Value::int(!with_host(|h| h.to_number(&v).to_int())),
     }
@@ -1731,12 +1735,30 @@ fn b_mod(vm: &mut VM, _: u8) -> Value {
     Value::int(x % y)
 }
 
+/// PHP 8.4 deprecated a zero base raised to a negative exponent; the result is
+/// still `INF` (or `-INF`, from a `-0.0` base and an odd exponent), which
+/// `powf` already gives, so only the diagnostic is added.
+///
+/// The test is on the COERCED operands, which is why `"0" ** -1` and
+/// `false ** -1` fire too. It is `< 0.0` rather than `<= 0.0` because a negative
+/// ZERO exponent is not negative: `0 ** -0.0` is 1.0 and says nothing. `NAN`
+/// fails the same comparison, and `0 ** NAN` is likewise silent.
+///
+/// Both call sites of a PHP power reach this: the `**` operator (and `**=`,
+/// which compiles to the same opcode) and the `pow()` library function.
+fn deprecate_zero_base_negative_exponent(an: &Value, bn: &Value) {
+    if an.to_float() == 0.0 && bn.to_float() < 0.0 {
+        with_host(|h| h.deprecated("Power of base 0 and negative exponent is deprecated"));
+    }
+}
+
 fn b_pow(vm: &mut VM, _: u8) -> Value {
     let b = vm.pop();
     let a = vm.pop();
     let Some((an, bn)) = arith_args(vm, "**", &a, &b) else {
         return Value::Undef;
     };
+    deprecate_zero_base_negative_exponent(&an, &bn);
     match (an, bn) {
         (Value::Int(x), Value::Int(y)) if y >= 0 => {
             if let Some(v) = checked_ipow(x, y as u32) {
@@ -2482,7 +2504,7 @@ pub fn call_library(name: &str, args: &[Value]) -> Result<Value, String> {
         }),
 
         // ── math ─────────────────────────────────────────────────────────
-        "pow" => with_host(|h| php_pow(h, args)),
+        "pow" => php_pow(args),
         "intdiv" => return php_intdiv(args),
         "fmod" => with_host(|h| {
             Value::float(
@@ -3682,9 +3704,12 @@ pub(crate) fn php_round(value: f64, places: i32) -> f64 {
     }
 }
 
-fn php_pow(h: &host::PhpHost, args: &[Value]) -> Value {
-    let an = h.to_number(&arg(args, 0));
-    let bn = h.to_number(&arg(args, 1));
+/// The host borrow is taken for the coercion and RELEASED before the
+/// deprecation check, which takes its own — holding one across the other panics
+/// the `RefCell`.
+fn php_pow(args: &[Value]) -> Value {
+    let (an, bn) = with_host(|h| (h.to_number(&arg(args, 0)), h.to_number(&arg(args, 1))));
+    deprecate_zero_base_negative_exponent(&an, &bn);
     match (an, bn) {
         (Value::Int(x), Value::Int(y)) if y >= 0 => match checked_ipow(x, y as u32) {
             Some(v) => Value::int(v),
