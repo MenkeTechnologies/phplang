@@ -253,9 +253,12 @@ end-to-end (see `tests/basic.rs`):
   - **ctype** — the `ctype_*` predicates. **types** — `is_*`, `gettype`,
     `get_debug_type`, `serialize`/`unserialize`, `var_dump`/`print_r`/`var_export`.
   - **preg** — `preg_match`/`match_all`/`replace`/`replace_callback`/`split`/
-    `quote`/`grep` (byte-mode by default, Unicode with `/u`; PCRE subset — no
-    backreferences/lookaround); `$matches` is a real by-reference OUT parameter,
-    so it defines the caller's variable whether or not it existed.
+    `quote`/`grep` (byte-mode by default, Unicode with `/u`). Look-around,
+    backreferences, atomic groups and possessive quantifiers all work: a pattern
+    the `regex` crate will not compile is retried on `fancy-regex`. `$matches` is
+    a real by-reference OUT parameter, so it defines the caller's variable
+    whether or not it existed, and a `(?<name>…)` group appears under its name as
+    well as its index.
   - **datetime** — `time`/`mktime`/`date`/`gmdate`/`checkdate`/`strtotime` (UTC).
   - **hash** — `md5`/`sha1`/`hash`/`crc32`/`hash_hmac`. **encoding** —
     `base64_*`, `bin2hex`/`hex2bin`, quoted-printable, `utf8_*`. **url** —
@@ -292,16 +295,16 @@ in-code:
 - A diagnostic names the *statement's* line. PHP names the line of the
   expression, so a statement spanning several lines reports its first.
 - A `preg_*` pattern the REFERENCE also rejects reproduces its `Warning` and its
-  `preg_last_error()` state. One the reference would have compiled but the Rust
-  engine cannot (a backreference, look-around) still returns the error sentinel
-  SILENTLY — there is no diagnostic to copy. The `D` modifier is accepted and
-  ignored; it is right by accident, because Rust's `$` is already
-  end-of-haystack only, so the *unmodified* `/a$/` is what differs —
+  `preg_last_error()` state. One the reference would have compiled but NEITHER
+  engine can (pattern recursion, a conditional group) still returns the error
+  sentinel SILENTLY — there is no diagnostic to copy. The `D` modifier is
+  accepted and ignored; it is right by accident, because both engines' `$` is
+  already end-of-haystack only, so the *unmodified* `/a$/` is what differs —
   `preg_match("/a$/", "a\n")` is 1 in the reference and 0 here.
-- `preg_split` with a pattern that can match both empty and non-empty text
-  (`/a*/`, `/\d*/`) drops the zero-width match sitting immediately after a
-  non-empty one, which PCRE emits. Ordinary delimiter patterns and the fully
-  empty `//` split identically.
+- A pattern that only the `fancy-regex` engine will take matches as if `/u` were
+  set, because that engine works over `&str`: `.` is one codepoint rather than
+  one byte. This is visible only for a NON-ASCII subject, and only for a pattern
+  the byte engine already refused.
 - A **stack trace** frame entered from inside a library function (an `array_map`
   callback) prints its call site rather than PHP's `[internal function]`, and a
   closure frame prints `{closure}` rather than PHP 8.4's `{closure:file:line}`.
@@ -342,9 +345,18 @@ cargo build --bin parity-fuzz
 Generators are biased toward where a PHP frontend is likely to disagree with the
 reference: float formatting, integer division/modulo signs, `**` precedence,
 loose-vs-strict comparison, `sort` ordering, `sprintf`/`number_format`, and
-string↔number coercion. Divergences are delta-debugged to a minimal reproducer
-and grouped by signature; a full report lands in
-`target/parity-fuzz/divergences.txt`.
+string↔number coercion, and the PCRE constructs the `regex` crate lacks.
+Divergences are delta-debugged to a minimal reproducer and grouped by signature;
+a full report lands in `target/parity-fuzz/divergences-<pid>.txt`, named for the
+run so concurrent invocations against one checkout cannot overwrite each other.
+
+The exit status answers *did this run measure what it was asked to*, not merely
+*did it find a disagreement*. A run exits non-zero when no cases ran, when every
+case that ran was skipped (the reference timing out on all of them), when a case
+reached a worker and produced no verdict, or when a case agreed only because the
+reference printed nothing. Each is named in a closing `RUN NOT CLEAN` line, and
+the summary reports the skipped and barren counts even at zero — a clean number
+is only evidence if those are visible next to it.
 
 A clean divergence count only means something alongside the two numbers printed
 under it. `skipped` counts cases that never reached a comparison — the reference

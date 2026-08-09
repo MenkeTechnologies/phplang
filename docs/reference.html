@@ -1165,7 +1165,7 @@ $o = new C; unset($o-&gt;zz);   // =&gt; unset:zz</code></pre>
         <article class="doc-entry" id="doc-predefined-constant-83">
           <h3><a class="doc-anchor" href="#doc-predefined-constant-83">#</a> <code>FILTER_VALIDATE_REGEXP</code></h3>
           <pre><code class="lang-php">FILTER_VALIDATE_REGEXP: int = 272</code></pre>
-          <p>Validates against the `options['regexp']` pattern, compiled with the Rust `regex` crate — a PCRE subset with no backreferences or lookaround.</p>
+          <p>Validates against the `options['regexp']` pattern, compiled by the same engine pair `preg_match` uses — so the delimiter rules, the modifier set, look-around and backreferences all behave identically, and a pattern fault raises `Warning: filter_var(): &lt;reason&gt;` and sets `preg_last_error()` exactly as the reference does.</p>
         </article>
         <article class="doc-entry" id="doc-predefined-constant-84">
           <h3><a class="doc-anchor" href="#doc-predefined-constant-84">#</a> <code>FILTER_VALIDATE_DOMAIN</code></h3>
@@ -3507,7 +3507,7 @@ echo implode(",", array_keys($a));   // =&gt; a,b</code></pre>
         <article class="doc-entry" id="doc-regular-expressions-2">
           <h3><a class="doc-anchor" href="#doc-regular-expressions-2">#</a> <code>preg_match_all</code></h3>
           <pre><code class="lang-php">preg_match_all(string $pattern, string $subject, array &amp;$matches = [], int $flags = PREG_PATTERN_ORDER): int|false</code></pre>
-          <p>Returns the number of matches, or `false` for a pattern that will not compile, with the same `Warning` and `preg_last_error()` state as `preg_match`. `$matches` is a real by-reference out-parameter. Only the `PREG_SET_ORDER` bit is honoured — `PREG_OFFSET_CAPTURE` and `PREG_UNMATCHED_AS_NULL` are not, and there is no `$offset` parameter.</p>
+          <p>Returns the number of matches, or `false` for a pattern that will not compile, with the same `Warning` and `preg_last_error()` state as `preg_match`. `$matches` is a real by-reference out-parameter, keyed by group name as well as index. `PREG_SET_ORDER` truncates each set at its own last participating group, so its rows are ragged where `PREG_PATTERN_ORDER`'s columns are full width. Only the `PREG_SET_ORDER` bit is honoured — `PREG_OFFSET_CAPTURE` and `PREG_UNMATCHED_AS_NULL` are not, and there is no `$offset` parameter.</p>
           <pre><code class="lang-php">$m = []; echo preg_match_all("/\d/", "a1b2", $m), $m[0][1];   // =&gt; 22</code></pre>
         </article>
         <article class="doc-entry" id="doc-regular-expressions-3">
@@ -3525,7 +3525,7 @@ echo implode(",", array_keys($a));   // =&gt; a,b</code></pre>
         <article class="doc-entry" id="doc-regular-expressions-5">
           <h3><a class="doc-anchor" href="#doc-regular-expressions-5">#</a> <code>preg_split</code></h3>
           <pre><code class="lang-php">preg_split(string $pattern, string $subject, int $limit = -1, int $flags = 0): array|false</code></pre>
-          <p>Splits on each match. All three flag bits are honoured: `PREG_SPLIT_NO_EMPTY`, `PREG_SPLIT_DELIM_CAPTURE`, and `PREG_SPLIT_OFFSET_CAPTURE`. DIVERGENCE: the Rust engine suppresses a zero-width match right after a non-empty one where PCRE emits it, so patterns matching both empty and non-empty text (`/x*/`) differ; ordinary delimiters and the empty pattern split identically.</p>
+          <p>Splits on each match. All three flag bits are honoured: `PREG_SPLIT_NO_EMPTY`, `PREG_SPLIT_DELIM_CAPTURE`, and `PREG_SPLIT_OFFSET_CAPTURE`. A zero-width match sitting right after a non-empty one is emitted, as PCRE does, so `/x*/` and `/\d*/` split the way the reference splits them. The captured delimiters `PREG_SPLIT_DELIM_CAPTURE` interleaves are positional — unlike `$matches`, they are not keyed by group name.</p>
           <pre><code class="lang-php">echo implode("-", preg_split("/[\s,]+/", "a, b  c"));   // =&gt; a-b-c</code></pre>
         </article>
         <article class="doc-entry" id="doc-regular-expressions-6">

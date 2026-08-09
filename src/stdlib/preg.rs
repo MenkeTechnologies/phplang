@@ -2,22 +2,36 @@
 //! see `src/stdlib/mod.rs`. `dispatch` returns `None` for names it does not
 //! handle.
 //!
-//! Backed by the Rust `regex` crate, which is a *subset* of PCRE: it has no
-//! backreferences and no look-around (`\1`, `(?=)`, `(?<=)`, …). Patterns using
-//! those constructs fail to compile and the function returns the PHP error
-//! sentinel (`false` for the match/grep family, `null` for the replace family).
-//! Everything else — character classes, quantifiers, anchors, alternation,
-//! named/numbered groups, the `imsxuU` flags — is supported.
+//! Backed by TWO engines, tried in that order by [`compile`]:
 //!
-//! A pattern the engine will not take splits into two cases, and only one of
+//! 1. The Rust `regex` crate — linear-time, byte-oriented, and the one that runs
+//!    for nearly every pattern. It is a *subset* of PCRE: no backreferences, no
+//!    look-around, no atomic groups or possessive quantifiers.
+//! 2. `fancy-regex` — a backtracking engine that HAS those constructs. A pattern
+//!    the first engine will not compile is retried here, so `/foo(?=bar)/`,
+//!    `/(?<=a)b/`, `/(a)\1/` and `/(?>a+)b/` answer instead of failing.
+//!
+//! The second engine matches over `&str` and is Unicode-mode only, so a pattern
+//! that lands on it behaves as if `/u` were set: `.` is one codepoint rather
+//! than one byte, and offsets, while still byte offsets, fall on codepoint
+//! boundaries. That only diverges from PCRE for a NON-ASCII subject, and only
+//! for a pattern the first engine already refused — where the previous answer
+//! was the error sentinel. `U` (ungreedy) has no builder switch there and is
+//! carried as a leading inline `(?U)` instead.
+//!
+//! A pattern NEITHER engine will take splits into two cases, and only one of
 //! them is visible. A fault the REFERENCE also diagnoses — a bad delimiter, an
 //! unknown modifier, an empty expression, or one of the five structural body
 //! faults ported from PCRE2 — raises `Warning: <fn>(): <reason>` and leaves
 //! `preg_last_error()` at `PREG_INTERNAL_ERROR`, exactly as the reference does.
-//! A pattern the reference would have COMPILED but this engine cannot returns
+//! A pattern the reference would have COMPILED but neither engine can returns
 //! the sentinel silently and leaves the error state alone: there is no
 //! diagnostic to copy, and inventing one would print what the reference never
 //! prints. See `compile` and `scan_body`.
+//!
+//! A backtracking blow-up is a RUNTIME fault, not a compile-time one: PCRE
+//! reports it as `PREG_BACKTRACK_LIMIT_ERROR` from `preg_last_error()` and
+//! returns the sentinel, and so does this — see [`Pattern::captures_all`].
 //!
 //! The `A` modifier (PCRE2_ANCHORED) is applied by [`Pattern::captures_all`].
 //! The engine exposes no anchored-search flag, but it is leftmost-first, so a
@@ -26,23 +40,25 @@
 //! returned is the anchored match.
 //!
 //! `J S X r` are accepted no-ops and none of them changes a result here: `S` and
-//! `X` carry no semantics for patterns this engine accepts, `r` has no
-//! observable effect, and `J` (duplicate group names) describes patterns the
-//! Rust engine rejects outright, so they take the silent `Unsupported` path
-//! rather than matching wrongly.
+//! `X` carry no semantics for patterns these engines accept, `r` has no
+//! observable effect, and `J` (duplicate group names) describes patterns both
+//! engines reject outright, so they take the silent `Unsupported` path rather
+//! than matching wrongly.
 //!
 //! DIVERGENCE — `D` (PCRE2_DOLLAR_ENDONLY) is accepted and ignored. It is the
-//! inverse of the usual engine-subset gap: Rust's `$` is already end-of-haystack
-//! only, so `/a$/D` is right by accident and the *unmodified* `/a$/` is what
-//! differs — `preg_match("/a$/", "a\n")` is 1 in the reference and 0 here.
-//! Fixing it means translating a trailing `$` to `(?:\n?\z)` in `scan_body`
-//! rather than honouring `D`.
+//! inverse of the usual engine-subset gap: both engines' `$` is already
+//! end-of-haystack only, so `/a$/D` is right by accident and the *unmodified*
+//! `/a$/` is what differs — `preg_match("/a$/", "a\n")` is 1 in the reference
+//! and 0 here. Fixing it means rewriting a `$` to the look-ahead `(?=\n?\z)`,
+//! which every pattern containing one would then pay for by moving to the
+//! backtracking engine.
 //!
-//! One further engine nuance affects `preg_split`: Rust's `regex` suppresses a
-//! zero-width match sitting immediately after a non-empty match, whereas PCRE
-//! emits it. This diverges only for a pattern that can match *both* empty and
-//! non-empty text at interleaved positions (`/x*/`, `/\d*/`); ordinary delimiter
-//! patterns and the fully-empty `//` pattern split identically to PCRE.
+//! Neither crate's own match ITERATOR walks a subject the way PCRE does — both
+//! suppress a zero-width match sitting immediately after a non-empty one, and
+//! neither retries an offset that matched empty for a NON-empty match there.
+//! `/a*/` turns on the first difference and the lazy `/a*?/` on the second, so
+//! [`Pattern::captures_all`] drives the walk by hand as a port of the loop in
+//! `php_pcre.c`.
 //!
 //! Matching runs on **bytes** by default (`regex::bytes::Regex`), mirroring PCRE
 //! without the `/u` flag: `.` matches one byte, `\d\w\s` are ASCII, and all
@@ -50,6 +66,13 @@
 //! mode, where `.` matches a whole codepoint and the classes become Unicode-aware
 //! — e.g. `preg_match("/^.$/", "é")` is `0` (2 bytes) without `/u` but `1` with
 //! it. Subjects are UTF-8; byte slices are decoded back with lossy UTF-8.
+//!
+//! `$matches` keys follow PHP's own rule: a `(?<name>…)` group is published
+//! TWICE, under its name and then under its index, and the two slots hold
+//! independent values rather than one shared array. A trailing group that did
+//! not participate is dropped with its name — per SET, so `preg_match_all`'s
+//! rows under `PREG_SET_ORDER` are ragged while `PREG_PATTERN_ORDER` keeps every
+//! column at full width.
 //!
 //! `$matches` by-reference out-parameter (`preg_match`, `preg_match_all`): the
 //! stdlib dispatch chain receives call arguments *by value*, so the captures
@@ -65,7 +88,7 @@ use fusevm::Value;
 
 // PCRE (PHP without `/u`) matches BYTES, not Unicode codepoints. The bytes
 // engine is the default; the `/u` flag re-enables Unicode on the builder.
-use regex::bytes::{Captures, Regex, RegexBuilder};
+use regex::bytes::{Regex, RegexBuilder};
 
 /// Decode a matched byte slice back to a `String`. Subjects are UTF-8, but a
 /// byte-mode match may land mid-codepoint, so decode lossily.
@@ -108,6 +131,9 @@ pub const PREG_NO_ERROR: i64 = 0;
 /// behind. PHP does not distinguish a bad delimiter from a bad body here: every
 /// compile-time fault reports this one code.
 pub const PREG_INTERNAL_ERROR: i64 = 1;
+/// `PREG_BACKTRACK_LIMIT_ERROR` — a run-time failure, not a compile-time one:
+/// the pattern was fine, the subject made the backtracking engine give up.
+pub const PREG_BACKTRACK_LIMIT_ERROR: i64 = 2;
 
 /// The `preg_last_error_msg()` text for an error code.
 fn error_msg(code: i64) -> &'static str {
@@ -139,70 +165,347 @@ enum PatternError {
     Unsupported,
 }
 
+/// One capture group's byte span in the subject, plus the subject itself so the
+/// text can be read back. The engine-neutral stand-in for either crate's
+/// `Match`.
+#[derive(Clone, Copy)]
+pub(crate) struct Span<'h> {
+    start: usize,
+    end: usize,
+    hay: &'h [u8],
+}
+
+impl<'h> Span<'h> {
+    fn start(&self) -> usize {
+        self.start
+    }
+    fn end(&self) -> usize {
+        self.end
+    }
+    fn as_bytes(&self) -> &'h [u8] {
+        &self.hay[self.start..self.end]
+    }
+}
+
+/// One match, normalised across the two engines: group 0 first, then the
+/// numbered groups in order, each either a byte span or absent (the group did
+/// not participate).
+pub(crate) struct Caps<'h> {
+    groups: Vec<Option<(usize, usize)>>,
+    hay: &'h [u8],
+}
+
+impl<'h> Caps<'h> {
+    fn len(&self) -> usize {
+        self.groups.len()
+    }
+
+    fn get(&self, i: usize) -> Option<Span<'h>> {
+        self.groups.get(i).copied().flatten().map(|(s, e)| Span {
+            start: s,
+            end: e,
+            hay: self.hay,
+        })
+    }
+
+    /// Substitute group references in a replacement template that
+    /// [`translate_replacement`] has already normalised to the `regex` crate's
+    /// syntax — `${N}` for a group, `$$` for a literal `$`, everything else
+    /// literal. A reference to a group that does not exist or did not
+    /// participate expands to nothing, as it does in both crates and in PCRE.
+    ///
+    /// Hand-rolled rather than delegated because the two engines' own
+    /// `expand` methods take different string types, and the substitution has to
+    /// be identical whichever engine produced the match.
+    fn expand(&self, repl: &[u8], out: &mut Vec<u8>) {
+        let mut i = 0usize;
+        while i < repl.len() {
+            if repl[i] != b'$' {
+                out.push(repl[i]);
+                i += 1;
+                continue;
+            }
+            // `$$` — one literal dollar.
+            if repl.get(i + 1) == Some(&b'$') {
+                out.push(b'$');
+                i += 2;
+                continue;
+            }
+            // `${N}` or the bare `$N`, both of which the `regex` crate accepts.
+            let (digits_at, braced) = match repl.get(i + 1) {
+                Some(b'{') => (i + 2, true),
+                _ => (i + 1, false),
+            };
+            let mut j = digits_at;
+            while j < repl.len() && repl[j].is_ascii_digit() {
+                j += 1;
+            }
+            let closed = !braced || repl.get(j) == Some(&b'}');
+            if j == digits_at || !closed {
+                // Not a group reference after all: a lone `$`.
+                out.push(b'$');
+                i += 1;
+                continue;
+            }
+            let n: usize = std::str::from_utf8(&repl[digits_at..j])
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(usize::MAX);
+            if let Some(m) = self.get(n) {
+                out.extend_from_slice(m.as_bytes());
+            }
+            i = if braced { j + 1 } else { j };
+        }
+    }
+}
+
+/// Which engine compiled a pattern. See the module header for why there are two.
+enum Engine {
+    /// The `regex` crate over bytes — the default, and PCRE's byte semantics.
+    Bytes(Regex),
+    /// `fancy-regex` over `&str` — look-around, backreferences, atomic groups.
+    Fancy(fancy_regex::Regex),
+}
+
+/// The builder settings a pattern was compiled with, kept so the NOTEMPTY
+/// companion of [`Pattern`] can be built from the same body later.
+#[derive(Clone)]
+struct Flags {
+    case_insensitive: bool,
+    multi_line: bool,
+    dot_all: bool,
+    extended: bool,
+    swap_greed: bool,
+}
+
 /// A compiled pattern plus the modifiers the engine cannot carry itself.
 ///
-/// Only `A` (PCRE2_ANCHORED) needs this so far. It is not a property of the
-/// compiled regex but of every search made with it, so it has to travel
-/// alongside — see [`Pattern::captures_all`] for how it is applied.
+/// `A` (PCRE2_ANCHORED) is one: it is not a property of the compiled regex but
+/// of every search made with it, so it has to travel alongside — see
+/// [`Pattern::captures_all`]. The translated body and its flags travel too, for
+/// the same method's empty-match retry.
 pub(crate) struct Pattern {
-    re: Regex,
+    engine: Engine,
     /// `A`: each match attempt must begin exactly at the offset it starts from.
     anchored: bool,
+    /// The body handed to the builder, in the engines' own syntax.
+    body: String,
+    flags: Flags,
+    /// The same body compiled to reject a zero-length match — PCRE2_NOTEMPTY.
+    /// Built on first need, because only a pattern that actually matches empty
+    /// ever asks for it, and `None` once built means it cannot exist (a pattern
+    /// that matches ONLY empty, or a body the second engine will not take).
+    notempty: std::cell::OnceCell<Option<fancy_regex::Regex>>,
 }
 
 impl Pattern {
-    /// Every non-overlapping match, left to right.
+    /// Every non-overlapping match, left to right — a port of the match loop in
+    /// `php_pcre.c`, which is not the same walk as either crate's own iterator.
     ///
-    /// Unanchored, this is the engine's own iterator. Anchored, PCRE2 retries at
-    /// each *successive* offset and stops at the first one that does not match
-    /// there — which is why `preg_match_all("/a/A", "aab")` is 2 but
-    /// `"bab"` is 0.
+    /// PCRE records an empty match and then RETRIES the same offset demanding a
+    /// non-empty one (`PCRE2_NOTEMPTY_ATSTART | PCRE2_ANCHORED`), only stepping
+    /// forward a character when that retry fails. Both crates instead step
+    /// immediately, which loses the non-empty match at that offset: for the lazy
+    /// `/a*?/` over `"abc"` PCRE finds five matches (`""`, `"a"`, `""`, `""`,
+    /// `""`) and a plain step finds four, so `preg_replace` produced `zazbzcz`
+    /// where the reference produces `zzzbzcz`. The retry is what makes those
+    /// agree.
     ///
-    /// The engine exposes no anchored-search flag, but it is leftmost-first: a
-    /// search started at `pos` returns the match beginning at `pos` if one
-    /// exists, so `start() == pos` is exactly the anchored question, and the
-    /// match it returns is the anchored match.
-    fn captures_all<'h>(&self, hay: &'h [u8]) -> Vec<Captures<'h>> {
-        if !self.anchored {
-            return self.re.captures_iter(hay).collect();
-        }
+    /// `A` (anchored) rides along: PCRE2 retries at each *successive* offset and
+    /// stops at the first one that does not match there, which is why
+    /// `preg_match_all("/a/A", "aab")` is 2 but `"bab"` is 0. Neither engine
+    /// exposes an anchored-search flag, but both are leftmost-first: a search
+    /// started at `pos` returns the match beginning at `pos` if one exists, so
+    /// `start() == pos` is exactly the anchored question.
+    ///
+    /// A backtracking failure on the second engine (its backtrack limit) records
+    /// `PREG_BACKTRACK_LIMIT_ERROR` and truncates the match list there, which is
+    /// what PCRE reports for the same subject.
+    fn captures_all<'h>(&self, hay: &'h [u8]) -> Vec<Caps<'h>> {
         let mut out = Vec::new();
         let mut pos = 0usize;
-        // `captures_at` panics past `hay.len()`, and `len` itself is a valid
-        // start — that is where a trailing zero-width match lives.
+        // PCRE's `g_notempty`: set after an empty match, it turns the next
+        // attempt at the SAME offset into an anchored, non-empty one.
+        let mut retry_nonempty = false;
+        // A start offset of `hay.len()` is valid — that is where a trailing
+        // zero-width match lives — but anything past it is not.
         while pos <= hay.len() {
-            let Some(caps) = self.re.captures_at(hay, pos) else {
+            let hit = if retry_nonempty {
+                self.captures_nonempty_at(hay, pos)
+            } else {
+                self.captures_at(hay, pos)
+                    .filter(|c| !self.anchored || c.get(0).is_some_and(|m| m.start() == pos))
+            };
+            let Some(caps) = hit else {
+                // A failed retry is not the end of the subject: step one whole
+                // character (a byte-boundary offset is rejected outright by the
+                // `&str` engine and splits a character for the byte one) and
+                // search normally from there.
+                if retry_nonempty && pos < hay.len() {
+                    retry_nonempty = false;
+                    pos = next_boundary(hay, pos);
+                    continue;
+                }
                 break;
             };
             let m = caps.get(0).expect("group 0 always participates");
-            if m.start() != pos {
-                break;
-            }
-            let end = m.end();
+            let (start, end) = (m.start(), m.end());
             out.push(caps);
-            // A zero-width match would otherwise spin on the same offset.
-            pos = if end == pos { pos + 1 } else { end };
+            retry_nonempty = end == start;
+            pos = end;
         }
         out
     }
 
-    /// The first match, honouring `A`.
-    fn captures_first<'h>(&self, hay: &'h [u8]) -> Option<Captures<'h>> {
-        if !self.anchored {
-            return self.re.captures(hay);
+    /// The match at exactly `pos` that consumes at least one character, or
+    /// `None` when there is none — PCRE2's `NOTEMPTY_ATSTART | ANCHORED`.
+    ///
+    /// Answered by a second compilation of the same body with `fancy-regex`'s
+    /// `find_not_empty`, which is the only switch either crate offers for this.
+    /// A body that can ONLY match empty is rejected at compile time there, and a
+    /// non-UTF-8 subject cannot reach the `&str` engine at all; both are "no
+    /// such match", which is the right answer in each case.
+    fn captures_nonempty_at<'h>(&self, hay: &'h [u8], pos: usize) -> Option<Caps<'h>> {
+        let re = self
+            .notempty
+            .get_or_init(|| self.build_notempty())
+            .as_ref()?;
+        let text = std::str::from_utf8(hay).ok()?;
+        if !text.is_char_boundary(pos) {
+            return None;
         }
-        self.re
-            .captures_at(hay, 0)
-            .filter(|c| c.get(0).is_some_and(|m| m.start() == 0))
+        let caps = re.captures_from_pos(text, pos).ok()??;
+        let m = caps.get(0)?;
+        // `captures_from_pos` is not anchored; PCRE's retry is.
+        if m.start() != pos {
+            return None;
+        }
+        Some(Caps {
+            groups: (0..caps.len())
+                .map(|i| caps.get(i).map(|g| (g.start(), g.end())))
+                .collect(),
+            hay,
+        })
     }
 
-    fn is_match(&self, hay: &[u8]) -> bool {
+    fn build_notempty(&self) -> Option<fancy_regex::Regex> {
+        let body = if self.flags.swap_greed {
+            format!("(?U){}", self.body)
+        } else {
+            self.body.clone()
+        };
+        let mut b = fancy_regex::RegexBuilder::new(&body);
+        b.case_insensitive(self.flags.case_insensitive);
+        b.multi_line(self.flags.multi_line);
+        b.dot_matches_new_line(self.flags.dot_all);
+        b.ignore_whitespace(self.flags.extended);
+        b.find_not_empty(true);
+        b.build().ok()
+    }
+
+    /// The first match, honouring `A`.
+    fn captures_first<'h>(&self, hay: &'h [u8]) -> Option<Caps<'h>> {
+        self.captures_at(hay, 0)
+            .filter(|c| !self.anchored || c.get(0).is_some_and(|m| m.start() == 0))
+    }
+
+    /// The leftmost match at or after `pos`, whichever engine holds the pattern.
+    fn captures_at<'h>(&self, hay: &'h [u8], pos: usize) -> Option<Caps<'h>> {
+        match &self.engine {
+            Engine::Bytes(re) => {
+                let caps = re.captures_at(hay, pos)?;
+                Some(Caps {
+                    groups: (0..caps.len())
+                        .map(|i| caps.get(i).map(|m| (m.start(), m.end())))
+                        .collect(),
+                    hay,
+                })
+            }
+            Engine::Fancy(re) => {
+                // The `&str` engine cannot be handed a non-UTF-8 subject, nor a
+                // start offset inside a codepoint. Either is a no-match rather
+                // than a panic.
+                let text = std::str::from_utf8(hay).ok()?;
+                if !text.is_char_boundary(pos) {
+                    return None;
+                }
+                match re.captures_from_pos(text, pos) {
+                    Ok(caps) => {
+                        let caps = caps?;
+                        Some(Caps {
+                            groups: (0..caps.len())
+                                .map(|i| caps.get(i).map(|m| (m.start(), m.end())))
+                                .collect(),
+                            hay,
+                        })
+                    }
+                    Err(e) => {
+                        with_host(|h| h.set_preg_error(runtime_error_code(&e)));
+                        None
+                    }
+                }
+            }
+        }
+    }
+
+    pub(crate) fn is_match(&self, hay: &[u8]) -> bool {
         self.captures_first(hay).is_some()
     }
 
     /// Group count including group 0, for `preg_match_all`'s row shape.
     fn captures_len(&self) -> usize {
-        self.re.captures_len()
+        match &self.engine {
+            Engine::Bytes(re) => re.captures_len(),
+            Engine::Fancy(re) => re.captures_len(),
+        }
+    }
+
+    /// The `(?<name>…)` label of each group by index, `None` for an unnamed one.
+    /// Index 0 is the whole match and is never named.
+    fn group_names(&self) -> Vec<Option<String>> {
+        match &self.engine {
+            Engine::Bytes(re) => re.capture_names().map(|n| n.map(str::to_string)).collect(),
+            Engine::Fancy(re) => re.capture_names().map(|n| n.map(str::to_string)).collect(),
+        }
+    }
+}
+
+/// Emit one group of a `$matches` row the way PHP keys it: a NAMED group is
+/// published twice, under its name first and then under its index, and an
+/// unnamed one only under its index.
+/// The two slots hold independent values, not one shared one: `preg_match_all`
+/// puts an ARRAY in each, and writing through `$m['name']` must not be visible
+/// through `$m[1]`, so the duplicate goes through the host's value-semantics
+/// copy.
+fn push_keyed(out: &mut Vec<(Value, Value)>, names: &[Option<String>], i: usize, v: Value) {
+    if let Some(Some(name)) = names.get(i) {
+        let dup = with_host(|h| h.copy_on_assign(v.clone()));
+        out.push((Value::str(name.clone()), dup));
+    }
+    out.push((Value::int(i as i64), v));
+}
+
+/// The next index at or after `from` that starts a UTF-8 codepoint, saturating
+/// at the end of the subject. A non-UTF-8 subject only ever reaches the byte
+/// engine, where every index is a valid start, so the scan stops on the first
+/// non-continuation byte.
+fn next_boundary(hay: &[u8], from: usize) -> usize {
+    let mut i = from + 1;
+    while i < hay.len() && (hay[i] & 0xC0) == 0x80 {
+        i += 1;
+    }
+    i
+}
+
+/// Map a `fancy-regex` run-time failure onto the `preg_last_error()` code PCRE
+/// reports for the same condition. Only the backtrack limit is reachable in
+/// practice; anything else keeps the generic internal code.
+fn runtime_error_code(e: &fancy_regex::Error) -> i64 {
+    match e {
+        fancy_regex::Error::RuntimeError(fancy_regex::RuntimeError::BacktrackLimitExceeded) => {
+            PREG_BACKTRACK_LIMIT_ERROR
+        }
+        _ => PREG_INTERNAL_ERROR,
     }
 }
 
@@ -318,8 +621,41 @@ fn compile(pattern: &str) -> Result<Pattern, PatternError> {
     b.ignore_whitespace(extended);
     b.swap_greed(swap_greed);
     b.unicode(unicode);
-    let re = b.build().map_err(|_| PatternError::Unsupported)?;
-    Ok(Pattern { re, anchored })
+    let engine = match b.build() {
+        Ok(re) => Engine::Bytes(re),
+        // Look-around, a backreference, an atomic group, a possessive
+        // quantifier — all PCRE, none of them the `regex` crate's. Retry on the
+        // backtracking engine, which has them.
+        Err(_) => {
+            // `U` (ungreedy) has no builder switch on the second engine, but its
+            // parser takes the inline form; leading it applies to the whole
+            // pattern, which is what the modifier means.
+            let body = if swap_greed {
+                format!("(?U){translated}")
+            } else {
+                translated.clone()
+            };
+            let mut fb = fancy_regex::RegexBuilder::new(&body);
+            fb.case_insensitive(case_insensitive);
+            fb.multi_line(multi_line);
+            fb.dot_matches_new_line(dot_all);
+            fb.ignore_whitespace(extended);
+            Engine::Fancy(fb.build().map_err(|_| PatternError::Unsupported)?)
+        }
+    };
+    Ok(Pattern {
+        engine,
+        anchored,
+        body: translated,
+        flags: Flags {
+            case_insensitive,
+            multi_line,
+            dot_all,
+            extended,
+            swap_greed,
+        },
+        notempty: std::cell::OnceCell::new(),
+    })
 }
 
 // ── pattern body: PCRE2 faults, and the PCRE→Rust differences ────────────────
@@ -550,7 +886,7 @@ fn brace_quantifier(c: &[char], open: usize) -> Option<(Option<u64>, Option<u64>
 /// is what makes it observable across calls: a successful compile clears it even
 /// when the match then fails, so `preg_last_error()` reports the LAST pattern
 /// the engine compiled and not the last one that failed.
-fn compile_for(func: &str, pat: &str) -> Option<Pattern> {
+pub(crate) fn compile_for(func: &str, pat: &str) -> Option<Pattern> {
     match compile(pat) {
         Ok(re) => {
             with_host(|h| h.set_preg_error(PREG_NO_ERROR));
@@ -574,22 +910,44 @@ fn compile_for(func: &str, pat: &str) -> Option<Pattern> {
 /// Full capture list for one match: index 0 is the whole match, 1.. are the
 /// numbered groups, unmatched groups render as the empty string. Fixed width —
 /// used by `preg_match_all` where every set must line up by group index.
-fn caps_full(caps: &Captures) -> Vec<Value> {
+///
+/// Values only: `preg_match_all`'s PATTERN_ORDER transposes these into per-group
+/// columns before keying them.
+fn caps_values(caps: &Caps<'_>) -> Vec<Value> {
     (0..caps.len())
         .map(|i| Value::str(caps.get(i).map(|m| bstr(m.as_bytes())).unwrap_or_default()))
         .collect()
 }
 
+/// Index of the last group that took part in this match — where PHP truncates a
+/// `$matches` row. Group 0 always participates, so this is never empty.
+fn last_participating(caps: &Caps<'_>) -> usize {
+    (0..caps.len())
+        .rfind(|&i| caps.get(i).is_some())
+        .unwrap_or(0)
+}
+
+/// A row of per-group values keyed the way PHP keys it — see [`push_keyed`].
+fn key_row(values: Vec<Value>, names: &[Option<String>]) -> Vec<(Value, Value)> {
+    let mut out = Vec::with_capacity(values.len());
+    for (i, v) in values.into_iter().enumerate() {
+        push_keyed(&mut out, names, i, v);
+    }
+    out
+}
+
 /// Capture list with trailing unmatched groups dropped — PHP's `preg_match` /
 /// `preg_replace_callback` behaviour. A group that did not participate but is
-/// followed by one that did is still emitted as the empty string.
-fn caps_trimmed(caps: &Captures) -> Vec<Value> {
-    let last = (0..caps.len())
-        .rfind(|&i| caps.get(i).is_some())
-        .unwrap_or(0);
-    (0..=last)
-        .map(|i| Value::str(caps.get(i).map(|m| bstr(m.as_bytes())).unwrap_or_default()))
-        .collect()
+/// followed by one that did is still emitted as the empty string. A group
+/// dropped here loses its NAME key with it.
+fn caps_trimmed(caps: &Caps<'_>, names: &[Option<String>]) -> Vec<(Value, Value)> {
+    let last = last_participating(caps);
+    let mut out = Vec::with_capacity(last + 1);
+    for i in 0..=last {
+        let v = Value::str(caps.get(i).map(|m| bstr(m.as_bytes())).unwrap_or_default());
+        push_keyed(&mut out, names, i, v);
+    }
+    out
 }
 
 /// Populate a caller-supplied array handle in place with `rows` (each a list of
@@ -608,13 +966,21 @@ fn caps_trimmed(caps: &Captures) -> Vec<Value> {
 /// site to store (which is what defines the variable when the caller passed one
 /// that did not exist), and also written through the handle when the caller
 /// passed an array that already did.
-fn fill_out(target: &Value, pos: usize, rows: Vec<Value>) {
+fn fill_out(target: &Value, pos: usize, rows: Vec<(Value, Value)>) {
     with_host(|h| {
         let out = h.new_array();
-        h.arr_set_reindexed(&out, rows.clone());
+        for (k, v) in &rows {
+            h.arr_set_key(&out, k, v.clone());
+        }
         h.byref_out_put(pos, out);
         if h.is_array(target) {
-            h.arr_set_reindexed(target, rows);
+            // Reindexing with nothing is the clear: it drops every entry and
+            // resets the next auto index, so the refill below cannot inherit
+            // stale keys from a prior call.
+            h.arr_set_reindexed(target, vec![]);
+            for (k, v) in rows {
+                h.arr_set_key(target, &k, v);
+            }
         }
     });
 }
@@ -628,7 +994,7 @@ fn preg_match(args: &[Value]) -> Result<Value, String> {
     match re.captures_first(subject.as_bytes()) {
         Some(caps) => {
             if args.len() > 2 {
-                fill_out(&args[2], 2, caps_trimmed(&caps));
+                fill_out(&args[2], 2, caps_trimmed(&caps, &re.group_names()));
             }
             Ok(Value::int(1))
         }
@@ -648,23 +1014,38 @@ fn preg_match_all(args: &[Value]) -> Result<Value, String> {
     let Some(re) = compile_for("preg_match_all", &pat) else {
         return Ok(Value::bool(false));
     };
-    let all: Vec<Vec<Value>> = re
+    let names = re.group_names();
+    // Full-width values plus the index of the last group that participated:
+    // PREG_SET_ORDER truncates each set THERE (its rows are ragged), while
+    // PREG_PATTERN_ORDER keeps every column at full width.
+    let all: Vec<(Vec<Value>, usize)> = re
         .captures_all(subject.as_bytes())
         .iter()
-        .map(caps_full)
+        .map(|c| (caps_values(c), last_participating(c)))
         .collect();
     let count = all.len();
 
     if args.len() > 2 {
         let group_count = re.captures_len(); // includes group 0
-        let rows: Vec<Value> = if flags & SET_ORDER != 0 {
-            // PREG_SET_ORDER: matches[set][group].
-            all.into_iter().map(make_list).collect()
-        } else {
-            // PREG_PATTERN_ORDER (default): matches[group][set].
-            (0..group_count)
-                .map(|g| make_list(all.iter().map(|row| row[g].clone()).collect()))
+        let rows: Vec<(Value, Value)> = if flags & SET_ORDER != 0 {
+            // PREG_SET_ORDER: matches[set][group]. The OUTER keys are the set
+            // numbers, so only the inner rows carry group names.
+            all.into_iter()
+                .enumerate()
+                .map(|(i, (mut row, last))| {
+                    row.truncate(last + 1);
+                    (Value::int(i as i64), make_map(key_row(row, &names)))
+                })
                 .collect()
+        } else {
+            // PREG_PATTERN_ORDER (default): matches[group][set]. Here it is the
+            // OUTER keys that name the groups.
+            let mut rows = Vec::with_capacity(group_count);
+            for g in 0..group_count {
+                let col = make_list(all.iter().map(|(row, _)| row[g].clone()).collect());
+                push_keyed(&mut rows, &names, g, col);
+            }
+            rows
         };
         fill_out(&args[2], 2, rows);
     }
@@ -856,6 +1237,7 @@ fn preg_replace_callback(args: &[Value]) -> Result<Value, String> {
 /// for each and substituting its string return. Propagates a thrown exception.
 fn replace_all_cb(re: &Pattern, s: &str, cb: &Value, limit: i64) -> Result<String, String> {
     let bytes = s.as_bytes();
+    let names = re.group_names();
     let mut out: Vec<u8> = Vec::new();
     let mut last = 0;
     for (n, caps) in re.captures_all(bytes).into_iter().enumerate() {
@@ -864,7 +1246,7 @@ fn replace_all_cb(re: &Pattern, s: &str, cb: &Value, limit: i64) -> Result<Strin
         }
         let whole = caps.get(0).unwrap();
         out.extend_from_slice(&bytes[last..whole.start()]);
-        let matches = make_list(caps_trimmed(&caps));
+        let matches = make_map(caps_trimmed(&caps, &names));
         let ret = crate::host::call_value(cb.clone(), vec![matches])?;
         if crate::host::has_pending_throw() {
             return Ok(String::new());

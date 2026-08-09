@@ -96,6 +96,10 @@ fusevm = { version = "0.17.0", features = ["jit", "jit-disk-cache", "aot", "ffi"
 # `src/stdlib/*`; these provide the vetted primitives (regex engine, date math,
 # hashing/encoding) rather than hand-rolling crypto or a PCRE engine.
 regex = "1"
+# PCRE has look-around and backreferences; the `regex` crate has neither. A
+# pattern using them is compiled by this backtracking engine instead, so
+# `preg_match("/foo(?=bar)/", …)` answers rather than failing to compile.
+fancy-regex = "0.18"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 base64 = "0.22"
 md-5 = "0.10"

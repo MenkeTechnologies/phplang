@@ -1354,7 +1354,7 @@ pub const CORPUS: &[Entry] = &[
         "FILTER_VALIDATE_REGEXP",
         "Predefined constant",
         "FILTER_VALIDATE_REGEXP: int = 272",
-        "Validates against the `options['regexp']` pattern, compiled with the Rust `regex` crate — a PCRE subset with no backreferences or lookaround.",
+        "Validates against the `options['regexp']` pattern, compiled by the same engine pair `preg_match` uses — so the delimiter rules, the modifier set, look-around and backreferences all behave identically, and a pattern fault raises `Warning: filter_var(): <reason>` and sets `preg_last_error()` exactly as the reference does.",
         "",
     ),
     (
@@ -4067,10 +4067,14 @@ pub const CORPUS: &[Entry] = &[
         "print_r(unserialize('a:1:{i:0;i:5;}'));   // => Array\\n(\\n    [0] => 5\\n)",
     ),
     // ══ Regular expressions (stdlib::preg) ══════════════════════════════════
-    // Backed by the Rust `regex` crate, NOT PCRE. Backreferences, lookaround,
-    // possessive quantifiers, and recursion do not exist and make a pattern fail
-    // to compile. Matching is on BYTES unless the `u` modifier is given, so `.`
-    // is one byte and every reported offset is a byte offset. Delimiters: any
+    // Backed by TWO engines, NOT PCRE: the Rust `regex` crate first, and
+    // `fancy-regex` for the patterns it will not take — look-around,
+    // backreferences, atomic groups, possessive quantifiers. A pattern on the
+    // second engine matches as if `/u` were set (it works over `&str`), and
+    // pattern RECURSION exists on neither. Matching is otherwise on BYTES unless
+    // the `u` modifier is given, so `.` is one byte and every reported offset is
+    // a byte offset. A named group is published in `$matches` under its name and
+    // its index both, the name first. Delimiters: any
     // non-alphanumeric, non-backslash character, with `()`, `{}`, `[]`, and `<>`
     // matched as pairs and NESTED (so `{a{b}` is unterminated). The closing
     // delimiter is found by scanning FORWARD honouring backslash escapes, so
@@ -4085,8 +4089,8 @@ pub const CORPUS: &[Entry] = &[
     // successive offset and stops at the first failure, so
     // `preg_match_all("/a/A", "aab")` is 2 while `"bab"` is 0.
     // DIVERGENCE: `D J S X r` are accepted as NO-OPS. Only `D` is observable,
-    // and inversely — Rust's `$` is already end-of-haystack only, so `/a$/D` is
-    // right by accident and the unmodified `/a$/` is what differs:
+    // and inversely — both engines' `$` is already end-of-haystack only, so
+    // `/a$/D` is right by accident and the unmodified `/a$/` is what differs:
     // `preg_match("/a$/", "a\n")` is 1 in the reference and 0 here.
     //
     // A pattern the engine rejects is a `Warning` naming the calling function and
@@ -4094,8 +4098,8 @@ pub const CORPUS: &[Entry] = &[
     // `preg_last_error()` at `PREG_INTERNAL_ERROR`. The delimiter and modifier
     // faults are ported from `php_pcre.c`; five structural body faults are ported
     // from PCRE2 with the offsets the reference reports. A body that is malformed
-    // in some OTHER way, or that uses a construct the Rust engine lacks
-    // (backreferences, look-around), still returns the sentinel but does so
+    // in some OTHER way, or that uses a construct NEITHER engine has (pattern
+    // recursion, a conditional group), still returns the sentinel but does so
     // SILENTLY, since the reference would have compiled most of them.
     (
         "preg_match",
@@ -4108,7 +4112,7 @@ pub const CORPUS: &[Entry] = &[
         "preg_match_all",
         "Regular expressions",
         "preg_match_all(string $pattern, string $subject, array &$matches = [], int $flags = PREG_PATTERN_ORDER): int|false",
-        "Returns the number of matches, or `false` for a pattern that will not compile, with the same `Warning` and `preg_last_error()` state as `preg_match`. `$matches` is a real by-reference out-parameter. Only the `PREG_SET_ORDER` bit is honoured — `PREG_OFFSET_CAPTURE` and `PREG_UNMATCHED_AS_NULL` are not, and there is no `$offset` parameter.",
+        "Returns the number of matches, or `false` for a pattern that will not compile, with the same `Warning` and `preg_last_error()` state as `preg_match`. `$matches` is a real by-reference out-parameter, keyed by group name as well as index. `PREG_SET_ORDER` truncates each set at its own last participating group, so its rows are ragged where `PREG_PATTERN_ORDER`'s columns are full width. Only the `PREG_SET_ORDER` bit is honoured — `PREG_OFFSET_CAPTURE` and `PREG_UNMATCHED_AS_NULL` are not, and there is no `$offset` parameter.",
         "$m = []; echo preg_match_all(\"/\\d/\", \"a1b2\", $m), $m[0][1];   // => 22",
     ),
     (
@@ -4129,7 +4133,7 @@ pub const CORPUS: &[Entry] = &[
         "preg_split",
         "Regular expressions",
         "preg_split(string $pattern, string $subject, int $limit = -1, int $flags = 0): array|false",
-        "Splits on each match. All three flag bits are honoured: `PREG_SPLIT_NO_EMPTY`, `PREG_SPLIT_DELIM_CAPTURE`, and `PREG_SPLIT_OFFSET_CAPTURE`. DIVERGENCE: the Rust engine suppresses a zero-width match right after a non-empty one where PCRE emits it, so patterns matching both empty and non-empty text (`/x*/`) differ; ordinary delimiters and the empty pattern split identically.",
+        "Splits on each match. All three flag bits are honoured: `PREG_SPLIT_NO_EMPTY`, `PREG_SPLIT_DELIM_CAPTURE`, and `PREG_SPLIT_OFFSET_CAPTURE`. A zero-width match sitting right after a non-empty one is emitted, as PCRE does, so `/x*/` and `/\\d*/` split the way the reference splits them. The captured delimiters `PREG_SPLIT_DELIM_CAPTURE` interleaves are positional — unlike `$matches`, they are not keyed by group name.",
         "echo implode(\"-\", preg_split(\"/[\\s,]+/\", \"a, b  c\"));   // => a-b-c",
     ),
     (

@@ -3486,6 +3486,16 @@ fn predefined_constants() -> FxHashMap<String, Value> {
     si("PREG_SPLIT_NO_EMPTY", 1);
     si("PREG_SPLIT_DELIM_CAPTURE", 2);
     si("PREG_SPLIT_OFFSET_CAPTURE", 4);
+    si("PREG_GREP_INVERT", 1);
+    // The `preg_last_error()` codes, whose names are what user code compares
+    // against rather than the bare numbers.
+    si("PREG_NO_ERROR", 0);
+    si("PREG_INTERNAL_ERROR", 1);
+    si("PREG_BACKTRACK_LIMIT_ERROR", 2);
+    si("PREG_RECURSION_LIMIT_ERROR", 3);
+    si("PREG_BAD_UTF8_ERROR", 4);
+    si("PREG_BAD_UTF8_OFFSET_ERROR", 5);
+    si("PREG_JIT_STACKLIMIT_ERROR", 6);
     // json
     si("JSON_HEX_TAG", 1);
     si("JSON_HEX_AMP", 2);

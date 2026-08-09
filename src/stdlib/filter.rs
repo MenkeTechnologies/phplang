@@ -480,61 +480,28 @@ fn validate_domain(s: &str, flags: i64) -> bool {
     true
 }
 
-/// `FILTER_VALIDATE_REGEXP`: the value must match `options['regexp']`, a Perl-style
-/// `/pattern/flags` string. Returns false when the option is missing or the
-/// pattern fails to compile (Rust `regex` is a PCRE subset — no back-references).
+/// `FILTER_VALIDATE_REGEXP`: the value must match `options['regexp']`, a
+/// Perl-style `/pattern/flags` string. Returns false when the option is missing
+/// or the pattern will not compile.
+///
+/// The pattern goes through the same compiler `preg_match` uses rather than a
+/// second, simpler one of this module's own. The reference compiles it with the
+/// same PCRE it gives `preg_*`, and reports a fault the same way — `Warning:
+/// filter_var(): <reason>` plus `preg_last_error()` — so sharing the compiler is
+/// what makes the delimiter rules, the modifier set, the fault text and the
+/// error state agree. A private lookalike here diverged on all four: it scanned
+/// BACKWARD for the closing delimiter (so `/a\/b/` took the wrong body), dropped
+/// every modifier but `imsx`, silently returned false for a fault the reference
+/// diagnoses, and could not compile look-around at all.
 fn validate_regexp(s: &str, options: &Option<Value>) -> bool {
     let Some(pat_val) = opt_get(options, "regexp") else {
         return false;
     };
     let pattern = with_host(|h| h.to_str(&pat_val));
-    let Some(re) = compile_delimited(&pattern) else {
+    let Some(re) = crate::stdlib::preg::compile_for("filter_var", &pattern) else {
         return false;
     };
-    re.is_match(s)
-}
-
-/// Compile a PHP-delimited regex (`/…/imsx`) into a Rust `Regex`. The first byte
-/// is the delimiter; trailing letters after the closing delimiter are inline
-/// flags mapped to `(?imsx)`. Unsupported flags are ignored.
-fn compile_delimited(pattern: &str) -> Option<regex::Regex> {
-    let bytes = pattern.as_bytes();
-    if bytes.len() < 2 {
-        return None;
-    }
-    // PHP regex delimiters are single ASCII punctuation chars. Guard against a
-    // multi-byte first char so `pattern[1..]` never slices mid-codepoint (panic).
-    if !pattern.is_char_boundary(1) {
-        return None;
-    }
-    let delim = bytes[0] as char;
-    let close = if delim == '(' {
-        ')'
-    } else if delim == '{' {
-        '}'
-    } else if delim == '[' {
-        ']'
-    } else if delim == '<' {
-        '>'
-    } else {
-        delim
-    };
-    let rest = &pattern[1..];
-    let end = rest.rfind(close)?;
-    let body = &rest[..end];
-    let mods = &rest[end + 1..];
-    let mut inline = String::new();
-    for m in mods.chars() {
-        if matches!(m, 'i' | 'm' | 's' | 'x') {
-            inline.push(m);
-        }
-    }
-    let full = if inline.is_empty() {
-        body.to_string()
-    } else {
-        format!("(?{inline}){body}")
-    };
-    regex::Regex::new(&full).ok()
+    re.is_match(s.as_bytes())
 }
 
 // ── sanitizers ───────────────────────────────────────────────────────────────

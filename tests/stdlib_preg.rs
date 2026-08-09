@@ -1,7 +1,8 @@
 //! `preg` (PCRE) standard-library tests: PHP source in, captured `echo` output
-//! out. Every expectation was cross-checked against reference PHP 8. Backed by
-//! the Rust `regex` crate — a PCRE subset (no backreferences / look-around); the
-//! two tests at the end pin those documented limitations.
+//! out. Every expectation was cross-checked against reference PHP 8.5. Two
+//! engines back these functions — the `regex` crate, and `fancy-regex` for the
+//! look-around / backreference / atomic-group patterns the first one will not
+//! compile; the tests at the end drive the second engine specifically.
 
 use phplang::eval_capture;
 
@@ -245,17 +246,18 @@ fn no_match_resets_out_array_to_empty() {
 }
 
 #[test]
-fn unsupported_pcre_features_return_error_sentinel() {
-    // The Rust engine rejects backreferences and look-around; preg_match then
-    // returns PHP's `false` (echoes as the empty string). This pins the
-    // documented PCRE-subset limitation rather than asserting it "works".
+fn lookaround_and_backreferences_match_rather_than_returning_the_sentinel() {
+    // These are the two constructs the `regex` crate has no support for, so each
+    // one lands on the second engine. Both used to come back as PHP's `false`
+    // (the error sentinel); the reference matches them, so this asserts the
+    // reference's answer instead of the old miss.
     assert_eq!(
         run(r#"<?php echo preg_match('/(?<=x)y/', 'xy') === false ? 'err' : 'ok';"#),
-        "err"
+        "ok"
     );
     assert_eq!(
         run(r#"<?php echo preg_match('/(a)\1/', 'aa') === false ? 'err' : 'ok';"#),
-        "err"
+        "ok"
     );
 }
 
@@ -424,13 +426,14 @@ fn preg_last_error_persists_until_the_next_pattern_compiles() {
 }
 
 #[test]
-fn a_pattern_the_rust_engine_alone_rejects_stays_silent() {
-    // Back-references and look-around compile in the reference, so there is no
-    // diagnostic to copy: the sentinel is returned with NO warning and the error
-    // state untouched. This is the documented engine-subset divergence.
+fn a_pattern_only_the_second_engine_takes_still_clears_the_error_state() {
+    // The reference compiles this one, so there is no warning to copy and no
+    // error to record. It now also MATCHES, which is what the reference does:
+    // `php -r '$r = preg_match("/(a)\\1/", "aa"); echo var_export($r, true), "|",
+    // preg_last_error();'` prints `1|0`.
     let src = r#"<?php $r = preg_match('/(a)\1/', 'aa');
         echo var_export($r, true), "|", preg_last_error();"#;
-    assert_eq!(run(src), "false|0");
+    assert_eq!(run(src), "1|0");
 }
 
 #[test]
@@ -452,8 +455,14 @@ fn suppression_and_the_error_reporting_mask_both_hide_the_warning() {
 #[test]
 fn anchored_modifier_matches_only_at_the_search_offset() {
     // Anchored at offset 0, so a match further in does not count.
-    assert_eq!(run(r#"<?php var_dump(preg_match("/a/A", "bar"));"#), "int(0)\n");
-    assert_eq!(run(r#"<?php var_dump(preg_match("/a/A", "abr"));"#), "int(1)\n");
+    assert_eq!(
+        run(r#"<?php var_dump(preg_match("/a/A", "bar"));"#),
+        "int(0)\n"
+    );
+    assert_eq!(
+        run(r#"<?php var_dump(preg_match("/a/A", "abr"));"#),
+        "int(1)\n"
+    );
 }
 
 #[test]
@@ -499,7 +508,10 @@ fn anchored_replace_split_and_grep() {
 
 #[test]
 fn unanchored_patterns_are_unaffected_by_the_anchoring_path() {
-    assert_eq!(run(r#"<?php var_dump(preg_match("/a/", "bar"));"#), "int(1)\n");
+    assert_eq!(
+        run(r#"<?php var_dump(preg_match("/a/", "bar"));"#),
+        "int(1)\n"
+    );
     assert_eq!(
         run(r#"<?php var_dump(preg_match_all("/a/", "bab"));"#),
         "int(1)\n"
@@ -508,4 +520,396 @@ fn unanchored_patterns_are_unaffected_by_the_anchoring_path() {
         run(r#"<?php var_dump(preg_replace("/a/", "X", "aab"));"#),
         "string(3) \"XXb\"\n"
     );
+}
+
+// ── the second engine: look-around, backreferences, atomic groups ─────────────
+//
+// Every expectation below was read back off `php` 8.5.9 before it was written
+// here. These constructs are the ones the `regex` crate cannot compile, so each
+// case also proves the fallback engine is reached at all.
+
+#[test]
+fn look_ahead_and_look_behind_match_in_both_polarities() {
+    assert_eq!(
+        run(r#"<?php var_dump(preg_match('/foo(?=bar)/', 'foobar', $m), $m);"#),
+        "int(1)\narray(1) {\n  [0]=>\n  string(3) \"foo\"\n}\n"
+    );
+    assert_eq!(
+        run(r#"<?php var_dump(preg_match('/foo(?!bar)/', 'foobar'));"#),
+        "int(0)\n"
+    );
+    assert_eq!(
+        run(r#"<?php var_dump(preg_match('/(?<=\$)\d+/', 'cost $21', $m), $m);"#),
+        "int(1)\narray(1) {\n  [0]=>\n  string(2) \"21\"\n}\n"
+    );
+    assert_eq!(
+        run(r#"<?php var_dump(preg_match('/(?<!a)b/', 'ab'));"#),
+        "int(0)\n"
+    );
+    // Two look-aheads stacked at one position — the shape every password rule
+    // in the wild is written in.
+    assert_eq!(
+        run(r#"<?php var_dump(preg_match('/^(?=.*\d)(?=.*[a-z]).{6,}$/', 'abc123'));"#),
+        "int(1)\n"
+    );
+    assert_eq!(
+        run(r#"<?php var_dump(preg_match('/^(?=.*\d)(?=.*[a-z]).{6,}$/', 'abcdef'));"#),
+        "int(0)\n"
+    );
+}
+
+#[test]
+fn backreferences_match_and_substitute() {
+    assert_eq!(
+        run(r#"<?php var_dump(preg_match('/(\w)\1/', 'abbc', $m), $m);"#),
+        "int(1)\narray(2) {\n  [0]=>\n  string(2) \"bb\"\n  [1]=>\n  string(1) \"b\"\n}\n"
+    );
+    assert_eq!(
+        run(r#"<?php var_dump(preg_replace('/(\w+) \1/', '$1', 'the the cat cat'));"#),
+        "string(7) \"the cat\"\n"
+    );
+    // `(?P=name)` — the named form of the same thing.
+    assert_eq!(
+        run(r#"<?php var_dump(preg_match('/(?<w>\w+)-(?P=w)/', 'hi-hi'));"#),
+        "int(1)\n"
+    );
+}
+
+#[test]
+fn atomic_groups_and_possessive_quantifiers_refuse_to_give_back() {
+    // `(?>a+)` takes all three `a`s and will not release one for the `a` that
+    // follows, so this fails where a plain `a+ab` would match.
+    assert_eq!(
+        run(r#"<?php var_dump(preg_match('/(?>a+)ab/', 'aaab'));"#),
+        "int(0)\n"
+    );
+    assert_eq!(
+        run(r#"<?php var_dump(preg_match('/a+ab/', 'aaab'));"#),
+        "int(1)\n"
+    );
+    assert_eq!(
+        run(r#"<?php var_dump(preg_match('/a++b/', 'aaab'));"#),
+        "int(1)\n"
+    );
+}
+
+#[test]
+fn the_modifiers_still_apply_on_the_second_engine() {
+    assert_eq!(
+        run(r#"<?php var_dump(preg_match('/A(?=b)/i', 'ab'));"#),
+        "int(1)\n"
+    );
+    assert_eq!(
+        run("<?php var_dump(preg_match_all('/^(?=\\w)/m', \"ab\\ncd\"));"),
+        "int(2)\n"
+    );
+    assert_eq!(
+        run("<?php var_dump(preg_match('/a.(?=c)/s', \"a\\nc\"));"),
+        "int(1)\n"
+    );
+    assert_eq!(
+        run(r#"<?php var_dump(preg_match('/a (?= b) c/x', 'abc'));"#),
+        "int(0)\n"
+    );
+    // `U` has no builder switch on the second engine and is carried inline; the
+    // ungreedy `.+` must still stop at the first `>`.
+    assert_eq!(
+        run(r#"<?php var_dump(preg_match('/<(.+)>(?=<)/U', '<a><b>', $m), $m);"#),
+        "int(1)\narray(2) {\n  [0]=>\n  string(3) \"<a>\"\n  [1]=>\n  string(1) \"a\"\n}\n"
+    );
+    // `A` retries at each successive offset and stops at the first miss.
+    assert_eq!(
+        run(r#"<?php var_dump(preg_match_all('/a(?=a)/A', 'aaab'));"#),
+        "int(2)\n"
+    );
+    assert_eq!(
+        run(r#"<?php var_dump(preg_match_all('/a(?=a)/A', 'baaa'));"#),
+        "int(0)\n"
+    );
+}
+
+#[test]
+fn a_second_engine_pattern_leaves_the_error_state_clear() {
+    // The reference COMPILES these, so nothing may be recorded for them — the
+    // old behaviour returned the sentinel here without touching the state, and
+    // the state half must not regress now that the match half works.
+    assert_eq!(
+        run(
+            r#"<?php preg_match('/(?<=a)b/', 'ab'); echo preg_last_error(), '|', preg_last_error_msg();"#
+        ),
+        "0|No error"
+    );
+}
+
+// ── named groups in $matches ─────────────────────────────────────────────────
+
+#[test]
+fn a_named_group_is_published_under_its_name_and_its_index() {
+    // PHP emits the NAME key immediately before the numeric one, in group order.
+    assert_eq!(
+        run(r#"<?php preg_match('/(?<y>\d+)-(?<m>\d+)/', '2024-05', $m); echo json_encode($m);"#),
+        r#"{"0":"2024-05","y":"2024","1":"2024","m":"05","2":"05"}"#
+    );
+    // An unnamed group in among the named ones keeps its index only.
+    assert_eq!(
+        run(r#"<?php preg_match('/(?P<x>a)(b)/', 'ab', $m); echo json_encode($m);"#),
+        r#"{"0":"ab","x":"a","1":"a","2":"b"}"#
+    );
+    // A pattern with no names is unchanged by the naming path.
+    assert_eq!(
+        run(r#"<?php preg_match('/(\d)(\d)/', '12', $m); echo json_encode($m);"#),
+        r#"["12","1","2"]"#
+    );
+}
+
+#[test]
+fn a_trailing_unmatched_named_group_loses_its_name_key_too() {
+    // The trailing-group truncation runs before the keying, so `b` disappears
+    // entirely rather than surviving as a bare name.
+    assert_eq!(
+        run(r#"<?php preg_match('/(?<a>x)(?<b>y)?/', 'x', $m); echo json_encode($m);"#),
+        r#"{"0":"x","a":"x","1":"x"}"#
+    );
+    // A non-participating group FOLLOWED by one that participates stays, as "".
+    assert_eq!(
+        run(r#"<?php preg_match('/(?<a>x)?(?<b>y)/', 'y', $m); echo json_encode($m);"#),
+        r#"{"0":"y","a":"","1":"","b":"y","2":"y"}"#
+    );
+}
+
+#[test]
+fn preg_match_all_names_the_outer_keys_in_pattern_order_and_the_inner_ones_in_set_order() {
+    assert_eq!(
+        run(r#"<?php preg_match_all('/(?<c>[ab])/', 'ab', $m); echo json_encode($m);"#),
+        r#"{"0":["a","b"],"c":["a","b"],"1":["a","b"]}"#
+    );
+    assert_eq!(
+        run(
+            r#"<?php preg_match_all('/(?<c>[ab])/', 'ab', $m, PREG_SET_ORDER); echo json_encode($m);"#
+        ),
+        r#"[{"0":"a","c":"a","1":"a"},{"0":"b","c":"b","1":"b"}]"#
+    );
+}
+
+#[test]
+fn the_name_slot_and_the_index_slot_hold_independent_values() {
+    // PHP stores two copies, not one shared array: writing through the name must
+    // not be visible through the index.
+    assert_eq!(
+        run(
+            r#"<?php preg_match_all('/(?<g>\d)/', '12', $m); $m['g'][0] = 'Z'; echo json_encode($m);"#
+        ),
+        r#"{"0":["1","2"],"g":["Z","2"],"1":["1","2"]}"#
+    );
+}
+
+#[test]
+fn preg_replace_callback_hands_the_named_keys_to_the_callback() {
+    assert_eq!(
+        run(
+            r#"<?php echo preg_replace_callback('/(?<n>\d)(x)?/', function($m){ return json_encode($m); }, '7');"#
+        ),
+        r#"{"0":"7","n":"7","1":"7"}"#
+    );
+}
+
+#[test]
+fn preg_split_delim_capture_stays_a_plain_list() {
+    // The delimiter groups are appended positionally; PHP does NOT key them by
+    // name here, unlike every `$matches` above.
+    assert_eq!(
+        run(
+            r#"<?php echo json_encode(preg_split('/(?<d>,)/', 'a,b', -1, PREG_SPLIT_DELIM_CAPTURE));"#
+        ),
+        r#"["a",",","b"]"#
+    );
+}
+
+#[test]
+fn preg_match_all_set_order_truncates_each_set_on_its_own() {
+    // The rows are RAGGED: each set drops its own trailing non-participating
+    // groups, so two sets of the same pattern can have different widths.
+    assert_eq!(
+        run(
+            r#"<?php preg_match_all('/(a)(b)?/', 'a ab', $m, PREG_SET_ORDER); echo json_encode($m);"#
+        ),
+        r#"[["a","a"],["ab","a","b"]]"#
+    );
+    assert_eq!(
+        run(
+            r#"<?php preg_match_all('/(a)(b)?/', 'ab a', $m, PREG_SET_ORDER); echo json_encode($m);"#
+        ),
+        r#"[["ab","a","b"],["a","a"]]"#
+    );
+    // A gap in the MIDDLE is not a truncation point.
+    assert_eq!(
+        run(
+            r#"<?php preg_match_all('/(a)(x)?(b)/', 'ab', $m, PREG_SET_ORDER); echo json_encode($m);"#
+        ),
+        r#"[["ab","a","","b"]]"#
+    );
+    // PREG_PATTERN_ORDER stays full-width — every column is present.
+    assert_eq!(
+        run(r#"<?php preg_match_all('/(a)(b)?/', 'a ab', $m); echo json_encode($m);"#),
+        r#"[["a","ab"],["a","a"],["","b"]]"#
+    );
+}
+
+#[test]
+fn the_preg_flag_and_error_constants_are_defined() {
+    // `PREG_GREP_INVERT` was missing, so `preg_grep($p, $a, PREG_GREP_INVERT)`
+    // read the undefined name and inverted nothing.
+    assert_eq!(
+        run(r#"<?php echo json_encode(preg_grep('/a/', ['ab', 'cd'], PREG_GREP_INVERT));"#),
+        r#"{"1":"cd"}"#
+    );
+    let src = r#"<?php echo PREG_GREP_INVERT, ',', PREG_NO_ERROR, ',', PREG_INTERNAL_ERROR, ',',
+        PREG_BACKTRACK_LIMIT_ERROR, ',', PREG_RECURSION_LIMIT_ERROR, ',', PREG_BAD_UTF8_ERROR,
+        ',', PREG_BAD_UTF8_OFFSET_ERROR, ',', PREG_JIT_STACKLIMIT_ERROR;"#;
+    assert_eq!(run(src), "1,0,1,2,3,4,5,6");
+}
+
+#[test]
+fn the_replacement_expander_handles_every_template_form() {
+    // The substitution is hand-rolled so both engines share one implementation;
+    // these pin it against the reference for each form a template can take.
+    assert_eq!(
+        run(r#"<?php var_dump(preg_replace('/(b)/', '[\1]', 'ab'));"#),
+        "string(4) \"a[b]\"\n"
+    );
+    assert_eq!(
+        run(r#"<?php var_dump(preg_replace('/(b)/', '${1}${1}', 'ab'));"#),
+        "string(3) \"abb\"\n"
+    );
+    assert_eq!(
+        run(r#"<?php var_dump(preg_replace('/(a)(b)/', '$2$1', 'ab'));"#),
+        "string(2) \"ba\"\n"
+    );
+    // A reference to a group that does not exist expands to nothing.
+    assert_eq!(
+        run(r#"<?php var_dump(preg_replace('/(b)/', '$9', 'ab'));"#),
+        "string(1) \"a\"\n"
+    );
+    // A `$` that is not a group reference is literal.
+    assert_eq!(
+        run(r#"<?php var_dump(preg_replace('/b/', 'p$q', 'ab'));"#),
+        "string(4) \"ap$q\"\n"
+    );
+    // PHP has no `$$` escape in a replacement — both dollars are literal.
+    assert_eq!(
+        run(r#"<?php var_dump(preg_replace('/b/', '$$', 'ab'));"#),
+        "string(3) \"a$$\"\n"
+    );
+    // `${1}0` must not be read as group 10.
+    assert_eq!(
+        run(r#"<?php var_dump(preg_replace('/(a)/', '${1}0', 'a'));"#),
+        "string(2) \"a0\"\n"
+    );
+    // The same forms through the SECOND engine, which shares the expander.
+    assert_eq!(
+        run(r#"<?php var_dump(preg_replace('/(?<=a)(b)/', '[\1]', 'ab'));"#),
+        "string(4) \"a[b]\"\n"
+    );
+    assert_eq!(
+        run(r#"<?php var_dump(preg_replace('/(?<=a)(b)/', '${1}${1}', 'ab'));"#),
+        "string(3) \"abb\"\n"
+    );
+    assert_eq!(
+        run(r#"<?php var_dump(preg_replace('/(?<=a)b/', '$$', 'ab'));"#),
+        "string(3) \"a$$\"\n"
+    );
+}
+
+#[test]
+fn zero_width_matches_after_a_non_empty_one_are_emitted() {
+    // PCRE emits the empty match sitting immediately after a non-empty one; the
+    // `regex` crate's own iterator suppresses it, so the match walk is driven by
+    // hand. This is what `/a*/` and friends turn on.
+    assert_eq!(
+        run(r#"<?php echo json_encode(preg_split('/a*/', 'xaby'));"#),
+        r#"["","x","","b","y",""]"#
+    );
+    assert_eq!(
+        run(r#"<?php echo json_encode(preg_split('/\d*/', 'a1b'));"#),
+        r#"["","a","","b",""]"#
+    );
+    assert_eq!(
+        run(r#"<?php var_dump(preg_match_all('/a*/', 'abc'));"#),
+        "int(4)\n"
+    );
+    assert_eq!(
+        run(r#"<?php var_dump(preg_replace('/a*/', '-', 'abc'));"#),
+        "string(6) \"--b-c-\"\n"
+    );
+    // The fully-empty pattern is unchanged by the hand-driven walk.
+    assert_eq!(
+        run(r#"<?php echo json_encode(preg_split('//', 'abc'));"#),
+        r#"["","a","b","c",""]"#
+    );
+}
+
+#[test]
+fn an_empty_match_is_retried_for_a_non_empty_one_at_the_same_offset() {
+    // PCRE records the empty match and then asks the SAME offset for a non-empty
+    // one before stepping on. The lazy `/a*?/` is where that shows: without the
+    // retry the `"a"` at offset 0 is never found at all.
+    assert_eq!(
+        run(r#"<?php var_dump(preg_match_all('/a*?/', 'abc'));"#),
+        "int(5)\n"
+    );
+    assert_eq!(
+        run(r#"<?php var_dump(preg_replace('/a*?/', 'z', 'abc'));"#),
+        "string(7) \"zzzbzcz\"\n"
+    );
+    assert_eq!(
+        run(r#"<?php echo json_encode(preg_split('/a*?/', 'bar'));"#),
+        r#"["","b","","","r",""]"#
+    );
+    assert_eq!(
+        run(r#"<?php var_dump(preg_replace('/b*?/', '-', 'abb'));"#),
+        "string(7) \"-a-----\"\n"
+    );
+    // The retry runs under `A` too — a failed one still steps a character on.
+    assert_eq!(
+        run(r#"<?php var_dump(preg_match_all('/a*/A', 'abc'));"#),
+        "int(4)\n"
+    );
+    assert_eq!(
+        run(r#"<?php var_dump(preg_match_all('/a*/A', 'baa'));"#),
+        "int(3)\n"
+    );
+    // An alternation whose first branch is zero-width: the non-empty branch must
+    // still be reachable at the offset the empty one matched.
+    assert_eq!(
+        run(r#"<?php preg_match_all('/(?=b)|a/', 'ab', $m); echo json_encode($m);"#),
+        r#"[["a",""]]"#
+    );
+}
+
+#[test]
+fn filter_validate_regexp_uses_the_same_compiler_as_preg() {
+    // Look-around, which the private lookalike compiler could not take at all.
+    assert_eq!(
+        run(
+            r#"<?php var_dump(filter_var('abc', FILTER_VALIDATE_REGEXP, ['options' => ['regexp' => '/(?<=a)b/']]));"#
+        ),
+        "string(3) \"abc\"\n"
+    );
+    // A forward delimiter scan: the body is `a\/b`, not `a\`.
+    assert_eq!(
+        run(
+            r#"<?php var_dump(filter_var('a/b', FILTER_VALIDATE_REGEXP, ['options' => ['regexp' => '/a\/b/']]));"#
+        ),
+        "string(3) \"a/b\"\n"
+    );
+    // A pattern fault is diagnosed under `filter_var`'s own name and recorded in
+    // the error state, rather than returning false in silence.
+    let bad = r#"<?php var_dump(filter_var('a', FILTER_VALIDATE_REGEXP, ['options' => ['regexp' => '/[a/']]));"#;
+    assert_eq!(
+        warning(bad),
+        "filter_var(): Compilation failed: missing terminating ] for character class at offset 2"
+    );
+    let state = r#"<?php @filter_var('a', FILTER_VALIDATE_REGEXP, ['options' => ['regexp' => '/[a/']]);
+        echo preg_last_error();"#;
+    assert_eq!(run(state), "1");
 }

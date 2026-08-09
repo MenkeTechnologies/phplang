@@ -359,9 +359,17 @@ fn validate_regexp() {
 #[test]
 fn validate_regexp_multibyte_delimiter_no_panic() {
     // A multi-byte first char is an invalid delimiter; the compiler must reject
-    // it (return false) rather than panic slicing mid-codepoint.
-    let src = r#"<?php var_export(filter_var("x", FILTER_VALIDATE_REGEXP, ["options"=>["regexp"=>"é^x$é"]]));"#;
-    assert_eq!(run(src), "false");
+    // it (return false) rather than panic slicing mid-codepoint. Now that this
+    // shares `preg_match`'s compiler it also DIAGNOSES the fault, which is what
+    // the reference does — `php -r` prints the same warning under the same name
+    // before the `false`. Single-quoted so the `$é` in the pattern is not read
+    // as an interpolation, which would add a second, unrelated warning.
+    let src = r#"<?php var_export(filter_var('x', FILTER_VALIDATE_REGEXP, ['options'=>['regexp'=>'é^x$é']]));"#;
+    assert_eq!(
+        run(src),
+        "\nWarning: filter_var(): Delimiter must not be alphanumeric, backslash, \
+         or NUL byte in Command line code on line 1\nfalse"
+    );
 }
 
 // ── sanitizers ───────────────────────────────────────────────────────────────
