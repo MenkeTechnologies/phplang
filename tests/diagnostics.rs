@@ -269,3 +269,235 @@ fn the_empty_string_has_its_own_pair_of_rules() {
         )
     );
 }
+
+// ── dynamic properties (PHP 8.2) ─────────────────────────────────────────────
+
+#[test]
+fn creating_an_undeclared_property_is_deprecated() {
+    assert_eq!(
+        run(r#"<?php class C {} $c = new C(); $c->x = 1; echo $c->x;"#),
+        format!(
+            "{}1",
+            deprecated("Creation of dynamic property C::$x is deprecated")
+        )
+    );
+}
+
+#[test]
+fn the_notice_names_the_objects_class_not_the_one_that_declared_the_others() {
+    // `$d` is inherited and silent; `$x` is nobody's, and the notice says `C`
+    // (the instance's class) even though the declarations live on `P`.
+    assert_eq!(
+        run(
+            r#"<?php class P { public $d; } class C extends P {} $c = new C(); $c->d = 1; $c->x = 2; echo "end";"#
+        ),
+        format!(
+            "{}end",
+            deprecated("Creation of dynamic property C::$x is deprecated")
+        )
+    );
+}
+
+#[test]
+fn it_fires_per_creation_not_per_write() {
+    // The second write finds the property already there; `unset` removes it, so
+    // the write after that creates it again and is a second creation.
+    assert_eq!(
+        run(r#"<?php class C {} $c = new C(); $c->x = 1; $c->x = 2; echo "end";"#),
+        format!(
+            "{}end",
+            deprecated("Creation of dynamic property C::$x is deprecated")
+        )
+    );
+}
+
+#[test]
+fn a_declared_or_promoted_property_is_silent_and_so_is_stdclass() {
+    // Four ways to be silent: declared with a default, declared bare, promoted
+    // from a constructor parameter, and being `stdClass` (PHP's property bag,
+    // which is also what an `(object)` cast produces).
+    assert_eq!(
+        run(
+            r#"<?php class C { public $a = 0; public $b; } $c = new C(); $c->a = 1; $c->b = 2; echo $c->a, $c->b;"#
+        ),
+        "12"
+    );
+    assert_eq!(
+        run(
+            r#"<?php class C { function __construct(public $p = 0) {} } $c = new C(); $c->p = 7; echo $c->p;"#
+        ),
+        "7"
+    );
+    assert_eq!(
+        run(r#"<?php $o = new stdClass(); $o->x = 1; echo $o->x;"#),
+        "1"
+    );
+    assert_eq!(
+        run(r#"<?php $o = (object) ["a" => 1]; $o->b = 2; echo $o->a, $o->b;"#),
+        "12"
+    );
+}
+
+#[test]
+fn allow_dynamic_properties_opts_out_and_is_inherited() {
+    assert_eq!(
+        run(r#"<?php #[AllowDynamicProperties] class C {} $c = new C(); $c->x = 1; echo $c->x;"#),
+        "1"
+    );
+    assert_eq!(
+        run(
+            r#"<?php #[AllowDynamicProperties] class P {} class C extends P {} $c = new C(); $c->x = 1; echo $c->x;"#
+        ),
+        "1"
+    );
+    // The name is matched exactly: a NAMESPACED attribute of the same last
+    // segment is a different, inert attribute and does not opt the class out.
+    assert_eq!(
+        run(
+            r#"<?php #[Ns\AllowDynamicProperties] class C {} $c = new C(); $c->x = 1; echo "end";"#
+        ),
+        format!(
+            "{}end",
+            deprecated("Creation of dynamic property C::$x is deprecated")
+        )
+    );
+}
+
+#[test]
+fn a_fetch_for_writing_deprecates_before_the_read_warns() {
+    // `.=` and `++` fetch the property for writing and then read it, so PHP
+    // announces the creation first and the undefined read second. The order is
+    // the whole point of the assertion.
+    assert_eq!(
+        run(r#"<?php class C {} $c = new C(); $c->n .= "x"; echo $c->n;"#),
+        format!(
+            "{}{}x",
+            deprecated("Creation of dynamic property C::$n is deprecated"),
+            warning("Undefined property: C::$n")
+        )
+    );
+    assert_eq!(
+        run(r#"<?php class C {} $c = new C(); $c->n++; echo $c->n;"#),
+        format!(
+            "{}{}1",
+            deprecated("Creation of dynamic property C::$n is deprecated"),
+            warning("Undefined property: C::$n")
+        )
+    );
+    // Appending into an undeclared property vivifies it, which is a creation too
+    // — and this path never reads, so there is no warning.
+    assert_eq!(
+        run(r#"<?php class C {} $c = new C(); $c->v[] = 1; echo count($c->v);"#),
+        format!(
+            "{}1",
+            deprecated("Creation of dynamic property C::$v is deprecated")
+        )
+    );
+}
+
+// ── compile-time notices ─────────────────────────────────────────────────────
+
+#[test]
+fn the_dollar_brace_notice_precedes_all_program_output() {
+    // Raised while the source is READ, so it lands before the `a` on the same
+    // line — not between the two statements where it was written.
+    assert_eq!(
+        run(r#"<?php echo "a"; $v = 1; echo "${v}";"#),
+        format!(
+            "{}a1",
+            deprecated("Using ${var} in strings is deprecated, use {$var} instead")
+        )
+    );
+}
+
+#[test]
+fn a_compile_time_notice_fires_for_code_that_never_runs() {
+    // The function is never called. The notice is a property of the source text.
+    assert_eq!(
+        run(r#"<?php function f() { $v = 1; return "${v}"; } echo "no-call";"#),
+        format!(
+            "{}no-call",
+            deprecated("Using ${var} in strings is deprecated, use {$var} instead")
+        )
+    );
+}
+
+#[test]
+fn error_reporting_cannot_retract_a_compile_time_notice() {
+    // The mask is written at run time; the notice was decided before any of it
+    // ran, so it is already out.
+    assert_eq!(
+        run(r#"<?php error_reporting(0); $v = 1; echo "${v}";"#),
+        format!(
+            "{}1",
+            deprecated("Using ${var} in strings is deprecated, use {$var} instead")
+        )
+    );
+}
+
+// ── the error_reporting mask ─────────────────────────────────────────────────
+
+#[test]
+fn the_mask_gates_each_severity_independently() {
+    // E_ALL is 30719 in PHP 8.4+ (E_STRICT was removed and left E_ALL).
+    assert_eq!(run(r#"<?php echo error_reporting();"#), "30719");
+    // Warnings off, deprecations still on.
+    assert_eq!(
+        run(
+            r#"<?php error_reporting(E_ALL & ~E_WARNING); class C {} $c = new C(); $c->x = 1; echo $undef; echo "end";"#
+        ),
+        format!(
+            "{}end",
+            deprecated("Creation of dynamic property C::$x is deprecated")
+        )
+    );
+    // Deprecations off, warnings still on.
+    assert_eq!(
+        run(
+            r#"<?php error_reporting(E_ALL & ~E_DEPRECATED); class C {} $c = new C(); $c->x = 1; echo $undef; echo "end";"#
+        ),
+        format!("{}end", warning("Undefined variable $undef"))
+    );
+    // Everything off.
+    assert_eq!(
+        run(
+            r#"<?php error_reporting(0); class C {} $c = new C(); $c->x = 1; echo $undef; echo "end";"#
+        ),
+        "end"
+    );
+}
+
+#[test]
+fn setting_the_mask_returns_the_previous_one_and_it_is_restorable() {
+    assert_eq!(
+        run(
+            r#"<?php $old = error_reporting(0); echo $undef; error_reporting($old); echo $undef2;"#
+        ),
+        warning("Undefined variable $undef2")
+    );
+}
+
+#[test]
+fn ini_set_and_error_reporting_write_the_same_state() {
+    // `ini_set` reports the previous value as a string and writes the mask.
+    assert_eq!(
+        run(
+            r#"<?php var_dump(ini_set("error_reporting", "8")); echo $undef; var_dump(error_reporting(), ini_get("error_reporting"));"#
+        ),
+        "string(5) \"30719\"\nint(8)\nstring(1) \"8\"\n"
+    );
+    // `error_reporting()` writes back through the ini view too.
+    assert_eq!(
+        run(r#"<?php error_reporting(8); var_dump(ini_get("error_reporting"));"#),
+        "string(1) \"8\"\n"
+    );
+    // `ini_set` does NOT run the php.ini constant-expression scanner: the string
+    // reads as an ordinary integer, so a symbolic level mutes everything (0) and
+    // `ini_get` still reports the raw text that was written.
+    assert_eq!(
+        run(
+            r#"<?php ini_set("error_reporting", "E_ALL & ~E_WARNING"); var_dump(ini_get("error_reporting"), error_reporting());"#
+        ),
+        "string(18) \"E_ALL & ~E_WARNING\"\nint(0)\n"
+    );
+}

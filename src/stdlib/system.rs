@@ -163,9 +163,29 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         }
         "php_ini_loaded_file" | "get_include_path" => Value::bool(false),
         "set_time_limit" | "ignore_user_abort" => Value::bool(true),
-        "error_reporting" => Value::int(32767), // E_ALL
-        "ini_get" => Value::bool(false),
-        "ini_set" => Value::bool(false),
+        // `error_reporting($level = null)`: read the mask, or set it and return
+        // the PREVIOUS one. Passing null (or nothing) only reads — the two are
+        // indistinguishable here because a missing argument arrives as `Undef`,
+        // which is also how an explicit `null` arrives, and PHP treats them alike.
+        "error_reporting" => with_host(|h| match args.first() {
+            Some(v) if !matches!(v, Value::Undef) => Value::int(h.set_error_reporting(v.to_int())),
+            _ => Value::int(h.error_reporting()),
+        }),
+        "ini_get" => {
+            let name = str_arg(args, 0);
+            with_host(|h| match h.ini_get(&name) {
+                Some(s) => Value::str(s),
+                None => Value::bool(false),
+            })
+        }
+        "ini_set" => {
+            let name = str_arg(args, 0);
+            let value = with_host(|h| h.to_str(&arg(args, 1)));
+            with_host(|h| match h.ini_set(&name, &value) {
+                Some(old) => Value::str(old),
+                None => Value::bool(false),
+            })
+        }
 
         // ── output buffering ──────────────────────────────────────────────
         "ob_start" => {

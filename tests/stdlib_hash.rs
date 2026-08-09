@@ -137,14 +137,21 @@ fn hash_hmac_sha2_family() {
 
 #[test]
 fn hash_unknown_algo_php8_valueerror() {
-    // PHP 8 ValueError text (not the PHP 7 "Unknown hashing algorithm").
+    // PHP 8 ValueError text (not the PHP 7 "Unknown hashing algorithm") — and a
+    // real, CATCHABLE `ValueError`, as the reference throws, rather than an
+    // engine-level abort. Asserting through `catch` pins both the class and the
+    // message; the uncaught rendering (with the `#0 hash('bogus', 'x')` internal
+    // frame) is covered in tests/fatal_errors.rs.
     assert_eq!(
-        eval_capture(r#"<?php echo hash("bogus", "x");"#).unwrap_err(),
-        "hash(): Argument #1 ($algo) must be a valid hashing algorithm"
+        run(r#"<?php try { hash("bogus", "x"); }
+               catch (ValueError $e) { echo get_class($e), "|", $e->getMessage(); }"#),
+        "ValueError|hash(): Argument #1 ($algo) must be a valid hashing algorithm"
     );
     assert_eq!(
-        eval_capture(r#"<?php echo hash_hmac("bogus", "x", "k");"#).unwrap_err(),
-        "hash_hmac(): Argument #1 ($algo) must be a valid cryptographic hashing algorithm"
+        run(r#"<?php try { hash_hmac("bogus", "x", "k"); }
+               catch (ValueError $e) { echo get_class($e), "|", $e->getMessage(); }"#),
+        "ValueError|hash_hmac(): Argument #1 ($algo) must be a valid cryptographic \
+         hashing algorithm"
     );
 }
 

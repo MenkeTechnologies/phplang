@@ -71,7 +71,10 @@ fn mb_str_split(args: &[Value]) -> Result<Value, String> {
         _ => 1,
     };
     if length < 1 {
-        return Err("mb_str_split(): Argument #2 ($length) must be greater than 0".into());
+        return Err(throws(
+            "ValueError",
+            "mb_str_split(): Argument #2 ($length) must be greater than 0",
+        ));
     }
     let chars: Vec<char> = s.chars().collect();
     let out: Vec<Value> = chars
@@ -203,7 +206,10 @@ fn mb_substr_count(args: &[Value]) -> Result<Value, String> {
     let hay: Vec<char> = str_arg(args, 0).chars().collect();
     let needle: Vec<char> = str_arg(args, 1).chars().collect();
     if needle.is_empty() {
-        return Err("mb_substr_count(): Argument #2 ($needle) cannot be empty".into());
+        return Err(throws(
+            "ValueError",
+            "mb_substr_count(): Argument #2 ($needle) must not be empty",
+        ));
     }
     let mut count = 0i64;
     let mut i = 0;
@@ -259,7 +265,10 @@ fn mb_str_pad(args: &[Value]) -> Result<Value, String> {
         return Ok(Value::str(s.into_iter().collect::<String>()));
     }
     if pad.is_empty() {
-        return Err("mb_str_pad(): Argument #3 ($pad_string) must be a non-empty string".into());
+        return Err(throws(
+            "ValueError",
+            "mb_str_pad(): Argument #3 ($pad_string) must not be empty",
+        ));
     }
     let total = target as usize - s.len();
     let make = |n: usize| -> Vec<char> { pad.iter().cloned().cycle().take(n).collect() };

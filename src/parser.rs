@@ -134,8 +134,13 @@ fn cast_fn(t: &str) -> Option<&'static str> {
 /// blocks are desugared to `__rust_compile(...)` calls before lexing.
 pub fn parse(src: &str) -> Result<Vec<Stmt>, String> {
     let src = crate::rust_ffi::desugar(src);
+    lexer::clear_diags();
     let toks = lexer::lex(&src)?;
-    let mut p = Parser { toks, pos: 0 };
+    let mut p = Parser {
+        toks,
+        pos: 0,
+        pending_attrs: Vec::new(),
+    };
     let mut stmts = Vec::new();
     while !p.at_end() {
         stmts.push(p.statement()?);
@@ -155,7 +160,11 @@ fn resolve_interp_parts(parts: Vec<StrPart>) -> Result<Vec<InterpPart>, String> 
             StrPart::Var(n) => Ok(InterpPart::Expr(Box::new(Expr::Var(n)))),
             StrPart::Raw(src) => {
                 let toks = lexer::lex(&format!("<?php {src};"))?;
-                let mut inner = Parser { toks, pos: 0 };
+                let mut inner = Parser {
+                    toks,
+                    pos: 0,
+                    pending_attrs: Vec::new(),
+                };
                 let e = inner.expression()?;
                 if !inner.at_punct(";") {
                     return Err(format!("unparsed interpolation `{{{src}}}`"));
@@ -169,6 +178,10 @@ fn resolve_interp_parts(parts: Vec<StrPart>) -> Result<Vec<InterpPart>, String> 
 struct Parser {
     toks: Vec<Spanned>,
     pos: usize,
+    /// Attribute names read at the head of the statement being parsed, waiting
+    /// for the declaration that follows to claim them. Cleared by whoever takes
+    /// them, so a `#[Attr] class A {} class B {}` cannot leak onto `B`.
+    pending_attrs: Vec<String>,
 }
 
 impl Parser {
@@ -329,6 +342,10 @@ impl Parser {
     // ── statements ─────────────────────────────────────────────────────────
 
     fn statement(&mut self) -> Result<Stmt, String> {
+        // A declaration statement may be preceded by attribute groups. They are
+        // read here and handed to the declaration that follows through
+        // `pending_attrs`, since only that declaration can interpret them.
+        self.pending_attrs = self.attributes()?;
         let line = self.line();
         let kind = match self.peek() {
             Some(Tok::InlineHtml(_)) => {
@@ -777,11 +794,69 @@ impl Parser {
     /// and bareword type names — then reads an optional `...$rest` variadic marker,
     /// the name, and an optional `= default` value. By-ref (`&`) and typed hints
     /// are accepted but not enforced in the scaffold.
+    /// Consume any run of `#[Attr, Other(args)]` groups and return the attribute
+    /// names in source order, unqualified and with any leading `\` dropped.
+    ///
+    /// Attributes are declarative metadata: nothing here executes, and only their
+    /// NAMES are kept, because the one attribute this engine acts on
+    /// (`#[AllowDynamicProperties]`) takes no arguments. The argument list is
+    /// scanned for balance and discarded, so an attribute whose arguments contain
+    /// brackets or a nested `#[…]` still ends at the right `]`.
+    ///
+    /// Every declaration form may carry attributes, so this is called at the head
+    /// of statements, class members, and parameters; consuming them is what keeps
+    /// an attributed declaration parsing at all.
+    fn attributes(&mut self) -> Result<Vec<String>, String> {
+        let mut names: Vec<String> = Vec::new();
+        while self.at_punct("#[") {
+            self.pos += 1;
+            let mut depth = 1usize;
+            // Depth 1 is the attribute list itself: a name there is an attribute,
+            // a name nested inside an argument list is not.
+            let mut expect_name = true;
+            while depth > 0 {
+                match self.next() {
+                    None => return Err("unterminated attribute".to_string()),
+                    Some(Tok::Punct("#[")) | Some(Tok::Punct("[")) | Some(Tok::Punct("(")) => {
+                        depth += 1
+                    }
+                    Some(Tok::Punct("]")) | Some(Tok::Punct(")")) => depth -= 1,
+                    Some(Tok::Punct(",")) if depth == 1 => expect_name = true,
+                    // A namespace separator. The QUALIFICATION is kept, unlike
+                    // class names elsewhere in this engine: attribute names are
+                    // matched exactly, so `#[Foo\AllowDynamicProperties]` is a
+                    // user attribute and must NOT be mistaken for the engine's
+                    // global `#[AllowDynamicProperties]`. A leading `\` is not
+                    // qualification — it only anchors the global namespace.
+                    Some(Tok::Punct("\\")) if depth == 1 => {
+                        if let Some(last) = names.last_mut() {
+                            if !expect_name {
+                                last.push('\\');
+                            }
+                        }
+                        expect_name = true;
+                    }
+                    Some(Tok::Ident(n)) if depth == 1 && expect_name => {
+                        match names.last_mut() {
+                            Some(last) if last.ends_with('\\') => last.push_str(&n),
+                            _ => names.push(n),
+                        }
+                        expect_name = false;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Ok(names)
+    }
+
     fn param_list(&mut self) -> Result<Vec<Param>, String> {
         self.expect_punct("(")?;
         let mut params = Vec::new();
         if !self.at_punct(")") {
             loop {
+                // A parameter may be attributed (`function f(#[Attr] int $x)`).
+                self.attributes()?;
                 // Skip a leading modifier/type-hint chain up to `...` or `$var`. A
                 // visibility/readonly keyword marks a promoted constructor property.
                 let mut promoted = false;
@@ -905,6 +980,7 @@ impl Parser {
     /// consts, properties (with visibility/static/type modifiers), and methods.
     /// A leading `abstract`/`final` class modifier is accepted but not enforced.
     fn class_stmt(&mut self) -> Result<StmtKind, String> {
+        let attributes = std::mem::take(&mut self.pending_attrs);
         let is_interface = self.at_kw("interface");
         let is_trait = self.at_kw("trait");
         let is_enum = self.at_kw("enum");
@@ -957,6 +1033,8 @@ impl Parser {
         let mut uses = Vec::new();
         let mut cases = Vec::new();
         while !self.at_punct("}") && !self.at_end() {
+            // Any member — const, property, method, enum case — may be attributed.
+            self.attributes()?;
             // `case Name [= value];` — an enum case (only meaningful inside `enum`).
             if is_enum && self.at_kw("case") {
                 self.pos += 1;
@@ -1101,6 +1179,7 @@ impl Parser {
             consts,
             props,
             methods,
+            attributes,
         }))
     }
 

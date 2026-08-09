@@ -190,17 +190,26 @@ fn pbkdf2_sha256_and_length_zero() {
 
 #[test]
 fn pbkdf2_errors() {
+    // All three are catchable `ValueError`s, as the reference throws — the class
+    // is asserted alongside the message so a plain engine abort cannot pass.
+    let caught = |call: &str| {
+        run(&format!(
+            r#"<?php try {{ {call}; }}
+               catch (ValueError $e) {{ echo get_class($e), "|", $e->getMessage(); }}"#
+        ))
+    };
     assert_eq!(
-        eval_capture(r#"<?php echo hash_pbkdf2("bogus", "p", "s", 1, 8);"#).unwrap_err(),
-        "hash_pbkdf2(): Argument #1 ($algo) must be a valid hashing algorithm"
+        caught(r#"hash_pbkdf2("bogus", "p", "s", 1, 8)"#),
+        "ValueError|hash_pbkdf2(): Argument #1 ($algo) must be a valid cryptographic \
+         hashing algorithm"
     );
     assert_eq!(
-        eval_capture(r#"<?php echo hash_pbkdf2("sha1", "p", "s", 0, 8);"#).unwrap_err(),
-        "hash_pbkdf2(): Argument #4 ($iterations) must be greater than 0"
+        caught(r#"hash_pbkdf2("sha1", "p", "s", 0, 8)"#),
+        "ValueError|hash_pbkdf2(): Argument #4 ($iterations) must be greater than 0"
     );
     assert_eq!(
-        eval_capture(r#"<?php echo hash_pbkdf2("sha1", "p", "s", 1, -1);"#).unwrap_err(),
-        "hash_pbkdf2(): Argument #5 ($length) must be greater than or equal to 0"
+        caught(r#"hash_pbkdf2("sha1", "p", "s", 1, -1)"#),
+        "ValueError|hash_pbkdf2(): Argument #5 ($length) must be greater than or equal to 0"
     );
 }
 
@@ -212,9 +221,10 @@ fn random_bytes_length_and_error() {
     assert_eq!(run(r#"<?php echo mb_strlen(random_bytes(16));"#), "16");
     assert_eq!(run(r#"<?php echo mb_strlen(random_bytes(1));"#), "1");
     assert_eq!(run(r#"<?php echo mb_strlen(random_bytes(100));"#), "100");
-    // Zero / negative length is a ValueError.
+    // Zero / negative length is a catchable ValueError, as the reference throws.
     assert_eq!(
-        eval_capture(r#"<?php echo random_bytes(0);"#).unwrap_err(),
-        "random_bytes(): Argument #1 ($length) must be greater than 0"
+        run(r#"<?php try { random_bytes(0); }
+               catch (ValueError $e) { echo get_class($e), "|", $e->getMessage(); }"#),
+        "ValueError|random_bytes(): Argument #1 ($length) must be greater than 0"
     );
 }

@@ -60,6 +60,8 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::PROP_GET, b_prop_get);
     vm.register_builtin(ops::PROP_SET, b_prop_set);
     vm.register_builtin(ops::PROP_ENSURE_ARRAY, b_prop_ensure_array);
+    vm.register_builtin(ops::PROP_TOUCH, b_prop_touch);
+    vm.register_builtin(ops::PROP_SET_RW, b_prop_set_rw);
     vm.register_builtin(ops::PROP_INCDEC, b_prop_incdec);
     vm.register_builtin(ops::MCALL, b_mcall);
     vm.register_builtin(ops::SCALL, b_scall);
@@ -786,7 +788,16 @@ fn cur_op_line(vm: &VM) -> u32 {
 /// raise a throw — nothing else needs it, and reading the line table costs a
 /// bounds-checked index.
 fn mark_frame_line(vm: &VM) {
-    with_host(|h| h.set_cur_line(cur_op_line(vm)));
+    let line = cur_op_line(vm);
+    with_host(|h| {
+        h.set_cur_line(line);
+        // A LIBRARY function warns from inside Rust, with no op of its own to
+        // read a line from — `range(): … subsequent bytes are ignored` belongs to
+        // the line of the call. Setting the warn site here is what gives every
+        // such diagnostic a line at all; a user function that goes on to warn
+        // overwrites this from its own ops.
+        h.set_warn_line(line);
+    });
 }
 
 fn b_getvar(vm: &mut VM, _: u8) -> Value {
@@ -1111,8 +1122,33 @@ fn b_prop_set(vm: &mut VM, _: u8) -> Value {
     if let Err(e) = with_host(|h| h.check_prop_access(&recv, &name)) {
         return fail(vm, e);
     }
+    mark_warn_site(vm);
+    with_host(|h| h.prop_set_checked(&recv, &name, val.clone()));
+    val
+}
+
+/// `$o->name = val` for the write half of a compound assignment — see
+/// `ops::PROP_SET_RW`. Stack `[recv, name, val]`.
+fn b_prop_set_rw(vm: &mut VM, _: u8) -> Value {
+    let val = vm.pop();
+    let name = pop_name(vm);
+    let recv = vm.pop();
+    if let Err(e) = with_host(|h| h.check_prop_access(&recv, &name)) {
+        return fail(vm, e);
+    }
     with_host(|h| h.prop_set(&recv, &name, val.clone()));
     val
+}
+
+/// `$o->name` fetched for writing — see `ops::PROP_TOUCH`. Raises the
+/// dynamic-property deprecation and leaves the receiver on the stack for the
+/// read that follows. Stack `[recv, name]` -> `[recv]`.
+fn b_prop_touch(vm: &mut VM, _: u8) -> Value {
+    let name = pop_name(vm);
+    let recv = vm.pop();
+    mark_warn_site(vm);
+    with_host(|h| h.warn_dynamic_prop(&recv, &name));
+    recv
 }
 
 /// Vivify `$o->name` into an array and leave its handle on the stack — the pivot
@@ -1123,7 +1159,13 @@ fn b_prop_ensure_array(vm: &mut VM, _: u8) -> Value {
     if let Err(e) = with_host(|h| h.check_prop_access(&recv, &name)) {
         return fail(vm, e);
     }
-    with_host(|h| h.prop_ensure_array(&recv, &name))
+    mark_warn_site(vm);
+    with_host(|h| {
+        // `$o->missing[] = 1` vivifies the property, so it too creates a dynamic
+        // one when the class never declared it.
+        h.warn_dynamic_prop(&recv, &name);
+        h.prop_ensure_array(&recv, &name)
+    })
 }
 
 /// `++`/`--` on `$o->name` — stack `[recv, name, code]`. The `code` bits match
@@ -1139,6 +1181,9 @@ fn b_prop_incdec(vm: &mut VM, _: u8) -> Value {
     }
     mark_warn_site(vm);
     with_host(|h| {
+        // PHP raises the dynamic-property deprecation BEFORE the undefined-property
+        // warning here: the slot is created, then read.
+        h.warn_dynamic_prop(&recv, &name);
         let old = h.prop_get_warn(&recv, &name);
         let newv = h.incdec_value(&old, inc);
         h.prop_set(&recv, &name, newv.clone());
@@ -1646,79 +1691,121 @@ const STRING_PARAM_BUILTINS: &[&str] = &[
 /// Runs before any host borrow is taken: converting calls the object's method,
 /// which re-enters the host. Costs one list lookup unless an object argument is
 /// actually present.
-fn coerce_stringable_args(lname: &str, args: Vec<Value>) -> Vec<Value> {
+fn coerce_stringable_args(lname: &str, args: &[Value]) -> Option<Vec<Value>> {
     if !args.iter().any(|a| matches!(a, Value::Obj(_))) || !STRING_PARAM_BUILTINS.contains(&lname) {
-        return args;
+        return None;
     }
-    args.into_iter()
-        .map(|a| {
-            let stringable = with_host(|h| {
-                h.object_class(&a)
-                    .is_some_and(|c| h.class_has_method(&c, "__tostring"))
-            });
-            if stringable {
-                Value::str(host::to_str_ext(&a))
-            } else {
-                a
-            }
-        })
-        .collect()
+    Some(
+        args.iter()
+            .map(|a| {
+                let stringable = with_host(|h| {
+                    h.object_class(a)
+                        .is_some_and(|c| h.class_has_method(&c, "__tostring"))
+                });
+                if stringable {
+                    Value::str(host::to_str_ext(a))
+                } else {
+                    a.clone()
+                }
+            })
+            .collect(),
+    )
+}
+
+/// Separates the exception class from the message inside a tagged library error.
+/// U+0001 cannot occur in a PHP diagnostic, so a plain error message can never be
+/// mistaken for a tagged one.
+const THROW_TAG: &str = "\u{1}throw\u{1}";
+
+/// Report a library argument error as the PHP exception it really is.
+///
+/// A standard-library function that rejects its arguments does not abort the
+/// process in PHP — it THROWS, catchably, and the throw carries a stack trace
+/// whose `#0` frame is the library call itself. Library functions here return
+/// `Result<Value, String>` and have no VM handle, so the class travels back in
+/// the error string under [`THROW_TAG`] and [`call_library`] turns it into a real
+/// throw at the one place that still knows the function name and its arguments —
+/// the two things the trace frame needs.
+///
+/// ```ignore
+/// return Err(throws("ValueError", "range(): Argument #3 ($step) must be …"));
+/// ```
+pub fn throws(class: &str, message: impl std::fmt::Display) -> String {
+    format!("{THROW_TAG}{class}{THROW_TAG}{message}")
+}
+
+/// Split a tagged library error back into `(class, message)`; `None` for an
+/// ordinary error string, which stays a scaffold-level failure.
+pub fn untag_throw(e: &str) -> Option<(&str, &str)> {
+    e.strip_prefix(THROW_TAG)?.split_once(THROW_TAG)
 }
 
 /// Dispatch a PHP library function by (case-insensitive) name.
-pub fn call_library(name: &str, args: Vec<Value>) -> Result<Value, String> {
+///
+/// An argument error comes back as a [`throws`]-tagged `Err`, which
+/// `host::call_function` turns into a real, catchable exception thrown from a
+/// frame naming this call; every other `Err` is a scaffold-level failure with no
+/// PHP equivalent. The decoding deliberately lives in the CALLER, which still
+/// owns the argument list the trace frame has to print.
+pub fn call_library(name: &str, args: &[Value]) -> Result<Value, String> {
     let lname = name.to_ascii_lowercase();
-    let args = coerce_stringable_args(&lname, args);
+    let coerced = coerce_stringable_args(&lname, args);
+    let args: &[Value] = coerced.as_deref().unwrap_or(args);
     // A builtin with a by-reference OUT parameter publishes its value for the
     // call site to write back (see `BYREF_BUILTINS`); clearing first means a
     // call that writes none cannot be read as having written the last one's.
     with_host(|h| h.byref_out_clear());
     let v = match lname.as_str() {
-        "strlen" => Value::int(with_host(|h| h.to_str(&arg(&args, 0)).len() as i64)),
+        "strlen" => Value::int(with_host(|h| h.to_str(&arg(args, 0)).len() as i64)),
         "count" | "sizeof" => Value::int(with_host(|h| {
-            let a = arg(&args, 0);
+            let a = arg(args, 0);
             if h.is_array(&a) {
                 h.array_len(&a)
             } else {
                 1
             }
         })),
-        "strtoupper" => with_host(|h| Value::str(ascii_upper(&h.to_str(&arg(&args, 0))))),
-        "strtolower" => with_host(|h| Value::str(ascii_lower(&h.to_str(&arg(&args, 0))))),
-        "ucfirst" => with_host(|h| Value::str(ucfirst(&h.to_str(&arg(&args, 0))))),
-        "trim" => with_host(|h| php_trim(h, &args, true, true)),
-        "ltrim" => with_host(|h| php_trim(h, &args, true, false)),
-        "rtrim" | "chop" => with_host(|h| php_trim(h, &args, false, true)),
-        "str_repeat" => with_host(|h| {
-            let s = h.to_str(&arg(&args, 0));
-            let n = arg(&args, 1).to_int().max(0) as usize;
-            Value::str(s.repeat(n))
-        }),
-        "strrev" => {
-            with_host(|h| Value::str(h.to_str(&arg(&args, 0)).chars().rev().collect::<String>()))
+        "strtoupper" => with_host(|h| Value::str(ascii_upper(&h.to_str(&arg(args, 0))))),
+        "strtolower" => with_host(|h| Value::str(ascii_lower(&h.to_str(&arg(args, 0))))),
+        "ucfirst" => with_host(|h| Value::str(ucfirst(&h.to_str(&arg(args, 0))))),
+        "trim" => with_host(|h| php_trim(h, args, true, true)),
+        "ltrim" => with_host(|h| php_trim(h, args, true, false)),
+        "rtrim" | "chop" => with_host(|h| php_trim(h, args, false, true)),
+        "str_repeat" => {
+            let n = arg(args, 1).to_int();
+            if n < 0 {
+                return Err(throws(
+                    "ValueError",
+                    "str_repeat(): Argument #2 ($times) must be greater than or equal to 0",
+                ));
+            }
+            with_host(|h| Value::str(h.to_str(&arg(args, 0)).repeat(n as usize)))
         }
-        "wordwrap" => with_host(|h| php_wordwrap(h, &args)),
-        "substr" => with_host(|h| Value::str(php_substr(&h.to_str(&arg(&args, 0)), &args))),
-        "strpos" => with_host(|h| php_strpos(h, &args)),
-        "str_replace" => with_host(|h| php_str_replace(h, &args)),
+        "strrev" => {
+            with_host(|h| Value::str(h.to_str(&arg(args, 0)).chars().rev().collect::<String>()))
+        }
+        "wordwrap" => with_host(|h| php_wordwrap(h, args)),
+        "substr" => with_host(|h| Value::str(php_substr(&h.to_str(&arg(args, 0)), args))),
+        "strpos" => with_host(|h| php_strpos(h, args)),
+        "str_replace" => with_host(|h| php_str_replace(h, args)),
         // The `(array)` / `(object)` casts, which have no PHP-callable spelling.
-        "__cast_array" => with_host(|h| php_cast_array(h, &arg(&args, 0))),
-        "__cast_object" => php_cast_object(&arg(&args, 0))?,
-        "abs" => with_host(|h| match h.to_number(&arg(&args, 0)) {
+        "__cast_array" => with_host(|h| php_cast_array(h, &arg(args, 0))),
+        "__cast_object" => php_cast_object(&arg(args, 0))?,
+        "abs" => with_host(|h| match h.to_number(&arg(args, 0)) {
             Value::Int(n) => Value::int(n.abs()),
             Value::Float(f) => Value::float(f.abs()),
             other => other,
         }),
-        "floor" => with_host(|h| Value::float(h.to_number(&arg(&args, 0)).to_float().floor())),
-        "ceil" => with_host(|h| Value::float(h.to_number(&arg(&args, 0)).to_float().ceil())),
-        "sqrt" => with_host(|h| Value::float(h.to_number(&arg(&args, 0)).to_float().sqrt())),
+        "floor" => with_host(|h| Value::float(h.to_number(&arg(args, 0)).to_float().floor())),
+        "ceil" => with_host(|h| Value::float(h.to_number(&arg(args, 0)).to_float().ceil())),
+        "sqrt" => with_host(|h| Value::float(h.to_number(&arg(args, 0)).to_float().sqrt())),
         "round" => with_host(|h| {
-            let x = h.to_number(&arg(&args, 0)).to_float();
+            let x = h.to_number(&arg(args, 0)).to_float();
             let p = args.get(1).map(|v| v.to_int()).unwrap_or(0);
             Value::float(php_round(x, p as i32))
         }),
         "intval" => with_host(|h| {
-            let v = arg(&args, 0);
+            let v = arg(args, 0);
             match args.get(1) {
                 // A base only applies to strings, and base 10 keeps the ordinary
                 // numeric-string reading so `intval("1e3", 10)` is still 1000.
@@ -1733,42 +1820,42 @@ pub fn call_library(name: &str, args: Vec<Value>) -> Result<Value, String> {
             }
         }),
         "floatval" | "doubleval" => {
-            with_host(|h| Value::float(h.to_number(&arg(&args, 0)).to_float()))
+            with_host(|h| Value::float(h.to_number(&arg(args, 0)).to_float()))
         }
         // `(string)$x` desugars to `strval($x)`, so this is the explicit cast too.
-        "strval" => Value::str(host::to_str_ext(&arg(&args, 0))),
-        "max" => with_host(|h| fold_cmp(h, &args, true)),
-        "min" => with_host(|h| fold_cmp(h, &args, false)),
-        "gettype" => with_host(|h| Value::str(h.type_name(&arg(&args, 0)).to_string())),
+        "strval" => Value::str(host::to_str_ext(&arg(args, 0))),
+        "max" => with_host(|h| fold_cmp(h, args, true)),
+        "min" => with_host(|h| fold_cmp(h, args, false)),
+        "gettype" => with_host(|h| Value::str(h.type_name(&arg(args, 0)).to_string())),
         // `settype($var, $type)` converts IN PLACE through its by-reference first
         // parameter (published for the call site to write back) and returns true.
-        "settype" => php_settype(&args)?,
-        "is_array" => with_host(|h| Value::bool(h.is_array(&arg(&args, 0)))),
-        "is_int" | "is_integer" | "is_long" => Value::bool(matches!(arg(&args, 0), Value::Int(_))),
-        "is_float" | "is_double" => Value::bool(matches!(arg(&args, 0), Value::Float(_))),
-        "is_string" => Value::bool(matches!(arg(&args, 0), Value::Str(_))),
-        "is_bool" => Value::bool(matches!(arg(&args, 0), Value::Bool(_))),
-        "is_null" => Value::bool(matches!(arg(&args, 0), Value::Undef)),
-        "is_numeric" => Value::bool(match arg(&args, 0) {
+        "settype" => php_settype(args)?,
+        "is_array" => with_host(|h| Value::bool(h.is_array(&arg(args, 0)))),
+        "is_int" | "is_integer" | "is_long" => Value::bool(matches!(arg(args, 0), Value::Int(_))),
+        "is_float" | "is_double" => Value::bool(matches!(arg(args, 0), Value::Float(_))),
+        "is_string" => Value::bool(matches!(arg(args, 0), Value::Str(_))),
+        "is_bool" => Value::bool(matches!(arg(args, 0), Value::Bool(_))),
+        "is_null" => Value::bool(matches!(arg(args, 0), Value::Undef)),
+        "is_numeric" => Value::bool(match arg(args, 0) {
             Value::Int(_) | Value::Float(_) => true,
             Value::Str(s) => host::is_numeric_string(&s),
             _ => false,
         }),
-        "implode" | "join" => php_implode(&args),
-        "explode" => with_host(|h| php_explode(h, &args)),
-        "in_array" => with_host(|h| php_in_array(h, &args)),
-        "array_keys" => with_host(|h| h.array_keys(&arg(&args, 0))),
-        "array_values" => with_host(|h| php_array_values(h, &arg(&args, 0))),
-        "array_push" => with_host(|h| php_array_push(h, &args)),
-        "range" => with_host(|h| php_range(h, &args))?,
-        "sprintf" => with_host(|h| Value::str(php_sprintf(h, &args))),
+        "implode" | "join" => php_implode(args),
+        "explode" => with_host(|h| php_explode(h, args)),
+        "in_array" => with_host(|h| php_in_array(h, args)),
+        "array_keys" => with_host(|h| h.array_keys(&arg(args, 0))),
+        "array_values" => with_host(|h| php_array_values(h, &arg(args, 0))),
+        "array_push" => with_host(|h| php_array_push(h, args)),
+        "range" => with_host(|h| php_range(h, args))?,
+        "sprintf" => with_host(|h| Value::str(php_sprintf(h, args))),
         "printf" => with_host(|h| {
-            let s = php_sprintf(h, &args);
+            let s = php_sprintf(h, args);
             h.write_out(&s);
             Value::int(s.len() as i64)
         }),
         "print_r" => with_host(|h| {
-            let s = php_print_r(h, &arg(&args, 0), 0);
+            let s = php_print_r(h, &arg(args, 0), 0);
             if args.get(1).map(|v| h.is_truthy(v)).unwrap_or(false) {
                 Value::str(s)
             } else {
@@ -1777,7 +1864,7 @@ pub fn call_library(name: &str, args: Vec<Value>) -> Result<Value, String> {
             }
         }),
         "var_dump" => with_host(|h| {
-            for a in &args {
+            for a in args {
                 let s = php_var_dump(h, a, 0);
                 h.write_out(&s);
             }
@@ -1785,90 +1872,85 @@ pub fn call_library(name: &str, args: Vec<Value>) -> Result<Value, String> {
         }),
 
         // ── strings ──────────────────────────────────────────────────────
-        "str_split" => with_host(|h| php_str_split(h, &args)),
-        "str_pad" => with_host(|h| Value::str(php_str_pad(h, &args))),
+        "str_split" => with_host(|h| php_str_split(h, args)),
+        "str_pad" => with_host(|h| Value::str(php_str_pad(h, args))),
         "str_contains" => {
-            with_host(|h| Value::bool(h.to_str(&arg(&args, 0)).contains(&h.to_str(&arg(&args, 1)))))
+            with_host(|h| Value::bool(h.to_str(&arg(args, 0)).contains(&h.to_str(&arg(args, 1)))))
         }
         "str_starts_with" => with_host(|h| {
             Value::bool(
-                h.to_str(&arg(&args, 0))
-                    .starts_with(&h.to_str(&arg(&args, 1))),
+                h.to_str(&arg(args, 0))
+                    .starts_with(&h.to_str(&arg(args, 1))),
             )
         }),
-        "str_ends_with" => with_host(|h| {
-            Value::bool(
-                h.to_str(&arg(&args, 0))
-                    .ends_with(&h.to_str(&arg(&args, 1))),
-            )
-        }),
+        "str_ends_with" => {
+            with_host(|h| Value::bool(h.to_str(&arg(args, 0)).ends_with(&h.to_str(&arg(args, 1)))))
+        }
         "ucwords" => with_host(|h| {
             let seps = match args.get(1) {
                 Some(v) if !matches!(v, Value::Undef) => h.to_str(v),
                 _ => " \t\r\n\x0c\x0b".to_string(),
             };
-            Value::str(ucwords(&h.to_str(&arg(&args, 0)), &seps))
+            Value::str(ucwords(&h.to_str(&arg(args, 0)), &seps))
         }),
-        "lcfirst" => with_host(|h| Value::str(lcfirst(&h.to_str(&arg(&args, 0))))),
-        "number_format" => with_host(|h| Value::str(php_number_format(h, &args))),
+        "lcfirst" => with_host(|h| Value::str(lcfirst(&h.to_str(&arg(args, 0))))),
+        "number_format" => with_host(|h| Value::str(php_number_format(h, args))),
         "htmlspecialchars" | "htmlentities" => {
-            with_host(|h| Value::str(html_special_chars(&h.to_str(&arg(&args, 0)))))
+            with_host(|h| Value::str(html_special_chars(&h.to_str(&arg(args, 0)))))
         }
         "strcmp" => with_host(|h| {
-            let (a, b) = (h.to_str(&arg(&args, 0)), h.to_str(&arg(&args, 1)));
+            let (a, b) = (h.to_str(&arg(args, 0)), h.to_str(&arg(args, 1)));
             Value::int(binary_strcmp(a.as_bytes(), b.as_bytes()))
         }),
         "strcasecmp" => with_host(|h| {
-            let a = ascii_lower(&h.to_str(&arg(&args, 0)));
-            let b = ascii_lower(&h.to_str(&arg(&args, 1)));
+            let a = ascii_lower(&h.to_str(&arg(args, 0)));
+            let b = ascii_lower(&h.to_str(&arg(args, 1)));
             Value::int(binary_strcmp(a.as_bytes(), b.as_bytes()))
         }),
         "strncmp" => with_host(|h| {
-            let a = h.to_str(&arg(&args, 0));
-            let b = h.to_str(&arg(&args, 1));
-            let n = arg(&args, 2).to_int().max(0) as usize;
+            let a = h.to_str(&arg(args, 0));
+            let b = h.to_str(&arg(args, 1));
+            let n = arg(args, 2).to_int().max(0) as usize;
             let (ab, bb) = (a.as_bytes(), b.as_bytes());
             Value::int(binary_strcmp(
                 &ab[..n.min(ab.len())],
                 &bb[..n.min(bb.len())],
             ))
         }),
-        "substr_compare" => with_host(|h| php_substr_compare(h, &args)),
+        "substr_compare" => with_host(|h| php_substr_compare(h, args)),
         // `str_word_count` is served by `stdlib::misc`, which implements the
         // `$format`/`$characters` arguments; it is intentionally not handled here
         // so the full version wins (this core arm was a count-only stub).
         "chr" => with_host(|h| {
-            let n = (h.to_number(&arg(&args, 0)).to_int().rem_euclid(256)) as u8;
+            let n = (h.to_number(&arg(args, 0)).to_int().rem_euclid(256)) as u8;
             Value::str((n as char).to_string())
         }),
         "ord" => {
-            with_host(|h| Value::int(h.to_str(&arg(&args, 0)).bytes().next().unwrap_or(0) as i64))
+            with_host(|h| Value::int(h.to_str(&arg(args, 0)).bytes().next().unwrap_or(0) as i64))
         }
-        "dechex" => {
-            with_host(|h| Value::str(format!("{:x}", h.to_number(&arg(&args, 0)).to_int())))
-        }
+        "dechex" => with_host(|h| Value::str(format!("{:x}", h.to_number(&arg(args, 0)).to_int()))),
         "hexdec" => with_host(|h| {
-            Value::int(i64::from_str_radix(h.to_str(&arg(&args, 0)).trim(), 16).unwrap_or(0))
+            Value::int(i64::from_str_radix(h.to_str(&arg(args, 0)).trim(), 16).unwrap_or(0))
         }),
         "bin2hex" => with_host(|h| {
-            let s = h.to_str(&arg(&args, 0));
+            let s = h.to_str(&arg(args, 0));
             Value::str(s.bytes().map(|b| format!("{b:02x}")).collect::<String>())
         }),
 
         // ── math ─────────────────────────────────────────────────────────
-        "pow" => with_host(|h| php_pow(h, &args)),
-        "intdiv" => return php_intdiv(&args),
+        "pow" => with_host(|h| php_pow(h, args)),
+        "intdiv" => return php_intdiv(args),
         "fmod" => with_host(|h| {
             Value::float(
-                h.to_number(&arg(&args, 0)).to_float() % h.to_number(&arg(&args, 1)).to_float(),
+                h.to_number(&arg(args, 0)).to_float() % h.to_number(&arg(args, 1)).to_float(),
             )
         }),
-        "sin" => with_host(|h| Value::float(h.to_number(&arg(&args, 0)).to_float().sin())),
-        "cos" => with_host(|h| Value::float(h.to_number(&arg(&args, 0)).to_float().cos())),
-        "tan" => with_host(|h| Value::float(h.to_number(&arg(&args, 0)).to_float().tan())),
-        "exp" => with_host(|h| Value::float(h.to_number(&arg(&args, 0)).to_float().exp())),
+        "sin" => with_host(|h| Value::float(h.to_number(&arg(args, 0)).to_float().sin())),
+        "cos" => with_host(|h| Value::float(h.to_number(&arg(args, 0)).to_float().cos())),
+        "tan" => with_host(|h| Value::float(h.to_number(&arg(args, 0)).to_float().tan())),
+        "exp" => with_host(|h| Value::float(h.to_number(&arg(args, 0)).to_float().exp())),
         "log" => with_host(|h| {
-            let x = h.to_number(&arg(&args, 0)).to_float();
+            let x = h.to_number(&arg(args, 0)).to_float();
             match args.get(1) {
                 Some(b) if !matches!(b, Value::Undef) => {
                     Value::float(x.log(h.to_number(b).to_float()))
@@ -1876,47 +1958,47 @@ pub fn call_library(name: &str, args: Vec<Value>) -> Result<Value, String> {
                 _ => Value::float(x.ln()),
             }
         }),
-        "log10" => with_host(|h| Value::float(h.to_number(&arg(&args, 0)).to_float().log10())),
+        "log10" => with_host(|h| Value::float(h.to_number(&arg(args, 0)).to_float().log10())),
         "pi" => Value::float(std::f64::consts::PI),
 
         // ── arrays ───────────────────────────────────────────────────────
-        "array_merge" => with_host(|h| php_array_merge(h, &args)),
-        "array_map" => return php_array_map(&args),
-        "array_filter" => return php_array_filter(&args),
-        "array_reduce" => return php_array_reduce(&args),
-        "array_slice" => with_host(|h| php_array_slice(h, &args)),
-        "array_reverse" => with_host(|h| php_array_reverse(h, &args)),
-        "array_sum" => with_host(|h| php_array_fold(h, &arg(&args, 0), false)),
-        "array_product" => with_host(|h| php_array_fold(h, &arg(&args, 0), true)),
-        "array_flip" => with_host(|h| php_array_flip(h, &arg(&args, 0))),
-        "array_unique" => with_host(|h| php_array_unique(h, &arg(&args, 0))),
-        "array_key_exists" | "key_exists" => with_host(|h| php_array_key_exists(h, &args)),
-        "array_search" => with_host(|h| php_array_search(h, &args)),
+        "array_merge" => with_host(|h| php_array_merge(h, args)),
+        "array_map" => return php_array_map(args),
+        "array_filter" => return php_array_filter(args),
+        "array_reduce" => return php_array_reduce(args),
+        "array_slice" => with_host(|h| php_array_slice(h, args)),
+        "array_reverse" => with_host(|h| php_array_reverse(h, args)),
+        "array_sum" => with_host(|h| php_array_fold(h, &arg(args, 0), false)),
+        "array_product" => with_host(|h| php_array_fold(h, &arg(args, 0), true)),
+        "array_flip" => with_host(|h| php_array_flip(h, &arg(args, 0))),
+        "array_unique" => with_host(|h| php_array_unique(h, &arg(args, 0))),
+        "array_key_exists" | "key_exists" => with_host(|h| php_array_key_exists(h, args)),
+        "array_search" => with_host(|h| php_array_search(h, args)),
         // The sort family takes an optional `SORT_*` flags argument in position 1.
-        "sort" => with_host(|h| php_sort(h, &arg(&args, 0), false, sort_flags(&args))),
-        "rsort" => with_host(|h| php_sort(h, &arg(&args, 0), true, sort_flags(&args))),
-        "asort" => with_host(|h| php_asort(h, &arg(&args, 0), false, sort_flags(&args))),
-        "arsort" => with_host(|h| php_asort(h, &arg(&args, 0), true, sort_flags(&args))),
-        "ksort" => with_host(|h| php_ksort(h, &arg(&args, 0), false, sort_flags(&args))),
-        "krsort" => with_host(|h| php_ksort(h, &arg(&args, 0), true, sort_flags(&args))),
-        "array_fill" => with_host(|h| php_array_fill(h, &args)),
-        "array_combine" => with_host(|h| php_array_combine(h, &args))?,
-        "array_diff" => with_host(|h| php_array_diff(h, &args, false)),
-        "array_intersect" => with_host(|h| php_array_diff(h, &args, true)),
+        "sort" => with_host(|h| php_sort(h, &arg(args, 0), false, sort_flags(args))),
+        "rsort" => with_host(|h| php_sort(h, &arg(args, 0), true, sort_flags(args))),
+        "asort" => with_host(|h| php_asort(h, &arg(args, 0), false, sort_flags(args))),
+        "arsort" => with_host(|h| php_asort(h, &arg(args, 0), true, sort_flags(args))),
+        "ksort" => with_host(|h| php_ksort(h, &arg(args, 0), false, sort_flags(args))),
+        "krsort" => with_host(|h| php_ksort(h, &arg(args, 0), true, sort_flags(args))),
+        "array_fill" => with_host(|h| php_array_fill(h, args)),
+        "array_combine" => with_host(|h| php_array_combine(h, args))?,
+        "array_diff" => with_host(|h| php_array_diff(h, args, false)),
+        "array_intersect" => with_host(|h| php_array_diff(h, args, true)),
 
         // ── type / util ──────────────────────────────────────────────────
-        "boolval" => with_host(|h| Value::bool(h.is_truthy(&arg(&args, 0)))),
+        "boolval" => with_host(|h| Value::bool(h.is_truthy(&arg(args, 0)))),
         "is_callable" => {
             // A closure handle is always callable; otherwise the scaffold treats
             // any non-empty string name as callable (the host exposes no
             // function-table accessor, so it cannot verify the name resolves).
-            let a = arg(&args, 0);
+            let a = arg(args, 0);
             Value::bool(
                 with_host(|h| h.is_closure(&a)) || matches!(&a, Value::Str(s) if !s.is_empty()),
             )
         }
         "var_export" => with_host(|h| {
-            let s = php_var_export(h, &arg(&args, 0), 0);
+            let s = php_var_export(h, &arg(args, 0), 0);
             if args.get(1).map(|v| h.is_truthy(v)).unwrap_or(false) {
                 Value::str(s)
             } else {
@@ -1925,7 +2007,7 @@ pub fn call_library(name: &str, args: Vec<Value>) -> Result<Value, String> {
             }
         }),
         "json_encode" => with_host(|h| {
-            let v = arg(&args, 0);
+            let v = arg(args, 0);
             // JSON has no NAN/INF literal, so the encoder bails out entirely and
             // reports JSON_ERROR_INF_OR_NAN rather than emitting invalid JSON.
             if has_nonfinite_float(h, &v) {
@@ -1933,14 +2015,14 @@ pub fn call_library(name: &str, args: Vec<Value>) -> Result<Value, String> {
                 Value::bool(false)
             } else {
                 crate::stdlib::json::set_last_error(0);
-                Value::str(php_json_encode(h, &v, arg(&args, 1).to_int(), 0))
+                Value::str(php_json_encode(h, &v, arg(args, 1).to_int(), 0))
             }
         }),
 
         // Extended standard library lives in `src/stdlib/*`, one module per
         // category, consulted only for names this core match does not handle.
         _ => {
-            return crate::stdlib::dispatch(&lname, &args)
+            return crate::stdlib::dispatch(&lname, args)
                 .unwrap_or_else(|| Err(format!("call to undefined function {name}()")))
         }
     };
@@ -2379,6 +2461,17 @@ fn php_range(h: &mut host::PhpHost, args: &[Value]) -> Result<Value, String> {
             && !host::is_numeric_string(s0)
             && !host::is_numeric_string(s1)
         {
+            // A character range walks BYTES, so only the first byte of each bound
+            // is used; PHP warns (per bound, `$start` before `$end`) that the rest
+            // is discarded rather than silently truncating.
+            for (pos, name, s) in [(1, "start", s0), (2, "end", s1)] {
+                if s.len() > 1 {
+                    h.warn(format_args!(
+                        "range(): Argument #{pos} (${name}) must be a single byte, \
+                         subsequent bytes are ignored"
+                    ));
+                }
+            }
             let low = s0.as_bytes()[0] as i64;
             let high = s1.as_bytes()[0] as i64;
             let step = args
@@ -2387,7 +2480,7 @@ fn php_range(h: &mut host::PhpHost, args: &[Value]) -> Result<Value, String> {
                 .unwrap_or(1)
                 .max(1);
             if low != high && (low - high).abs() < step {
-                return Err(STEP_ERR.into());
+                return Err(throws("ValueError", STEP_ERR));
             }
             let mut c = low;
             if low <= high {
@@ -2421,7 +2514,7 @@ fn php_range(h: &mut host::PhpHost, args: &[Value]) -> Result<Value, String> {
             step = 1.0;
         }
         if (low - high).abs() >= f64::EPSILON && (low - high).abs() < step {
-            return Err(STEP_ERR.into());
+            return Err(throws("ValueError", STEP_ERR));
         }
         if (low - high).abs() < f64::EPSILON {
             h.arr_push_auto(&arr, Value::float(low));
@@ -2451,7 +2544,7 @@ fn php_range(h: &mut host::PhpHost, args: &[Value]) -> Result<Value, String> {
         let high = n1.to_int();
         let step = nstep.as_ref().map(|v| v.to_int().abs()).unwrap_or(1).max(1);
         if low != high && (low - high).abs() < step {
-            return Err(STEP_ERR.into());
+            return Err(throws("ValueError", STEP_ERR));
         }
         let mut i = low;
         if low <= high {
@@ -3472,11 +3565,11 @@ fn php_array_combine(h: &mut host::PhpHost, args: &[Value]) -> Result<Value, Str
     let keys = h.array_pairs(&arg(args, 0)).unwrap_or_default();
     let vals = h.array_pairs(&arg(args, 1)).unwrap_or_default();
     if keys.len() != vals.len() {
-        return Err(
+        return Err(throws(
+            "ValueError",
             "array_combine(): Argument #1 ($keys) and argument #2 ($values) \
-                    must have the same number of elements"
-                .into(),
-        );
+             must have the same number of elements",
+        ));
     }
     let out = h.new_array();
     for ((_, k), (_, v)) in keys.into_iter().zip(vals) {

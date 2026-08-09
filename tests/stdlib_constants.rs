@@ -36,7 +36,11 @@ fn flag_constants_are_integers() {
     assert_eq!(run("<?php echo STR_PAD_LEFT;"), "0");
     assert_eq!(run("<?php echo FILTER_VALIDATE_EMAIL;"), "274");
     assert_eq!(run("<?php echo JSON_PRETTY_PRINT;"), "128");
-    assert_eq!(run("<?php echo E_ALL;"), "32767");
+    // 30719, not the pre-8.4 32767: PHP 8.4 removed the E_STRICT level and took
+    // its bit (2048) out of E_ALL. The constant E_STRICT itself still exists.
+    assert_eq!(run("<?php echo E_ALL;"), "30719");
+    assert_eq!(run("<?php echo E_STRICT;"), "2048");
+    assert_eq!(run("<?php echo E_ALL & E_STRICT;"), "0");
 }
 
 #[test]

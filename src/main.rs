@@ -17,6 +17,16 @@ const FATAL_EXIT: u8 = 255;
 fn main() -> ExitCode {
     let cli = phplang::cli::parse();
 
+    // `-d name=value` must take effect before the source is read: it can change
+    // the error level that decides whether a COMPILE-time notice is displayed.
+    for d in &cli.define {
+        let (name, value) = match d.split_once('=') {
+            Some((n, v)) => (n, v),
+            None => (d.as_str(), "1"),
+        };
+        phplang::host::add_initial_ini(name.trim(), value.trim());
+    }
+
     if cli.lsp {
         return match phplang::lsp::run() {
             Ok(()) => ExitCode::SUCCESS,

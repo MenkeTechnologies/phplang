@@ -5,6 +5,63 @@
 //! code between the tags). `<?=` opens PHP mode with an implicit `echo`.
 
 use crate::ast::StrPart;
+use crate::errlevel::E_DEPRECATED;
+use std::cell::RefCell;
+
+/// A diagnostic the *compiler* raises — a notice PHP prints once, while reading
+/// the source, before the program has run a single instruction.
+///
+/// PHP's compiler and its runtime write to the same stream, so a compile-time
+/// notice is indistinguishable from a runtime one except in ORDER: it is emitted
+/// before any output the script produces, even output on an earlier line, and it
+/// fires whether or not the code that carries it ever executes. Nothing in the
+/// runtime can suppress one after the fact — `error_reporting(0)` on line 1 does
+/// not silence a notice from line 2, because the notice was already decided when
+/// the file was read. Only the *initial* error level (`-d error_reporting=…`)
+/// applies to it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompileDiag {
+    /// The severity label PHP prints — `"Deprecated"`, `"Warning"`, `"Notice"`.
+    pub severity: &'static str,
+    /// The `E_*` bit the initial error level is tested against.
+    pub level: i64,
+    pub line: u32,
+    pub msg: String,
+}
+
+thread_local! {
+    /// Diagnostics collected by the lexer for the source currently being read.
+    /// Reset by [`clear_diags`] when a top-level parse begins and drained by
+    /// [`take_diags`] when the compilation that owns them finishes, so one
+    /// compilation can never inherit the notices of another.
+    ///
+    /// Deliberately NOT cleared by [`lex`] itself: a string interpolation re-lexes
+    /// its `{$expr}` source with a nested `lex` call, and clearing there would
+    /// discard every notice raised earlier in the same file.
+    static DIAGS: RefCell<Vec<CompileDiag>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Drop any diagnostics left over from an earlier source. Called once per
+/// top-level parse, before its first [`lex`].
+pub fn clear_diags() {
+    DIAGS.with(|d| d.borrow_mut().clear());
+}
+
+/// Take (and clear) the compile diagnostics raised since [`clear_diags`].
+pub fn take_diags() -> Vec<CompileDiag> {
+    DIAGS.with(|d| std::mem::take(&mut *d.borrow_mut()))
+}
+
+fn push_diag(severity: &'static str, level: i64, line: u32, msg: impl Into<String>) {
+    DIAGS.with(|d| {
+        d.borrow_mut().push(CompileDiag {
+            severity,
+            level,
+            line,
+            msg: msg.into(),
+        })
+    });
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Tok {
@@ -123,6 +180,16 @@ impl<'a> Lexer<'a> {
                     return Ok(());
                 }
                 b'/' if self.peek(1) == Some(b'/') => self.skip_line_comment(),
+                // `#[` opens an ATTRIBUTE, not a comment. The two spellings share
+                // a leading `#`, and PHP 8 resolved the ambiguity in favour of the
+                // attribute: `#[Attr] class C {}` declares a class, it does not
+                // comment the whole line out. Lexing it as a comment silently
+                // deletes every attributed declaration to the end of the line —
+                // for `php -r`, usually the entire program.
+                b'#' if self.peek(1) == Some(b'[') => {
+                    self.push(Tok::Punct("#["));
+                    self.advance(2);
+                }
                 b'#' => self.skip_line_comment(),
                 b'/' if self.peek(1) == Some(b'*') => self.skip_block_comment()?,
                 b'$' => self.lex_variable(),
@@ -367,10 +434,19 @@ impl<'a> Lexer<'a> {
                     }
                 }
                 // `${name}` — the pre-8.2 form, deprecated but still substituted.
+                // The notice is raised HERE, at lex time, because that is when the
+                // reference engine raises it: it is a property of the source text,
+                // not of the interpolation ever running.
                 b'$' if self.peek(1) == Some(b'{') => {
                     if !lit.is_empty() {
                         parts.push(StrPart::Lit(std::mem::take(&mut lit)));
                     }
+                    push_diag(
+                        "Deprecated",
+                        E_DEPRECATED,
+                        self.line,
+                        "Using ${var} in strings is deprecated, use {$var} instead",
+                    );
                     self.pos += 2; // `${`
                     let start = self.pos;
                     while self.pos < self.src.len() && is_ident(self.src[self.pos]) {

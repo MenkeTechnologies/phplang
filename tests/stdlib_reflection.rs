@@ -69,7 +69,16 @@ fn property_exists_declared_and_dynamic() {
         echo property_exists("C", "dynamic") ? "y" : "n";"#;
     // declared via class + object => y y; missing => n; dynamic on object => y;
     // dynamic is not on the class definition => n.
-    assert_eq!(run(src), "yynyn");
+    //
+    // The write that creates `$dynamic` also raises PHP 8.2's dynamic-property
+    // deprecation, verbatim as the reference does — asserted here in full rather
+    // than skipped, so a regression in either the notice or its placement between
+    // the two `property_exists` results fails this test.
+    assert_eq!(
+        run(src),
+        "yyn\nDeprecated: Creation of dynamic property C::$dynamic is deprecated \
+         in Command line code on line 7\nyn"
+    );
 }
 
 #[test]

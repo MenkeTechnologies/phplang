@@ -77,14 +77,20 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         "gmp_div_q" | "gmp_div" => {
             let d = big(args, 1);
             if d.sign() == Sign::NoSign {
-                return Some(Err("gmp_div_q(): Division by zero".to_string()));
+                return Some(Err(throws(
+                    "DivisionByZeroError",
+                    "gmp_div_q(): Argument #2 ($num2) Division by zero",
+                )));
             }
             out(big(args, 0) / d)
         }
         "gmp_div_r" | "gmp_mod" => {
             let m = big(args, 1);
             if m.sign() == Sign::NoSign {
-                return Some(Err("gmp_mod(): Division by zero".to_string()));
+                return Some(Err(throws(
+                    "DivisionByZeroError",
+                    "gmp_mod(): Argument #2 ($num2) Modulo by zero",
+                )));
             }
             out(gmp_modulo(&big(args, 0), &m))
         }
@@ -99,7 +105,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         "gmp_powm" => {
             let m = big(args, 2);
             if m.sign() == Sign::NoSign {
-                return Some(Err("gmp_powm(): Modulus may not be zero".to_string()));
+                return Some(Err(throws("DivisionByZeroError", "Modulo by zero")));
             }
             let e = big(args, 1);
             if e.sign() == Sign::Minus {

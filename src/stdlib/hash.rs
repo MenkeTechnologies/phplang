@@ -11,7 +11,7 @@
 //! `chr`/`ord` byte handling. Hex output is the common, fully faithful path.
 
 use crate::host::with_host;
-use crate::stdlib::common::{arg, str_arg};
+use crate::stdlib::common::{arg, str_arg, throws};
 use fusevm::Value;
 
 /// Dispatch a `hash`-category PHP function by lowercased name.
@@ -70,7 +70,10 @@ fn php_hash(args: &[Value]) -> Result<Value, String> {
         Some(b) => Ok(wrap(b, raw)),
         // PHP 8 throws a ValueError with this exact message for an unknown algo
         // (replacing the PHP 7 "Unknown hashing algorithm" wording).
-        None => Err("hash(): Argument #1 ($algo) must be a valid hashing algorithm".to_string()),
+        None => Err(throws(
+            "ValueError",
+            "hash(): Argument #1 ($algo) must be a valid hashing algorithm",
+        )),
     }
 }
 
@@ -107,10 +110,11 @@ fn php_hash_hmac(args: &[Value]) -> Result<Value, String> {
         }
         // PHP 8 throws a ValueError with this exact message for an unknown algo.
         _ => {
-            return Err(
-                "hash_hmac(): Argument #1 ($algo) must be a valid cryptographic hashing algorithm"
-                    .to_string(),
-            );
+            return Err(throws(
+                "ValueError",
+                "hash_hmac(): Argument #1 ($algo) must be a valid cryptographic \
+                 hashing algorithm",
+            ));
         }
     };
     Ok(wrap(hmac(block_size, f, &key, &data), raw))

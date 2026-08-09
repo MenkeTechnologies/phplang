@@ -13,6 +13,7 @@ pub mod cli;
 pub mod compiler;
 pub mod corpus;
 pub mod dap;
+pub mod errlevel;
 pub mod host;
 pub mod intercepts;
 pub mod lexer;
@@ -374,6 +375,7 @@ pub fn load_merged(prog: compiler::Program) -> fusevm::Chunk {
         functions,
         classes,
         try_defs,
+        diags: _,
     } = prog;
     let (prelude_fns, prelude_classes) = prelude_defs();
     host::with_host(|h| {
@@ -388,8 +390,22 @@ pub fn load_merged(prog: compiler::Program) -> fusevm::Chunk {
 }
 
 /// Run an already-compiled program on the current host.
-pub fn run_compiled(prog: compiler::Program) -> Result<Value, String> {
-    host::run_main(load_merged(prog))
+///
+/// Compile-time notices are flushed first, ahead of the program's own output —
+/// the reference engine finishes reading the whole source before it executes a
+/// line of it, so `echo "a"; $v = 1; echo "${v}";` prints the deprecation notice
+/// BEFORE the `a`, not between the two statements.
+pub fn run_compiled(mut prog: compiler::Program) -> Result<Value, String> {
+    let diags = std::mem::take(&mut prog.diags);
+    let main = load_merged(prog);
+    if !diags.is_empty() {
+        host::with_host(|h| {
+            for d in &diags {
+                h.diagnose(d.severity, d.level, d.line, &d.msg);
+            }
+        });
+    }
+    host::run_main(main)
 }
 
 /// Parse, compile, load, and run a PHP source string on a fresh host; return the

@@ -38,6 +38,25 @@ is run with no
 .I FILE
 and stdin is a TTY.
 .TP
+.BR \-d ", " \-\-define " " \fINAME\fR[=\fIVALUE\fR]
+Set an ini entry before the source is read, e.g.
+\(oq\fIphp \-d error_reporting=0\fR\(cq. Repeatable; a later
+.B \-d
+for the same name wins, and
+.B \-d
+.I NAME
+with no
+.I =VALUE
+sets it to \fI1\fR.
+.I error_reporting
+takes the php.ini spelling, so
+\(oq\fI\-d 'error_reporting=E_ALL & ~E_DEPRECATED'\fR\(cq works. Because this
+applies before the source is read, it is the only way to suppress a
+COMPILE-time notice such as \fIUsing ${var} in strings is deprecated\fR; the
+run-time
+.BR error_reporting ()
+function cannot, since the notice was already raised.
+.TP
 .B \-\-tiers
 Run it, then report which fusevm execution tier took each of its chunks.
 .TP
@@ -92,6 +111,24 @@ the PHP CLI reports them: the display copy on stdout (\fIParse error: ...\fR /
 \fIFatal error: Uncaught ...\fR with a stack trace) and a \fIPHP \fR-prefixed log
 copy on stderr. 1 on a failure with no PHP equivalent, reported to stderr as
 \fIphp: <reason>\fR and nothing else.
+.SH DIAGNOSTICS
+\fIWarning\fR and \fIDeprecated\fR notices are written to \fBstdout\fR,
+interleaved with the program's own output, as the PHP CLI defaults
+(\fIdisplay_errors=STDOUT\fR, \fIhtml_errors=Off\fR) put them. Each carries an
+\fIE_*\fR level and is displayed only when that bit is set in the
+\fIerror_reporting\fR mask \(em writable at run time by
+.BR error_reporting ()
+and
+.BR ini_set (),
+and at startup by
+.BR \-d .
+The
+.B @
+operator suppresses locally without touching the mask.
+.PP
+A notice raised while the source is READ \(em \fIUsing ${var} in strings is
+deprecated\fR \(em is emitted before the program's first output and regardless
+of whether the code carrying it ever runs. Only the startup level applies to it.
 .SH EXAMPLES
 .TP
 Run a script:

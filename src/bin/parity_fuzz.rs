@@ -1253,6 +1253,153 @@ fn gen_rounding(seed: u64) -> Vec<String> {
     }
 }
 
+/// Dynamic-property creation: the PHP 8.2 `Deprecated` notice and the three ways
+/// out of it (a declared property, `stdClass`, `#[AllowDynamicProperties]` —
+/// which is inherited). Every case prints the property back, so a missing notice
+/// and a wrong value both show up.
+fn gen_dynprop(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let p = *r.pick(&["x", "y", "value", "n"]);
+    let v = ii(r);
+    match r.below(8) {
+        0 => vec![format!(
+            "class C {{}} $c = new C; $c->{p} = {v}; echo $c->{p};"
+        )],
+        1 => vec![format!(
+            "class C {{ public ${p}; }} $c = new C; $c->{p} = {v}; echo $c->{p};"
+        )],
+        2 => vec![format!(
+            "#[AllowDynamicProperties] class C {{}} $c = new C; $c->{p} = {v}; echo $c->{p};"
+        )],
+        3 => vec![format!(
+            "#[AllowDynamicProperties] class P {{}} class C extends P {{}} \
+             $c = new C; $c->{p} = {v}; echo $c->{p};"
+        )],
+        4 => vec![format!(
+            "class P {{ public ${p} = 0; }} class C extends P {{}} \
+             $c = new C; $c->{p} = {v}; echo $c->{p};"
+        )],
+        5 => vec![format!("$o = new stdClass; $o->{p} = {v}; echo $o->{p};")],
+        6 => vec![format!(
+            "class C {{}} $c = new C; $c->{p} = {v}; $c->{p} = {}; echo $c->{p};",
+            ii(r)
+        )],
+        // Compound assignment and increment: the notice precedes the
+        // undefined-property warning the read then raises.
+        _ => vec![format!(
+            "class C {{}} $c = new C; $c->{p} {}= {v}; echo $c->{p};",
+            r.pick(&["+", ".", "*"])
+        )],
+    }
+}
+
+/// `#[Attr]` in every position a declaration can carry one. These change no
+/// behaviour (except `AllowDynamicProperties`, covered above) — the point is that
+/// the declaration still PARSES and runs, which it cannot if `#[` lexes as a
+/// comment and swallows the rest of the line.
+fn gen_attributes(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let n = ii(r);
+    match r.below(6) {
+        0 => vec![format!("#[Attr] class C {{ public $v = {n}; }} echo (new C)->v;")],
+        1 => vec![format!(
+            "class C {{ #[Attr] public $v = {n}; #[Attr] public function m() {{ return $this->v; }} }} \
+             echo (new C)->m();"
+        )],
+        2 => vec![format!(
+            "#[Attr(1, [2, 3])] function f(#[Attr] $x) {{ return $x; }} echo f({n});"
+        )],
+        3 => vec![format!(
+            "#[A] #[B] class C {{}} #[C] class D {{ const K = {n}; }} echo D::K;"
+        )],
+        4 => vec![format!(
+            "enum E {{ #[Attr] case A; #[Attr] case B; }} echo E::A->name, count(E::cases());"
+        )],
+        _ => vec![format!(
+            "#[\\Ns\\Attr] interface I {{}} #[Attr] class C implements I {{}} \
+             echo (new C) instanceof I ? \"y{n}\" : \"n{n}\";"
+        )],
+    }
+}
+
+/// The `error_reporting` mask: what it returns, what it suppresses, and that a
+/// COMPILE-time notice (`${var}`) is decided before any of it runs.
+fn gen_errlevel(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let lvl = *r.pick(&[
+        "0",
+        "E_ALL",
+        "E_ALL & ~E_WARNING",
+        "E_ALL & ~E_DEPRECATED",
+        "E_ERROR",
+        "E_WARNING | E_DEPRECATED",
+    ]);
+    match r.below(6) {
+        0 => vec![format!("echo error_reporting();")],
+        1 => vec![format!(
+            "var_dump(error_reporting({lvl})); echo error_reporting();"
+        )],
+        2 => vec![format!(
+            "error_reporting({lvl}); echo $undef; echo \"end\";"
+        )],
+        3 => vec![format!(
+            "error_reporting({lvl}); class C {{}} $c = new C; $c->p = 1; echo \"end\";"
+        )],
+        4 => vec![format!(
+            "var_dump(ini_get(\"error_reporting\")); ini_set(\"error_reporting\", \"0\"); \
+             echo $undef; var_dump(ini_get(\"error_reporting\"));"
+        )],
+        // The `${var}` notice is raised while READING the source, so it prints
+        // before the `echo` on the line before it and survives `error_reporting(0)`.
+        _ => vec![format!(
+            "echo \"a\"; error_reporting({lvl}); $v = {}; echo \"${{v}}\";",
+            ii(r)
+        )],
+    }
+}
+
+/// Library argument errors: a standard-library function given arguments it
+/// rejects throws a catchable exception whose `#0` trace frame is the library
+/// call itself. Half the cases catch it (class + message + line), half let it
+/// reach the top (the whole uncaught rendering, trace included).
+fn gen_libargerr(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let call = *r.pick(&[
+        "range(9, 10, 2)",
+        "range(1, 2, 5)",
+        "range('a', 'b', 9)",
+        "array_chunk([1, 2], 0)",
+        "array_combine([1, 2], [1])",
+        "str_repeat('ab', -1)",
+        "substr_count('aa', '')",
+        "chunk_split('aa', 0)",
+        "mb_str_split('ab', 0)",
+        "mb_substr_count('aa', '')",
+        "hash('nope', 'x')",
+        "hash_hmac('nope', 'x', 'k')",
+        "random_bytes(0)",
+        "bcdiv('1', '0')",
+        "bcmod('1', '0')",
+        "bcsqrt('-1')",
+        "gmp_div_q('1', '0')",
+        "gmp_mod('1', '0')",
+    ]);
+    match r.below(4) {
+        0 => vec![format!(
+            "try {{ {call}; }} catch (Throwable $e) {{ \
+             echo get_class($e), \"|\", $e->getMessage(); }}"
+        )],
+        1 => vec![format!(
+            "try {{ {call}; }} catch (Throwable $e) {{ \
+             echo $e->getLine(), \"|\", $e->getTraceAsString(); }}"
+        )],
+        // Uncaught, one frame down, so the trace has a user frame under the
+        // internal one.
+        2 => vec![format!("function f() {{ return {call}; }} f();")],
+        _ => vec![format!("{call};")],
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Mode registry.
 // ---------------------------------------------------------------------------
@@ -1423,6 +1570,22 @@ const MODES: &[Mode] = &[
     Mode {
         name: "rounding",
         gen: gen_rounding,
+    },
+    Mode {
+        name: "dynprop",
+        gen: gen_dynprop,
+    },
+    Mode {
+        name: "attributes",
+        gen: gen_attributes,
+    },
+    Mode {
+        name: "errlevel",
+        gen: gen_errlevel,
+    },
+    Mode {
+        name: "libargerr",
+        gen: gen_libargerr,
     },
 ];
 

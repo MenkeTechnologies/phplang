@@ -175,9 +175,29 @@ end-to-end (see `tests/basic.rs`):
 - **Diagnostics.** `Warning` and `Deprecated` notices go to *stdout*, interleaved
   with the program's output exactly as PHP's CLI defaults put them: undefined
   variables, array keys and properties, array offsets on a non-array, string
-  offsets past the end, and the `++`/`--` cases that have no effect. `isset()`,
-  `empty()`, `??` and `@` read in PHP's isset mode and stay silent, as do writes,
-  auto-vivification and by-reference output arguments.
+  offsets past the end, the `++`/`--` cases that have no effect, and PHP 8.2's
+  `Creation of dynamic property C::$p is deprecated`. `isset()`, `empty()`, `??`
+  and `@` read in PHP's isset mode and stay silent, as do writes,
+  auto-vivification and by-reference output arguments. Which of them are
+  *displayed* is the `error_reporting` mask, writable by `error_reporting()`,
+  `ini_set('error_reporting', …)`, or `php -d error_reporting=…`. Only the `-d`
+  path runs the php.ini constant-expression scanner, so `E_ALL & ~E_DEPRECATED`
+  is understood there and reads as plain integer `0` through `ini_set` — the
+  reference behaves the same way.
+- **Compile-time notices** are raised while the source is READ, so they precede
+  every byte the program writes and fire whether or not the code carrying them
+  runs — `Using ${var} in strings is deprecated, use {$var} instead` is the one
+  PHP 8.2 added. A run-time `error_reporting(0)` cannot retract one; only the
+  startup level (`-d`) applies.
+- **Attributes** (`#[Attr]`, `#[Ns\\Attr(1, [2])]`) parse everywhere a
+  declaration can carry them — class, function, method, property, class constant,
+  enum case, parameter. `#[AllowDynamicProperties]` is honoured, and inherited by
+  subclasses.
+- **Library argument errors throw.** A standard-library function given arguments
+  it rejects raises the catchable exception PHP raises — `ValueError`,
+  `DivisionByZeroError` — with the library call itself as frame `#0` of the trace
+  (`#0 <file>(<line>): range(9, 10, 2)`), and a `#[\\SensitiveParameter]`
+  argument masked as `Object(SensitiveParameterValue)` exactly as PHP masks it.
 - **`__toString`** is invoked wherever a value becomes a string: `echo`, `print`,
   `.` concatenation, interpolation, the `(string)` cast / `strval`, `implode`'s
   elements, and the library functions whose parameters PHP declares as `string`.
@@ -245,26 +265,28 @@ in-code:
   (`array_multisort`, `sscanf`'s trailing arguments).
 - A diagnostic names the *statement's* line. PHP names the line of the
   expression, so a statement spanning several lines reports its first.
-- A **bad argument to a library function** (`range(9, 10, 2)`) aborts with an
-  uncatchable host-level `php: …` line on stderr instead of throwing PHP's
-  `ValueError`/`TypeError`, so no `catch` sees it and no `Fatal error: Uncaught …`
-  block reaches stdout. Closing it needs both halves: the library's argument
-  errors raised as real throws, *and* internal-function frames in the trace,
-  since PHP renders such a throw as `#0 <file>(<line>): range(9, 10, 2)`.
+- A **bad argument to a library function** throws (see above), but the `preg_*`
+  family is not converted: an empty pattern or a missing delimiter still aborts
+  with a host-level `php: …` line, where PHP raises a `Warning` and returns
+  `false`. That family needs the *warning* shape, not the throw shape.
+- **`unset($obj->prop)`** is rejected with `unset() target must be a variable or
+  an array element`; PHP removes the property. Writing an inaccessible property
+  (`$c->privateProp = 1`) likewise aborts host-level instead of throwing
+  `Error: Cannot access private property C::$p`.
 - A **stack trace** frame entered from inside a library function (an `array_map`
   callback) prints its call site rather than PHP's `[internal function]`, and a
   closure frame prints `{closure}` rather than PHP 8.4's `{closure:file:line}`.
 - A **syntax error** reproduces PHP's `unexpected <token>` text but not the
   `, expecting "X" or "Y"` clause that often follows it: the expected set comes
   out of PHP's generated LALR tables, not the grammar as written here.
-- `Deprecated: Creation of dynamic property …` is not emitted: `#[…]` attributes
-  lex as comments, so `#[AllowDynamicProperties]` cannot be seen and the notice
-  would fire on classes that opted out.
 - `var_dump`'s `#N` object number and `spl_object_id` agree with each other, but
   PHP reuses a freed object's number and phplang's arena never frees, so the two
   agree only until an object becomes unreachable.
-- `error_reporting` / `-d` ini settings are not implemented; diagnostics are
-  always displayed.
+- `ini_get`/`ini_set` know only the settings with an engine-level default
+  (`error_reporting`, `precision`, `serialize_precision`, `display_errors`,
+  `log_errors`, `html_errors`, `default_charset`, `max_execution_time`). A
+  setting whose value comes from a php.ini file, such as `memory_limit` or
+  `date.timezone`, reads back `false` rather than a machine-specific guess.
 
 Persistent bytecode caching and AOT (`--build`) —
 present in the sibling frontends — are not wired yet; an LSP server (`--lsp`) and

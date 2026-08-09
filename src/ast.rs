@@ -362,6 +362,10 @@ pub struct ClassDecl {
     /// Property declarations, in source order (instance and static).
     pub props: Vec<PropDecl>,
     pub methods: Vec<Method>,
+    /// Names of the `#[…]` attributes written before the declaration, unqualified.
+    /// Only `AllowDynamicProperties` changes behaviour today; the rest are carried
+    /// so the declaration parses and so reflection has something to report.
+    pub attributes: Vec<String>,
 }
 
 /// One `case Name [= value];` of an `enum`. `value` is the backing-value

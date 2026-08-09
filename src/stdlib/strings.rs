@@ -80,7 +80,10 @@ fn substr_count(args: &[Value]) -> Result<Value, String> {
     let hay = str_arg(args, 0);
     let needle = str_arg(args, 1);
     if needle.is_empty() {
-        return Err("substr_count(): Argument #2 ($needle) cannot be empty".into());
+        return Err(throws(
+            "ValueError",
+            "substr_count(): Argument #2 ($needle) must not be empty",
+        ));
     }
     let bytes = hay.as_bytes();
     let len = bytes.len() as i64;
@@ -433,7 +436,10 @@ fn chunk_split(args: &[Value]) -> Result<Value, String> {
         _ => 76,
     };
     if length <= 0 {
-        return Err("chunk_split(): Argument #2 ($length) must be greater than 0".into());
+        return Err(throws(
+            "ValueError",
+            "chunk_split(): Argument #2 ($length) must be greater than 0",
+        ));
     }
     let end = match args.get(2) {
         Some(v) if !matches!(v, Value::Undef) => str_arg(args, 2),
@@ -606,12 +612,12 @@ fn vformat(args: &[Value], echo: bool) -> Result<Value, String> {
         call_args.push(v);
     }
     if echo {
-        let s = crate::builtins::call_library("sprintf", call_args)?;
+        let s = crate::builtins::call_library("sprintf", &call_args)?;
         let out = with_host(|h| h.to_str(&s));
         with_host(|h| h.write_out(&out));
         Ok(Value::int(out.len() as i64))
     } else {
-        crate::builtins::call_library("sprintf", call_args)
+        crate::builtins::call_library("sprintf", &call_args)
     }
 }
 

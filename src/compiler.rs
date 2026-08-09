@@ -10,6 +10,7 @@
 
 use crate::ast::*;
 use crate::host::{self, ops, CatchClause, ClassDef, FuncDef, TryDef};
+use crate::lexer::CompileDiag;
 use fusevm::{Chunk, ChunkBuilder, Op, Value};
 use rustc_hash::FxHashMap;
 
@@ -21,6 +22,11 @@ pub struct Program {
     /// `try`/`catch`/`finally` constructs, indexed by the id baked into each
     /// `RUN_TRY` call.
     pub try_defs: Vec<TryDef>,
+    /// Notices raised while READING this source (see [`CompileDiag`]). They are
+    /// emitted once, before the first instruction runs — carrying them on the
+    /// program rather than in a global is what guarantees the ordering, since the
+    /// prelude is compiled after the user's source but must not interleave.
+    pub diags: Vec<CompileDiag>,
 }
 
 /// Break/continue jump fixups for the innermost loop.
@@ -108,6 +114,10 @@ pub fn compile(stmts: &[Stmt], debug: bool) -> Result<Program, String> {
         functions: c.functions,
         classes: c.classes,
         try_defs: c.try_defs,
+        // Drained here rather than in the lexer's caller: this is the last point
+        // that still belongs to compiling THIS source, so no later compilation
+        // (the prelude, an `eval`) can inherit or lose them.
+        diags: crate::lexer::take_diags(),
     })
 }
 
@@ -869,6 +879,12 @@ impl Compiler {
             // `$this->x = $x` before the body runs.
             if m.name.eq_ignore_ascii_case("__construct") {
                 for p in m.params.iter().filter(|p| p.promoted) {
+                    // A promoted parameter DECLARES the property, so the synthetic
+                    // assignment below must not read as creating a dynamic one.
+                    // The parser does not keep which visibility keyword promoted
+                    // it, and none is enforced on properties reached this way, so
+                    // the declaration is recorded as public.
+                    prop_vis.insert(p.name.clone(), Visibility::Public);
                     let assign = Expr::Assign(
                         Box::new(Expr::PropGet(
                             Box::new(Expr::Var("this".to_string())),
@@ -925,6 +941,10 @@ impl Compiler {
                 is_enum: decl.is_enum,
                 is_abstract: decl.is_abstract,
                 is_interface: decl.is_interface,
+                allow_dynamic_props: decl
+                    .attributes
+                    .iter()
+                    .any(|a| a.eq_ignore_ascii_case("AllowDynamicProperties")),
                 enum_cases,
             },
         ));
@@ -1760,7 +1780,7 @@ impl Compiler {
                     c.compile_expr(b, &recv)?;
                     let pi = b.add_constant(Value::str(prop));
                     b.emit(Op::LoadConst(pi), 0);
-                    b.emit(Op::CallBuiltin(ops::PROP_ENSURE_ARRAY, 2), 0);
+                    b.emit(Op::CallBuiltin(ops::PROP_ENSURE_ARRAY, 2), c.cur_line);
                     Ok(())
                 })?;
                 Ok(tmp)
@@ -2051,12 +2071,18 @@ impl Compiler {
                         let nidx = b.add_constant(Value::str(name.clone()));
                         b.emit(Op::LoadConst(nidx), 0);
                         self.compile_rhs(b, rhs)?;
-                        b.emit(Op::CallBuiltin(ops::PROP_SET, 3), 0);
+                        b.emit(Op::CallBuiltin(ops::PROP_SET, 3), self.cur_line);
                     }
                     Some(cop) => {
                         let r = self.tmp_name("pr");
                         self.emit_set_var(b, &r, |c, b| c.compile_expr(b, recv))?;
+                        // Fetch-for-write comes FIRST, so `$o->missing .= "x"`
+                        // deprecates the dynamic property before the read below
+                        // warns that it is undefined — the reference order.
                         self.emit_get_var(b, &r);
+                        let tidx = b.add_constant(Value::str(name.clone()));
+                        b.emit(Op::LoadConst(tidx), 0);
+                        b.emit(Op::CallBuiltin(ops::PROP_TOUCH, 2), self.cur_line);
                         let nidx = b.add_constant(Value::str(name.clone()));
                         b.emit(Op::LoadConst(nidx), 0);
                         // value = @r->name op rhs
@@ -2066,7 +2092,7 @@ impl Compiler {
                         b.emit(Op::CallBuiltin(ops::PROP_GET, 2), self.cur_line);
                         self.compile_rhs(b, rhs)?;
                         self.emit_binop(b, cop);
-                        b.emit(Op::CallBuiltin(ops::PROP_SET, 3), 0);
+                        b.emit(Op::CallBuiltin(ops::PROP_SET_RW, 3), self.cur_line);
                     }
                 }
             }
@@ -2084,7 +2110,7 @@ impl Compiler {
                             c.compile_expr(b, recv)?;
                             let idx = b.add_constant(Value::str(prop.clone()));
                             b.emit(Op::LoadConst(idx), 0);
-                            b.emit(Op::CallBuiltin(ops::PROP_ENSURE_ARRAY, 2), 0);
+                            b.emit(Op::CallBuiltin(ops::PROP_ENSURE_ARRAY, 2), c.cur_line);
                             Ok(())
                         })?;
                         self.compile_lvalue_assign(b, &t, &segs, op, rhs)?;
@@ -2424,7 +2450,7 @@ impl Compiler {
                             c.compile_expr(b, recv)?;
                             let idx = b.add_constant(Value::str(prop.clone()));
                             b.emit(Op::LoadConst(idx), 0);
-                            b.emit(Op::CallBuiltin(ops::PROP_ENSURE_ARRAY, 2), 0);
+                            b.emit(Op::CallBuiltin(ops::PROP_ENSURE_ARRAY, 2), c.cur_line);
                             Ok(())
                         })?;
                         t

@@ -20,6 +20,12 @@ pub struct Cli {
     #[arg(short = 'a', long = "interactive")]
     pub interactive: bool,
 
+    /// Set an ini entry before the script is read (`php -d error_reporting=0`).
+    /// Repeatable; a later `-d` for the same name wins. `-d name` with no `=`
+    /// sets the value to `"1"`, as the reference CLI does.
+    #[arg(short = 'd', long = "define", value_name = "NAME[=VALUE]")]
+    pub define: Vec<String>,
+
     /// Speak the Language Server Protocol over stdio.
     #[arg(long = "lsp")]
     pub lsp: bool,

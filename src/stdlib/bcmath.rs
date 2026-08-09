@@ -172,7 +172,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             let b = parse_bd(&str_arg(args, 1));
             let s = scale_arg(args, 2);
             if b.is_zero() {
-                Err("bcdiv(): Division by zero".to_string())
+                Err(throws("DivisionByZeroError", "Division by zero"))
             } else {
                 Ok(Value::str(format_scaled(&(a / b), s)))
             }
@@ -182,7 +182,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             let b = parse_bd(&str_arg(args, 1));
             let s = scale_arg(args, 2);
             if b.is_zero() {
-                Err("bcmod(): Modulo by zero".to_string())
+                Err(throws("DivisionByZeroError", "Modulo by zero"))
             } else {
                 // r = a - b * trunc(a / b) with the quotient truncated to an
                 // integer (scale 0), toward zero — PHP 7.2+ bcmod semantics.
@@ -203,7 +203,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             // A negative exponent takes the reciprocal — undefined (division by
             // zero) when the base is 0; error cleanly instead of panicking.
             if exp_i64 < 0 && base.is_zero() {
-                Err("bcpow(): Division by zero".to_string())
+                Err(throws("DivisionByZeroError", "Negative power of zero"))
             } else {
                 Ok(Value::str(format_scaled(&bd_pow(&base, exp_i64), s)))
             }
@@ -213,7 +213,10 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             let s = scale_arg(args, 1);
             match n.sqrt() {
                 Some(r) => Ok(Value::str(format_scaled(&r, s))),
-                None => Err("bcsqrt(): Argument must be greater than or equal to 0".to_string()),
+                None => Err(throws(
+                    "ValueError",
+                    "bcsqrt(): Argument #1 ($num) must be greater than or equal to 0",
+                )),
             }
         }
         "bccomp" => {
@@ -247,9 +250,12 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             let modulus = bd_to_bigint(&parse_bd(&str_arg(args, 2)));
             let s = scale_arg(args, 3);
             if modulus.is_zero() {
-                Err("bcpowmod(): Modulo by zero".to_string())
+                Err(throws("DivisionByZeroError", "Modulo by zero"))
             } else if exp.sign() == num_bigint::Sign::Minus {
-                Err("bcpowmod(): Exponent must be greater than or equal to 0".to_string())
+                Err(throws(
+                    "ValueError",
+                    "bcpowmod(): Argument #2 ($exponent) must be greater than or equal to 0",
+                ))
             } else {
                 let r = base.modpow(&exp, &modulus);
                 Ok(Value::str(format_scaled(&BigDecimal::from(r), s)))

@@ -77,6 +77,12 @@ pub(crate) mod common {
     use crate::host::with_host;
     use fusevm::Value;
 
+    /// Report an argument error as the PHP exception it is — see
+    /// [`crate::builtins::throws`]. Re-exported here because every stdlib module
+    /// already glob-imports this prelude, and an argument error is a normal thing
+    /// for a library function to raise.
+    pub use crate::builtins::throws;
+
     /// The `i`-th argument, or `Undef` (PHP: a missing argument reads as null).
     pub fn arg(args: &[Value], i: usize) -> Value {
         args.get(i).cloned().unwrap_or(Value::Undef)

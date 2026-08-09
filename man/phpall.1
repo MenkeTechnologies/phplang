@@ -36,7 +36,9 @@ you can grep with `/`:
 .B \-r \fICODE\fR
 runs code given on the command line, and
 .B \-a
-starts the interactive shell.
+starts the interactive shell, and
+.B \-d \fINAME\fR[=\fIVALUE\fR]
+sets an ini entry before the source is read.
 .B \-\-lsp
 and
 .B \-\-dap
@@ -96,8 +98,20 @@ the parsed AST, and
 .B \-\-disasm
 a fusevm bytecode disassembly \(em each then exits.
 .SH 5. DIAGNOSTICS
-Errors are written to standard error. The process exits non\-zero on an unhandled
-error and 0 on success.
+\fIWarning\fR and \fIDeprecated\fR notices go to standard OUTPUT, interleaved with
+the program's own, as the PHP CLI defaults put them; a fatal or parse error is
+displayed there too and logged to standard error with a \fIPHP \fR prefix. Each
+notice carries an \fIE_*\fR level and appears only when that bit is set in the
+\fIerror_reporting\fR mask, which
+.BR error_reporting (),
+.BR ini_set ()
+and
+.B \-d error_reporting=\fILEVEL\fR
+write. Notices raised while READING the source, such as \fIUsing ${var} in
+strings is deprecated\fR, precede all program output and answer only to
+.BR \-d .
+The process exits 255 on a parse or fatal error, 1 on a failure with no PHP
+equivalent, and 0 on success.
 .SH SEE ALSO
 .BR php (1)
 The focused invocation page. Source and issue tracker:

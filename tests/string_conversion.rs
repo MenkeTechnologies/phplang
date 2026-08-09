@@ -102,8 +102,14 @@ fn a_brace_not_introducing_an_interpolation_stays_literal() {
 #[test]
 fn the_dollar_brace_form_still_substitutes() {
     // `${var}` is deprecated but not yet removed, and still names the variable.
+    // The deprecation is a COMPILE-time notice, so it precedes the program's own
+    // output — asserted in full here, which is what pins that ordering.
     let src = r#"<?php $x = 3; echo "${x}";"#;
-    assert_eq!(run(src), "3");
+    assert_eq!(
+        run(src),
+        "\nDeprecated: Using ${var} in strings is deprecated, use {$var} instead \
+         in Command line code on line 1\n3"
+    );
 }
 
 // ── strcmp's return value ────────────────────────────────────────────────────

@@ -9,6 +9,7 @@
 //! function call (see `call_function`) while sharing one heap.
 
 use crate::ast::Visibility;
+use crate::errlevel;
 use fusevm::{Chunk, VMResult, Value, VM};
 use indexmap::IndexMap;
 use rustc_hash::FxHashMap;
@@ -163,6 +164,19 @@ pub mod ops {
     /// `parent::m()` and `static::m()` keep the caller's late-static-binding
     /// class, whereas naming a class explicitly (`Base::m()`) replaces it.
     pub const LSB_FORWARD: u16 = 97;
+
+    /// `[recv, name]` -> `recv`, unchanged. Marks a property as being fetched
+    /// FOR WRITING, which is when PHP decides whether the write creates a dynamic
+    /// property. Emitted ahead of the read half of a compound assignment
+    /// (`$o->p .= "x"`), because the reference engine raises the
+    /// "Creation of dynamic property" deprecation before the "Undefined property"
+    /// warning the read then produces — the slot exists by the time it is read.
+    pub const PROP_TOUCH: u16 = 98;
+    /// `[recv, name, val]` -> `val`. The write half of a read-modify-write, whose
+    /// creation of a dynamic property was already announced by the [`PROP_TOUCH`]
+    /// that opened it. Identical to [`PROP_SET`] but silent, so `$o->p .= "x"`
+    /// deprecates once rather than twice.
+    pub const PROP_SET_RW: u16 = 99;
 }
 
 /// Sub-ops for the by-reference array mutators lowered through `ops::ARR_MUT`
@@ -245,6 +259,11 @@ pub struct ClassDef {
     /// is a fatal error in PHP.
     pub is_abstract: bool,
     pub is_interface: bool,
+    /// Whether the class carries `#[AllowDynamicProperties]`, which opts it — and
+    /// everything that extends it — out of the "Creation of dynamic property"
+    /// deprecation. Checked by walking the parent chain, because the attribute is
+    /// inherited.
+    pub allow_dynamic_props: bool,
     /// `enum` cases, in source order: `(case name, optional backing-value chunk)`.
     /// Consulted to build the singleton case instances (`E::Case`, `E::cases()`,
     /// `E::from()`, `E::tryFrom()`).
@@ -446,6 +465,50 @@ pub struct PhpHost {
     /// [`PhpHost::fatal`]), so the CLI wrapper reports the exit status without
     /// printing the message a second time in its terse `php: …` form.
     fatal_reported: bool,
+    /// The `error_reporting` mask: a diagnostic is displayed only when its `E_*`
+    /// bit is set here. Seeded from `-d error_reporting=…` (or `E_ALL`), then
+    /// writable at run time through `error_reporting()` / `ini_set`.
+    error_reporting: i64,
+    /// `ini_set`/`ini_get` string store for settings with no dedicated field, so a
+    /// value written by one is read back by the other unchanged.
+    ini: FxHashMap<String, String>,
+}
+
+/// Ini settings applied to every host the moment it is created — what `php -d
+/// name=value` writes.
+///
+/// A process-wide cell rather than an argument to `PhpHost::new`: hosts are
+/// created implicitly on first `with_host` and thrown away by every
+/// `reset_host`, so there is no single call site that could pass them in, and a
+/// value set once on a host would not survive the next reset.
+static INITIAL_INI: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
+
+/// Record a `-d name=value` override for every host created from now on.
+pub fn add_initial_ini(name: &str, value: &str) {
+    let mut g = INITIAL_INI.lock().unwrap_or_else(|e| e.into_inner());
+    g.retain(|(k, _)| k != name);
+    g.push((name.to_string(), value.to_string()));
+}
+
+/// The ini settings this engine knows, with the values the PHP CLI uses when no
+/// php.ini overrides them. Only engine-level defaults are listed — see
+/// [`PhpHost::ini_get`] for why the file-driven ones are deliberately absent.
+fn default_ini() -> FxHashMap<String, String> {
+    [
+        // The startup mask, also readable through `ini_get`. `-d` and
+        // `error_reporting()` both rewrite this entry, so the two views agree.
+        ("error_reporting", "30719"),
+        ("precision", "14"),
+        ("serialize_precision", "-1"),
+        ("display_errors", "1"),
+        ("log_errors", "1"),
+        ("html_errors", "0"),
+        ("default_charset", "UTF-8"),
+        ("max_execution_time", "0"),
+    ]
+    .iter()
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .collect()
 }
 
 impl Default for PhpHost {
@@ -482,8 +545,24 @@ impl PhpHost {
             ret_ref_slot: None,
             generators: Vec::new(),
             fatal_reported: false,
+            error_reporting: errlevel::E_ALL,
+            ini: default_ini(),
         };
         h.init_superglobals();
+        // `-d` overrides land before the program is read, so a compile-time
+        // notice is already tested against the level they set.
+        for (name, value) in INITIAL_INI.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+            if name == "error_reporting" {
+                // The ini path — unlike `ini_set` — runs the constant-expression
+                // scanner, so `-d 'error_reporting=E_ALL & ~E_NOTICE'` works. The
+                // RESOLVED number is what `ini_get` reports back afterwards.
+                h.set_error_reporting(crate::errlevel::parse_ini_level(value).unwrap_or(0));
+            } else {
+                // Unlike `ini_set`, `-d` may introduce a name the engine has no
+                // default for — the reference CLI registers it either way.
+                h.ini.insert(name.clone(), value.clone());
+            }
+        }
         h
     }
 
@@ -771,27 +850,84 @@ impl PhpHost {
     /// output buffer or a capture just as `echo` does. The copy `log_errors`
     /// sends to stderr is not reproduced: nothing observes it.
     pub fn warn(&mut self, msg: impl std::fmt::Display) {
-        if self.suppress > 0 {
-            return;
-        }
-        let text = format!(
-            "\nWarning: {msg} in {} on line {}\n",
-            self.script_name, self.warn_line
-        );
-        self.write_out(&text);
+        self.diagnose("Warning", errlevel::E_WARNING, self.warn_line, msg);
     }
 
     /// Emit a PHP `Deprecated` diagnostic. Same stream and shape as [`warn`],
     /// which is the only thing that distinguishes the severities on output.
     pub fn deprecated(&mut self, msg: impl std::fmt::Display) {
-        if self.suppress > 0 {
+        self.diagnose("Deprecated", errlevel::E_DEPRECATED, self.warn_line, msg);
+    }
+
+    /// Emit a PHP `Notice`.
+    pub fn notice(&mut self, msg: impl std::fmt::Display) {
+        self.diagnose("Notice", errlevel::E_NOTICE, self.warn_line, msg);
+    }
+
+    /// The one place a non-fatal diagnostic is rendered, for every severity.
+    ///
+    /// Two independent gates silence it: `@expr` suppression (lexically scoped,
+    /// leaves the level alone) and the `error_reporting` mask (a global the script
+    /// or `-d` sets). A diagnostic whose `E_*` bit is clear is not merely hidden —
+    /// it is never written, so it cannot land in an output buffer either.
+    pub fn diagnose(&mut self, severity: &str, level: i64, line: u32, msg: impl std::fmt::Display) {
+        if self.suppress > 0 || self.error_reporting & level == 0 {
             return;
         }
         let text = format!(
-            "\nDeprecated: {msg} in {} on line {}\n",
-            self.script_name, self.warn_line
+            "\n{severity}: {msg} in {} on line {line}\n",
+            self.script_name
         );
         self.write_out(&text);
+    }
+
+    /// The current `error_reporting` mask.
+    pub fn error_reporting(&self) -> i64 {
+        self.error_reporting
+    }
+
+    /// Set the `error_reporting` mask, returning the previous one — what
+    /// `error_reporting($level)` reports back. The ini store is updated with the
+    /// decimal spelling, so `ini_get('error_reporting')` follows the function.
+    pub fn set_error_reporting(&mut self, level: i64) -> i64 {
+        self.ini
+            .insert("error_reporting".to_string(), level.to_string());
+        std::mem::replace(&mut self.error_reporting, level)
+    }
+
+    /// Read an ini setting as `ini_get` returns it — always a STRING, even for a
+    /// numeric setting. `None` means the name is not a setting this engine knows,
+    /// which `ini_get` reports as `false`.
+    ///
+    /// `error_reporting` is stored here VERBATIM as well as parsed into the mask,
+    /// because the two can disagree: `ini_set('error_reporting', '12abc')` leaves
+    /// `ini_get` reporting `"12abc"` while the mask becomes 12.
+    ///
+    /// DIVERGENCE: only settings with an engine-level default are known. Ones
+    /// whose value comes from a php.ini file (`memory_limit`, `date.timezone`)
+    /// report `false` rather than a guess that would be wrong on most machines.
+    pub fn ini_get(&self, name: &str) -> Option<String> {
+        self.ini.get(name).cloned()
+    }
+
+    /// Write an ini setting, returning the previous value — or `None` for a name
+    /// the engine does not know, which `ini_set` reports as `false` without
+    /// storing anything (PHP does not let `ini_set` invent settings).
+    ///
+    /// `error_reporting` also updates the mask, by PHP's ordinary string-to-int
+    /// coercion — NOT the constant-expression scanner. `E_ALL & ~E_NOTICE` is a
+    /// php.ini spelling, understood on the `-d`/ini path only; handed to
+    /// `ini_set` at run time it reads as the integer 0 and mutes everything,
+    /// which is exactly what the reference does with it.
+    pub fn ini_set(&mut self, name: &str, value: &str) -> Option<String> {
+        let level = (name == "error_reporting")
+            .then(|| self.to_number(&Value::str(value.to_string())).to_int());
+        let slot = self.ini.get_mut(name)?;
+        let old = std::mem::replace(slot, value.to_string());
+        if let Some(level) = level {
+            self.error_reporting = level;
+        }
+        Some(old)
     }
 
     /// One argument as a stack trace renders it. PHP does not print values in
@@ -1917,6 +2053,66 @@ impl PhpHost {
         }
     }
 
+    /// `$obj->name = val` from PHP source, with the PHP 8.2 deprecation for
+    /// creating a property the class never declared.
+    ///
+    /// Split from [`prop_set`] because the engine's own writes must NOT warn:
+    /// `seed_throwable` stamps `file`/`line`/`trace` onto every Throwable, and an
+    /// internal write is not the user creating a dynamic property. Only the
+    /// opcodes that lower a source-level `->` assignment come through here.
+    pub fn prop_set_checked(&mut self, recv: &Value, name: &str, val: Value) {
+        self.warn_dynamic_prop(recv, name);
+        self.prop_set(recv, name, val);
+    }
+
+    /// Raise `Creation of dynamic property C::$p is deprecated` if writing `name`
+    /// on `recv` would create one.
+    ///
+    /// It creates one when the object does not already carry the property AND no
+    /// class in its chain declares it. `stdClass` is exempt — it is PHP's
+    /// property bag, and `(object)` casts and `json_decode` produce it — as is any
+    /// class opted in with `#[AllowDynamicProperties]`, itself or inherited.
+    pub fn warn_dynamic_prop(&mut self, recv: &Value, name: &str) {
+        let Some(PhpObj::Object { class, props }) = self.as_array(recv) else {
+            return;
+        };
+        if props.contains_key(name) || class.eq_ignore_ascii_case("stdClass") {
+            return;
+        }
+        let class = class.clone();
+        if self.prop_is_declared(&class, name) || self.allows_dynamic_props(&class) {
+            return;
+        }
+        self.deprecated(format_args!(
+            "Creation of dynamic property {class}::${name} is deprecated"
+        ));
+    }
+
+    /// Whether `class` or any ancestor declares a property called `name`.
+    /// A declaration with no initializer still counts, so `prop_vis` — which every
+    /// declaration writes — is the authority, not the defaults list.
+    fn prop_is_declared(&self, class: &str, name: &str) -> bool {
+        self.class_chain(class).any(|d| {
+            d.prop_vis.contains_key(name) || d.prop_defaults.iter().any(|(p, _)| p == name)
+        })
+    }
+
+    /// Whether `class` or any ancestor carries `#[AllowDynamicProperties]`.
+    fn allows_dynamic_props(&self, class: &str) -> bool {
+        self.class_chain(class).any(|d| d.allow_dynamic_props)
+    }
+
+    /// The class and its ancestors, innermost first. Stops at an undeclared
+    /// parent rather than looping, so a broken chain cannot hang a lookup.
+    fn class_chain<'a>(&'a self, class: &str) -> impl Iterator<Item = &'a ClassDef> + 'a {
+        let mut cur = Some(class.to_ascii_lowercase());
+        std::iter::from_fn(move || {
+            let def = self.classes.get(&cur.take()?)?;
+            cur = def.parent.as_ref().map(|p| p.to_ascii_lowercase());
+            Some(def)
+        })
+    }
+
     /// The reference slot `$obj->name` holds, if that property is a reference.
     fn prop_ref_slot(&self, recv: &Value, name: &str) -> Option<usize> {
         let Some(PhpObj::Object { props, .. }) = self.as_array(recv) else {
@@ -2972,17 +3168,24 @@ fn predefined_constants() -> FxHashMap<String, Value> {
     si("PHP_ROUND_HALF_DOWN", 2);
     si("PHP_ROUND_HALF_EVEN", 3);
     si("PHP_ROUND_HALF_ODD", 4);
-    si("E_ERROR", 1);
-    si("E_WARNING", 2);
-    si("E_PARSE", 4);
-    si("E_NOTICE", 8);
-    si("E_STRICT", 2048);
-    si("E_DEPRECATED", 8192);
-    si("E_ALL", 32767);
-    si("E_USER_ERROR", 256);
-    si("E_USER_WARNING", 512);
-    si("E_USER_NOTICE", 1024);
-    si("E_USER_DEPRECATED", 16384);
+    // Error levels — the canonical values live in `crate::errlevel`, which the
+    // `error_reporting` mask and the `-d error_reporting=…` parser share.
+    si("E_ERROR", errlevel::E_ERROR);
+    si("E_WARNING", errlevel::E_WARNING);
+    si("E_PARSE", errlevel::E_PARSE);
+    si("E_NOTICE", errlevel::E_NOTICE);
+    si("E_CORE_ERROR", errlevel::E_CORE_ERROR);
+    si("E_CORE_WARNING", errlevel::E_CORE_WARNING);
+    si("E_COMPILE_ERROR", errlevel::E_COMPILE_ERROR);
+    si("E_COMPILE_WARNING", errlevel::E_COMPILE_WARNING);
+    si("E_STRICT", errlevel::E_STRICT);
+    si("E_RECOVERABLE_ERROR", errlevel::E_RECOVERABLE_ERROR);
+    si("E_DEPRECATED", errlevel::E_DEPRECATED);
+    si("E_ALL", errlevel::E_ALL);
+    si("E_USER_ERROR", errlevel::E_USER_ERROR);
+    si("E_USER_WARNING", errlevel::E_USER_WARNING);
+    si("E_USER_NOTICE", errlevel::E_USER_NOTICE);
+    si("E_USER_DEPRECATED", errlevel::E_USER_DEPRECATED);
     // sort / count / str_pad / array_filter
     si("SORT_REGULAR", 0);
     si("SORT_NUMERIC", 1);
@@ -3711,7 +3914,23 @@ pub fn call_function(name: &str, args: Vec<Value>) -> Result<Value, String> {
             def.is_generator,
         );
     }
-    crate::builtins::call_library(name, args)
+    call_library_throwing(name, args)
+}
+
+/// Call a standard-library function, turning a tagged argument error into the
+/// PHP exception it stands for (see [`crate::builtins::throws`]).
+///
+/// This wrapper is the caller rather than part of `call_library` itself because
+/// it needs the argument list AFTER the call, to render the trace frame —
+/// `call_library` borrows it, so the owner has to be the one that reacts.
+fn call_library_throwing(name: &str, args: Vec<Value>) -> Result<Value, String> {
+    match crate::builtins::call_library(name, &args) {
+        Err(e) => match crate::builtins::untag_throw(&e) {
+            Some((class, message)) => throw_from_internal(name, &args, class, message),
+            None => Err(e),
+        },
+        ok => ok,
+    }
 }
 
 /// `call_function` with PHP 8.0 named arguments. User functions bind by parameter
@@ -4081,6 +4300,88 @@ fn seed_throwable(class: &str, obj: &Value) {
         h.prop_set(obj, "line", Value::int(line));
         h.prop_set(obj, "trace", Value::str(trace));
     });
+}
+
+/// Zero-based positions of the parameters an internal function declares
+/// `#[\SensitiveParameter]`, which a backtrace must never print.
+///
+/// Only functions that can THROW need an entry, because an internal frame exists
+/// only for the duration of [`throw_from_internal`]; a library function that
+/// merely returns never reaches a trace. Verified against the reference by
+/// throwing out of each and reading back `getTraceAsString`.
+fn sensitive_params(func: &str) -> &'static [usize] {
+    match func.to_ascii_lowercase().as_str() {
+        "hash_hmac" | "hash_hmac_file" => &[2], // $key
+        "hash_pbkdf2" => &[1],                  // $password
+        _ => &[],
+    }
+}
+
+/// Throw a PHP exception *from inside a library function*, with the internal
+/// call as a real backtrace frame.
+///
+/// PHP renders such a throw with the library function itself at `#0`:
+///
+/// ```text
+/// Fatal error: Uncaught ValueError: range(): Argument #3 ($step) … in file:1
+/// Stack trace:
+/// #0 file(1): range(9, 10, 2)
+/// #1 {main}
+/// ```
+///
+/// A library function has no PHP call frame — it is Rust — so one is pushed for
+/// exactly as long as the exception object takes to construct, which is when PHP
+/// snapshots `file`, `line` and the trace ([`seed_throwable`]). The frame carries
+/// the arguments as its hidden `@args` so the trace prints them through the same
+/// `trace_arg` rendering a user frame uses, and its line is the CALLER's, which
+/// is the line PHP reports for a throw out of an internal function.
+///
+/// Returns `Ok(Undef)`: the exception is recorded as pending, and the `bubbled`
+/// helper at every call site halts the chunk the moment it sees one, so the value
+/// is never observed. Reporting it as `Err` instead would surface the scaffold's
+/// terse `php: …` fatal and lose the catchability.
+pub fn throw_from_internal(
+    func: &str,
+    args: &[Value],
+    class: &str,
+    message: &str,
+) -> Result<Value, String> {
+    let sensitive = sensitive_params(func);
+    with_host(|h| {
+        let line = h.cur_frame_line();
+        h.scopes.push(Scope {
+            name: Some(func.to_string()),
+            line,
+            ..Scope::default()
+        });
+        let argsarr = h.new_array();
+        for (i, a) in args.iter().enumerate() {
+            if sensitive.contains(&i) {
+                // A `#[\SensitiveParameter]` argument never appears in a trace:
+                // the engine substitutes a `SensitiveParameterValue` wrapper so a
+                // password or key cannot leak into an error log. The wrapper is
+                // built as a real object of that class so `trace_arg` renders it
+                // `Object(SensitiveParameterValue)` through the ordinary path.
+                let obj = h.objs.len() as u32;
+                h.objs.push(PhpObj::Object {
+                    class: "SensitiveParameterValue".to_string(),
+                    props: IndexMap::new(),
+                });
+                h.arr_push_auto(&argsarr, Value::Obj(obj));
+            } else {
+                h.arr_push_auto(&argsarr, a.clone());
+            }
+        }
+        h.set_var("@args", argsarr);
+    });
+    // `new_object` runs PHP (the exception constructor), so it must not be called
+    // inside the borrow above.
+    let exc = new_object(class, vec![Value::str(message.to_string())]);
+    with_host(|h| {
+        h.scopes.pop();
+    });
+    set_pending_throw(exc?);
+    Ok(Value::Undef)
 }
 
 /// `new Class(args)`: allocate an object seeded with its (inherited) property

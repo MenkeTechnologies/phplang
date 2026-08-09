@@ -417,11 +417,23 @@ echo (new B)-&gt;f();   // =&gt; 9</code></pre>
         <article class="doc-entry" id="doc-language-construct-5">
           <h3><a class="doc-anchor" href="#doc-language-construct-5">#</a> <code>unset</code></h3>
           <pre><code class="lang-php">unset($var[, $var …]): void</code></pre>
-          <p>Removes variables, array elements, and object properties. Like `isset`, it is a construct rather than a call, so an index path such as `$a[$k]` is unset in place rather than being evaluated to a value first.</p>
+          <p>Removes variables and array elements. Like `isset`, it is a construct rather than a call, so an index path such as `$a[$k]` is unset in place rather than being evaluated to a value first. DIVERGENCE: an object property target (`unset($o-&gt;p)`) is rejected with `unset() target must be a variable or an array element`; PHP removes the property.</p>
           <pre><code class="lang-php">$a = [1, 2]; unset($a[0]); echo count($a);   // =&gt; 1</code></pre>
         </article>
         <article class="doc-entry" id="doc-language-construct-6">
-          <h3><a class="doc-anchor" href="#doc-language-construct-6">#</a> <code>rust { … }</code></h3>
+          <h3><a class="doc-anchor" href="#doc-language-construct-6">#</a> <code>#[Attr]</code></h3>
+          <pre><code class="lang-php">#[Name], #[Name(args)], #[Ns\Name] …   //  before a class, function, method, property, class constant, enum case, or parameter</code></pre>
+          <p>An attribute group: declarative metadata attached to the declaration that follows. It is NOT a comment — `#[` and `#` are different tokens, and lexing `#[Attr] class C {}` as a comment would delete the declaration. Arguments are scanned for bracket balance and discarded. DIVERGENCE: attributes are not reflectable (`ReflectionAttribute` does not exist) and none is evaluated; only `#[AllowDynamicProperties]` changes behaviour.</p>
+          <pre><code class="lang-php">#[Attr(1)] class C { #[Attr] public $v = 7; } echo (new C)-&gt;v;   // =&gt; 7</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-language-construct-7">
+          <h3><a class="doc-anchor" href="#doc-language-construct-7">#</a> <code>#[AllowDynamicProperties]</code></h3>
+          <pre><code class="lang-php">#[AllowDynamicProperties] class C { … }</code></pre>
+          <p>Opts a class out of the PHP 8.2 `Deprecated: Creation of dynamic property C::$p is deprecated` notice, which otherwise fires the first time a property no class in the chain declares is written. The opt-out is INHERITED by subclasses. `stdClass` is exempt without it, as is any property the class (or an ancestor) declares — including one promoted from a constructor parameter. The name is matched exactly, so a namespaced `#[Ns\AllowDynamicProperties]` is a different, inert attribute.</p>
+          <pre><code class="lang-php">#[AllowDynamicProperties] class C {} $c = new C; $c-&gt;x = 1; echo $c-&gt;x;   // =&gt; 1</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-language-construct-8">
+          <h3><a class="doc-anchor" href="#doc-language-construct-8">#</a> <code>rust { … }</code></h3>
           <pre><code class="lang-php">rust { pub extern "C" fn name(args) -&gt; ty { … } }</code></pre>
           <p>Inline Rust FFI. The block is lifted out before lexing and replaced with a `__rust_compile(…)` call carrying the base64-encoded body; every `pub extern "C"` function it exports becomes callable from PHP as a bareword. Unique to phplang — reference PHP has no such construct.</p>
           <pre><code class="lang-php">rust { pub extern "C" fn add(a: i64, b: i64) -&gt; i64 { a + b } }
@@ -452,13 +464,13 @@ echo add(2, 3);   // =&gt; 5</code></pre>
         <article class="doc-entry" id="doc-operator-4">
           <h3><a class="doc-anchor" href="#doc-operator-4">#</a> <code>/</code></h3>
           <pre><code class="lang-php">expr / expr</code></pre>
-          <p>Division. Two integers that divide exactly yield an integer, otherwise a float. DIVERGENCE: a zero divisor aborts the script with the uncatchable host error `php: Division by zero` instead of throwing `DivisionByZeroError`.</p>
+          <p>Division. Two integers that divide exactly yield an integer, otherwise a float. A zero divisor throws a catchable `DivisionByZeroError` with the message `Division by zero`.</p>
           <pre><code class="lang-php">echo 7 / 2;   // =&gt; 3.5</code></pre>
         </article>
         <article class="doc-entry" id="doc-operator-5">
           <h3><a class="doc-anchor" href="#doc-operator-5">#</a> <code>%</code></h3>
           <pre><code class="lang-php">expr % expr</code></pre>
-          <p>Integer remainder, taking the sign of the left operand. Both operands are cast to integers first, so `7.5 % 2` is `1`. A zero divisor aborts with the uncatchable host error `php: Modulo by zero`.</p>
+          <p>Integer remainder, taking the sign of the left operand. Both operands are cast to integers first, so `7.5 % 2` is `1`. A zero divisor throws a catchable `DivisionByZeroError` with the message `Modulo by zero`.</p>
           <pre><code class="lang-php">echo 7 % 3;   // =&gt; 1</code></pre>
         </article>
         <article class="doc-entry" id="doc-operator-6">
@@ -847,7 +859,7 @@ $o = new C; echo $o-&gt;__toString(), "|", $o;   // =&gt; S|Array</code></pre>
         <article class="doc-entry" id="doc-predefined-constant-28">
           <h3><a class="doc-anchor" href="#doc-predefined-constant-28">#</a> <code>E_STRICT</code></h3>
           <pre><code class="lang-php">E_STRICT: int = 2048</code></pre>
-          <p>Error level for interoperability suggestions.</p>
+          <p>Error level for interoperability suggestions. The level was REMOVED in PHP 8.4 — nothing raises it and it is not part of `E_ALL` — but the constant remains so an existing `E_ALL &amp; ~E_STRICT` still parses.</p>
         </article>
         <article class="doc-entry" id="doc-predefined-constant-29">
           <h3><a class="doc-anchor" href="#doc-predefined-constant-29">#</a> <code>E_DEPRECATED</code></h3>
@@ -856,9 +868,9 @@ $o = new C; echo $o-&gt;__toString(), "|", $o;   // =&gt; S|Array</code></pre>
         </article>
         <article class="doc-entry" id="doc-predefined-constant-30">
           <h3><a class="doc-anchor" href="#doc-predefined-constant-30">#</a> <code>E_ALL</code></h3>
-          <pre><code class="lang-php">E_ALL: int = 32767</code></pre>
-          <p>Every error level. `error_reporting()` returns exactly this value and ignores its argument.</p>
-          <pre><code class="lang-php">echo error_reporting();   // =&gt; 32767</code></pre>
+          <pre><code class="lang-php">E_ALL: int = 30719</code></pre>
+          <p>Every error level that still exists. It is 30719, not the pre-8.4 32767: PHP 8.4 removed `E_STRICT` and took its bit out of `E_ALL`, so `E_ALL &amp; E_STRICT` is 0. This is also the level a program starts at unless `-d error_reporting=…` says otherwise.</p>
+          <pre><code class="lang-php">echo E_ALL, "|", E_ALL &amp; E_STRICT;   // =&gt; 30719|0</code></pre>
         </article>
         <article class="doc-entry" id="doc-predefined-constant-31">
           <h3><a class="doc-anchor" href="#doc-predefined-constant-31">#</a> <code>E_USER_ERROR</code></h3>
@@ -1504,22 +1516,28 @@ $o = new C; echo $o-&gt;__toString(), "|", $o;   // =&gt; S|Array</code></pre>
         <article class="doc-entry" id="doc-prelude-class-1">
           <h3><a class="doc-anchor" href="#doc-prelude-class-1">#</a> <code>Exception</code></h3>
           <pre><code class="lang-php">class Exception {
-    protected $message = ""; protected $code = 0;
-    __construct($message = "", $code = 0)
-    getMessage(): string   getCode(): int   __toString(): string
+    protected $message = ""; protected $code = 0; protected $previous = null;
+    protected $file = ""; protected $line = 0; protected $trace = "";
+    __construct($message = "", $code = 0, $previous = null)
+    getMessage(): string   getCode(): int   getPrevious(): ?Throwable
+    getFile(): string   getLine(): int   getTraceAsString(): string
+    __toString(): string
 }</code></pre>
-          <p>One of the two disjoint roots of the exception hierarchy. `catch (Throwable)` is special-cased in the host to match this root or `Error`. DIVERGENCE: PHP's `getFile`, `getLine`, `getTrace`, `getTraceAsString`, and `getPrevious` are not declared, and the constructor takes no `$previous` argument.</p>
+          <p>One of the two disjoint roots of the exception hierarchy. `catch (Throwable)` is special-cased in the host to match this root or `Error`. `file`, `line` and `trace` are recorded when the object is *constructed*, as the reference engine records them, so `getLine()` reports the `new` site even when the `throw` is on a later line. DIVERGENCE: `getTrace()` — the structured array form — is not declared; only the rendered `getTraceAsString()` is.</p>
           <pre><code class="lang-php">try { throw new Exception("boom", 7); }
 catch (Exception $e) { echo $e-&gt;getMessage(), $e-&gt;getCode(); }   // =&gt; boom7</code></pre>
         </article>
         <article class="doc-entry" id="doc-prelude-class-2">
           <h3><a class="doc-anchor" href="#doc-prelude-class-2">#</a> <code>Error</code></h3>
           <pre><code class="lang-php">class Error {
-    protected $message = ""; protected $code = 0;
-    __construct($message = "", $code = 0)
-    getMessage(): string   getCode(): int   __toString(): string
+    protected $message = ""; protected $code = 0; protected $previous = null;
+    protected $file = ""; protected $line = 0; protected $trace = "";
+    __construct($message = "", $code = 0, $previous = null)
+    getMessage(): string   getCode(): int   getPrevious(): ?Throwable
+    getFile(): string   getLine(): int   getTraceAsString(): string
+    __toString(): string
 }</code></pre>
-          <p>The other root of the hierarchy, for engine-level failures. It does NOT extend `Exception` — the two roots are disjoint, exactly as in PHP, so `catch (Exception)` never catches an `Error`. DIVERGENCE: the runtime does not throw these classes for its own failures. A division by zero, a bad standard-library argument, or a call to an undefined function aborts the script with a host-level `php: &lt;message&gt;` on stderr that no `catch` block can intercept; only an explicit `throw` and an unmatched `match` produce a catchable object.</p>
+          <p>The other root of the hierarchy, for engine-level failures. It does NOT extend `Exception` — the two roots are disjoint, exactly as in PHP, so `catch (Exception)` never catches an `Error`. A zero divisor throws `DivisionByZeroError`, and a method call on a non-object throws `Error`. Reaching the top uncaught prints the reference's `Fatal error: Uncaught &lt;Class&gt;: &lt;message&gt; in &lt;file&gt;:&lt;line&gt;` block, stack trace and all, on stdout. DIVERGENCE: most other runtime failures — a bad standard-library argument, a call to an undefined function — still abort with a host-level `php: &lt;message&gt;` on stderr that no `catch` block can intercept.</p>
           <pre><code class="lang-php">try { throw new TypeError("t"); }
 catch (Exception $e) { echo "E"; } catch (Error $e) { echo "R"; }   // =&gt; R</code></pre>
         </article>
@@ -1546,7 +1564,7 @@ catch (Exception $e) { echo "E"; } catch (Error $e) { echo "R"; }   // =&gt; R</
         <article class="doc-entry" id="doc-prelude-class-7">
           <h3><a class="doc-anchor" href="#doc-prelude-class-7">#</a> <code>DivisionByZeroError</code></h3>
           <pre><code class="lang-php">class DivisionByZeroError extends ArithmeticError {}</code></pre>
-          <p>The class PHP raises for a zero divisor. DIVERGENCE: phplang's `/`, `%`, and `intdiv()` do NOT throw it — they abort with the uncatchable host errors `php: Division by zero` and `php: Modulo by zero`. The class is declared so a program can throw and catch it itself.</p>
+          <p>The class raised for a zero divisor. `/` and `intdiv()` throw it with the message `Division by zero`, `%` with `Modulo by zero`, and a program may throw and catch it itself.</p>
           <pre><code class="lang-php">try { throw new DivisionByZeroError("x"); }
 catch (ArithmeticError $e) { echo get_class($e); }   // =&gt; DivisionByZeroError</code></pre>
         </article>
@@ -1604,7 +1622,7 @@ echo $a-&gt;getTimestamp(), " ", $b-&gt;getTimestamp();   // =&gt; 0 86400</code
         <article class="doc-entry" id="doc-prelude-class-14">
           <h3><a class="doc-anchor" href="#doc-prelude-class-14">#</a> <code>stdClass</code></h3>
           <pre><code class="lang-php">class stdClass {}</code></pre>
-          <p>The empty generic object. Properties are added dynamically at assignment. DIVERGENCE: it is not produced by any cast or decode — `(object)` is not a supported cast and `json_decode` always yields arrays — so the only way to get one is `new stdClass`.</p>
+          <p>The empty generic object. Properties are added dynamically at assignment. Produced by `new stdClass` and by the `(object)` cast. DIVERGENCE: `json_decode` always yields arrays, so it never produces one.</p>
           <pre><code class="lang-php">$o = new stdClass; $o-&gt;x = 1; echo $o-&gt;x, get_class($o);   // =&gt; 1stdClass</code></pre>
         </article>
         <article class="doc-entry" id="doc-prelude-class-15">
@@ -1724,7 +1742,7 @@ echo $q-&gt;extract();   // =&gt; hi</code></pre>
         <article class="doc-entry" id="doc-core-library-strings-2">
           <h3><a class="doc-anchor" href="#doc-core-library-strings-2">#</a> <code>strtoupper</code></h3>
           <pre><code class="lang-php">strtoupper(string $string): string</code></pre>
-          <p>Uppercases the string with Rust's full Unicode `to_uppercase`. DIVERGENCE: PHP's `strtoupper` is ASCII-only and locale-bound, so non-ASCII letters change here where PHP leaves them untouched.</p>
+          <p>Uppercases the ASCII letters in the string, leaving every other byte alone — so `strtoupper("héllo")` is `"HéLLO"`, as in PHP 8. Use `mb_strtoupper` for the Unicode-aware form.</p>
           <pre><code class="lang-php">echo strtoupper("abc");   // =&gt; ABC</code></pre>
         </article>
         <article class="doc-entry" id="doc-core-library-strings-3">
@@ -1754,7 +1772,7 @@ echo $q-&gt;extract();   // =&gt; hi</code></pre>
         <article class="doc-entry" id="doc-core-library-strings-7">
           <h3><a class="doc-anchor" href="#doc-core-library-strings-7">#</a> <code>trim</code></h3>
           <pre><code class="lang-php">trim(string $string): string</code></pre>
-          <p>Removes leading and trailing whitespace, using Rust's Unicode-aware `str::trim`. DIVERGENCE: the `$characters` argument is not read, so trimming a custom character set is not supported, and the NUL byte PHP also strips is not in Rust's whitespace set.</p>
+          <p>Removes leading and trailing characters, defaulting to PHP's set `" \t\n\r\0\x0B"`. The optional `$characters` argument replaces that set and understands `a..z` ranges.</p>
           <pre><code class="lang-php">echo trim("  hi  ");   // =&gt; hi</code></pre>
         </article>
         <article class="doc-entry" id="doc-core-library-strings-8">
@@ -1777,7 +1795,7 @@ echo $q-&gt;extract();   // =&gt; hi</code></pre>
         <article class="doc-entry" id="doc-core-library-strings-11">
           <h3><a class="doc-anchor" href="#doc-core-library-strings-11">#</a> <code>str_repeat</code></h3>
           <pre><code class="lang-php">str_repeat(string $string, int $times): string</code></pre>
-          <p>Concatenates the string with itself `$times` times. A negative count is clamped to zero, yielding the empty string.</p>
+          <p>Concatenates the string with itself `$times` times. A count of zero yields the empty string; a negative count throws `ValueError: str_repeat(): Argument #2 ($times) must be greater than or equal to 0`.</p>
           <pre><code class="lang-php">echo str_repeat("ab", 3);   // =&gt; ababab</code></pre>
         </article>
         <article class="doc-entry" id="doc-core-library-strings-12">
@@ -1807,7 +1825,7 @@ echo $q-&gt;extract();   // =&gt; hi</code></pre>
         <article class="doc-entry" id="doc-core-library-strings-16">
           <h3><a class="doc-anchor" href="#doc-core-library-strings-16">#</a> <code>str_replace</code></h3>
           <pre><code class="lang-php">str_replace(string $search, string $replace, string $subject): string</code></pre>
-          <p>Replaces every occurrence of the search string. DIVERGENCE: only the all-scalar form is implemented — array arguments are string-cast rather than applied element-wise, and the by-reference `$count` out-parameter does not exist.</p>
+          <p>Replaces every occurrence of the search string. `$search`/`$replace` may be arrays (paired by position, or one replacement for every needle), an array `$subject` is processed element-wise, and the by-reference `$count` receives the number of replacements.</p>
           <pre><code class="lang-php">echo str_replace("a", "b", "aaa");   // =&gt; bbb</code></pre>
         </article>
         <article class="doc-entry" id="doc-core-library-strings-17">
@@ -1959,7 +1977,7 @@ echo $q-&gt;extract();   // =&gt; hi</code></pre>
         <article class="doc-entry" id="doc-core-library-arrays-7">
           <h3><a class="doc-anchor" href="#doc-core-library-arrays-7">#</a> <code>range</code></h3>
           <pre><code class="lang-php">range(mixed $start, mixed $end, int|float $step = 1): array</code></pre>
-          <p>An inclusive sequence. Two non-numeric single-character strings produce a character range walked by codepoint; anything else produces a numeric range. A step of zero is an error.</p>
+          <p>An inclusive sequence. Two non-numeric strings produce a character range walked by BYTE, using only the first byte of each bound — a longer bound raises `range(): Argument #N ($start|$end) must be a single byte, subsequent bytes are ignored` and continues. Anything else produces a numeric range. A step wider than the span (`range(9, 10, 2)`) throws a catchable `ValueError` whose trace names this call: `#0 &lt;file&gt;(&lt;line&gt;): range(9, 10, 2)`.</p>
           <pre><code class="lang-php">echo implode(",", range(1, 4)), " ", implode("", range("a", "c"));   // =&gt; 1,2,3,4 abc</code></pre>
         </article>
         <article class="doc-entry" id="doc-core-library-arrays-8">
@@ -2042,7 +2060,7 @@ echo $q-&gt;extract();   // =&gt; hi</code></pre>
         <article class="doc-entry" id="doc-core-library-arrays-21">
           <h3><a class="doc-anchor" href="#doc-core-library-arrays-21">#</a> <code>sort</code></h3>
           <pre><code class="lang-php">sort(array $array): bool</code></pre>
-          <p>Sorts ascending in place and reindexes the keys from 0. DIVERGENCE: the `$flags` argument is not read, so the comparison is always the default one.</p>
+          <p>Sorts ascending in place and reindexes the keys from 0. The `$flags` argument selects the comparison (`SORT_REGULAR`, `SORT_NUMERIC`, `SORT_STRING`, `SORT_NATURAL`, optionally `|SORT_FLAG_CASE`). The sort is stable, as PHP 8's is.</p>
           <pre><code class="lang-php">$a = [3, 1, 2]; sort($a); echo implode(",", $a);   // =&gt; 1,2,3</code></pre>
         </article>
         <article class="doc-entry" id="doc-core-library-arrays-22">
@@ -2084,7 +2102,7 @@ echo $q-&gt;extract();   // =&gt; hi</code></pre>
         <article class="doc-entry" id="doc-core-library-arrays-28">
           <h3><a class="doc-anchor" href="#doc-core-library-arrays-28">#</a> <code>array_combine</code></h3>
           <pre><code class="lang-php">array_combine(array $keys, array $values): array</code></pre>
-          <p>Pairs one array's values as keys with another's as values. Mismatched lengths are an error.</p>
+          <p>Pairs one array's values as keys with another's as values. Mismatched lengths throw `ValueError: array_combine(): Argument #1 ($keys) and argument #2 ($values) must have the same number of elements`.</p>
           <pre><code class="lang-php">echo array_combine(["a"], [1])["a"];   // =&gt; 1</code></pre>
         </article>
         <article class="doc-entry" id="doc-core-library-arrays-29">
@@ -2114,7 +2132,7 @@ implode(array $array): string</code></pre>
         <article class="doc-entry" id="doc-core-library-arrays-33">
           <h3><a class="doc-anchor" href="#doc-core-library-arrays-33">#</a> <code>explode</code></h3>
           <pre><code class="lang-php">explode(string $separator, string $string): array</code></pre>
-          <p>Splits the string on every occurrence of the separator. An empty separator returns a single-element array rather than raising `ValueError`. DIVERGENCE: the `$limit` argument is not read.</p>
+          <p>Splits the string on every occurrence of the separator. A positive `$limit` caps the number of parts with the last holding the remainder, a negative one drops that many parts off the end, and `0` behaves as `1`. An empty separator returns a single-element array rather than raising `ValueError`.</p>
           <pre><code class="lang-php">echo explode(",", "a,b")[1];   // =&gt; b</code></pre>
         </article>
       </section>
@@ -2160,7 +2178,7 @@ implode(array $array): string</code></pre>
         <article class="doc-entry" id="doc-core-library-math-7">
           <h3><a class="doc-anchor" href="#doc-core-library-math-7">#</a> <code>intdiv</code></h3>
           <pre><code class="lang-php">intdiv(int $num1, int $num2): int</code></pre>
-          <p>Integer division truncated toward zero. A zero divisor aborts with the uncatchable host error `php: Division by zero`.</p>
+          <p>Integer division truncated toward zero. A zero divisor throws a catchable `DivisionByZeroError` with the message `Division by zero`.</p>
           <pre><code class="lang-php">echo intdiv(7, 2);   // =&gt; 3</code></pre>
         </article>
         <article class="doc-entry" id="doc-core-library-math-8">
@@ -2230,131 +2248,149 @@ min(array $values): mixed</code></pre>
       <section class="tutorial-section" id="ch-core-library-types-and-output">
         <h2>Core library — types and output</h2>
         <article class="doc-entry" id="doc-core-library-types-and-output-1">
-          <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-1">#</a> <code>gettype</code></h3>
+          <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-1">#</a> <code>settype</code></h3>
+          <pre><code class="lang-php">settype(mixed &amp;$var, string $type): bool</code></pre>
+          <p>Converts `$var` in place to `$type` and returns true. Accepts `bool`/`boolean`, `int`/`integer`, `float`/`double`, `string`, `array`, `object` and `null`; the conversion is the one the matching cast performs, so a non-numeric string becomes `0` and a scalar becomes a one-element array. Any other type name is a `ValueError`.</p>
+          <pre><code class="lang-php">$n = "12abc"; settype($n, "integer"); var_dump($n);   // =&gt; int(12)</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-core-library-types-and-output-2">
+          <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-2">#</a> <code>gettype</code></h3>
           <pre><code class="lang-php">gettype(mixed $value): string</code></pre>
           <p>The legacy type name: `boolean`, `integer`, `double`, `string`, `array`, `object`, `NULL`, or `unknown type`. Use `get_debug_type()` for the modern short names.</p>
           <pre><code class="lang-php">echo gettype(1.0), "|", gettype(null);   // =&gt; double|NULL</code></pre>
         </article>
-        <article class="doc-entry" id="doc-core-library-types-and-output-2">
-          <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-2">#</a> <code>is_array</code></h3>
+        <article class="doc-entry" id="doc-core-library-types-and-output-3">
+          <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-3">#</a> <code>is_array</code></h3>
           <pre><code class="lang-php">is_array(mixed $value): bool</code></pre>
           <p>True when the value is an array. Arrays and objects share one handle representation, so this asks the host which kind the handle points at.</p>
           <pre><code class="lang-php">var_dump(is_array([1]));   // =&gt; bool(true)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-core-library-types-and-output-3">
-          <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-3">#</a> <code>is_int</code></h3>
+        <article class="doc-entry" id="doc-core-library-types-and-output-4">
+          <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-4">#</a> <code>is_int</code></h3>
           <pre><code class="lang-php">is_int(mixed $value): bool</code></pre>
           <p>True only for a real integer — a numeric string is not one.</p>
           <pre><code class="lang-php">var_dump(is_int(5), is_int("5"));   // =&gt; bool(true) bool(false)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-core-library-types-and-output-4">
-          <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-4">#</a> <code>is_integer</code></h3>
+        <article class="doc-entry" id="doc-core-library-types-and-output-5">
+          <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-5">#</a> <code>is_integer</code></h3>
           <pre><code class="lang-php">is_integer(mixed $value): bool</code></pre>
           <p>The alias of `is_int`, sharing its match arm.</p>
         </article>
-        <article class="doc-entry" id="doc-core-library-types-and-output-5">
-          <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-5">#</a> <code>is_long</code></h3>
+        <article class="doc-entry" id="doc-core-library-types-and-output-6">
+          <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-6">#</a> <code>is_long</code></h3>
           <pre><code class="lang-php">is_long(mixed $value): bool</code></pre>
           <p>The second alias of `is_int`, sharing the same arm.</p>
         </article>
-        <article class="doc-entry" id="doc-core-library-types-and-output-6">
-          <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-6">#</a> <code>is_float</code></h3>
+        <article class="doc-entry" id="doc-core-library-types-and-output-7">
+          <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-7">#</a> <code>is_float</code></h3>
           <pre><code class="lang-php">is_float(mixed $value): bool</code></pre>
           <p>True only for a real float value.</p>
           <pre><code class="lang-php">var_dump(is_float(1.5));   // =&gt; bool(true)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-core-library-types-and-output-7">
-          <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-7">#</a> <code>is_double</code></h3>
+        <article class="doc-entry" id="doc-core-library-types-and-output-8">
+          <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-8">#</a> <code>is_double</code></h3>
           <pre><code class="lang-php">is_double(mixed $value): bool</code></pre>
           <p>The alias of `is_float`, sharing its match arm.</p>
         </article>
-        <article class="doc-entry" id="doc-core-library-types-and-output-8">
-          <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-8">#</a> <code>is_string</code></h3>
+        <article class="doc-entry" id="doc-core-library-types-and-output-9">
+          <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-9">#</a> <code>is_string</code></h3>
           <pre><code class="lang-php">is_string(mixed $value): bool</code></pre>
           <p>True only for a string value.</p>
           <pre><code class="lang-php">var_dump(is_string("x"));   // =&gt; bool(true)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-core-library-types-and-output-9">
-          <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-9">#</a> <code>is_bool</code></h3>
+        <article class="doc-entry" id="doc-core-library-types-and-output-10">
+          <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-10">#</a> <code>is_bool</code></h3>
           <pre><code class="lang-php">is_bool(mixed $value): bool</code></pre>
           <p>True only for `true` or `false`.</p>
           <pre><code class="lang-php">var_dump(is_bool(true), is_bool(1));   // =&gt; bool(true) bool(false)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-core-library-types-and-output-10">
-          <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-10">#</a> <code>is_null</code></h3>
+        <article class="doc-entry" id="doc-core-library-types-and-output-11">
+          <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-11">#</a> <code>is_null</code></h3>
           <pre><code class="lang-php">is_null(mixed $value): bool</code></pre>
           <p>True for null, which is also what an unset variable and a missing array key read as.</p>
           <pre><code class="lang-php">var_dump(is_null(null));   // =&gt; bool(true)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-core-library-types-and-output-11">
-          <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-11">#</a> <code>is_numeric</code></h3>
+        <article class="doc-entry" id="doc-core-library-types-and-output-12">
+          <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-12">#</a> <code>is_numeric</code></h3>
           <pre><code class="lang-php">is_numeric(mixed $value): bool</code></pre>
           <p>True for an integer, a float, or a string that parses as a number — including leading whitespace, a sign, hex-free decimals, and exponent notation.</p>
           <pre><code class="lang-php">var_dump(is_numeric("3.5"), is_numeric("3.5px"));   // =&gt; bool(true) bool(false)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-core-library-types-and-output-12">
-          <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-12">#</a> <code>is_callable</code></h3>
+        <article class="doc-entry" id="doc-core-library-types-and-output-13">
+          <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-13">#</a> <code>is_callable</code></h3>
           <pre><code class="lang-php">is_callable(mixed $value): bool</code></pre>
           <p>True for a closure handle, and for ANY non-empty string. DIVERGENCE: the host exposes no function-table lookup here, so `is_callable("no_such_function")` is true — the name is never resolved.</p>
           <pre><code class="lang-php">var_dump(is_callable("strlen"), is_callable("nope"));   // =&gt; bool(true) bool(true)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-core-library-types-and-output-13">
-          <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-13">#</a> <code>intval</code></h3>
+        <article class="doc-entry" id="doc-core-library-types-and-output-14">
+          <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-14">#</a> <code>intval</code></h3>
           <pre><code class="lang-php">intval(mixed $value): int</code></pre>
           <p>The integer value, taking the leading numeric prefix of a string and yielding 0 when there is none. DIVERGENCE: the `$base` argument is not read, so `intval("ff", 16)` is 0.</p>
           <pre><code class="lang-php">echo intval("42px");   // =&gt; 42</code></pre>
         </article>
-        <article class="doc-entry" id="doc-core-library-types-and-output-14">
-          <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-14">#</a> <code>floatval</code></h3>
+        <article class="doc-entry" id="doc-core-library-types-and-output-15">
+          <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-15">#</a> <code>floatval</code></h3>
           <pre><code class="lang-php">floatval(mixed $value): float</code></pre>
           <p>The float value, taking the leading numeric prefix of a string.</p>
           <pre><code class="lang-php">echo floatval("3.5kg");   // =&gt; 3.5</code></pre>
         </article>
-        <article class="doc-entry" id="doc-core-library-types-and-output-15">
-          <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-15">#</a> <code>doubleval</code></h3>
+        <article class="doc-entry" id="doc-core-library-types-and-output-16">
+          <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-16">#</a> <code>doubleval</code></h3>
           <pre><code class="lang-php">doubleval(mixed $value): float</code></pre>
           <p>The alias of `floatval`, sharing its match arm.</p>
         </article>
-        <article class="doc-entry" id="doc-core-library-types-and-output-16">
-          <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-16">#</a> <code>strval</code></h3>
+        <article class="doc-entry" id="doc-core-library-types-and-output-17">
+          <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-17">#</a> <code>strval</code></h3>
           <pre><code class="lang-php">strval(mixed $value): string</code></pre>
           <p>The string value. DIVERGENCE: an object stringifies to `Array` because `__toString` is never consulted.</p>
           <pre><code class="lang-php">echo strval(42);   // =&gt; 42</code></pre>
         </article>
-        <article class="doc-entry" id="doc-core-library-types-and-output-17">
-          <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-17">#</a> <code>boolval</code></h3>
+        <article class="doc-entry" id="doc-core-library-types-and-output-18">
+          <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-18">#</a> <code>__cast_array</code></h3>
+          <pre><code class="lang-php">__cast_array(mixed $value): array</code></pre>
+          <p>Internal target of the `(array)` cast — not a PHP function, and not meant to be called by name. An array passes through, `null` becomes the empty array, an object yields its properties keyed by name, and any other scalar becomes a one-element list. DIVERGENCE: PHP mangles private/protected property names in an object cast (`\0Class\0prop`, `\0*\0prop`); this returns the plain names.</p>
+          <pre><code class="lang-php">var_dump((array)"a");   // =&gt; array(1) { [0]=&gt; string(1) "a" }</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-core-library-types-and-output-19">
+          <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-19">#</a> <code>__cast_object</code></h3>
+          <pre><code class="lang-php">__cast_object(mixed $value): object</code></pre>
+          <p>Internal target of the `(object)` cast — not a PHP function, and not meant to be called by name. An array becomes a `stdClass` whose keys are properties, `null` an empty `stdClass`, and any other scalar a `stdClass` with the value in a `scalar` property. An object passes through unchanged.</p>
+          <pre><code class="lang-php">$o = (object)["a" =&gt; 1]; echo $o-&gt;a;   // =&gt; 1</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-core-library-types-and-output-20">
+          <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-20">#</a> <code>boolval</code></h3>
           <pre><code class="lang-php">boolval(mixed $value): bool</code></pre>
           <p>The boolean value. Falsey values are `0`, `0.0`, `""`, `"0"`, the empty array, and null.</p>
           <pre><code class="lang-php">var_dump(boolval(""), boolval("0"), boolval("a"));   // =&gt; bool(false) bool(false) bool(true)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-core-library-types-and-output-18">
-          <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-18">#</a> <code>print_r</code></h3>
+        <article class="doc-entry" id="doc-core-library-types-and-output-21">
+          <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-21">#</a> <code>print_r</code></h3>
           <pre><code class="lang-php">print_r(mixed $value, bool $return = false): string|true</code></pre>
           <p>Renders a value in PHP's indented human-readable form. With `$return` truthy the text is returned instead of printed.</p>
           <pre><code class="lang-php">echo print_r([1, 2], true);   // =&gt; Array\n(\n    [0] =&gt; 1\n    [1] =&gt; 2\n)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-core-library-types-and-output-19">
-          <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-19">#</a> <code>var_dump</code></h3>
+        <article class="doc-entry" id="doc-core-library-types-and-output-22">
+          <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-22">#</a> <code>var_dump</code></h3>
           <pre><code class="lang-php">var_dump(mixed ...$values): void</code></pre>
           <p>Prints each value with its type and structure — `bool(true)`, `int(3)`, `float(1.5)`, `string(3) "abc"`, and nested `array(n) { … }`.</p>
           <pre><code class="lang-php">var_dump(true);   // =&gt; bool(true)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-core-library-types-and-output-20">
-          <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-20">#</a> <code>var_export</code></h3>
+        <article class="doc-entry" id="doc-core-library-types-and-output-23">
+          <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-23">#</a> <code>var_export</code></h3>
           <pre><code class="lang-php">var_export(mixed $value, bool $return = false): string|null</code></pre>
           <p>Renders a value as parsable PHP source. With `$return` truthy the text is returned; otherwise it is printed and null is returned.</p>
           <pre><code class="lang-php">var_export(1);   // =&gt; 1</code></pre>
         </article>
-        <article class="doc-entry" id="doc-core-library-types-and-output-21">
-          <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-21">#</a> <code>printf</code></h3>
+        <article class="doc-entry" id="doc-core-library-types-and-output-24">
+          <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-24">#</a> <code>printf</code></h3>
           <pre><code class="lang-php">printf(string $format, mixed ...$values): int</code></pre>
           <p>Writes a `sprintf`-formatted string to output and returns its length in BYTES.</p>
           <pre><code class="lang-php">printf("%d", 7);   // =&gt; 7</code></pre>
         </article>
-        <article class="doc-entry" id="doc-core-library-types-and-output-22">
-          <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-22">#</a> <code>json_encode</code></h3>
+        <article class="doc-entry" id="doc-core-library-types-and-output-25">
+          <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-25">#</a> <code>json_encode</code></h3>
           <pre><code class="lang-php">json_encode(mixed $value): string</code></pre>
-          <p>Encodes a value as JSON. DIVERGENCE: the `$flags` and `$depth` arguments are not read, so `JSON_PRETTY_PRINT` and friends have no effect and the output is always compact. `json_decode` lives in the `json` module, not here.</p>
+          <p>Encodes a value as JSON, escaping `/` and non-ASCII characters by default and returning `false` (with `json_last_error()` set to `JSON_ERROR_INF_OR_NAN`) for a NAN or INF. `JSON_PRETTY_PRINT`, `JSON_UNESCAPED_SLASHES` and `JSON_UNESCAPED_UNICODE` are honoured. DIVERGENCE: the `$depth` argument is not read. `json_decode` lives in the `json` module, not here.</p>
           <pre><code class="lang-php">echo json_encode([1, 2, 3]);   // =&gt; [1,2,3]</code></pre>
         </article>
       </section>
@@ -2364,7 +2400,7 @@ min(array $values): mixed</code></pre>
         <article class="doc-entry" id="doc-strings-1">
           <h3><a class="doc-anchor" href="#doc-strings-1">#</a> <code>substr_count</code></h3>
           <pre><code class="lang-php">substr_count(string $haystack, string $needle, int $offset = 0, ?int $length = null): int</code></pre>
-          <p>Counts non-overlapping matches inside the byte window `[$offset, $offset + $length)`. Negative offsets and lengths count from the end. An empty needle raises `substr_count(): Argument #2 ($needle) cannot be empty`. The window is a raw byte slice, so a multibyte haystack can be cut mid-character.</p>
+          <p>Counts non-overlapping matches inside the byte window `[$offset, $offset + $length)`. Negative offsets and lengths count from the end. An empty needle throws `ValueError: substr_count(): Argument #2 ($needle) must not be empty`. The window is a raw byte slice, so a multibyte haystack can be cut mid-character.</p>
           <pre><code class="lang-php">echo substr_count("aaa", "aa");   // =&gt; 1</code></pre>
         </article>
         <article class="doc-entry" id="doc-strings-2">
@@ -2460,7 +2496,7 @@ strtr(string $string, string $from, string $to): string</code></pre>
         <article class="doc-entry" id="doc-strings-17">
           <h3><a class="doc-anchor" href="#doc-strings-17">#</a> <code>chunk_split</code></h3>
           <pre><code class="lang-php">chunk_split(string $string, int $length = 76, string $separator = "\r\n"): string</code></pre>
-          <p>Appends the separator after every `$length` units. DIVERGENCE: chunking counts CODEPOINTS, not bytes as PHP does, so multibyte input chunks differently. A non-positive length raises a `ValueError`-style message.</p>
+          <p>Appends the separator after every `$length` units. DIVERGENCE: chunking counts CODEPOINTS, not bytes as PHP does, so multibyte input chunks differently. A non-positive length throws `ValueError: chunk_split(): Argument #2 ($length) must be greater than 0`.</p>
           <pre><code class="lang-php">echo chunk_split("abcdef", 2, "-");   // =&gt; ab-cd-ef-</code></pre>
         </article>
         <article class="doc-entry" id="doc-strings-18">
@@ -2565,7 +2601,7 @@ strtr(string $string, string $from, string $to): string</code></pre>
         <article class="doc-entry" id="doc-multibyte-strings-1">
           <h3><a class="doc-anchor" href="#doc-multibyte-strings-1">#</a> <code>mb_str_split</code></h3>
           <pre><code class="lang-php">mb_str_split(string $string, int $length = 1): array</code></pre>
-          <p>Splits into chunks of `$length` CODEPOINTS; the final chunk may be shorter. A length below 1 raises `mb_str_split(): Argument #2 ($length) must be greater than 0`.</p>
+          <p>Splits into chunks of `$length` CODEPOINTS; the final chunk may be shorter. A length below 1 throws `ValueError: mb_str_split(): Argument #2 ($length) must be greater than 0`.</p>
           <pre><code class="lang-php">echo mb_str_split("héllo")[1];   // =&gt; é</code></pre>
         </article>
         <article class="doc-entry" id="doc-multibyte-strings-2">
@@ -2600,13 +2636,13 @@ strtr(string $string, string $from, string $to): string</code></pre>
         <article class="doc-entry" id="doc-multibyte-strings-7">
           <h3><a class="doc-anchor" href="#doc-multibyte-strings-7">#</a> <code>mb_substr_count</code></h3>
           <pre><code class="lang-php">mb_substr_count(string $haystack, string $needle): int</code></pre>
-          <p>Non-overlapping match count in codepoints. An empty needle raises `mb_substr_count(): Argument #2 ($needle) cannot be empty`.</p>
+          <p>Non-overlapping match count in codepoints. An empty needle throws `ValueError: mb_substr_count(): Argument #2 ($needle) must not be empty`.</p>
           <pre><code class="lang-php">echo mb_substr_count("ababa", "aba");   // =&gt; 1</code></pre>
         </article>
         <article class="doc-entry" id="doc-multibyte-strings-8">
           <h3><a class="doc-anchor" href="#doc-multibyte-strings-8">#</a> <code>mb_str_pad</code></h3>
           <pre><code class="lang-php">mb_str_pad(string $string, int $length, string $pad_string = " ", int $pad_type = STR_PAD_RIGHT): string</code></pre>
-          <p>Pads to `$length` CODEPOINTS by cycling the pad string. All three `STR_PAD_*` modes are honoured, with `STR_PAD_BOTH` flooring the left side. An empty pad string raises only when padding is actually needed.</p>
+          <p>Pads to `$length` CODEPOINTS by cycling the pad string. All three `STR_PAD_*` modes are honoured, with `STR_PAD_BOTH` flooring the left side. An empty pad string throws `ValueError: mb_str_pad(): Argument #3 ($pad_string) must not be empty`, and only when padding is actually needed.</p>
           <pre><code class="lang-php">echo mb_str_pad("é", 3, "-");   // =&gt; é--</code></pre>
         </article>
         <article class="doc-entry" id="doc-multibyte-strings-9">
@@ -2729,7 +2765,7 @@ strtr(string $string, string $from, string $to): string</code></pre>
         <article class="doc-entry" id="doc-arrays-2">
           <h3><a class="doc-anchor" href="#doc-arrays-2">#</a> <code>array_chunk</code></h3>
           <pre><code class="lang-php">array_chunk(array $array, int $size, bool $preserve_keys = false): array</code></pre>
-          <p>Splits into a list of sub-arrays of at most `$size` elements. A size below 1 raises `array_chunk(): Argument #2 ($length) must be greater than 0`.</p>
+          <p>Splits into a list of sub-arrays of at most `$size` elements. A size below 1 throws `ValueError: array_chunk(): Argument #2 ($length) must be greater than 0`.</p>
           <pre><code class="lang-php">echo count(array_chunk([1, 2, 3], 2));   // =&gt; 2</code></pre>
         </article>
         <article class="doc-entry" id="doc-arrays-3">
@@ -2847,7 +2883,7 @@ echo implode(",", array_keys($a));   // =&gt; a,b</code></pre>
         <article class="doc-entry" id="doc-arrays-22">
           <h3><a class="doc-anchor" href="#doc-arrays-22">#</a> <code>array_walk</code></h3>
           <pre><code class="lang-php">array_walk(array $array, callable $callback, mixed $extra = null): bool</code></pre>
-          <p>Calls `$callback($value, $key[, $extra])` for every element and returns true. DIVERGENCE: PHP's first callback parameter is by reference; phplang has no by-reference parameters, so mutating a SCALAR element inside the callback does not write back. Array and object elements do reflect mutations, because those are shared handles.</p>
+          <p>Calls `$callback($value, $key[, $extra])` for every element and returns true. The value is passed through a reference cell, so a `function (&amp;$v)` callback writes back into the array, scalars included.</p>
           <pre><code class="lang-php">$a = [1, 2]; array_walk($a, function ($v, $k) { echo $k . $v; });   // =&gt; 0112</code></pre>
         </article>
         <article class="doc-entry" id="doc-arrays-23">
@@ -3113,25 +3149,25 @@ echo implode(",", array_keys($a));   // =&gt; a,b</code></pre>
         <article class="doc-entry" id="doc-arbitrary-precision-bcmath-4">
           <h3><a class="doc-anchor" href="#doc-arbitrary-precision-bcmath-4">#</a> <code>bcdiv</code></h3>
           <pre><code class="lang-php">bcdiv(string $num1, string $num2, ?int $scale = null): string</code></pre>
-          <p>Decimal division; a zero divisor raises `bcdiv(): Division by zero`. DIVERGENCE: the quotient is computed at a 100-significant-digit context before truncation, so this is BOUNDED precision — a `$scale` needing more than about 100 significant digits is not reliable.</p>
+          <p>Decimal division; a zero divisor throws `DivisionByZeroError: Division by zero`. DIVERGENCE: the quotient is computed at a 100-significant-digit context before truncation, so this is BOUNDED precision — a `$scale` needing more than about 100 significant digits is not reliable.</p>
           <pre><code class="lang-php">echo bcdiv("10", "3", 4);   // =&gt; 3.3333</code></pre>
         </article>
         <article class="doc-entry" id="doc-arbitrary-precision-bcmath-5">
           <h3><a class="doc-anchor" href="#doc-arbitrary-precision-bcmath-5">#</a> <code>bcmod</code></h3>
           <pre><code class="lang-php">bcmod(string $num1, string $num2, ?int $scale = null): string</code></pre>
-          <p>The remainder `a - b * trunc(a / b)`, following PHP 7.2+ semantics. A zero divisor raises `bcmod(): Modulo by zero`. The intermediate division inherits the same bounded context as `bcdiv`.</p>
+          <p>The remainder `a - b * trunc(a / b)`, following PHP 7.2+ semantics. A zero divisor throws `DivisionByZeroError: Modulo by zero`. The intermediate division inherits the same bounded context as `bcdiv`.</p>
           <pre><code class="lang-php">echo bcmod("10", "3");   // =&gt; 1</code></pre>
         </article>
         <article class="doc-entry" id="doc-arbitrary-precision-bcmath-6">
           <h3><a class="doc-anchor" href="#doc-arbitrary-precision-bcmath-6">#</a> <code>bcpow</code></h3>
           <pre><code class="lang-php">bcpow(string $num, string $exponent, ?int $scale = null): string</code></pre>
-          <p>Exponentiation by squaring on exact decimals. DIVERGENCE: a fractional exponent is silently truncated toward zero instead of raising PHP 8's `ValueError`, and an exponent beyond the 64-bit range saturates. A negative exponent yields the reciprocal, and zero to a negative power raises `bcpow(): Division by zero`.</p>
+          <p>Exponentiation by squaring on exact decimals. DIVERGENCE: a fractional exponent is silently truncated toward zero instead of raising PHP 8's `ValueError`, and an exponent beyond the 64-bit range saturates. A negative exponent yields the reciprocal, and zero to a negative power throws `DivisionByZeroError: Negative power of zero`.</p>
           <pre><code class="lang-php">echo bcpow("2", "10");   // =&gt; 1024</code></pre>
         </article>
         <article class="doc-entry" id="doc-arbitrary-precision-bcmath-7">
           <h3><a class="doc-anchor" href="#doc-arbitrary-precision-bcmath-7">#</a> <code>bcsqrt</code></h3>
           <pre><code class="lang-php">bcsqrt(string $num, ?int $scale = null): string</code></pre>
-          <p>The square root truncated to `$scale` fractional digits. A negative operand raises `bcsqrt(): Argument must be greater than or equal to 0`. DIVERGENCE: computed at the same bounded 100-significant-digit context as `bcdiv`.</p>
+          <p>The square root truncated to `$scale` fractional digits. A negative operand throws `ValueError: bcsqrt(): Argument #1 ($num) must be greater than or equal to 0`. DIVERGENCE: computed at the same bounded 100-significant-digit context as `bcdiv`.</p>
           <pre><code class="lang-php">echo bcsqrt("2", 4);   // =&gt; 1.4142</code></pre>
         </article>
         <article class="doc-entry" id="doc-arbitrary-precision-bcmath-8">
@@ -3149,7 +3185,7 @@ echo implode(",", array_keys($a));   // =&gt; a,b</code></pre>
         <article class="doc-entry" id="doc-arbitrary-precision-bcmath-10">
           <h3><a class="doc-anchor" href="#doc-arbitrary-precision-bcmath-10">#</a> <code>bcpowmod</code></h3>
           <pre><code class="lang-php">bcpowmod(string $num, string $exponent, string $modulus, ?int $scale = null): string</code></pre>
-          <p>Modular exponentiation at TRUE arbitrary precision — all three operands are truncated to integers and a big-integer `modpow` does the work. A zero modulus or a negative exponent raises. Because the result is an integer, `$scale` only controls how many trailing zero digits are appended.</p>
+          <p>Modular exponentiation at TRUE arbitrary precision — all three operands are truncated to integers and a big-integer `modpow` does the work. A zero modulus throws `DivisionByZeroError: Modulo by zero`; a negative exponent throws `ValueError: bcpowmod(): Argument #2 ($exponent) must be greater than or equal to 0`. Because the result is an integer, `$scale` only controls how many trailing zero digits are appended.</p>
           <pre><code class="lang-php">echo bcpowmod("4", "13", "497");   // =&gt; 445</code></pre>
         </article>
       </section>
@@ -3183,7 +3219,7 @@ echo implode(",", array_keys($a));   // =&gt; a,b</code></pre>
         <article class="doc-entry" id="doc-arbitrary-precision-gmp-5">
           <h3><a class="doc-anchor" href="#doc-arbitrary-precision-gmp-5">#</a> <code>gmp_div_q</code></h3>
           <pre><code class="lang-php">gmp_div_q(string|int $num1, string|int $num2, int $rounding_mode = GMP_ROUND_ZERO): string</code></pre>
-          <p>Integer quotient truncated toward zero; a zero divisor raises `gmp_div_q(): Division by zero`. DIVERGENCE: `$rounding_mode` is accepted and ignored — only truncation is implemented.</p>
+          <p>Integer quotient truncated toward zero; a zero divisor throws `DivisionByZeroError: gmp_div_q(): Argument #2 ($num2) Division by zero`. DIVERGENCE: `$rounding_mode` is accepted and ignored — only truncation is implemented.</p>
           <pre><code class="lang-php">echo gmp_div_q("10", "3");   // =&gt; 3</code></pre>
         </article>
         <article class="doc-entry" id="doc-arbitrary-precision-gmp-6">
@@ -3199,7 +3235,7 @@ echo implode(",", array_keys($a));   // =&gt; a,b</code></pre>
         <article class="doc-entry" id="doc-arbitrary-precision-gmp-8">
           <h3><a class="doc-anchor" href="#doc-arbitrary-precision-gmp-8">#</a> <code>gmp_mod</code></h3>
           <pre><code class="lang-php">gmp_mod(string|int $num1, string|int $num2): string</code></pre>
-          <p>A remainder whose sign follows the DIVISOR: the raw remainder has `|m|` added when it is negative, so a positive modulus always yields a result in `[0, |m|)`. A zero modulus raises.</p>
+          <p>A remainder whose sign follows the DIVISOR: the raw remainder has `|m|` added when it is negative, so a positive modulus always yields a result in `[0, |m|)`. A zero modulus throws `DivisionByZeroError: gmp_mod(): Argument #2 ($num2) Modulo by zero`.</p>
           <pre><code class="lang-php">echo gmp_mod("-7", "3");   // =&gt; 2</code></pre>
         </article>
         <article class="doc-entry" id="doc-arbitrary-precision-gmp-9">
@@ -3211,7 +3247,7 @@ echo implode(",", array_keys($a));   // =&gt; a,b</code></pre>
         <article class="doc-entry" id="doc-arbitrary-precision-gmp-10">
           <h3><a class="doc-anchor" href="#doc-arbitrary-precision-gmp-10">#</a> <code>gmp_powm</code></h3>
           <pre><code class="lang-php">gmp_powm(string|int $num, string|int $exponent, string|int $modulus): string</code></pre>
-          <p>Modular exponentiation at true arbitrary precision. A zero modulus raises `Modulus may not be zero` and a negative exponent raises `Negative exponent not supported`.</p>
+          <p>Modular exponentiation at true arbitrary precision. A zero modulus throws `DivisionByZeroError: Modulo by zero` and a negative exponent raises `Negative exponent not supported`.</p>
           <pre><code class="lang-php">echo gmp_powm("4", "13", "497");   // =&gt; 445</code></pre>
         </article>
         <article class="doc-entry" id="doc-arbitrary-precision-gmp-11">
@@ -3647,13 +3683,13 @@ preg_match("/(\d+)/", "ab 42", $u); var_dump($u);   // =&gt; NULL</code></pre>
         <article class="doc-entry" id="doc-hashing-4">
           <h3><a class="doc-anchor" href="#doc-hashing-4">#</a> <code>hash</code></h3>
           <pre><code class="lang-php">hash(string $algo, string $data, bool $binary = false): string</code></pre>
-          <p>Digests the data with one of exactly six algorithms: `md5`, `sha1`, `sha256`, `sha512`, `crc32b`, `crc32`. DIVERGENCE: `sha384` is NOT accepted here even though `hash_hmac`, `hash_file`, and `hash_pbkdf2` accept it. An unknown name raises `hash(): Argument #1 ($algo) must be a valid hashing algorithm`. PHP 8.1's `$options` array does not exist.</p>
+          <p>Digests the data with one of exactly six algorithms: `md5`, `sha1`, `sha256`, `sha512`, `crc32b`, `crc32`. DIVERGENCE: `sha384` is NOT accepted here even though `hash_hmac`, `hash_file`, and `hash_pbkdf2` accept it. An unknown name throws `ValueError: hash(): Argument #1 ($algo) must be a valid hashing algorithm`. PHP 8.1's `$options` array does not exist.</p>
           <pre><code class="lang-php">echo hash("sha256", "");   // =&gt; e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855</code></pre>
         </article>
         <article class="doc-entry" id="doc-hashing-5">
           <h3><a class="doc-anchor" href="#doc-hashing-5">#</a> <code>hash_hmac</code></h3>
           <pre><code class="lang-php">hash_hmac(string $algo, string $data, string $key, bool $binary = false): string</code></pre>
-          <p>RFC 2104 HMAC over the same digests, with the block size paired per algorithm. Exactly five names are accepted — `md5`, `sha1`, `sha256`, `sha384`, `sha512` — so the CRC variants `hash()` allows are rejected. An unknown name raises `hash_hmac(): Argument #1 ($algo) must be a valid cryptographic hashing algorithm`.</p>
+          <p>RFC 2104 HMAC over the same digests, with the block size paired per algorithm. Exactly five names are accepted — `md5`, `sha1`, `sha256`, `sha384`, `sha512` — so the CRC variants `hash()` allows are rejected. An unknown name throws `ValueError: hash_hmac(): Argument #1 ($algo) must be a valid cryptographic hashing algorithm`. `$key` is `#[\SensitiveParameter]`, so a backtrace prints it as `Object(SensitiveParameterValue)` rather than the key itself.</p>
           <pre><code class="lang-php">echo strlen(hash_hmac("sha256", "m", "k"));   // =&gt; 64</code></pre>
         </article>
         <article class="doc-entry" id="doc-hashing-6">
@@ -3695,13 +3731,13 @@ preg_match("/(\d+)/", "ab 42", $u); var_dump($u);   // =&gt; NULL</code></pre>
         <article class="doc-entry" id="doc-hashing-files-and-key-derivation-6">
           <h3><a class="doc-anchor" href="#doc-hashing-files-and-key-derivation-6">#</a> <code>hash_pbkdf2</code></h3>
           <pre><code class="lang-php">hash_pbkdf2(string $algo, string $password, string $salt, int $iterations, int $length = 0, bool $binary = false): string</code></pre>
-          <p>PBKDF2 per RFC 2898 over the local HMAC, accepting `md5`, `sha1`, `sha256`, `sha384`, `sha512`. `$length` is the length of the OUTPUT STRING — derived bytes for binary output, hex characters otherwise — and 0 emits the full digest. Raises on an unknown algorithm, non-positive iterations, a negative length, or a length above 16777216.</p>
+          <p>PBKDF2 per RFC 2898 over the local HMAC, accepting `md5`, `sha1`, `sha256`, `sha384`, `sha512`. `$length` is the length of the OUTPUT STRING — derived bytes for binary output, hex characters otherwise — and 0 emits the full digest. Throws a `ValueError` on an unknown algorithm, non-positive iterations, or a negative length. `$password` is `#[\SensitiveParameter]`, so a backtrace prints it as `Object(SensitiveParameterValue)`. DIVERGENCE: a length above 16777216 is refused (PHP instead attempts the allocation and dies on the memory limit).</p>
           <pre><code class="lang-php">echo strlen(hash_pbkdf2("sha256", "p", "s", 10, 20));   // =&gt; 20</code></pre>
         </article>
         <article class="doc-entry" id="doc-hashing-files-and-key-derivation-7">
           <h3><a class="doc-anchor" href="#doc-hashing-files-and-key-derivation-7">#</a> <code>random_bytes</code></h3>
           <pre><code class="lang-php">random_bytes(int $length): string</code></pre>
-          <p>DIVERGENCE — NOT A CSPRNG. No OS-entropy dependency is available to this crate, so the bytes come from a SplitMix64 generator seeded from wall-clock nanoseconds XOR the process id. Use it for tests and filler only, never for keys, tokens, or salts. Output is the Latin-1 raw mapping, so `strlen()` exceeds `$length` whenever a generated byte reaches 0x80. A length below 1, or above 16 MiB, raises.</p>
+          <p>DIVERGENCE — NOT A CSPRNG. No OS-entropy dependency is available to this crate, so the bytes come from a SplitMix64 generator seeded from wall-clock nanoseconds XOR the process id. Use it for tests and filler only, never for keys, tokens, or salts. Output is the Latin-1 raw mapping, so `strlen()` exceeds `$length` whenever a generated byte reaches 0x80. A length below 1 throws `ValueError: random_bytes(): Argument #1 ($length) must be greater than 0`. DIVERGENCE: a length above 16 MiB is refused with a `ValueError` too (PHP instead attempts the allocation and dies on the memory limit).</p>
         </article>
       </section>
 
@@ -4628,20 +4664,20 @@ echo implode(",", $a), "|", implode(",", $b);   // =&gt; 1,2,3|a,b,c</code></pre
         <article class="doc-entry" id="doc-system-and-runtime-environment-26">
           <h3><a class="doc-anchor" href="#doc-system-and-runtime-environment-26">#</a> <code>error_reporting</code></h3>
           <pre><code class="lang-php">error_reporting(?int $error_level = null): int</code></pre>
-          <p>DIVERGENCE: the argument is never read and no level is stored, so it reports the same value before and after any attempted set. Always returns 32767 (`E_ALL`).</p>
-          <pre><code class="lang-php">error_reporting(E_ERROR); echo error_reporting();   // =&gt; 32767</code></pre>
+          <p>Read the error-reporting mask, or set it and return the PREVIOUS one. A diagnostic is displayed only when its `E_*` bit is set in the mask, so `error_reporting(0)` mutes every warning and notice. A missing argument and an explicit `null` both mean read-only. The mask starts at `E_ALL` unless `php -d error_reporting=…` seeded another. It cannot silence a COMPILE-time notice (`Using ${var} in strings …`), which was already decided when the file was read.</p>
+          <pre><code class="lang-php">error_reporting(E_ALL &amp; ~E_WARNING); echo $undefined; echo "quiet";   // =&gt; quiet</code></pre>
         </article>
         <article class="doc-entry" id="doc-system-and-runtime-environment-27">
           <h3><a class="doc-anchor" href="#doc-system-and-runtime-environment-27">#</a> <code>ini_get</code></h3>
-          <pre><code class="lang-php">ini_get(string $option): false</code></pre>
-          <p>DIVERGENCE: always false — PHP's "no such option" result — for every name. The argument is never read.</p>
-          <pre><code class="lang-php">var_dump(ini_get("precision"));   // =&gt; bool(false)</code></pre>
+          <pre><code class="lang-php">ini_get(string $option): string|false</code></pre>
+          <p>The current value of an ini setting, always as a STRING, or false when the engine has no such setting. `error_reporting` reads back what was last written to it — the decimal mask after `error_reporting()` or `-d`, but the RAW string after an `ini_set`, which is why `ini_set("error_reporting", "12abc")` leaves `ini_get` reporting `"12abc"` while the mask is 12. DIVERGENCE: only settings with an engine-level default are known (`precision`, `serialize_precision`, `display_errors`, `log_errors`, `html_errors`, `default_charset`, `max_execution_time`, `error_reporting`); ones whose value comes from a php.ini file, such as `memory_limit` and `date.timezone`, report false rather than a guess.</p>
+          <pre><code class="lang-php">var_dump(ini_get("precision"), ini_get("nosuch"));   // =&gt; string(2) "14" bool(false)</code></pre>
         </article>
         <article class="doc-entry" id="doc-system-and-runtime-environment-28">
           <h3><a class="doc-anchor" href="#doc-system-and-runtime-environment-28">#</a> <code>ini_set</code></h3>
-          <pre><code class="lang-php">ini_set(string $option, mixed $value): false</code></pre>
-          <p>DIVERGENCE: sets nothing and always returns false, PHP's failure value. Neither argument is read.</p>
-          <pre><code class="lang-php">var_dump(ini_set("precision", "3"));   // =&gt; bool(false)</code></pre>
+          <pre><code class="lang-php">ini_set(string $option, mixed $value): string|false</code></pre>
+          <p>Set an ini setting, returning its previous value as a string — or false, changing nothing, for a name the engine does not know (`ini_set` cannot invent settings). Writing `error_reporting` also writes the mask, by ordinary string-to-int coercion and NOT the php.ini constant-expression scanner: `ini_set("error_reporting", "E_ALL &amp; ~E_NOTICE")` reads as 0 and mutes everything, exactly as in the reference. The symbolic spelling works only on the `php -d error_reporting=…` path. See `ini_get` for which names are known.</p>
+          <pre><code class="lang-php">var_dump(ini_set("error_reporting", "0"), ini_get("error_reporting"));   // =&gt; string(5) "30719" string(1) "0"</code></pre>
         </article>
         <article class="doc-entry" id="doc-system-and-runtime-environment-29">
           <h3><a class="doc-anchor" href="#doc-system-and-runtime-environment-29">#</a> <code>spl_object_id</code></h3>
@@ -4852,7 +4888,7 @@ var_dump(is_subclass_of(new B, "A"), is_subclass_of(new A, "A"));   // =&gt; boo
         <article class="doc-entry" id="doc-runtime-and-diagnostics-9">
           <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-9">#</a> <code>set_exception_handler</code></h3>
           <pre><code class="lang-php">set_exception_handler(?callable $callback): null</code></pre>
-          <p>DIVERGENCE: shares the `set_error_handler` arm — the callback is discarded and an uncaught exception still aborts with the host's own message.</p>
+          <p>DIVERGENCE: shares the `set_error_handler` arm — the callback is discarded, so an uncaught exception still ends the program with the standard `Fatal error: Uncaught …` block instead of being routed to the handler.</p>
         </article>
         <article class="doc-entry" id="doc-runtime-and-diagnostics-10">
           <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-10">#</a> <code>restore_error_handler</code></h3>

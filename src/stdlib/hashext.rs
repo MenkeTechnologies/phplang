@@ -18,7 +18,7 @@
 //! fully faithful. See `wrap` for the `strlen` caveat on raw binary output.
 
 use crate::host::with_host;
-use crate::stdlib::common::{arg, int_arg, str_arg};
+use crate::stdlib::common::{arg, int_arg, str_arg, throws};
 use fusevm::Value;
 
 /// A raw-digest function (`data -> digest bytes`) paired with its HMAC block
@@ -111,7 +111,11 @@ fn hash_hmac_file(args: &[Value]) -> Result<Value, String> {
         Some(pair) => pair,
         // PHP 8 ValueError text for an unknown HMAC algorithm.
         None => {
-            return Err("hash_hmac_file(): Argument #1 ($algo) must be a valid cryptographic hashing algorithm".to_string());
+            return Err(throws(
+                "ValueError",
+                "hash_hmac_file(): Argument #1 ($algo) must be a valid cryptographic \
+             hashing algorithm",
+            ));
         }
     };
     let bytes = match read_file(&path) {
@@ -156,18 +160,24 @@ fn hash_pbkdf2(args: &[Value]) -> Result<Value, String> {
     let (f, block_size) = match hmac_algo(&algo) {
         Some(pair) => pair,
         None => {
-            return Err(
-                "hash_pbkdf2(): Argument #1 ($algo) must be a valid hashing algorithm".to_string(),
-            );
+            return Err(throws(
+                "ValueError",
+                "hash_pbkdf2(): Argument #1 ($algo) must be a valid cryptographic \
+                 hashing algorithm",
+            ));
         }
     };
     if iterations <= 0 {
-        return Err("hash_pbkdf2(): Argument #4 ($iterations) must be greater than 0".to_string());
+        return Err(throws(
+            "ValueError",
+            "hash_pbkdf2(): Argument #4 ($iterations) must be greater than 0",
+        ));
     }
     if length < 0 {
-        return Err(
-            "hash_pbkdf2(): Argument #5 ($length) must be greater than or equal to 0".to_string(),
-        );
+        return Err(throws(
+            "ValueError",
+            "hash_pbkdf2(): Argument #5 ($length) must be greater than or equal to 0",
+        ));
     }
     // Cap the derived-key length so a pathological request cannot abort the
     // process on allocation.
@@ -211,7 +221,10 @@ fn random_bytes(args: &[Value]) -> Result<Value, String> {
     let len = int_arg(args, 0);
     if len < 1 {
         // PHP 8 ValueError text.
-        return Err("random_bytes(): Argument #1 ($length) must be greater than 0".to_string());
+        return Err(throws(
+            "ValueError",
+            "random_bytes(): Argument #1 ($length) must be greater than 0",
+        ));
     }
     // Cap the request so a pathological length cannot abort the process on
     // allocation (16 MiB is far beyond any real key/token size).

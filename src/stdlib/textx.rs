@@ -53,7 +53,7 @@ fn vfprintf(args: &[Value]) -> Result<Value, String> {
 
 /// Run `sprintf(...call_args)` and write the bytes to `$res`.
 fn write_formatted(res: &Value, call_args: Vec<Value>) -> Result<Value, String> {
-    let s = crate::builtins::call_library("sprintf", call_args)?;
+    let s = crate::builtins::call_library("sprintf", &call_args)?;
     let bytes = with_host(|h| h.to_str(&s)).into_bytes();
     let written = with_host(|h| h.res_write(res, &bytes));
     flush(res);
@@ -76,7 +76,7 @@ fn fscanf(args: &[Value]) -> Result<Value, String> {
         // would make the idiomatic `while ($r = fscanf(...))` loop spin forever.
         None => return Ok(Value::bool(false)),
     };
-    crate::builtins::call_library("sscanf", vec![Value::str(line), fmt])
+    crate::builtins::call_library("sscanf", &[Value::str(line), fmt])
 }
 
 /// `array_change_key_case($array, $case = CASE_LOWER)` — return a copy of

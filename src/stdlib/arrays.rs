@@ -152,7 +152,10 @@ fn php_array_chunk(args: &[Value]) -> Result<Value, String> {
     let arr = arg(args, 0);
     let size = int_arg(args, 1);
     if size < 1 {
-        return Err("array_chunk(): Argument #2 ($length) must be greater than 0".into());
+        return Err(throws(
+            "ValueError",
+            "array_chunk(): Argument #2 ($length) must be greater than 0",
+        ));
     }
     let preserve = args.get(2).map(|v| host::with_host(|h| h.is_truthy(v)));
     let preserve = preserve.unwrap_or(false);

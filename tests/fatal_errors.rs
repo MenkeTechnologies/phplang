@@ -333,3 +333,76 @@ fn running_out_of_tokens_is_reported_against_the_last_line_not_line_zero() {
         "syntax error, unexpected end of file in Command line code on line 3"
     );
 }
+
+// ── library argument errors ──────────────────────────────────────────────────
+
+#[test]
+fn a_library_argument_error_throws_with_the_library_call_as_frame_zero() {
+    // php -r 'echo implode(",", range(9, 10, 2));' — a step wider than the span
+    // is a ValueError, and the trace names the internal call with its arguments.
+    assert_eq!(
+        output_of(r#"<?php echo implode(",", range(9, 10, 2));"#),
+        "\nFatal error: Uncaught ValueError: range(): Argument #3 ($step) must be less than \
+         the range spanned by argument #1 ($start) and argument #2 ($end) in Command line code:1\n\
+         Stack trace:\n#0 Command line code(1): range(9, 10, 2)\n#1 {main}\n  \
+         thrown in Command line code on line 1\n"
+    );
+}
+
+#[test]
+fn the_internal_frame_stacks_under_the_user_frames_that_reached_it() {
+    // php -r 'function f() { return range(9, 10, 2); } f();' — the internal frame
+    // is #0 and the PHP function that called it is #1.
+    assert_eq!(
+        output_of(r#"<?php function f() { return range(9, 10, 2); } f();"#),
+        "\nFatal error: Uncaught ValueError: range(): Argument #3 ($step) must be less than \
+         the range spanned by argument #1 ($start) and argument #2 ($end) in Command line code:1\n\
+         Stack trace:\n#0 Command line code(1): range(9, 10, 2)\n#1 Command line code(1): f()\n\
+         #2 {main}\n  thrown in Command line code on line 1\n"
+    );
+}
+
+#[test]
+fn the_internal_frame_renders_its_arguments_the_way_every_other_frame_does() {
+    // Long strings are cut to 15 characters inside the quotes and an array
+    // collapses to `Array` — the same `trace_arg` rendering a user frame uses.
+    assert!(
+        output_of(r#"<?php range("aaaaaaaaaaaaaaaaaaaaaaa", "b", 99);"#)
+            .contains("#0 Command line code(1): range('aaaaaaaaaaaaaaa...', 'b', 99)")
+    );
+    assert!(output_of(r#"<?php array_combine([1, 2], [1]);"#)
+        .contains("#0 Command line code(1): array_combine(Array, Array)"));
+}
+
+#[test]
+fn a_sensitive_parameter_never_reaches_the_trace() {
+    // PHP marks `hash_hmac`'s `$key` `#[\SensitiveParameter]` so a key cannot
+    // leak into an error log; the trace shows the wrapper object instead.
+    let out = output_of(r#"<?php hash_hmac("nope", "data", "SECRET-KEY");"#);
+    assert!(
+        out.contains(
+            "#0 Command line code(1): hash_hmac('nope', 'data', Object(SensitiveParameterValue))"
+        ),
+        "trace was: {out}"
+    );
+    assert!(!out.contains("SECRET-KEY"), "the key leaked: {out}");
+}
+
+#[test]
+fn a_library_argument_error_is_catchable_and_carries_its_own_site() {
+    // The whole point of throwing rather than aborting: a `catch` sees it, and
+    // `getLine`/`getFile` report the CALL, not something internal.
+    assert_eq!(
+        output_of(
+            r#"<?php try { range(9, 10, 2); } catch (ValueError $e) { echo get_class($e), "|", $e->getLine(), "|", $e->getFile(); }"#
+        ),
+        "ValueError|1|Command line code"
+    );
+    // A `DivisionByZeroError` from bcmath carries PHP's unprefixed message.
+    assert_eq!(
+        output_of(
+            r#"<?php try { bcdiv("1", "0"); } catch (Throwable $e) { echo get_class($e), "|", $e->getMessage(); }"#
+        ),
+        "DivisionByZeroError|Division by zero"
+    );
+}
