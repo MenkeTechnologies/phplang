@@ -9,7 +9,7 @@
 //! `Err`.
 
 use crate::host::{self, ops, with_host, PropAccess};
-use fusevm::{NumOp, Value, VM};
+use fusevm::{NumOp, NumericCall, Value, VM};
 
 /// Register every compiler-emitted builtin on a fresh VM.
 pub fn install(vm: &mut VM) {
@@ -349,6 +349,9 @@ fn b_sprop_incdec(vm: &mut VM, _: u8) -> Value {
         Err(e) => return fail(vm, e),
     };
     mark_warn_site(vm);
+    if incdec_refused(vm, &old, inc) {
+        return Value::Undef;
+    }
     let newv = with_host(|h| h.incdec_value(&old, inc));
     if let Err(e) = host::static_prop_set(&class, &name, newv.clone()) {
         return fail(vm, e);
@@ -616,27 +619,170 @@ fn b_sig_level(_: &mut VM, _: u8) -> Value {
 }
 
 /// Pop two operands as PHP integers (bitwise ops cast their operands to int).
-fn pop_two_ints(vm: &mut VM) -> (i64, i64) {
+/// PHP's bitwise operators take two paths. Two *string* operands are combined
+/// byte by byte and produce a string — `"5" | "3"` is `"7"` because `0x35|0x33`
+/// is `0x37`, not because either side was read as a number. Anything else is
+/// numeric and therefore subject to the PHP 8 operand rules, so `"g" | 1` is a
+/// `TypeError` while `"5g" | 1` warns and uses `5`.
+///
+/// `None` means the chunk has been halted with a pending `TypeError`.
+fn pop_two_ints(vm: &mut VM, sym: &str) -> Option<(i64, i64)> {
     let b = vm.pop();
     let a = vm.pop();
-    with_host(|h| (h.to_number(&a).to_int(), h.to_number(&b).to_int()))
+    int_args(vm, sym, &a, &b)
+}
+
+/// [`arith_args`] for the operators that then narrow both operands to `int`.
+fn int_args(vm: &mut VM, sym: &str, a: &Value, b: &Value) -> Option<(i64, i64)> {
+    mark_warn_site(vm);
+    let resolve = || -> Result<(i64, i64), String> {
+        Ok((
+            int_arith_operand(sym, a, b, true)?,
+            int_arith_operand(sym, a, b, false)?,
+        ))
+    };
+    match resolve() {
+        Ok(pair) => Some(pair),
+        Err(_) => {
+            mark_frame_line(vm);
+            vm.ip = vm.chunk.ops.len();
+            None
+        }
+    }
+}
+
+/// Narrow an already-coerced operand to `int` for the operators that accept
+/// nothing else (`% << >> & | ^`, `intdiv`), raising the diagnostics PHP
+/// attaches to that narrowing.
+///
+/// A float that is already integral converts in silence; one with a fraction is
+/// deprecated, and one outside `i64` is a warning instead. `orig` is the operand
+/// before coercion, because the deprecation quotes the *string* a float-string
+/// came from (`float-string ".5g"`) rather than the number it parsed to.
+fn int_operand(orig: &Value, coerced: &Value) -> i64 {
+    let Value::Float(f) = *coerced else {
+        return coerced.to_int();
+    };
+    let out_of_range = !f.is_finite() || f < i64::MIN as f64 || f > i64::MAX as f64;
+    let lossy = out_of_range || f.fract() != 0.0;
+    // A float that *came from a string* is always reported as a lost-precision
+    // deprecation, even when the loss is an overflow rather than a fraction —
+    // but only when the string was written in float form. An integer-format
+    // string that merely outgrew `i64` narrows silently.
+    if let Value::Str(s) = orig {
+        if lossy && host::numeric_prefix_is_float(s) {
+            with_host(|h| {
+                h.deprecated(format!(
+                    "Implicit conversion from float-string \"{s}\" to int loses precision"
+                ))
+            });
+        }
+        // Saturating, which is what `as` already does for a finite float.
+        return if f.is_finite() { f as i64 } else { 0 };
+    }
+    if out_of_range {
+        let shown = with_host(|h| h.to_str(&Value::float(f)));
+        with_host(|h| {
+            h.warn(format!(
+                "The float {shown} is not representable as an int, cast occurred"
+            ))
+        });
+        return 0;
+    }
+    if f.fract() != 0.0 {
+        let shown = with_host(|h| h.to_str(&Value::float(f)));
+        with_host(|h| {
+            h.deprecated(format!(
+                "Implicit conversion from float {shown} to int loses precision"
+            ))
+        });
+    }
+    f as i64
+}
+
+/// Resolve one operand of an int-only operator: the PHP 8 operand rules first,
+/// then the narrowing to int.
+///
+/// Doing both for the left operand before touching the right is observable —
+/// `2.5 % "INF"` deprecates the left narrowing and only then throws on the
+/// right — so the two steps cannot be batched across operands.
+fn int_arith_operand(sym: &str, a: &Value, b: &Value, left: bool) -> Result<i64, String> {
+    let n = coerce_arith(sym, a, b, left)?;
+    Ok(int_operand(if left { a } else { b }, &n))
+}
+
+/// The two operands of a bitwise operator when both are strings, which selects
+/// the byte-wise form.
+fn pop_two_strs(vm: &mut VM) -> Option<(Vec<u8>, Vec<u8>)> {
+    match (vm.stack.iter().nth_back(1), vm.stack.last()) {
+        (Some(Value::Str(x)), Some(Value::Str(y))) => {
+            let (x, y) = (x.as_bytes().to_vec(), y.as_bytes().to_vec());
+            vm.pop();
+            vm.pop();
+            Some((x, y))
+        }
+        _ => None,
+    }
 }
 
 fn b_bitand(vm: &mut VM, _: u8) -> Value {
-    let (a, b) = pop_two_ints(vm);
+    // `&` and `^` truncate to the shorter operand; only `|` pads.
+    if let Some((x, y)) = pop_two_strs(vm) {
+        return str_bitop(&x, &y, false, |p, q| p & q);
+    }
+    let Some((a, b)) = pop_two_ints(vm, "&") else {
+        return Value::Undef;
+    };
     Value::int(a & b)
 }
 fn b_bitor(vm: &mut VM, _: u8) -> Value {
-    let (a, b) = pop_two_ints(vm);
+    if let Some((x, y)) = pop_two_strs(vm) {
+        return str_bitop(&x, &y, true, |p, q| p | q);
+    }
+    let Some((a, b)) = pop_two_ints(vm, "|") else {
+        return Value::Undef;
+    };
     Value::int(a | b)
 }
 fn b_bitxor(vm: &mut VM, _: u8) -> Value {
-    let (a, b) = pop_two_ints(vm);
+    if let Some((x, y)) = pop_two_strs(vm) {
+        return str_bitop(&x, &y, false, |p, q| p ^ q);
+    }
+    let Some((a, b)) = pop_two_ints(vm, "^") else {
+        return Value::Undef;
+    };
     Value::int(a ^ b)
 }
 
+/// Combine two byte strings. `pad` picks the length rule: `|` runs to the longer
+/// operand treating the missing bytes as `\0`, while `&` and `^` stop at the
+/// shorter one.
+fn str_bitop(x: &[u8], y: &[u8], pad: bool, f: impl Fn(u8, u8) -> u8) -> Value {
+    let n = if pad {
+        x.len().max(y.len())
+    } else {
+        x.len().min(y.len())
+    };
+    // Result bytes become chars one-for-one, which is the same mapping `chr`
+    // already uses here. A byte above 0x7f therefore lands as that code point
+    // rather than as a raw byte — the frontend's existing string
+    // representation, not a choice this operator makes.
+    Value::str(
+        (0..n)
+            .map(|i| {
+                f(
+                    x.get(i).copied().unwrap_or(0),
+                    y.get(i).copied().unwrap_or(0),
+                ) as char
+            })
+            .collect::<String>(),
+    )
+}
+
 fn b_shl(vm: &mut VM, _: u8) -> Value {
-    let (a, b) = pop_two_ints(vm);
+    let Some((a, b)) = pop_two_ints(vm, "<<") else {
+        return Value::Undef;
+    };
     // PHP throws a catchable ArithmeticError on a negative shift, not a fatal.
     if b < 0 {
         return throw_php(vm, "ArithmeticError", "Bit shift by negative number");
@@ -651,7 +797,9 @@ fn b_shl(vm: &mut VM, _: u8) -> Value {
 }
 
 fn b_shr(vm: &mut VM, _: u8) -> Value {
-    let (a, b) = pop_two_ints(vm);
+    let Some((a, b)) = pop_two_ints(vm, ">>") else {
+        return Value::Undef;
+    };
     if b < 0 {
         return throw_php(vm, "ArithmeticError", "Bit shift by negative number");
     }
@@ -663,7 +811,18 @@ fn b_shr(vm: &mut VM, _: u8) -> Value {
 
 fn b_bitnot(vm: &mut VM, _: u8) -> Value {
     let v = vm.pop();
-    Value::int(!with_host(|h| h.to_number(&v).to_int()))
+    // `~` on a string flips its bytes and stays a string; on an array or object
+    // it is refused by name rather than by the `Unsupported operand types`
+    // wording the binary operators use.
+    match &v {
+        Value::Str(s) => str_bitop(s.as_bytes(), s.as_bytes(), false, |p, _| !p),
+        Value::Obj(_) => {
+            let what = with_host(|h| host::arith_type_name(h, &v));
+            mark_frame_line(vm);
+            throw_php(vm, "TypeError", &format!("Cannot perform bitwise not on {what}"))
+        }
+        _ => Value::int(!with_host(|h| h.to_number(&v).to_int())),
+    }
 }
 
 fn b_spaceship(vm: &mut VM, _: u8) -> Value {
@@ -708,6 +867,22 @@ fn fail(vm: &mut VM, msg: impl Into<String>) -> Value {
     with_host(|h| h.set_error(msg));
     vm.ip = vm.chunk.ops.len();
     Value::Undef
+}
+
+/// `++`/`--` refuse arrays and objects outright, by name rather than with the
+/// `Unsupported operand types` wording the binary operators use.
+///
+/// `true` means the chunk has been halted with a pending `TypeError`, so the
+/// caller must not go on to compute or store a new value.
+fn incdec_refused(vm: &mut VM, old: &Value, inc: bool) -> bool {
+    if !matches!(old, Value::Obj(_)) {
+        return false;
+    }
+    let what = with_host(|h| host::arith_type_name(h, old));
+    let word = if inc { "increment" } else { "decrement" };
+    mark_frame_line(vm);
+    throw_php(vm, "TypeError", &format!("Cannot {word} {what}"));
+    true
 }
 
 /// Raise a catchable PHP exception from inside a builtin: construct `class` with
@@ -1010,8 +1185,11 @@ fn b_incdec_path(vm: &mut VM, argc: u8) -> Value {
     let inc = code & 1 != 0;
     let prefix = code & 2 != 0;
     mark_warn_site(vm);
+    let old = with_host(|h| h.index_get_path_warn(&name, &keys));
+    if incdec_refused(vm, &old, inc) {
+        return Value::Undef;
+    }
     with_host(|h| {
-        let old = h.index_get_path_warn(&name, &keys);
         let newv = h.incdec_value(&old, inc);
         h.index_set_path(&name, &keys, newv.clone());
         if prefix {
@@ -1044,9 +1222,12 @@ fn b_incdec(vm: &mut VM, _: u8) -> Value {
     let inc = code & 1 != 0;
     let prefix = code & 2 != 0;
     mark_warn_site(vm);
+    // `$x++` on an unset variable reports it, exactly as reading it would.
+    let old = with_host(|h| h.get_var_warn(&name));
+    if incdec_refused(vm, &old, inc) {
+        return Value::Undef;
+    }
     with_host(|h| {
-        // `$x++` on an unset variable reports it, exactly as reading it would.
-        let old = h.get_var_warn(&name);
         let newv = h.incdec_value(&old, inc);
         h.set_var(&name, newv.clone());
         if prefix {
@@ -1392,6 +1573,9 @@ fn b_prop_incdec(vm: &mut VM, _: u8) -> Value {
             if bubble_throw(vm) {
                 return Value::Undef;
             }
+            if incdec_refused(vm, &old, inc) {
+                return Value::Undef;
+            }
             let newv = with_host(|h| h.incdec_value(&old, inc));
             let has_set = with_host(|h| {
                 h.object_class(&recv)
@@ -1412,11 +1596,16 @@ fn b_prop_incdec(vm: &mut VM, _: u8) -> Value {
         }
         _ => {
             mark_warn_site(vm);
-            with_host(|h| {
-                // PHP raises the dynamic-property deprecation BEFORE the
-                // undefined-property warning here: the slot is created, then read.
+            // PHP raises the dynamic-property deprecation BEFORE the
+            // undefined-property warning here: the slot is created, then read.
+            let old = with_host(|h| {
                 h.warn_dynamic_prop(&recv, &name);
-                let old = h.prop_get_warn(&recv, &name);
+                h.prop_get_warn(&recv, &name)
+            });
+            if incdec_refused(vm, &old, inc) {
+                return Value::Undef;
+            }
+            with_host(|h| {
                 let newv = h.incdec_value(&old, inc);
                 h.prop_set(&recv, &name, newv.clone());
                 if prefix {
@@ -1498,10 +1687,29 @@ fn b_sconst(vm: &mut VM, _: u8) -> Value {
 
 // ── arithmetic builtins (PHP semantics) ──────────────────────────────────────
 
+/// Resolve both operands of an operator compiled as a builtin, halting the chunk
+/// with a pending `TypeError` when one has no numeric reading.
+///
+/// The operand rules run *before* the operator's own checks, which is
+/// observable: `"g" / 0` is a `TypeError`, not a `DivisionByZeroError`.
+fn arith_args(vm: &mut VM, sym: &str, a: &Value, b: &Value) -> Option<(Value, Value)> {
+    mark_warn_site(vm);
+    match coerce_arith_pair(sym, a, b) {
+        Ok(pair) => Some(pair),
+        Err(_) => {
+            mark_frame_line(vm);
+            vm.ip = vm.chunk.ops.len();
+            None
+        }
+    }
+}
+
 fn b_div(vm: &mut VM, _: u8) -> Value {
     let b = vm.pop();
     let a = vm.pop();
-    let (an, bn) = with_host(|h| (h.to_number(&a), h.to_number(&b)));
+    let Some((an, bn)) = arith_args(vm, "/", &a, &b) else {
+        return Value::Undef;
+    };
     if bn.to_float() == 0.0 {
         return throw_php(vm, "DivisionByZeroError", "Division by zero");
     }
@@ -1514,7 +1722,9 @@ fn b_div(vm: &mut VM, _: u8) -> Value {
 fn b_mod(vm: &mut VM, _: u8) -> Value {
     let b = vm.pop();
     let a = vm.pop();
-    let (x, y) = with_host(|h| (h.to_number(&a).to_int(), h.to_number(&b).to_int()));
+    let Some((x, y)) = int_args(vm, "%", &a, &b) else {
+        return Value::Undef;
+    };
     if y == 0 {
         return throw_php(vm, "DivisionByZeroError", "Modulo by zero");
     }
@@ -1524,7 +1734,9 @@ fn b_mod(vm: &mut VM, _: u8) -> Value {
 fn b_pow(vm: &mut VM, _: u8) -> Value {
     let b = vm.pop();
     let a = vm.pop();
-    let (an, bn) = with_host(|h| (h.to_number(&a), h.to_number(&b)));
+    let Some((an, bn)) = arith_args(vm, "**", &a, &b) else {
+        return Value::Undef;
+    };
     match (an, bn) {
         (Value::Int(x), Value::Int(y)) if y >= 0 => {
             if let Some(v) = checked_ipow(x, y as u32) {
@@ -1790,24 +2002,122 @@ fn cmp_f64(x: f64, y: f64) -> i32 {
 
 // ── the strict numeric hook ──────────────────────────────────────────────────
 
+/// The operator PHP names in `Unsupported operand types: X <sym> Y`.
+///
+/// `Neg` reports `*` because the reference lowers unary minus to a
+/// multiplication by `-1`: `-"g"` says `string * int`, not `string - int`.
+fn op_symbol(op: NumOp) -> &'static str {
+    match op {
+        NumOp::Add => "+",
+        NumOp::Sub => "-",
+        NumOp::Mul | NumOp::Neg => "*",
+        NumOp::Div => "/",
+        NumOp::Mod => "%",
+        NumOp::Pow => "**",
+        _ => "?",
+    }
+}
+
+/// Record a `TypeError` for `a <sym> b` and return the message to stop the VM.
+///
+/// The pending exception is the real signal — `run_chunk_on` turns this stop
+/// into the clean halt that `catch` can see — so the returned string is only
+/// ever the text of a fatal that nothing caught.
+pub(crate) fn unsupported_operands(sym: &str, a: &Value, b: &Value) -> String {
+    let msg = with_host(|h| {
+        format!(
+            "Unsupported operand types: {} {sym} {}",
+            host::arith_type_name(h, a),
+            host::arith_type_name(h, b)
+        )
+    });
+    let _ = pending_php_throw("TypeError", &msg);
+    msg
+}
+
+/// Coerce one operand of `a <sym> b` under PHP 8's rules, raising the
+/// reference's diagnostics on the way.
+///
+/// Callers must resolve the left operand before the right, because the order is
+/// observable: `"5g" + "g"` warns once and *then* throws, while `"g" + "5g"`
+/// throws without warning at all.
+pub(crate) fn coerce_arith(sym: &str, a: &Value, b: &Value, left: bool) -> Result<Value, String> {
+    let v = if left { a } else { b };
+    match with_host(|h| host::classify_arith(h, v)) {
+        host::ArithOperand::Numeric(n) => Ok(n),
+        host::ArithOperand::Leading(n) => {
+            with_host(|h| h.warn("A non-numeric value encountered"));
+            Ok(n)
+        }
+        host::ArithOperand::Unsupported => Err(unsupported_operands(sym, a, b)),
+    }
+}
+
+/// Both operands of a binary arithmetic operator, left resolved first.
+pub(crate) fn coerce_arith_pair(sym: &str, a: &Value, b: &Value) -> Result<(Value, Value), String> {
+    let an = coerce_arith(sym, a, b, true)?;
+    let bn = coerce_arith(sym, a, b, false)?;
+    Ok((an, bn))
+}
+
 /// Supplies PHP arithmetic for the native `Add`/`Sub`/`Mul`/`Negate` ops when an
 /// operand is non-numeric (string/array/bool/null) or an `i64` op overflows.
-pub fn numeric_hook(op: NumOp, a: &Value, b: &Value) -> Result<Value, String> {
+///
+/// `lines` is the running chunk's line table, captured per VM so a warning
+/// raised here reports the operator's own line; `ip` indexes it directly.
+pub fn numeric_hook_sited(call: NumericCall<'_>, lines: &[u32]) -> Result<Value, String> {
+    let (op, a, b) = (call.op, call.a, call.b);
+    // `[..] + [..]` is array union, not arithmetic, and must not reach the
+    // operand rules below — the reference keeps the left operand's entries and
+    // adds only the right's keys that are missing.
+    if op == NumOp::Add && with_host(|h| h.is_array(a) && h.is_array(b)) {
+        return Ok(array_union(a, b));
+    }
+    with_host(|h| h.set_warn_line(lines.get(call.ip).copied().unwrap_or(0)));
+    let sym = op_symbol(op);
+    if op == NumOp::Neg {
+        // Unary minus is `$x * -1`, so the reported right-hand type is `int`.
+        let an = coerce_arith(sym, a, &Value::Int(-1), true)?;
+        return Ok(match an {
+            Value::Int(n) => n
+                .checked_neg()
+                .map(Value::int)
+                .unwrap_or(Value::float(-(n as f64))),
+            Value::Float(f) => Value::float(-f),
+            _ => Value::int(0),
+        });
+    }
+    let (an, bn) = coerce_arith_pair(sym, a, b)?;
+    Ok(arith(op, an, bn))
+}
+
+/// PHP's `+` on two arrays: the left operand's entries win, and the right
+/// contributes only the keys the left does not already have.
+fn array_union(a: &Value, b: &Value) -> Value {
     with_host(|h| {
-        let an = h.to_number(a);
-        if op == NumOp::Neg {
-            return Ok(match an {
-                Value::Int(n) => n
-                    .checked_neg()
-                    .map(Value::int)
-                    .unwrap_or(Value::float(-(n as f64))),
-                Value::Float(f) => Value::float(-f),
-                _ => Value::int(0),
-            });
+        let pa = h.array_pairs(a).unwrap_or_default();
+        let pb = h.array_pairs(b).unwrap_or_default();
+        let out = h.new_array();
+        for (k, v) in &pa {
+            h.arr_set_key(&out, k, v.clone());
         }
-        let bn = h.to_number(b);
-        Ok(arith(op, an, bn))
+        for (k, v) in &pb {
+            if !pa.iter().any(|(ka, _)| same_key(ka, k)) {
+                h.arr_set_key(&out, k, v.clone());
+            }
+        }
+        out
     })
+}
+
+/// Array keys are already normalized to `Int`/`Str`, so identity is a plain
+/// comparison of those two shapes.
+fn same_key(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Int(x), Value::Int(y)) => x == y,
+        (Value::Str(x), Value::Str(y)) => x == y,
+        _ => false,
+    }
 }
 
 fn arith(op: NumOp, an: Value, bn: Value) -> Value {
@@ -3385,12 +3695,9 @@ fn php_pow(h: &host::PhpHost, args: &[Value]) -> Value {
 }
 
 fn php_intdiv(args: &[Value]) -> Result<Value, String> {
-    let (x, y) = with_host(|h| {
-        (
-            h.to_number(&arg(args, 0)).to_int(),
-            h.to_number(&arg(args, 1)).to_int(),
-        )
-    });
+    let (a, b) = (arg(args, 0), arg(args, 1));
+    let (an, bn) = with_host(|h| (h.to_number(&a), h.to_number(&b)));
+    let (x, y) = (int_operand(&a, &an), int_operand(&b, &bn));
     if y == 0 {
         return pending_php_throw("DivisionByZeroError", "Division by zero");
     }

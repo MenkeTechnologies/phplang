@@ -1679,6 +1679,77 @@ fn gen_ini(seed: u64) -> Vec<String> {
     }
 }
 
+/// Operands spanning PHP 8's three-way split of a value in an arithmetic
+/// context: fully numeric (silent), leading-numeric (warns, uses the prefix),
+/// and no numeric reading at all (`TypeError`).
+///
+/// The blank and empty strings are in here on purpose — they have no numeric
+/// prefix, so PHP 8 throws on them exactly as it does on `"g"`, which is the
+/// single most surprising corner of the rule.
+const JUGGLE_OPERANDS: &[&str] = &[
+    // numeric
+    "5", "\"5\"", "\" 5 \"", "\"5.\"", "\".5\"", "\"-5\"", "\"5e3\"", "\"1e400\"", "2.5", "true",
+    "false", "null", "0",
+    // leading-numeric
+    "\"5g\"", "\"5.5g\"", "\"-5g\"", "\".5g\"", "\"0x1A\"", "\"1_000\"", "\"5e\"", "\"5 x\"",
+    // no numeric reading
+    "\"g\"", "\"\"", "\"   \"", "\"INF\"", "\"NAN\"", "\"abc\"", "[1]", "[]",
+];
+
+const JUGGLE_BINOPS: &[&str] = &["+", "-", "*", "/", "%", "**", "|", "&", "^", "<<", ">>"];
+
+/// PHP 8's string-to-number juggling across every operator that performs it.
+///
+/// Each program prints the outcome of a whole operation — the value, or the
+/// class and message of whatever it threw — so a missing warning, a wrong
+/// operand-type name and a silently-computed result are all visible as output
+/// rather than only as an exit status. Every case is wrapped in `try` for the
+/// same reason: an uncaught fatal prints nothing on either side, which would
+/// let two different failures read as agreement.
+fn gen_numjuggle(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let a = *r.pick(JUGGLE_OPERANDS);
+    let b = *r.pick(JUGGLE_OPERANDS);
+    let op = *r.pick(JUGGLE_BINOPS);
+    // `var_dump` for the value so int-vs-float and int-vs-string are not
+    // flattened by echo's stringification.
+    let show = "catch (Throwable $e) { echo get_class($e), \"|\", $e->getMessage(), \"|\"; }";
+    match r.below(7) {
+        // The bare binary operation.
+        0 => vec![format!("try {{ var_dump({a} {op} {b}); }} {show}")],
+        // Compound assignment: the same rules on the read-modify-write path.
+        1 => vec![format!(
+            "try {{ $x = {a}; $x {op}= {b}; var_dump($x); }} {show}"
+        )],
+        // Unary plus and minus, which the engine lowers to multiplication.
+        2 => vec![format!(
+            "try {{ var_dump(-({a})); }} {show} try {{ var_dump(+({a})); }} {show}"
+        )],
+        // Increment/decrement, which have their own deprecations rather than
+        // the operand rules — included so a fix to one does not silently
+        // rewrite the other.
+        3 => vec![format!(
+            "try {{ $x = {a}; $x++; var_dump($x); $x--; var_dump($x); }} {show}"
+        )],
+        // The warning is maskable and the TypeError is not; both are checked
+        // under a suppressed error level and again under `@`.
+        4 => vec![format!(
+            "error_reporting(E_ALL & ~E_WARNING); try {{ var_dump({a} {op} {b}); }} {show} \
+             error_reporting(E_ALL); try {{ var_dump(@({a} {op} {b})); }} {show}"
+        )],
+        // Through a function call, so the unwind crosses a frame.
+        5 => vec![format!(
+            "function f($p, $q) {{ return $p {op} $q; }} try {{ var_dump(f({a}, {b})); }} {show}"
+        )],
+        // Ordering: which operand is resolved first is observable when one
+        // warns and the other throws.
+        _ => vec![format!(
+            "try {{ var_dump(({a} {op} {b}) {op} {a}); }} {show} \
+             try {{ var_dump({a} {op} ({b} {op} {b})); }} {show}"
+        )],
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Mode registry.
 // ---------------------------------------------------------------------------
@@ -1690,6 +1761,10 @@ struct Mode {
 }
 
 const MODES: &[Mode] = &[
+    Mode {
+        name: "numjuggle",
+        gen: gen_numjuggle,
+    },
     Mode {
         name: "arith",
         gen: gen_arith,

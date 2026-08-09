@@ -1193,15 +1193,24 @@ impl Compiler {
                 self.compile_expr(b, e)?;
                 match op {
                     UnOp::Neg => {
-                        b.emit(Op::Negate, 0);
+                        b.emit(Op::Negate, self.cur_line);
                     }
-                    UnOp::Pos => {} // `+$x` is numeric identity in the scaffold
+                    // `+$x` is not the identity: PHP applies the same operand
+                    // rules as `$x * 1`, so `+"g"` is a `TypeError` and `+"5g"`
+                    // warns and yields `5`. Lowering it to that multiplication
+                    // gets both without a dedicated opcode — and reports the
+                    // `string * int` the reference names, because unary plus
+                    // and minus are both multiplications to the engine.
+                    UnOp::Pos => {
+                        b.emit(Op::LoadInt(1), self.cur_line);
+                        b.emit(Op::Mul, self.cur_line);
+                    }
                     UnOp::Not => {
                         b.emit(Op::CallBuiltin(ops::TRUTHY, 1), 0);
                         b.emit(Op::LogNot, 0);
                     }
                     UnOp::BitNot => {
-                        b.emit(Op::CallBuiltin(ops::BITNOT, 1), 0);
+                        b.emit(Op::CallBuiltin(ops::BITNOT, 1), self.cur_line);
                     }
                 }
             }
@@ -2013,13 +2022,13 @@ impl Compiler {
         self.compile_expr(b, r)?;
         match op {
             BinOp::Add => {
-                b.emit(Op::Add, 0);
+                b.emit(Op::Add, self.cur_line);
             }
             BinOp::Sub => {
-                b.emit(Op::Sub, 0);
+                b.emit(Op::Sub, self.cur_line);
             }
             BinOp::Mul => {
-                b.emit(Op::Mul, 0);
+                b.emit(Op::Mul, self.cur_line);
             }
             BinOp::Div => {
                 b.emit(Op::CallBuiltin(ops::DIV, 2), self.cur_line);
@@ -2061,13 +2070,13 @@ impl Compiler {
                 b.emit(Op::CallBuiltin(ops::SPACESHIP, 2), 0);
             }
             BinOp::BitAnd => {
-                b.emit(Op::CallBuiltin(ops::BITAND, 2), 0);
+                b.emit(Op::CallBuiltin(ops::BITAND, 2), self.cur_line);
             }
             BinOp::BitOr => {
-                b.emit(Op::CallBuiltin(ops::BITOR, 2), 0);
+                b.emit(Op::CallBuiltin(ops::BITOR, 2), self.cur_line);
             }
             BinOp::BitXor => {
-                b.emit(Op::CallBuiltin(ops::BITXOR, 2), 0);
+                b.emit(Op::CallBuiltin(ops::BITXOR, 2), self.cur_line);
             }
             BinOp::Shl => {
                 b.emit(Op::CallBuiltin(ops::SHL, 2), self.cur_line);
@@ -2535,13 +2544,13 @@ impl Compiler {
     fn emit_binop(&mut self, b: &mut ChunkBuilder, op: BinOp) {
         match op {
             BinOp::Add => {
-                b.emit(Op::Add, 0);
+                b.emit(Op::Add, self.cur_line);
             }
             BinOp::Sub => {
-                b.emit(Op::Sub, 0);
+                b.emit(Op::Sub, self.cur_line);
             }
             BinOp::Mul => {
-                b.emit(Op::Mul, 0);
+                b.emit(Op::Mul, self.cur_line);
             }
             BinOp::Div => {
                 b.emit(Op::CallBuiltin(ops::DIV, 2), self.cur_line);
@@ -2556,13 +2565,13 @@ impl Compiler {
                 b.emit(Op::CallBuiltin(ops::CONCAT, 2), 0);
             }
             BinOp::BitAnd => {
-                b.emit(Op::CallBuiltin(ops::BITAND, 2), 0);
+                b.emit(Op::CallBuiltin(ops::BITAND, 2), self.cur_line);
             }
             BinOp::BitOr => {
-                b.emit(Op::CallBuiltin(ops::BITOR, 2), 0);
+                b.emit(Op::CallBuiltin(ops::BITOR, 2), self.cur_line);
             }
             BinOp::BitXor => {
-                b.emit(Op::CallBuiltin(ops::BITXOR, 2), 0);
+                b.emit(Op::CallBuiltin(ops::BITXOR, 2), self.cur_line);
             }
             BinOp::Shl => {
                 b.emit(Op::CallBuiltin(ops::SHL, 2), self.cur_line);

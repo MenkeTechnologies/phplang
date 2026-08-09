@@ -4076,10 +4076,18 @@ pub fn set_debug_mode(on: bool) {
 
 /// Register every phplang builtin + the strict numeric hook on a VM, then run it.
 fn run_chunk_on(chunk: Chunk) -> Result<Value, String> {
+    // The hook warns (`A non-numeric value encountered`), so it needs the line
+    // of the operator that delegated to it. Native arithmetic ops run no
+    // builtin, so nothing else sets the warn site — hand the hook this chunk's
+    // line table and let it index the op position the VM reports. Capturing it
+    // per VM rather than in a thread-local keeps it correct when a generator
+    // suspends mid-chunk, and the clone is dwarfed by the `Chunk` clone every
+    // call already pays.
+    let lines: std::sync::Arc<[u32]> = chunk.lines.as_slice().into();
     let mut vm = VM::new(chunk);
     crate::builtins::install(&mut vm);
-    vm.set_numeric_hook(std::sync::Arc::new(|op, a, b| {
-        crate::builtins::numeric_hook(op, a, b)
+    vm.set_sited_numeric_hook(std::sync::Arc::new(move |call| {
+        crate::builtins::numeric_hook_sited(call, &lines)
     }));
     if DEBUG_MODE.with(|d| d.get()) {
         vm.set_extension_handler(Box::new(|vm, id, _| {
@@ -4095,6 +4103,13 @@ fn run_chunk_on(chunk: Chunk) -> Result<Value, String> {
     match outcome {
         VMResult::Ok(v) => Ok(v),
         VMResult::Halted => Ok(vm.stack.last().cloned().unwrap_or(Value::Undef)),
+        // A builtin raising a PHP exception halts its chunk cleanly, but the
+        // numeric hook has no VM handle to do that with — its only way out is
+        // an error return. When it leaves an exception pending, that exception
+        // is the real signal, so report the stop as a clean halt: every caller
+        // (`run_body`, `run_main`, the call dispatcher) already checks for a
+        // pending throw on this path, and only that path routes it to `catch`.
+        VMResult::Error(_) if has_pending_throw() => Ok(Value::Undef),
         VMResult::Error(e) => Err(e),
     }
 }
@@ -5228,46 +5243,94 @@ pub fn php_gcvt(f: f64, precision: usize) -> String {
     }
 }
 
-/// Parse the leading numeric prefix of a string into an `Int`/`Float` `Value`,
-/// as PHP does when a string is used in arithmetic (`"12abc" + 0 == 12`).
-fn parse_php_number(s: &str) -> Value {
-    let t = s.trim_start();
-    let bytes = t.as_bytes();
+/// The whitespace PHP's numeric-string scanner skips. Deliberately not
+/// `str::trim`, which also strips Unicode spaces: PHP reads `"\u{a0}5"` as
+/// non-numeric, and trimming NBSP here would silently make it `5`.
+const PHP_SPACE: &[char] = &[' ', '\t', '\n', '\r', '\x0b', '\x0c'];
+
+/// Scan the leading numeric run of `s`, returning its value and how many bytes
+/// of `s.trim_start_matches(PHP_SPACE)` it consumed, or `None` when the string
+/// does not begin with a number at all.
+///
+/// This is the single source of truth behind all three questions PHP asks about
+/// a string in a numeric context — is it numeric, does it merely *start*
+/// numeric, and what is the number — so the three can never disagree.
+///
+/// Two rules are easy to get wrong and are what the byte scan is here for:
+/// an exponent counts only when digits actually follow it, so `"5e"` reads as
+/// `5` rather than failing; and `"5."` and `".5"` are both complete numbers
+/// while a bare `"."` is not.
+fn scan_php_number(s: &str) -> Option<(Value, usize, bool)> {
+    let t = s.trim_start_matches(PHP_SPACE);
+    let b = t.as_bytes();
     let mut i = 0;
-    let mut seen_dot = false;
-    let mut seen_exp = false;
-    if i < bytes.len() && (bytes[i] == b'+' || bytes[i] == b'-') {
+    if i < b.len() && (b[i] == b'+' || b[i] == b'-') {
         i += 1;
     }
-    while i < bytes.len() {
-        match bytes[i] {
-            b'0'..=b'9' => i += 1,
-            b'.' if !seen_dot && !seen_exp => {
-                seen_dot = true;
-                i += 1;
-            }
-            b'e' | b'E' if !seen_exp && i > 0 => {
-                seen_exp = true;
-                i += 1;
-                if i < bytes.len() && (bytes[i] == b'+' || bytes[i] == b'-') {
-                    i += 1;
-                }
-            }
-            _ => break,
+    let digits_start = i;
+    while i < b.len() && b[i].is_ascii_digit() {
+        i += 1;
+    }
+    // `end` is the length of the longest complete number seen so far; 0 means
+    // nothing valid has been scanned yet, which is how a bare sign or `.` fails.
+    let mut end = if i > digits_start { i } else { 0 };
+    let mut is_float = false;
+    if i < b.len() && b[i] == b'.' {
+        let frac_start = i + 1;
+        let mut j = frac_start;
+        while j < b.len() && b[j].is_ascii_digit() {
+            j += 1;
+        }
+        // `".5"` needs the fraction digits; `"5."` is already complete without
+        // them. A lone `"."` has neither and stays invalid.
+        if j > frac_start || end != 0 {
+            i = j;
+            end = j;
+            is_float = true;
         }
     }
-    let prefix = &t[..i];
-    if prefix.is_empty() || prefix == "+" || prefix == "-" {
-        return Value::int(0);
+    if end == 0 {
+        return None;
     }
-    if seen_dot || seen_exp {
-        Value::float(prefix.parse().unwrap_or(0.0))
-    } else {
-        match prefix.parse::<i64>() {
-            Ok(n) => Value::int(n),
-            Err(_) => Value::float(prefix.parse().unwrap_or(0.0)),
+    if i < b.len() && (b[i] == b'e' || b[i] == b'E') {
+        let mut j = i + 1;
+        if j < b.len() && (b[j] == b'+' || b[j] == b'-') {
+            j += 1;
+        }
+        let exp_digits = j;
+        while j < b.len() && b[j].is_ascii_digit() {
+            j += 1;
+        }
+        if j > exp_digits {
+            end = j;
+            is_float = true;
         }
     }
+    let text = &t[..end];
+    // An integer literal too wide for `i64` becomes a float, as PHP does.
+    let value = match (is_float, text.parse::<i64>()) {
+        (false, Ok(n)) => Value::int(n),
+        _ => Value::float(text.parse::<f64>().ok()?),
+    };
+    Some((value, end, is_float))
+}
+
+/// Whether a string's numeric prefix is *written* in float form — it carries a
+/// decimal point or an exponent.
+///
+/// This is not the same question as "did it parse to a float": an integer-format
+/// string too wide for `i64` also parses to a float, and PHP treats the two
+/// differently when narrowing back to int. `"1e20" % 2` deprecates the
+/// narrowing, `"9223372036854775808" % 2` does not.
+pub fn numeric_prefix_is_float(s: &str) -> bool {
+    scan_php_number(s).is_some_and(|(_, _, is_float)| is_float)
+}
+
+/// Parse the leading numeric prefix of a string into an `Int`/`Float` `Value`,
+/// as PHP does when a string is used in arithmetic (`"12abc" + 0 == 12`).
+/// A string with no numeric prefix at all reads as `0`, matching `(int)"abc"`.
+fn parse_php_number(s: &str) -> Value {
+    scan_php_number(s).map_or(Value::int(0), |(v, _, _)| v)
 }
 
 /// Whether a string is a fully numeric PHP string (for loose comparison).
@@ -5325,23 +5388,82 @@ fn increment_alnum_string(s: &str) -> String {
 }
 
 pub fn is_numeric_string(s: &str) -> bool {
-    let t = s.trim();
-    if t.is_empty() {
-        return false;
-    }
-    parse_php_number_full(t).is_some()
+    parse_php_number_full(s).is_some()
 }
 
 /// Parse a string that is *entirely* numeric (no trailing garbage), or `None`.
+///
+/// "Entirely" allows whitespace on both ends (`" 5 "` is numeric in PHP 8) but
+/// nothing else. Routing through [`scan_php_number`] rather than Rust's own
+/// float parser is what keeps `"INF"`/`"NAN"` non-numeric — Rust accepts those
+/// spellings and PHP does not — while still admitting `"1e400"`, which is a
+/// numeric string that happens to overflow to infinity.
 pub fn parse_php_number_full(s: &str) -> Option<Value> {
-    let t = s.trim();
-    if let Ok(n) = t.parse::<i64>() {
-        return Some(Value::int(n));
-    }
-    if let Ok(f) = t.parse::<f64>() {
-        if f.is_finite() {
-            return Some(Value::float(f));
+    let t = s.trim_matches(PHP_SPACE);
+    let (value, used, _) = scan_php_number(t)?;
+    (used == t.len()).then_some(value)
+}
+
+/// How an operand reads to PHP 8's arithmetic operators.
+///
+/// PHP 8 split what PHP 7 did silently into three outcomes, and an operator has
+/// to tell them apart *before* it computes anything. See [`classify_arith`].
+pub enum ArithOperand {
+    /// Converts silently: a number, a bool, null, or a fully numeric string.
+    Numeric(Value),
+    /// A leading-numeric string such as `"5g"`. The operator raises
+    /// `A non-numeric value encountered` and then uses the prefix.
+    Leading(Value),
+    /// No numeric reading at all — `"g"`, `""`, an array, an object. The
+    /// operator raises `TypeError` instead of producing a value.
+    Unsupported,
+}
+
+/// Classify an operand for PHP 8's arithmetic operators.
+///
+/// The three-way split is the whole of the PHP 7 → 8 juggling change: `"g" + 9`
+/// used to be `9` and is now a `TypeError`, while `"5g" + 1` used to be silent
+/// and is now a warning that still yields `6`. Booleans and `null` were left
+/// alone by that change and still convert without complaint.
+pub fn classify_arith(h: &PhpHost, v: &Value) -> ArithOperand {
+    match v {
+        Value::Int(_) | Value::Float(_) => ArithOperand::Numeric(v.clone()),
+        Value::Bool(b) => ArithOperand::Numeric(Value::int(*b as i64)),
+        Value::Undef => ArithOperand::Numeric(Value::int(0)),
+        Value::Str(s) => match parse_php_number_full(s) {
+            Some(n) => ArithOperand::Numeric(n),
+            // A prefix exists but did not cover the string: warn and use it.
+            None => match scan_php_number(s) {
+                Some((n, _, _)) => ArithOperand::Leading(n),
+                None => ArithOperand::Unsupported,
+            },
+        },
+        // Arrays and objects have no arithmetic reading. `__toString` is not
+        // consulted here: the reference reports `Closure + int`, not `string`.
+        _ => {
+            let _ = h;
+            ArithOperand::Unsupported
         }
     }
-    None
+}
+
+/// The type name PHP prints in `Unsupported operand types: X op Y`.
+///
+/// These are the short spellings (`int`, `bool`, `null`), not the `gettype`
+/// ones ([`PhpHost::type_name`] returns `integer`/`boolean`/`NULL`), and an
+/// object contributes its class name rather than the word `object`.
+pub fn arith_type_name(h: &PhpHost, v: &Value) -> String {
+    match v {
+        Value::Undef => "null".into(),
+        Value::Bool(_) => "bool".into(),
+        Value::Int(_) => "int".into(),
+        Value::Float(_) => "float".into(),
+        Value::Str(_) => "string".into(),
+        Value::Obj(_) if h.is_array(v) => "array".into(),
+        // A closure is an object of class `Closure`, and the reference names it
+        // that way even though it has no declared class entry.
+        Value::Obj(_) if h.is_closure(v) => "Closure".into(),
+        Value::Obj(_) => h.object_class(v).unwrap_or_else(|| "object".into()),
+        _ => "mixed".into(),
+    }
 }

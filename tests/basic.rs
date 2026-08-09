@@ -35,7 +35,13 @@ fn variables_and_interpolation() {
 
 #[test]
 fn string_number_coercion() {
-    assert_eq!(run(r#"<?php echo "12abc" + 0;"#), "12");
+    // PHP 8 still uses the numeric prefix, but no longer silently: the CLI
+    // writes `A non-numeric value encountered` to stdout, so it is part of the
+    // output the reference produces for this program.
+    assert_eq!(
+        run(r#"<?php echo "12abc" + 0;"#),
+        "\nWarning: A non-numeric value encountered in Command line code on line 1\n12"
+    );
     assert_eq!(run(r#"<?php echo "3" . 4;"#), "34");
 }
 
