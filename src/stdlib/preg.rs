@@ -9,6 +9,22 @@
 //! Everything else — character classes, quantifiers, anchors, alternation,
 //! named/numbered groups, the `imsxuU` flags — is supported.
 //!
+//! A pattern the engine will not take splits into two cases, and only one of
+//! them is visible. A fault the REFERENCE also diagnoses — a bad delimiter, an
+//! unknown modifier, an empty expression, or one of the five structural body
+//! faults ported from PCRE2 — raises `Warning: <fn>(): <reason>` and leaves
+//! `preg_last_error()` at `PREG_INTERNAL_ERROR`, exactly as the reference does.
+//! A pattern the reference would have COMPILED but this engine cannot returns
+//! the sentinel silently and leaves the error state alone: there is no
+//! diagnostic to copy, and inventing one would print what the reference never
+//! prints. See `compile` and `scan_body`.
+//!
+//! DIVERGENCE — the `A` modifier (PCRE2_ANCHORED) is accepted and ignored, so
+//! `preg_match("/a/A", "bar")` is 1 here and 0 in the reference. Anchoring each
+//! match attempt at the current offset is not something the Rust engine's safe
+//! API exposes; `D J S X r` are likewise accepted no-ops, but none of those four
+//! changes the result of a pattern this engine can otherwise run.
+//!
 //! One further engine nuance affects `preg_split`: Rust's `regex` suppresses a
 //! zero-width match sitting immediately after a non-empty match, whereas PCRE
 //! emits it. This diverges only for a pattern that can match *both* empty and
@@ -63,83 +79,411 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         "preg_split" => preg_split(args),
         "preg_quote" => preg_quote(args),
         "preg_grep" => preg_grep(args),
-        "preg_last_error" => Ok(Value::int(0)),
-        "preg_last_error_msg" => Ok(Value::str("No error")),
+        // Pure readers: they report the state the last matching call left and
+        // never clear it, so calling either one twice gives the same answer.
+        "preg_last_error" => Ok(Value::int(with_host(|h| h.preg_error()))),
+        "preg_last_error_msg" => Ok(Value::str(error_msg(with_host(|h| h.preg_error())))),
         _ => return None,
     })
 }
 
+// ── error state ──────────────────────────────────────────────────────────────
+
+/// `PREG_NO_ERROR`.
+pub const PREG_NO_ERROR: i64 = 0;
+/// `PREG_INTERNAL_ERROR` — what a pattern the engine could not compile leaves
+/// behind. PHP does not distinguish a bad delimiter from a bad body here: every
+/// compile-time fault reports this one code.
+pub const PREG_INTERNAL_ERROR: i64 = 1;
+
+/// The `preg_last_error_msg()` text for an error code.
+fn error_msg(code: i64) -> &'static str {
+    match code {
+        PREG_NO_ERROR => "No error",
+        PREG_INTERNAL_ERROR => "Internal error",
+        2 => "Backtrack limit exhausted",
+        3 => "Recursion limit exhausted",
+        4 => "Malformed UTF-8 characters, possibly incorrectly encoded",
+        5 => "The offset did not correspond to the beginning of a valid UTF-8 code point",
+        6 => "JIT stack limit exhausted",
+        _ => "Internal error",
+    }
+}
+
 // ── delimiter / flag parsing ─────────────────────────────────────────────────
 
+/// Why a pattern did not produce a usable matcher.
+enum PatternError {
+    /// A fault the reference diagnoses itself: it prints
+    /// `Warning: <fn>(): <msg>`, returns the function's error sentinel, and
+    /// leaves `preg_last_error()` at `PREG_INTERNAL_ERROR`.
+    Php(String),
+    /// A pattern PCRE compiles but the Rust engine does not — a backreference,
+    /// look-around, or the `n` modifier. The reference would have MATCHED, so
+    /// there is no diagnostic to copy: this is the pre-existing engine-subset
+    /// divergence (see the module header), and it stays silent rather than
+    /// inventing a warning the reference never prints.
+    Unsupported,
+}
+
 /// Parse a PHP PCRE pattern (`/body/flags`, `#body#`, `~body~`, `{body}`, …)
-/// into a compiled `Regex`. Returns `Err` for a malformed delimiter/flag set or
-/// a body the Rust engine cannot compile (e.g. backreferences).
-fn compile(pattern: &str) -> Result<Regex, String> {
+/// into a compiled `Regex`.
+///
+/// The accepted modifier set is `imnrsuxADJSUX`, established by running all 62
+/// alphanumerics through `preg_match("/a/$c", "a")` on the reference rather than
+/// from memory; every other letter is `Unknown modifier '<c>'`.
+///
+/// The delimiter scan is a port of `php_pcre.c`'s, not a lookalike, because the
+/// two disagree on real patterns: PHP scans FORWARD from the opening delimiter
+/// honouring backslash escapes (so `/a\//` has body `a\/` and compiles), and for
+/// a bracket delimiter it COUNTS NESTING (so `{a{b}` is unterminated even though
+/// it ends in `}`). Scanning backwards for the last delimiter character, which
+/// is the obvious implementation, gets both of those wrong.
+fn compile(pattern: &str) -> Result<Regex, PatternError> {
     let chars: Vec<char> = pattern.chars().collect();
-    // Leading whitespace is allowed before the opening delimiter in PCRE.
+    // Leading whitespace is allowed before the opening delimiter.
     let mut i = 0;
     while i < chars.len() && chars[i].is_whitespace() {
         i += 1;
     }
     if i >= chars.len() {
-        return Err("empty pattern".into());
+        return Err(PatternError::Php("Empty regular expression".into()));
     }
     let open = chars[i];
+    // The delimiter test is on the CHARACTER, before any bracket handling: PHP
+    // rejects alphanumerics and backslash outright, with one message for all.
+    if open.is_alphanumeric() || open == '\\' || open == '\0' {
+        return Err(PatternError::Php(
+            "Delimiter must not be alphanumeric, backslash, or NUL byte".into(),
+        ));
+    }
+    let bracket = matches!(open, '(' | '{' | '[' | '<');
     let close = match open {
         '(' => ')',
         '{' => '}',
         '[' => ']',
         '<' => '>',
-        c if c.is_alphanumeric() || c == '\\' || c.is_whitespace() => {
-            return Err(format!("invalid delimiter `{c}`"));
-        }
         c => c,
     };
-    // Find the matching closing delimiter, scanning from the end so the body may
-    // contain the delimiter char when it is not a bracket pair.
+
+    // Forward scan for the closing delimiter. A backslash escapes the next
+    // character in both styles; only a bracket style tracks nesting depth.
     let body_start = i + 1;
-    let close_idx = (body_start..chars.len())
-        .rev()
-        .find(|&j| chars[j] == close)
-        .ok_or_else(|| format!("no ending delimiter `{close}` found"))?;
-    if close_idx < body_start {
-        return Err("no ending delimiter found".into());
-    }
+    let mut depth = 1usize;
+    let mut j = body_start;
+    let close_idx = loop {
+        if j >= chars.len() {
+            return Err(PatternError::Php(if bracket {
+                format!("No ending matching delimiter '{close}' found")
+            } else {
+                format!("No ending delimiter '{close}' found")
+            }));
+        }
+        if chars[j] == '\\' && j + 1 < chars.len() {
+            j += 2;
+            continue;
+        }
+        if chars[j] == close {
+            depth -= 1;
+            if depth == 0 {
+                break j;
+            }
+        } else if bracket && chars[j] == open {
+            depth += 1;
+        }
+        j += 1;
+    };
+
     let body: String = chars[body_start..close_idx].iter().collect();
     let flags: String = chars[close_idx + 1..].iter().collect();
 
-    let mut b = RegexBuilder::new(&body);
     // Default (no `/u`) is byte matching, as PCRE. `/u` opts into Unicode.
     let mut unicode = false;
+    // `n` — no auto-capture. The Rust engine has no such flag, so it is applied
+    // by rewriting each capturing `(` in the body as `(?:` instead.
+    let mut no_auto_capture = false;
+    let mut case_insensitive = false;
+    let mut multi_line = false;
+    let mut dot_all = false;
+    let mut extended = false;
+    let mut swap_greed = false;
     for f in flags.chars() {
         match f {
-            'i' => {
-                b.case_insensitive(true);
-            }
-            'm' => {
-                b.multi_line(true);
-            }
-            's' => {
-                b.dot_matches_new_line(true);
-            }
-            'x' => {
-                b.ignore_whitespace(true);
-            }
-            'U' => {
-                b.swap_greed(true);
-            }
-            'u' => {
-                unicode = true;
-            }
-            // `D`, `A`, `X`, `S` have no Rust-engine analogue → accepted no-ops.
-            'D' | 'A' | 'X' | 'S' => {}
+            'i' => case_insensitive = true,
+            'm' => multi_line = true,
+            's' => dot_all = true,
+            'x' => extended = true,
+            'U' => swap_greed = true,
+            'u' => unicode = true,
+            'n' => no_auto_capture = true,
+            // Accepted by the reference, no Rust-engine analogue → no-ops.
+            'r' | 'D' | 'A' | 'X' | 'S' | 'J' => {}
             // PHP tolerates trailing whitespace/newlines after the pattern.
             c if c.is_whitespace() => {}
-            other => return Err(format!("unknown modifier `{other}`")),
+            other => {
+                return Err(PatternError::Php(format!("Unknown modifier '{other}'")));
+            }
         }
     }
+    let translated = match scan_body(&body, no_auto_capture) {
+        Ok(t) => t,
+        Err(msg) => return Err(PatternError::Php(format!("Compilation failed: {msg}"))),
+    };
+    let mut b = RegexBuilder::new(&translated);
+    b.case_insensitive(case_insensitive);
+    b.multi_line(multi_line);
+    b.dot_matches_new_line(dot_all);
+    b.ignore_whitespace(extended);
+    b.swap_greed(swap_greed);
     b.unicode(unicode);
-    b.build().map_err(|e| e.to_string())
+    b.build().map_err(|_| PatternError::Unsupported)
+}
+
+// ── pattern body: PCRE2 faults, and the PCRE→Rust differences ────────────────
+
+/// Walk a pattern BODY once, doing the two things that need the same parse:
+/// report the PCRE2 compile error for a structurally malformed body (`Err`), and
+/// rewrite the constructs where PCRE and the Rust engine disagree on syntax
+/// (`Ok`, the body to hand to the builder).
+///
+/// One scan rather than two because the answers depend on the same state — which
+/// characters are inside a class, which `{` opens a quantifier, which `(`
+/// captures. Splitting them lets the validator and the rewriter drift into
+/// disagreeing about a pattern, and the disagreement would be silent.
+///
+/// The error half is a PARTIAL port, deliberately. PCRE2's table has ~100
+/// entries and its offsets come from wherever its parser happened to stop;
+/// guessing at one would print a confidently wrong `at offset N`. Only the five
+/// faults whose offset rule was read back off the reference for a spread of
+/// patterns are reported (each rule is stated at its site below). A body
+/// malformed in some OTHER way still fails to compile — the Rust engine rejects
+/// it too — and takes the silent [`PatternError::Unsupported`] path, which is
+/// where it already went.
+///
+/// The direction that matters is false POSITIVES: claiming a fault in a body
+/// PCRE accepts would break working patterns. Hence the scan tracks escapes and
+/// character classes, inside which `(`, `)` and quantifiers are all literal.
+fn scan_body(body: &str, no_auto_capture: bool) -> Result<String, String> {
+    let c: Vec<char> = body.chars().collect();
+    let mut out = String::with_capacity(body.len());
+    let mut depth: usize = 0;
+    // Whether a quantifier (`*`, `+`, `?`, `{n,m}`) may legally appear here —
+    // true only just after something repeatable. It is false at the start of the
+    // pattern, after `(`, after `|`, and after another quantifier, which is
+    // exactly when PCRE says "quantifier does not follow a repeatable item".
+    let mut repeatable = false;
+    let mut i = 0;
+    while i < c.len() {
+        match c[i] {
+            // An escape consumes the next character; the pair is repeatable.
+            '\\' if i + 1 < c.len() => {
+                out.push(c[i]);
+                out.push(c[i + 1]);
+                repeatable = true;
+                i += 2;
+            }
+            // A character class: everything up to the terminating `]` is literal.
+            // `]` in the first position (after an optional `^`) is a literal `]`,
+            // not the terminator — PCRE's rule, and why `/[]/` is unterminated.
+            '[' => {
+                let mut k = i + 1;
+                if k < c.len() && c[k] == '^' {
+                    k += 1;
+                }
+                if k < c.len() && c[k] == ']' {
+                    k += 1;
+                }
+                loop {
+                    if k >= c.len() {
+                        // Offset is the END of the body — PCRE reports where it
+                        // ran out, not where the class opened.
+                        return Err(format!(
+                            "missing terminating ] for character class at offset {}",
+                            c.len()
+                        ));
+                    }
+                    if c[k] == '\\' {
+                        k += 2;
+                        continue;
+                    }
+                    if c[k] == ']' {
+                        break;
+                    }
+                    k += 1;
+                }
+                out.extend(&c[i..=k]);
+                repeatable = true;
+                i = k + 1;
+            }
+            '(' => {
+                depth += 1;
+                repeatable = false;
+                i += 1;
+                if i < c.len() && c[i] == '?' {
+                    // `(?:`, `(?=`, `(?<name>`, `(?i)` … — the `?` belongs to the
+                    // group syntax and is NOT a quantifier. Emitting it here is
+                    // what keeps `(?` from being read as one, which is why the
+                    // reference calls `/(?/` a missing closing parenthesis.
+                    out.push_str("(?");
+                    i += 1;
+                } else if no_auto_capture {
+                    // `/n` — an unnamed group does not capture.
+                    out.push_str("(?:");
+                } else {
+                    out.push('(');
+                }
+            }
+            ')' => {
+                if depth == 0 {
+                    // Offset is one PAST the offending `)`.
+                    return Err(format!("unmatched closing parenthesis at offset {}", i + 1));
+                }
+                depth -= 1;
+                repeatable = true;
+                out.push(')');
+                i += 1;
+            }
+            '|' => {
+                repeatable = false;
+                out.push('|');
+                i += 1;
+            }
+            '*' | '+' | '?' => {
+                if !repeatable {
+                    // Offset is one PAST the offending quantifier.
+                    return Err(format!(
+                        "quantifier does not follow a repeatable item at offset {}",
+                        i + 1
+                    ));
+                }
+                // `a*?` / `a*+` — a lazy or possessive suffix on a quantifier is
+                // part of it, not a second quantifier; either way what follows
+                // may not be quantified again.
+                repeatable = false;
+                out.push(c[i]);
+                i += 1;
+                if i < c.len() && (c[i] == '?' || c[i] == '+') {
+                    out.push(c[i]);
+                    i += 1;
+                }
+            }
+            '{' => match brace_quantifier(&c, i) {
+                // Not a quantifier at all (`a{x}`, `a{`): PCRE reads `{` as a
+                // literal, which IS repeatable. Rust's parser has no such
+                // fallback and rejects the pattern, so escape it.
+                None => {
+                    out.push_str("\\{");
+                    repeatable = true;
+                    i += 1;
+                }
+                Some((lo, hi, end)) => {
+                    if !repeatable {
+                        return Err(format!(
+                            "quantifier does not follow a repeatable item at offset {}",
+                            end + 1
+                        ));
+                    }
+                    if let (Some(lo), Some(hi)) = (lo, hi) {
+                        if lo > hi {
+                            // Offset is the closing `}` itself here, not one past
+                            // it — PCRE reports this one while still on the brace.
+                            return Err(format!(
+                                "numbers out of order in {{}} quantifier at offset {end}"
+                            ));
+                        }
+                    }
+                    // `{,m}` is `{0,m}` in PCRE2; Rust's parser does not take the
+                    // open lower bound, so spell it out.
+                    match lo {
+                        Some(_) => out.extend(&c[i..=end]),
+                        None => {
+                            out.push_str("{0");
+                            out.extend(&c[i + 1..=end]);
+                        }
+                    }
+                    repeatable = false;
+                    i = end + 1;
+                    if i < c.len() && (c[i] == '?' || c[i] == '+') {
+                        out.push(c[i]);
+                        i += 1;
+                    }
+                }
+            },
+            other => {
+                out.push(other);
+                repeatable = true;
+                i += 1;
+            }
+        }
+    }
+    if depth > 0 {
+        // As with the character class, the offset is where the body ran out.
+        return Err(format!("missing closing parenthesis at offset {}", c.len()));
+    }
+    Ok(out)
+}
+
+/// Read a `{n}` / `{n,}` / `{n,m}` / `{,m}` quantifier starting at `open` (which
+/// must be `{`), returning `(low, high, index_of_closing_brace)`. `None` when the
+/// braces do not spell a quantifier, in which case PCRE treats `{` as a literal.
+fn brace_quantifier(c: &[char], open: usize) -> Option<(Option<u64>, Option<u64>, usize)> {
+    let mut k = open + 1;
+    let digits = |k: &mut usize| -> Option<u64> {
+        let start = *k;
+        while *k < c.len() && c[*k].is_ascii_digit() {
+            *k += 1;
+        }
+        (*k > start).then(|| {
+            c[start..*k]
+                .iter()
+                .collect::<String>()
+                .parse()
+                .unwrap_or(u64::MAX)
+        })
+    };
+    let lo = digits(&mut k);
+    let hi = if k < c.len() && c[k] == ',' {
+        k += 1;
+        digits(&mut k)
+    } else {
+        // `{n}` — a single bound is both ends, so it can never be out of order.
+        lo
+    };
+    // At least one bound must be present, and the braces must close.
+    if lo.is_none() && hi.is_none() {
+        return None;
+    }
+    (k < c.len() && c[k] == '}').then_some((lo, hi, k))
+}
+
+/// Compile `pat` on behalf of library function `func`, reporting a pattern fault
+/// the way the reference does.
+///
+/// The reference does NOT throw here — a bad pattern is a `Warning` and the
+/// function's error sentinel, which is why this returns `Option` rather than
+/// going through the tagged-throw path that library ARGUMENT errors use.
+///
+/// The error state is written on every outcome that reached the compiler, which
+/// is what makes it observable across calls: a successful compile clears it even
+/// when the match then fails, so `preg_last_error()` reports the LAST pattern
+/// the engine compiled and not the last one that failed.
+fn compile_for(func: &str, pat: &str) -> Option<Regex> {
+    match compile(pat) {
+        Ok(re) => {
+            with_host(|h| h.set_preg_error(PREG_NO_ERROR));
+            Some(re)
+        }
+        Err(PatternError::Php(msg)) => {
+            with_host(|h| {
+                h.set_preg_error(PREG_INTERNAL_ERROR);
+                h.warn(format_args!("{func}(): {msg}"));
+            });
+            None
+        }
+        // Silent: the reference compiled this one, so it has no error state to
+        // copy and no warning to print.
+        Err(PatternError::Unsupported) => None,
+    }
 }
 
 // ── preg_match / preg_match_all ──────────────────────────────────────────────
@@ -195,9 +539,8 @@ fn fill_out(target: &Value, pos: usize, rows: Vec<Value>) {
 fn preg_match(args: &[Value]) -> Result<Value, String> {
     let pat = with_host(|h| h.to_str(&arg(args, 0)));
     let subject = with_host(|h| h.to_str(&arg(args, 1)));
-    let re = match compile(&pat) {
-        Ok(r) => r,
-        Err(_) => return Ok(Value::bool(false)),
+    let Some(re) = compile_for("preg_match", &pat) else {
+        return Ok(Value::bool(false));
     };
     match re.captures(subject.as_bytes()) {
         Some(caps) => {
@@ -219,9 +562,8 @@ fn preg_match_all(args: &[Value]) -> Result<Value, String> {
     let pat = with_host(|h| h.to_str(&arg(args, 0)));
     let subject = with_host(|h| h.to_str(&arg(args, 1)));
     let flags = args.get(3).map(|v| v.to_int()).unwrap_or(0);
-    let re = match compile(&pat) {
-        Ok(r) => r,
-        Err(_) => return Ok(Value::bool(false)),
+    let Some(re) = compile_for("preg_match_all", &pat) else {
+        return Ok(Value::bool(false));
     };
     let all: Vec<Vec<Value>> = re
         .captures_iter(subject.as_bytes())
@@ -345,9 +687,8 @@ fn preg_replace(args: &[Value]) -> Result<Value, String> {
     // Pre-compile the patterns; a bad pattern makes the whole call return null.
     let mut compiled: Vec<(Regex, String)> = Vec::with_capacity(pats.len());
     for (idx, p) in pats.iter().enumerate() {
-        let re = match compile(p) {
-            Ok(r) => r,
-            Err(_) => return Ok(Value::Undef),
+        let Some(re) = compile_for("preg_replace", p) else {
+            return Ok(Value::Undef);
         };
         let repl = if repl_is_array {
             // Fewer replacements than patterns → the surplus patterns delete.
@@ -387,10 +728,10 @@ fn preg_replace_callback(args: &[Value]) -> Result<Value, String> {
 
     let mut compiled: Vec<Regex> = Vec::with_capacity(pats.len());
     for p in &pats {
-        match compile(p) {
-            Ok(r) => compiled.push(r),
-            Err(_) => return Ok(Value::Undef),
-        }
+        let Some(re) = compile_for("preg_replace_callback", p) else {
+            return Ok(Value::Undef);
+        };
+        compiled.push(re);
     }
 
     let subj = arg(args, 2);
@@ -447,9 +788,8 @@ fn preg_split(args: &[Value]) -> Result<Value, String> {
     let subject = with_host(|h| h.to_str(&arg(args, 1)));
     let limit = args.get(2).map(|v| v.to_int()).unwrap_or(-1);
     let flags = args.get(3).map(|v| v.to_int()).unwrap_or(0);
-    let re = match compile(&pat) {
-        Ok(r) => r,
-        Err(_) => return Ok(Value::bool(false)),
+    let Some(re) = compile_for("preg_split", &pat) else {
+        return Ok(Value::bool(false));
     };
 
     let no_empty = flags & SPLIT_NO_EMPTY != 0;
@@ -542,9 +882,8 @@ fn preg_grep(args: &[Value]) -> Result<Value, String> {
     let input = arg(args, 1);
     let flags = args.get(2).map(|v| v.to_int()).unwrap_or(0);
     let invert = flags & GREP_INVERT != 0;
-    let re = match compile(&pat) {
-        Ok(r) => r,
-        Err(_) => return Ok(Value::bool(false)),
+    let Some(re) = compile_for("preg_grep", &pat) else {
+        return Ok(Value::bool(false));
     };
     let pairs = with_host(|h| h.array_pairs(&input)).unwrap_or_default();
     let mut kept: Vec<(Value, Value)> = Vec::new();

@@ -258,3 +258,191 @@ fn unsupported_pcre_features_return_error_sentinel() {
         "err"
     );
 }
+
+// ── pattern faults: the WARNING shape, not the throw shape ────────────────────
+//
+// A pattern the reference rejects is a `Warning` naming the calling function,
+// the function's own error sentinel, and `preg_last_error()` left at
+// `PREG_INTERNAL_ERROR`. Every expectation below is verbatim stdout of the same
+// program under the reference `php` 8.5.9.
+
+/// The diagnostic body of the warning `src` raises, with the position clause
+/// stripped so the assertion is about the message and not the line.
+fn warning(src: &str) -> String {
+    run(src)
+        .trim()
+        .strip_prefix("Warning: ")
+        .unwrap_or("<no warning>")
+        .split(" in Command line code")
+        .next()
+        .unwrap_or_default()
+        .to_string()
+}
+
+#[test]
+fn a_bad_delimiter_or_modifier_warns_and_returns_false() {
+    for (pattern, message) in [
+        ("''", "Empty regular expression"),
+        ("'   '", "Empty regular expression"),
+        (
+            "'abc'",
+            "Delimiter must not be alphanumeric, backslash, or NUL byte",
+        ),
+        (
+            "'1a1'",
+            "Delimiter must not be alphanumeric, backslash, or NUL byte",
+        ),
+        ("'/a/Z'", "Unknown modifier 'Z'"),
+        // Only the FIRST unknown modifier is reported.
+        ("'/a/gg'", "Unknown modifier 'g'"),
+        ("'/abc'", "No ending delimiter '/' found"),
+        // A bracket delimiter names itself differently, and counts nesting, so
+        // this one is unterminated despite ending in `}`.
+        ("'{a{b}'", "No ending matching delimiter '}' found"),
+    ] {
+        let src = format!("<?php preg_match({pattern}, 'x');");
+        assert_eq!(
+            warning(&src),
+            format!("preg_match(): {message}"),
+            "{pattern}"
+        );
+        assert_eq!(
+            run(&format!("<?php var_dump(@preg_match({pattern}, 'x'));")),
+            "bool(false)\n",
+            "{pattern}"
+        );
+    }
+}
+
+#[test]
+fn a_malformed_body_reports_the_pcre_fault_and_its_offset() {
+    for (pattern, message) in [
+        (
+            "'/[a/'",
+            "missing terminating ] for character class at offset 2",
+        ),
+        (
+            "'/ab[cd/'",
+            "missing terminating ] for character class at offset 5",
+        ),
+        ("'/(a/'", "missing closing parenthesis at offset 2"),
+        // `(?` opens a group, so the `?` is not read as a quantifier.
+        ("'/(?/'", "missing closing parenthesis at offset 2"),
+        ("'/a)/'", "unmatched closing parenthesis at offset 2"),
+        (
+            "'/{2}/'",
+            "quantifier does not follow a repeatable item at offset 3",
+        ),
+        (
+            "'/x{1,2}{3}/'",
+            "quantifier does not follow a repeatable item at offset 9",
+        ),
+        (
+            "'/a{2,1}/'",
+            "numbers out of order in {} quantifier at offset 5",
+        ),
+    ] {
+        let src = format!("<?php preg_match({pattern}, 'x');");
+        assert_eq!(
+            warning(&src),
+            format!("preg_match(): Compilation failed: {message}"),
+            "{pattern}"
+        );
+    }
+}
+
+#[test]
+fn a_pattern_the_reference_accepts_still_compiles() {
+    // The delimiter and quantifier rules that a careless scan gets wrong. None of
+    // these may warn, and each answer is the reference's.
+    for (pattern, expected) in [
+        // Backslash escapes the delimiter, so the body is `a\/` and closes later.
+        (r#"'/a\//'"#, "0"),
+        // Bracket delimiters, nested and not.
+        ("'{a}'", "1"),
+        ("'(a)'", "1"),
+        ("'<a>'", "1"),
+        // `{` that does not open a quantifier is a literal.
+        ("'/a{x}/'", "0"),
+        // PCRE2 takes an open lower bound.
+        ("'/a{,3}/'", "1"),
+        ("'/a{2,}/'", "0"),
+        // `)` and `]` inside a character class are literal.
+        ("'/[a)]/'", "1"),
+        ("'/[]a]/'", "1"),
+        // A lazy or possessive suffix is part of the quantifier, not a second one.
+        ("'/a*?/'", "1"),
+        ("'/a*+/'", "1"),
+        // Every modifier letter the reference accepts.
+        ("'/a/imsxuADJSUX'", "1"),
+    ] {
+        assert_eq!(
+            run(&format!("<?php echo preg_match({pattern}, 'ab');")),
+            expected,
+            "{pattern}"
+        );
+    }
+}
+
+#[test]
+fn every_compiling_function_reports_the_fault_under_its_own_name() {
+    for (call, sentinel) in [
+        ("preg_match('/[a/', 'x')", "bool(false)"),
+        ("preg_match_all('/[a/', 'x', $m)", "bool(false)"),
+        ("preg_replace('/[a/', 'z', 'x')", "NULL"),
+        ("preg_replace_callback('/[a/', fn($m) => 'z', 'x')", "NULL"),
+        ("preg_split('/[a/', 'x')", "bool(false)"),
+        ("preg_grep('/[a/', ['x'])", "bool(false)"),
+    ] {
+        let name = call.split('(').next().unwrap();
+        assert_eq!(
+            warning(&format!("<?php {call};")),
+            format!("{name}(): Compilation failed: missing terminating ] for character class at offset 2"),
+            "{call}"
+        );
+        assert_eq!(
+            run(&format!("<?php var_dump(@{call});")),
+            format!("{sentinel}\n"),
+            "{call}"
+        );
+    }
+}
+
+#[test]
+fn preg_last_error_persists_until_the_next_pattern_compiles() {
+    // The state is what makes this observable across CALLS: reading it does not
+    // clear it, `preg_quote` does not touch it, and a pattern that compiles
+    // clears it even when the match then finds nothing.
+    let src = r#"<?php
+        @preg_match('/[a/', 'x');           echo preg_last_error(), preg_last_error_msg(), "|";
+        echo preg_last_error(), "|";       // reading does not clear
+        preg_quote('a');                   echo preg_last_error(), "|";
+        preg_match('/zzz/', 'abc');        echo preg_last_error(), "|";  // no match, but compiled
+        @preg_grep('/(', ['a']);           echo preg_last_error(), "|";
+        preg_split('/,/', 'a,b');          echo preg_last_error(), preg_last_error_msg();"#;
+    assert_eq!(run(src), "1Internal error|1|1|0|1|0No error");
+}
+
+#[test]
+fn a_pattern_the_rust_engine_alone_rejects_stays_silent() {
+    // Back-references and look-around compile in the reference, so there is no
+    // diagnostic to copy: the sentinel is returned with NO warning and the error
+    // state untouched. This is the documented engine-subset divergence.
+    let src = r#"<?php $r = preg_match('/(a)\1/', 'aa');
+        echo var_export($r, true), "|", preg_last_error();"#;
+    assert_eq!(run(src), "false|0");
+}
+
+#[test]
+fn suppression_and_the_error_reporting_mask_both_hide_the_warning() {
+    // Neither touches the error STATE, only the display.
+    assert_eq!(
+        run(r#"<?php var_dump(@preg_match('/[a/', 'x')); echo preg_last_error();"#),
+        "bool(false)\n1"
+    );
+    assert_eq!(
+        run(r#"<?php error_reporting(E_ALL & ~E_WARNING);
+               var_dump(preg_match('/[a/', 'x')); echo preg_last_error();"#),
+        "bool(false)\n1"
+    );
+}

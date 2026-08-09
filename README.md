@@ -176,9 +176,12 @@ end-to-end (see `tests/basic.rs`):
   with the program's output exactly as PHP's CLI defaults put them: undefined
   variables, array keys and properties, array offsets on a non-array, string
   offsets past the end, the `++`/`--` cases that have no effect, and PHP 8.2's
-  `Creation of dynamic property C::$p is deprecated`. `isset()`, `empty()`, `??`
-  and `@` read in PHP's isset mode and stay silent, as do writes,
-  auto-vivification and by-reference output arguments. Which of them are
+  `Creation of dynamic property C::$p is deprecated`. `isset()`, `empty()` and
+  `??` read in PHP's isset mode and stay silent, as do writes, auto-vivification
+  and by-reference output arguments. `@` is separate and dynamic: the operand is
+  evaluated normally and every diagnostic raised while it runs is dropped,
+  including those raised from inside the library functions it calls
+  (`@preg_match('/[a', $s)`). Which of them are
   *displayed* is the `error_reporting` mask, writable by `error_reporting()`,
   `ini_set('error_reporting', …)`, or `php -d error_reporting=…`. Only the `-d`
   path runs the php.ini constant-expression scanner, so `E_ALL & ~E_DEPRECATED`
@@ -198,6 +201,20 @@ end-to-end (see `tests/basic.rs`):
   `DivisionByZeroError` — with the library call itself as frame `#0` of the trace
   (`#0 <file>(<line>): range(9, 10, 2)`), and a `#[\\SensitiveParameter]`
   argument masked as `Object(SensitiveParameterValue)` exactly as PHP masks it.
+- **Property overloading** — `__get`, `__set`, `__isset` and `__unset` fire for a
+  property the object does not carry, whether because no class declared it,
+  because it was `unset`, or because its visibility puts it out of reach of the
+  reading scope. They are consulted BEFORE the access error, so a class defining
+  them never reports `Cannot access private property`. A magic method is not
+  re-entered for the property it is already handling, so `__get($n) { return
+  $this->$n; }` terminates. The four questions PHP asks differently are all
+  distinguished: `isset()` asks `__isset` alone, `empty()` and `??` follow a true
+  `__isset` with `__get` (and `??` falls back to `__get` when there is no
+  `__isset`, where `empty()` does not), and a plain read asks `__get`.
+- **Property access errors throw.** Reading, writing or unsetting an out-of-reach
+  property raises a catchable `Error: Cannot access private property C::$x`
+  naming the class that DECLARED it, rather than aborting the process. `isset()`
+  never throws — asking is always allowed.
 - **`__toString`** is invoked wherever a value becomes a string: `echo`, `print`,
   `.` concatenation, interpolation, the `(string)` cast / `strval`, `implode`'s
   elements, and the library functions whose parameters PHP declares as `string`.
@@ -265,14 +282,14 @@ in-code:
   (`array_multisort`, `sscanf`'s trailing arguments).
 - A diagnostic names the *statement's* line. PHP names the line of the
   expression, so a statement spanning several lines reports its first.
-- A **bad argument to a library function** throws (see above), but the `preg_*`
-  family is not converted: an empty pattern or a missing delimiter still aborts
-  with a host-level `php: …` line, where PHP raises a `Warning` and returns
-  `false`. That family needs the *warning* shape, not the throw shape.
-- **`unset($obj->prop)`** is rejected with `unset() target must be a variable or
-  an array element`; PHP removes the property. Writing an inaccessible property
-  (`$c->privateProp = 1`) likewise aborts host-level instead of throwing
-  `Error: Cannot access private property C::$p`.
+- A `preg_*` pattern the REFERENCE also rejects reproduces its `Warning` and its
+  `preg_last_error()` state. One the reference would have compiled but the Rust
+  engine cannot (a backreference, look-around) still returns the error sentinel
+  SILENTLY — there is no diagnostic to copy. The `A` modifier is accepted and
+  ignored, so `preg_match("/a/A", "bar")` is 1 here and 0 in the reference.
+- **Arithmetic on a non-numeric string** does not raise. PHP 8 makes `"g" + 1` a
+  `TypeError: Unsupported operand types: string + int` and `"5g" + 1` a
+  `Warning: A non-numeric value encountered`; both are computed quietly here.
 - A **stack trace** frame entered from inside a library function (an `array_map`
   callback) prints its call site rather than PHP's `[internal function]`, and a
   closure frame prints `{closure}` rather than PHP 8.4's `{closure:file:line}`.
@@ -282,11 +299,13 @@ in-code:
 - `var_dump`'s `#N` object number and `spl_object_id` agree with each other, but
   PHP reuses a freed object's number and phplang's arena never frees, so the two
   agree only until an object becomes unreachable.
-- `ini_get`/`ini_set` know only the settings with an engine-level default
-  (`error_reporting`, `precision`, `serialize_precision`, `display_errors`,
-  `log_errors`, `html_errors`, `default_charset`, `max_execution_time`). A
-  setting whose value comes from a php.ini file, such as `memory_limit` or
-  `date.timezone`, reads back `false` rather than a machine-specific guess.
+- `ini_get`/`ini_set` know PHP core plus `date` and `pcre` — the two extensions
+  PHP 8 cannot be built without — at the values the reference reports for them
+  with no php.ini loaded. A name belonging to an optional extension, or one whose
+  default is the build's install prefix (`extension_dir`), reads back `false`
+  rather than a machine-specific guess. `ini_set` does not model per-setting
+  VALUE validation: the reference refuses `ini_set('memory_limit', '20')` with a
+  message quoting its live memory usage, which is not a reproducible number.
 
 Persistent bytecode caching and AOT (`--build`) —
 present in the sibling frontends — are not wired yet; an LSP server (`--lsp`) and

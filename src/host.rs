@@ -177,6 +177,28 @@ pub mod ops {
     /// that opened it. Identical to [`PROP_SET`] but silent, so `$o->p .= "x"`
     /// deprecates once rather than twice.
     pub const PROP_SET_RW: u16 = 99;
+    /// `[] -> null`. Open an `@expr` suppression region (see
+    /// [`super::PhpHost::suppress_push`]). The pushed null is dropped by the
+    /// `Pop` the compiler emits after it.
+    ///
+    /// `@` needs a RUN-TIME region, not just the quiet read opcodes: a warning
+    /// raised inside a library function (`@preg_match('/[a', $s)`,
+    /// `@range('ab', 'c')`) is raised from Rust with no opcode of its own to
+    /// quieten, and the reference silences those too.
+    pub const SUPPRESS_PUSH: u16 = 100;
+    /// `[value] -> value`. Close the region [`SUPPRESS_PUSH`] opened, passing the
+    /// operand's value through so `@` stays an expression.
+    pub const SUPPRESS_POP: u16 = 101;
+    /// `[recv, name] -> null`. `unset($o->p)`.
+    pub const PROP_UNSET: u16 = 102;
+    /// `[recv, name] -> bool`. `isset($o->p)` — see [`super::PropAccess`] and the
+    /// `IssetOf` arm of the compiler for why this cannot be a value comparison.
+    pub const PROP_ISSET: u16 = 103;
+    /// `[recv, name] -> value`. The read inside `empty($o->p)`. [`PROP_GET_Q`]
+    /// with one arm changed: a property no `__isset` vouched for reads as null
+    /// instead of falling back to `__get`, so a class with `__get` and no
+    /// `__isset` is `empty()` without `__get` being called at all.
+    pub const PROP_GET_EMPTY: u16 = 104;
 }
 
 /// Sub-ops for the by-reference array mutators lowered through `ops::ARR_MUT`
@@ -472,6 +494,37 @@ pub struct PhpHost {
     /// `ini_set`/`ini_get` string store for settings with no dedicated field, so a
     /// value written by one is read back by the other unchanged.
     ini: FxHashMap<String, String>,
+    /// What `preg_last_error()` reports: the outcome of the last `preg_*` call
+    /// that reached the regex compiler. Sticky — only another such call rewrites
+    /// it, so `preg_last_error()` itself and `preg_quote()` leave it alone.
+    preg_error: i64,
+    /// Magic property accesses currently on the stack, as
+    /// `(object handle, property, magic method)`. PHP does not re-enter a magic
+    /// method for a property already being handled by it, which is what lets
+    /// `__get($n) { return $this->$n ?? 'd'; }` terminate: the inner `$this->$n`
+    /// finds no property, sees `__get` already in progress for that name, and
+    /// takes the ordinary undefined-property path instead of recursing.
+    magic_in_progress: Vec<(u32, String, &'static str)>,
+}
+
+/// What `$obj->name` should do, once the object's property table and the
+/// visibility rules have both been consulted. Returned by
+/// [`PhpHost::prop_access`], which every property opcode routes through so the
+/// four of them cannot disagree about when a magic method fires.
+pub enum PropAccess {
+    /// The property is present on the object and reachable from here: read,
+    /// write or remove the slot directly.
+    Direct,
+    /// Not directly reachable, and the class defines the magic method for this
+    /// operation — call it.
+    Magic,
+    /// Not reachable, no magic method, and the property IS declared: its
+    /// visibility puts it out of reach. Carries the reference's message.
+    Denied(String),
+    /// Not reachable, no magic method, and no such property. What that means is
+    /// the caller's decision: a read warns and yields null, a write creates the
+    /// property, an unset does nothing, an `isset` is false.
+    Absent,
 }
 
 /// Ini settings applied to every host the moment it is created — what `php -d
@@ -490,26 +543,136 @@ pub fn add_initial_ini(name: &str, value: &str) {
     g.push((name.to_string(), value.to_string()));
 }
 
-/// The ini settings this engine knows, with the values the PHP CLI uses when no
-/// php.ini overrides them. Only engine-level defaults are listed — see
-/// [`PhpHost::ini_get`] for why the file-driven ones are deliberately absent.
+/// The ini settings this engine knows, with the values the reference CLI reports
+/// for them when nothing overrides them.
+///
+/// Every entry here is an ENGINE default — compiled into the interpreter, not
+/// read from a php.ini. The distinction is testable rather than a judgement
+/// call: `php -n` starts with no ini file at all, so a setting whose value is
+/// the same under `php -n` and `php` is one the engine supplies itself, and a
+/// setting whose value differs between them came from the file. Only the former
+/// are listed, which is why `memory_limit` (`128M`) and `date.timezone` (`UTC`)
+/// belong here — both survive `php -n` unchanged — while `variables_order`,
+/// `enable_dl` and `short_open_tag`, which do not, are deliberately absent.
+///
+/// Two further exclusions, for values that are engine defaults but not portable
+/// ones: anything whose default is a build path (`extension_dir`,
+/// `include_path`, `openssl.cafile`), which encodes the prefix the reference
+/// happened to be built with, and settings belonging to optional extensions
+/// (`mysqli.*`, `pgsql.*`, `tidy.*`), which a differently configured build does
+/// not register at all. What remains is PHP core plus `date` and `pcre` — the
+/// two extensions PHP 8 cannot be built without.
 fn default_ini() -> FxHashMap<String, String> {
     [
         // The startup mask, also readable through `ini_get`. `-d` and
         // `error_reporting()` both rewrite this entry, so the two views agree.
         ("error_reporting", "30719"),
+        // Error handling and output.
         ("precision", "14"),
         ("serialize_precision", "-1"),
         ("display_errors", "1"),
+        ("display_startup_errors", "1"),
         ("log_errors", "1"),
         ("html_errors", "0"),
-        ("default_charset", "UTF-8"),
+        ("docref_ext", ""),
+        ("error_append_string", ""),
+        ("error_prepend_string", ""),
+        ("ignore_repeated_errors", "0"),
+        ("ignore_repeated_source", "0"),
+        ("report_memleaks", "1"),
+        ("fatal_error_backtraces", "1"),
+        ("output_buffering", "0"),
+        ("implicit_flush", "1"),
+        ("output_handler", ""),
+        // Resource limits. `max_execution_time` and `max_input_time` are the CLI
+        // SAPI's own hardcoded overrides, not the common defaults.
+        ("memory_limit", "128M"),
+        ("max_memory_limit", "-1"),
         ("max_execution_time", "0"),
+        ("max_input_time", "-1"),
+        ("max_input_nesting_level", "64"),
+        ("max_input_vars", "1000"),
+        ("post_max_size", "8M"),
+        ("default_socket_timeout", "60"),
+        ("hard_timeout", "2"),
+        ("unserialize_max_depth", "4096"),
+        ("unserialize_callback_func", ""),
+        // Language and encoding.
+        ("default_charset", "UTF-8"),
+        ("default_mimetype", "text/html"),
+        ("input_encoding", ""),
+        ("internal_encoding", ""),
+        ("output_encoding", ""),
+        ("disable_functions", ""),
+        ("expose_php", "1"),
+        ("ignore_user_abort", "0"),
+        ("register_argc_argv", "0"),
+        ("auto_detect_line_endings", "0"),
+        ("allow_url_fopen", "1"),
+        ("arg_separator.input", "&"),
+        ("arg_separator.output", "&"),
+        ("user_agent", ""),
+        ("from", ""),
+        // Zend engine.
+        ("zend.assertions", "1"),
+        ("zend.enable_gc", "1"),
+        ("zend.detect_unicode", "1"),
+        ("zend.multibyte", "0"),
+        ("zend.exception_ignore_args", "0"),
+        ("zend.exception_string_param_max_len", "15"),
+        ("zend.script_encoding", ""),
+        // ext/date — always built.
+        ("date.timezone", "UTC"),
+        ("date.default_latitude", "31.7667"),
+        ("date.default_longitude", "35.2333"),
+        ("date.sunrise_zenith", "90.833333"),
+        ("date.sunset_zenith", "90.833333"),
+        // ext/pcre — always built.
+        ("pcre.backtrack_limit", "1000000"),
+        ("pcre.recursion_limit", "100000"),
+        ("pcre.jit", "1"),
     ]
     .iter()
     .map(|(k, v)| (k.to_string(), v.to_string()))
     .collect()
 }
+
+/// Settings from [`default_ini`] that `ini_set` cannot change at run time —
+/// PHP's `PHP_INI_PERDIR`/`PHP_INI_SYSTEM` entries, which only a php.ini or a
+/// `-d` may set. `ini_set` reports `false` for these and changes nothing, while
+/// `ini_get` still reads them.
+///
+/// Determined by running `ini_set($name, ini_get($name))` on the reference for
+/// every name in `default_ini` and recording which ones answered `false` —
+/// writing a setting its OWN current value can only fail because the write
+/// itself is refused.
+const INI_FIXED: &[&str] = &[
+    "allow_url_fopen",
+    "arg_separator.input",
+    "disable_functions",
+    "expose_php",
+    "hard_timeout",
+    "max_input_nesting_level",
+    "max_input_time",
+    "max_input_vars",
+    "max_memory_limit",
+    "output_buffering",
+    "output_handler",
+    "post_max_size",
+    "register_argc_argv",
+    "zend.multibyte",
+    "zend.script_encoding",
+];
+
+// DIVERGENCE — per-setting VALUE validation is not modelled. The reference
+// refuses a value a setting will not take, with a `Warning` and `false`:
+// `ini_set('date.timezone', '-1')` keeps UTC, `ini_set('memory_limit', '20')`
+// keeps 128M. Neither is reproducible here. The timezone check needs a zone
+// database this build does not carry (see `stdlib::datetime`, which documents
+// the same gap for `date_default_timezone_set`), and `memory_limit`'s refusal
+// message quotes the process's CURRENT memory usage in bytes, which is not a
+// reproducible number. A write of a value the reference would refuse is
+// therefore accepted here rather than guessed at; see the `ini_set` corpus entry.
 
 impl Default for PhpHost {
     fn default() -> Self {
@@ -547,6 +710,8 @@ impl PhpHost {
             fatal_reported: false,
             error_reporting: errlevel::E_ALL,
             ini: default_ini(),
+            preg_error: 0,
+            magic_in_progress: Vec::new(),
         };
         h.init_superglobals();
         // `-d` overrides land before the program is read, so a compile-time
@@ -841,6 +1006,18 @@ impl PhpHost {
         self.suppress = self.suppress.saturating_sub(1);
     }
 
+    /// The open `@expr` region count, for a caller that has to put it back.
+    pub fn suppress_depth(&self) -> usize {
+        self.suppress
+    }
+
+    /// Force the region count back to `depth` — see the call in
+    /// [`run_try_orchestrator`], the one place an `@expr` can be abandoned
+    /// part-way through.
+    pub fn suppress_restore(&mut self, depth: usize) {
+        self.suppress = depth;
+    }
+
     /// Emit a PHP `Warning` on the output stream.
     ///
     /// With the CLI defaults (`display_errors=STDOUT`, `html_errors=Off`) the
@@ -886,6 +1063,19 @@ impl PhpHost {
         self.error_reporting
     }
 
+    /// What `preg_last_error()` reports.
+    pub fn preg_error(&self) -> i64 {
+        self.preg_error
+    }
+
+    /// Record the outcome of a `preg_*` call that reached the regex compiler.
+    /// Called on SUCCESS too, which is what clears a previous failure: in the
+    /// reference a pattern that compiles resets the state even when the match
+    /// then finds nothing.
+    pub fn set_preg_error(&mut self, code: i64) {
+        self.preg_error = code;
+    }
+
     /// Set the `error_reporting` mask, returning the previous one — what
     /// `error_reporting($level)` reports back. The ini store is updated with the
     /// decimal spelling, so `ini_get('error_reporting')` follows the function.
@@ -903,9 +1093,11 @@ impl PhpHost {
     /// because the two can disagree: `ini_set('error_reporting', '12abc')` leaves
     /// `ini_get` reporting `"12abc"` while the mask becomes 12.
     ///
-    /// DIVERGENCE: only settings with an engine-level default are known. Ones
-    /// whose value comes from a php.ini file (`memory_limit`, `date.timezone`)
-    /// report `false` rather than a guess that would be wrong on most machines.
+    /// DIVERGENCE: only the settings [`default_ini`] lists are known — PHP core
+    /// plus `date` and `pcre`. A name belonging to an optional extension the
+    /// reference happened to be built with (`mysqli.default_host`), or one whose
+    /// default is that build's install prefix (`extension_dir`), reports `false`
+    /// rather than a value that would be wrong on another machine.
     pub fn ini_get(&self, name: &str) -> Option<String> {
         self.ini.get(name).cloned()
     }
@@ -919,7 +1111,14 @@ impl PhpHost {
     /// php.ini spelling, understood on the `-d`/ini path only; handed to
     /// `ini_set` at run time it reads as the integer 0 and mutes everything,
     /// which is exactly what the reference does with it.
+    ///
+    /// Two more ways a write is refused, both of which report `false` and change
+    /// nothing: a setting that is not runtime-changeable (see [`INI_FIXED`]), and
+    /// a value the setting rejects (see [`ini_value_rejected`]).
     pub fn ini_set(&mut self, name: &str, value: &str) -> Option<String> {
+        if INI_FIXED.contains(&name) {
+            return None;
+        }
         let level = (name == "error_reporting")
             .then(|| self.to_number(&Value::str(value.to_string())).to_int());
         let slot = self.ini.get_mut(name)?;
@@ -2189,25 +2388,102 @@ impl PhpHost {
         }
     }
 
-    /// Enforce property visibility for `$obj->name` access. `Ok` when the property
-    /// is public, dynamic, or reachable from the current class context; otherwise
-    /// the PHP `Cannot access <vis> property C::$name` error.
-    pub fn check_prop_access(&self, recv: &Value, name: &str) -> Result<(), String> {
-        let Some(class) = self.object_class(recv) else {
-            return Ok(());
+    /// Decide what `$obj->name` does for the operation whose magic method is
+    /// `magic` (`__get`, `__set`, `__isset`, `__unset`).
+    ///
+    /// The order is the reference's, and the two halves are easy to get backwards:
+    /// a magic method is consulted for a property that is not THERE just as much
+    /// as for one that is out of reach, and it is consulted BEFORE any access
+    /// error. So `unset($o->pub)` on a class with `__get` really does route later
+    /// reads of that public property through `__get` — the slot is gone, and gone
+    /// is indistinguishable from never-declared at this point.
+    ///
+    /// A magic method already running for this object and property is skipped,
+    /// which is the recursion guard described on [`magic_in_progress`].
+    ///
+    /// [`magic_in_progress`]: PhpHost::magic_in_progress
+    pub fn prop_access(&self, recv: &Value, name: &str, magic: &'static str) -> PropAccess {
+        let Some(PhpObj::Object { class, props }) = self.as_array(recv) else {
+            // Not an object: no visibility to enforce and no magic to call.
+            return PropAccess::Absent;
         };
-        let Some((declaring, vis)) = self.resolve_prop_vis(&class, name) else {
-            return Ok(());
+        let declared = self.resolve_prop_vis(class, name);
+        // A property no class declares carries no visibility, so it is reachable.
+        let reachable = match &declared {
+            Some((declaring, vis)) => self.visibility_allows(*vis, declaring),
+            None => true,
         };
-        if self.visibility_allows(vis, &declaring) {
-            return Ok(());
+        if reachable && props.contains_key(name) {
+            return PropAccess::Direct;
         }
-        let vname = match vis {
-            Visibility::Private => "private",
-            Visibility::Protected => "protected",
-            Visibility::Public => unreachable!(),
+        let handle = match recv {
+            Value::Obj(h) => *h,
+            _ => return PropAccess::Absent,
         };
-        Err(format!("Cannot access {vname} property {class}::${name}"))
+        let guarded = self
+            .magic_in_progress
+            .iter()
+            .any(|(h, p, m)| *h == handle && p == name && *m == magic);
+        if !guarded && self.class_has_method(class, magic) {
+            return PropAccess::Magic;
+        }
+        match declared {
+            // Out of reach rather than absent — the reference names the
+            // visibility and the class that declared it, not the class of the
+            // object, which for an inherited private property is not the same.
+            Some((declaring, vis)) if !reachable => {
+                let vname = match vis {
+                    Visibility::Private => "private",
+                    Visibility::Protected => "protected",
+                    Visibility::Public => unreachable!("public is always reachable"),
+                };
+                let class = self.class_display_name(&declaring);
+                PropAccess::Denied(format!("Cannot access {vname} property {class}::${name}"))
+            }
+            _ => PropAccess::Absent,
+        }
+    }
+
+    /// Mark a magic property access as in progress; the matching
+    /// [`magic_leave`](PhpHost::magic_leave) must follow it.
+    pub fn magic_enter(&mut self, recv: &Value, name: &str, magic: &'static str) {
+        if let Value::Obj(h) = recv {
+            self.magic_in_progress.push((*h, name.to_string(), magic));
+        }
+    }
+
+    pub fn magic_leave(&mut self) {
+        self.magic_in_progress.pop();
+    }
+
+    /// The open magic-access count, for a caller that has to put it back after an
+    /// unwind — the same problem, and the same fix, as `@expr` suppression.
+    pub fn magic_depth(&self) -> usize {
+        self.magic_in_progress.len()
+    }
+
+    pub fn magic_restore(&mut self, depth: usize) {
+        self.magic_in_progress.truncate(depth);
+    }
+
+    /// A class name as declared, recovered from the lowercased key the class
+    /// table is indexed by, so a diagnostic prints `MyClass` and not `myclass`.
+    fn class_display_name(&self, lowered: &str) -> String {
+        self.classes
+            .get(lowered)
+            .map(|d| d.name.clone())
+            .unwrap_or_else(|| lowered.to_string())
+    }
+
+    /// Remove `$obj->name` from the object's property table — `unset($o->p)`.
+    /// A property that is not there is not an error; the caller has already
+    /// decided this is the right thing to do (see [`prop_access`]).
+    ///
+    /// [`prop_access`]: PhpHost::prop_access
+    pub fn prop_remove(&mut self, recv: &Value, name: &str) {
+        if let Some(PhpObj::Object { props, .. }) = self.as_array_mut(recv) {
+            props.shift_remove(name);
+        }
     }
 
     /// Enforce method visibility for `$obj->method()`. Same policy as properties;
@@ -4828,7 +5104,13 @@ pub fn run_try_orchestrator(id: i64) -> Result<i64, String> {
         return Err(format!("internal: no try-def #{id}"));
     };
 
+    // An `@expr` that throws never reaches its `SUPPRESS_POP`, so the region it
+    // opened would stay open and silence everything after the catch. Unwinding
+    // out of the expression restores the depth, which is what the reference does
+    // when it restores the error-reporting level on the way out.
+    let suppress_depth = with_host(|h| h.suppress_depth());
     let mut status = run_body(def.try_chunk);
+    with_host(|h| h.suppress_restore(suppress_depth));
 
     // A thrown exception: try each catch clause in order; the first whose union
     // of class names matches the thrown object's class wins.

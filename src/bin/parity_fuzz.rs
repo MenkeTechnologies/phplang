@@ -1400,6 +1400,285 @@ fn gen_libargerr(seed: u64) -> Vec<String> {
     }
 }
 
+/// Patterns the reference REJECTS, each with the fault it reports: an empty
+/// expression, a delimiter that may not be one, an unknown modifier, an
+/// unterminated delimiter of both styles, and the five PCRE2 body faults.
+const BAD_PATTERNS: &[&str] = &[
+    "''",
+    "'   '",
+    "'abc'",
+    "'1a1'",
+    "'/a/Z'",
+    "'/a/gg'",
+    "'/abc'",
+    "'{abc'",
+    "'(a(b)'",
+    "'/[a'",
+    "'/ab[cd'",
+    "'/(a'",
+    "'/((a)'",
+    "'/a)'",
+    "'/(a))'",
+    "'/*a'.'/'",
+    "'/a**'.'/'",
+    "'/a|*'.'/'",
+    "'/a{2,1}/'",
+    "'/ab{5,3}c/'",
+    "'/{2}/'",
+    "'/x{1,2}{3}/'",
+    "'/(?'.'/'",
+];
+
+/// Patterns the reference ACCEPTS, including the ones a careless delimiter or
+/// quantifier scan gets wrong: an escaped delimiter, nested bracket delimiters,
+/// a literal `{`, an open lower bound, and every modifier letter that is legal.
+const GOOD_PATTERNS: &[&str] = &[
+    "'/a/'",
+    "'//'",
+    "'/a\\\\//'",
+    "'/a\\\\\\\\/'",
+    "'{a}'",
+    "'(a)'",
+    "'[a]'",
+    "'<a>'",
+    "'#a#'",
+    "'~a~'",
+    "'/a{x}/'",
+    "'/a{,3}/'",
+    "'/a{2,}/'",
+    "'/[a)]/'",
+    "'/[]a]/'",
+    "'/\\\\(/'",
+    "'/a*?/'",
+    "'/a*+/'",
+    "'/(a)(b)/'",
+    "'/a/imsxuADJSUX'",
+    "'/A/i'",
+    "'/^ab$/'",
+    "'/a|b/'",
+];
+
+/// `preg_*` pattern faults, and the error state they leave behind.
+///
+/// Every case is a SEQUENCE, not a single call: the interesting behaviour is that
+/// `preg_last_error()` persists across calls and is cleared by the next pattern
+/// that compiles — not by reading it, and not by `preg_quote`. A generator that
+/// only ever emitted one call and one read would agree with a wrong
+/// implementation that reset the state on every read, or never reset it at all.
+/// So each program interleaves calls with reads and prints the state after each
+/// step, and mixes good patterns in with bad ones so both transitions are seen.
+fn gen_pregerr(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let bad = *r.pick(BAD_PATTERNS);
+    let bad2 = *r.pick(BAD_PATTERNS);
+    let good = *r.pick(GOOD_PATTERNS);
+    let subj = ww(r);
+    // The state read, printed after every step.
+    let st = r#"echo "|", preg_last_error(), ":", preg_last_error_msg(), "|";"#;
+    match r.below(8) {
+        // One fault, then the reads that must NOT clear it, then a good pattern
+        // that must.
+        0 => vec![format!(
+            "var_dump(preg_match({bad}, '{subj}')); {st} {st} preg_quote('a'); {st} \
+             var_dump(preg_match({good}, '{subj}')); {st}"
+        )],
+        // Every function that compiles a pattern reports the fault under its own
+        // name and returns its own error sentinel.
+        1 => vec![format!(
+            "var_dump(preg_match({bad}, '{subj}')); {st} \
+             var_dump(preg_match_all({bad2}, '{subj}', $m)); {st} \
+             var_dump(preg_replace({bad}, 'z', '{subj}')); {st} \
+             var_dump(preg_split({bad2}, '{subj}')); {st} \
+             var_dump(preg_grep({bad}, ['{subj}'])); {st}"
+        )],
+        // A good pattern clears the state even when the match itself finds
+        // nothing — the compile is what counts, not the outcome.
+        2 => vec![format!(
+            "preg_match({bad}, '{subj}'); {st} \
+             var_dump(preg_match('/zzzzz/', '{subj}')); {st} \
+             var_dump(preg_match({good}, '{subj}')); {st}"
+        )],
+        // Good patterns must stay silent and keep the state clear.
+        3 => vec![format!(
+            "var_dump(preg_match({good}, '{subj}', $m), $m); {st} \
+             var_dump(preg_split({good}, '{subj}')); {st}"
+        )],
+        // `@` and the error_reporting mask hide the warning; neither touches the
+        // error state, which the reads after them prove.
+        4 => vec![format!(
+            "var_dump(@preg_match({bad}, '{subj}')); {st} \
+             error_reporting(E_ALL & ~E_WARNING); \
+             var_dump(preg_match({bad2}, '{subj}')); {st} \
+             error_reporting(E_ALL); var_dump(preg_match({bad}, '{subj}')); {st}"
+        )],
+        // An array of patterns: the first bad one ends the whole call.
+        5 => vec![format!(
+            "var_dump(preg_replace([{good}, {bad}], 'z', '{subj}')); {st} \
+             var_dump(preg_replace([{good}], 'z', '{subj}')); {st}"
+        )],
+        // Inside a function, so the warning's line is the call's and not the
+        // caller's.
+        6 => vec![format!(
+            "function f($p) {{ return preg_match($p, '{subj}'); }} \
+             var_dump(f({bad})); {st} var_dump(f({good})); {st}"
+        )],
+        // A fault in a loop: the state must track the LAST call every time round.
+        _ => vec![format!(
+            "foreach ([{bad}, {good}, {bad2}] as $p) {{ \
+             var_dump(@preg_match($p, '{subj}')); {st} }}"
+        )],
+    }
+}
+
+/// Property access against classes that DO and DO NOT define the magic methods.
+///
+/// The operations are the point, not the declarations: each program writes,
+/// reads back, unsets, and re-reads, so a `__set` that never stored anything and
+/// an `__unset` that removed the wrong slot both surface as a wrong value later
+/// rather than as a missing echo. The four questions PHP asks differently —
+/// `isset`, `empty`, `??` and `@` — are all exercised, because they consult
+/// `__isset` and `__get` in different combinations.
+fn gen_propmagic(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    // The magic methods this class defines. Each subset behaves differently, and
+    // "none" is the arm where the access error has to appear instead.
+    let magic = *r.pick(&[
+        "",
+        "public function __get($n) { echo \"[G$n]\"; return $this->bag[$n] ?? \"g\"; }",
+        "public function __set($n, $v) { echo \"[S$n]\"; $this->bag[$n] = $v; }",
+        "public function __get($n) { echo \"[G$n]\"; return $this->bag[$n] ?? \"g\"; } \
+         public function __set($n, $v) { echo \"[S$n]\"; $this->bag[$n] = $v; }",
+        "public function __isset($n) { echo \"[I$n]\"; return isset($this->bag[$n]); } \
+         public function __unset($n) { echo \"[U$n]\"; unset($this->bag[$n]); }",
+        "public function __get($n) { echo \"[G$n]\"; return $this->bag[$n] ?? \"g\"; } \
+         public function __set($n, $v) { echo \"[S$n]\"; $this->bag[$n] = $v; } \
+         public function __isset($n) { echo \"[I$n]\"; return isset($this->bag[$n]); } \
+         public function __unset($n) { echo \"[U$n]\"; unset($this->bag[$n]); }",
+    ]);
+    let vis = *r.pick(&["public", "protected", "private"]);
+    let v = ii(r);
+    // Every declaration carries the same private bag, so `__set` has somewhere to
+    // put a value and `__get` has somewhere to find it.
+    let cls = format!("class C {{ {vis} $p = 1; private $bag = []; {magic} }} $c = new C;");
+    // A property the class never declares — the "absent" half of the same
+    // machinery, where the access error must NOT appear.
+    let undeclared = format!("class D {{ private $bag = []; {magic} }} $d = new D;");
+    match r.below(8) {
+        // Write, read back, unset, read again — the full round trip on the
+        // declared property.
+        0 => vec![format!(
+            "{cls} try {{ $c->p = {v}; echo \"|\", $c->p, \"|\"; unset($c->p); \
+             echo \"|\", $c->p, \"|\"; }} catch (Throwable $e) {{ \
+             echo get_class($e), \"|\", $e->getMessage(); }}"
+        )],
+        // The same round trip on a property no class declares.
+        1 => vec![format!(
+            "{undeclared} $d->q = {v}; echo \"|\", $d->q, \"|\"; unset($d->q); \
+             echo \"|\", $d->q, \"|\";"
+        )],
+        // The four "is it there" questions, which disagree with each other.
+        2 => vec![format!(
+            "{cls} var_dump(isset($c->p)); var_dump(empty($c->p)); \
+             var_dump($c->p ?? 'D'); var_dump(@$c->p);"
+        )],
+        3 => vec![format!(
+            "{undeclared} var_dump(isset($d->q)); var_dump(empty($d->q)); \
+             var_dump($d->q ?? 'D'); var_dump(@$d->q);"
+        )],
+        // The same questions AFTER a write, so a `__set` that stored nothing
+        // shows up as the wrong answer rather than as silence.
+        4 => vec![format!(
+            "{undeclared} $d->q = {v}; var_dump(isset($d->q)); var_dump(empty($d->q)); \
+             var_dump($d->q ?? 'D');"
+        )],
+        // And after an unset, which must undo the write.
+        5 => vec![format!(
+            "{undeclared} $d->q = {v}; unset($d->q); var_dump(isset($d->q)); \
+             var_dump($d->q ?? 'D'); echo \"|\", @$d->q, \"|\";"
+        )],
+        // Reached from INSIDE the class, where a private property is directly
+        // reachable and no magic method fires at all.
+        6 => vec![format!(
+            "class C {{ {vis} $p = 1; private $bag = []; {magic} \
+             public function go($v) {{ $this->p = $v; unset($this->bag); \
+             return $this->p; }} }} \
+             $c = new C; echo $c->go({v});"
+        )],
+        // Compound assignment and increment, which fetch for writing and then
+        // write back — two passes through the same machinery.
+        _ => vec![format!(
+            "{undeclared} try {{ $d->q {}= {v}; echo \"|\", $d->q, \"|\"; $d->q++; \
+             echo \"|\", $d->q, \"|\"; }} catch (Throwable $e) {{ \
+             echo get_class($e), \"|\", $e->getMessage(); }}",
+            r.pick(&["+", ".", "*"])
+        )],
+    }
+}
+
+/// `ini_get` over the settings the engine supplies itself, and `ini_set` over
+/// the same. Reads are interleaved with writes because `ini_set` must return the
+/// PREVIOUS value and leave the new one readable — a store that dropped the
+/// write, or one that invented a setting it should have refused, both show up
+/// only in a later read.
+/// `(setting, a value the reference ACCEPTS for it)`.
+///
+/// Paired rather than crossed because the reference validates per setting, and a
+/// value it refuses is not a question this harness can ask: `ini_set('memory_limit',
+/// '20')` is refused with a message quoting the process's live memory usage, and
+/// `ini_set('date.timezone', '-1')` needs a zone database to reject. Both are
+/// nondeterministic or unavailable here, and the harness exists to compare
+/// deterministic output — see the DIVERGENCE note above `INI_FIXED` in
+/// `src/host.rs`. What IS asked: reads of every kind of setting, writes to the
+/// changeable ones, refusal of the fixed ones, and refusal of a name that does
+/// not exist.
+const INI_SETTINGS: &[(&str, &str)] = &[
+    ("memory_limit", "256M"),
+    ("date.timezone", "America/New_York"),
+    ("precision", "7"),
+    ("serialize_precision", "17"),
+    ("display_errors", "0"),
+    ("max_execution_time", "30"),
+    ("default_charset", "ISO-8859-1"),
+    ("zend.assertions", "0"),
+    ("pcre.backtrack_limit", "500000"),
+    ("date.default_latitude", "51.5"),
+    ("unserialize_max_depth", "2048"),
+    ("default_socket_timeout", "10"),
+    ("arg_separator.output", ";"),
+    ("html_errors", "1"),
+    ("log_errors", "0"),
+    ("error_reporting", "0"),
+    // Not runtime-changeable: `ini_set` must refuse these and change nothing.
+    ("post_max_size", "16M"),
+    ("output_buffering", "4096"),
+    ("max_input_vars", "2000"),
+    ("expose_php", "0"),
+    ("allow_url_fopen", "0"),
+    ("zend.multibyte", "1"),
+    // Not a setting at all.
+    ("no.such.setting", "1"),
+];
+
+fn gen_ini(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let (name, val) = *r.pick(INI_SETTINGS);
+    match r.below(4) {
+        0 => vec![format!("var_dump(ini_get('{name}'));")],
+        1 => vec![format!(
+            "var_dump(ini_set('{name}', '{val}')); var_dump(ini_get('{name}'));"
+        )],
+        // Restore, and prove the restore took.
+        2 => vec![format!(
+            "$old = ini_get('{name}'); var_dump($old); ini_set('{name}', '{val}'); \
+             var_dump(ini_get('{name}')); ini_set('{name}', $old); \
+             var_dump(ini_get('{name}') === $old);"
+        )],
+        _ => vec![format!(
+            "var_dump(ini_get('{name}') === false); var_dump(ini_set('{name}', '{val}') === false);"
+        )],
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Mode registry.
 // ---------------------------------------------------------------------------
@@ -1586,6 +1865,18 @@ const MODES: &[Mode] = &[
     Mode {
         name: "libargerr",
         gen: gen_libargerr,
+    },
+    Mode {
+        name: "pregerr",
+        gen: gen_pregerr,
+    },
+    Mode {
+        name: "propmagic",
+        gen: gen_propmagic,
+    },
+    Mode {
+        name: "ini",
+        gen: gen_ini,
     },
 ];
 

@@ -1379,13 +1379,12 @@ impl Parser {
                 }
             }
         }
-        // `@expr` — the error-suppression operator. It silences the read
-        // diagnostics of its operand, the same suppression `isset()` applies.
-        // (PHP's `@` is dynamic and also silences diagnostics raised inside the
-        // functions the operand calls; phplang's builtins raise none, so the
-        // static form covers every case that currently differs.)
+        // `@expr` — the error-suppression operator. Dynamic: it silences every
+        // diagnostic raised while the operand runs, including the ones raised
+        // from inside the library functions it calls, which have no opcode of
+        // their own to quieten.
         if self.eat_punct("@") {
-            return Ok(Expr::Quiet(Box::new(self.unary()?)));
+            return Ok(Expr::Suppress(Box::new(self.unary()?)));
         }
         if self.eat_punct("!") {
             return Ok(Expr::Unary(UnOp::Not, Box::new(self.unary()?)));
@@ -1656,25 +1655,22 @@ impl Parser {
                     // returns `null` for a missing var/index silently, so both
                     // desugar to plain operators over existing ops.
                     if name.eq_ignore_ascii_case("empty") && args.len() == 1 {
-                        // empty($x) ≡ !$x (both are false-on-truthy, quiet on unset).
+                        // empty($x) ≡ !$x over an isset-gated read of $x.
                         return Ok(Expr::Unary(
                             UnOp::Not,
-                            Box::new(Expr::Quiet(Box::new(args.into_iter().next().unwrap()))),
+                            Box::new(Expr::EmptyOf(Box::new(args.into_iter().next().unwrap()))),
                         ));
                     }
                     if name.eq_ignore_ascii_case("isset") && !args.is_empty() {
-                        // isset($a, $b, …) ≡ ($a !== null) && ($b !== null) && …
+                        // isset($a, $b, …) ≡ isset($a) && isset($b) && …
                         let mut it = args.into_iter();
-                        let quiet = |e: Expr| Box::new(Expr::Quiet(Box::new(e)));
-                        let mut expr = Expr::Binary(
-                            BinOp::StrictNe,
-                            quiet(it.next().unwrap()),
-                            Box::new(Expr::Null),
-                        );
+                        let mut expr = Expr::IssetOf(Box::new(it.next().unwrap()));
                         for a in it {
-                            let term =
-                                Expr::Binary(BinOp::StrictNe, quiet(a), Box::new(Expr::Null));
-                            expr = Expr::Binary(BinOp::And, Box::new(expr), Box::new(term));
+                            expr = Expr::Binary(
+                                BinOp::And,
+                                Box::new(expr),
+                                Box::new(Expr::IssetOf(Box::new(a))),
+                            );
                         }
                         return Ok(expr);
                     }

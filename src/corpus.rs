@@ -268,14 +268,14 @@ pub const CORPUS: &[Entry] = &[
         "protected",
         "Keyword",
         "protected $prop;   protected function m() { … }",
-        "Marks a member reachable only from the declaring class and its subclasses. Visibility IS enforced: an access from outside aborts with the uncatchable host error `php: Cannot access protected property C::$x`.",
+        "Marks a member reachable only from the declaring class and its subclasses. Visibility IS enforced: reading, writing or unsetting the property from outside throws a catchable `Error: Cannot access protected property C::$x` — unless the class defines the matching magic method (`__get`, `__set`, `__unset`), which is consulted first and makes the access succeed instead.",
         "class A { protected $x = 1; }\nclass B extends A { function g() { return $this->x; } }\necho (new B)->g();   // => 1",
     ),
     (
         "private",
         "Keyword",
         "private $prop;   private function m() { … }",
-        "Marks a member reachable only from the declaring class. Enforced for both properties and methods: an outside access aborts with `php: Cannot access private property C::$x` or `php: Call to private method C::m() from global scope`.",
+        "Marks a member reachable only from the declaring class. Enforced for both properties and methods. A property access from outside throws a catchable `Error: Cannot access private property C::$x`, naming the class that DECLARED it, unless the class defines the matching magic method (`__get`, `__set`, `__unset`), which is consulted first. `isset()` never throws here — an unreachable property is simply not set. DIVERGENCE: a method call from outside still aborts with the uncatchable host error `php: Call to private method C::m() from global scope`.",
         "class C { private $x = 4; function get() { return $this->x; } }\necho (new C)->get();   // => 4",
     ),
     (
@@ -402,21 +402,21 @@ pub const CORPUS: &[Entry] = &[
         "isset",
         "Language construct",
         "isset($var[, $var …]): bool",
-        "True when every argument is set and not null, staying quiet about undefined variables and missing keys. It desugars to a chain of `!== null` tests rather than a function call, which is why an unset name never raises.",
+        "True when every argument is set and not null, staying quiet about undefined variables and missing keys — asking is never an error, so even an unreachable private property is simply `false` rather than a fatal. On an OBJECT PROPERTY it consults `__isset` and stops there: it never reads a value, so `isset($o->p)` is true whenever `__isset` says so even if `__get` would answer null.",
         "$a = 1; echo isset($a) ? \"y\" : \"n\";   // => y",
     ),
     (
         "empty",
         "Language construct",
         "empty($var): bool",
-        "True when the argument is falsey or unset. It desugars to the unary `!` operator, so `empty(\"0\")`, `empty([])`, and `empty(null)` are all true and no notice is raised for an undefined name.",
+        "True when the argument is falsey or unset, raising no notice for an undefined name, so `empty(\"0\")`, `empty([])`, and `empty(null)` are all true. On an OBJECT PROPERTY it sits between `isset` and `??`: it wants a value, but will not read one through `__get` unless `__isset` vouched for the property first. A class with `__get` and no `__isset` is therefore `empty()` without `__get` ever being called, while `$o->p ?? \"d\"` on that same class does call it.",
         "echo empty(0) ? \"y\" : \"n\";   // => y",
     ),
     (
         "unset",
         "Language construct",
         "unset($var[, $var …]): void",
-        "Removes variables and array elements. Like `isset`, it is a construct rather than a call, so an index path such as `$a[$k]` is unset in place rather than being evaluated to a value first. DIVERGENCE: an object property target (`unset($o->p)`) is rejected with `unset() target must be a variable or an array element`; PHP removes the property.",
+        "Removes variables, array elements and object properties. Like `isset`, it is a construct rather than a call, so an index path such as `$a[$k]` is unset in place rather than being evaluated to a value first. `unset($o->p)` removes the property outright — a later read of it goes through `__get` as for any property that is not there — or calls `__unset` when the property is unreachable or absent and the class defines one. Unsetting a property that is not there is not an error; unsetting one that is out of reach, with no `__unset` to take it, throws `Error: Cannot access private property C::$p`.",
         "$a = [1, 2]; unset($a[0]); echo count($a);   // => 1",
     ),
     (
@@ -662,7 +662,7 @@ pub const CORPUS: &[Entry] = &[
         "@",
         "Operator",
         "@expr",
-        "The error-suppression operator. phplang already returns null or false quietly where PHP would emit a warning or notice, so `@` is a pure pass-through: the parser consumes it and evaluates the operand unchanged.",
+        "The error-suppression operator. The operand is evaluated exactly as it would be without the `@` and only the DIAGNOSTICS it raises are dropped — including the ones raised from inside the functions it calls, so `@preg_match('/[a', $s)` and `@range('ab', 'c')` are silent too. It is NOT an isset-mode read: `@$o->p` calls `__get` (where `isset($o->p)` would ask `__isset`), and it does not swallow an `Error`, so `@$o->privateProp` still throws. Suppression is restored when an exception unwinds out of the expression.",
         "echo @$undefined ?? \"quiet\";   // => quiet",
     ),
     (
@@ -736,6 +736,34 @@ pub const CORPUS: &[Entry] = &[
         "public function __toString(): string",
         "Declared by the prelude `Exception` and `Error` classes and callable like any other method. DIVERGENCE: the runtime never invokes it implicitly — `echo $obj`, `(string) $obj`, and interpolation all produce `Array`, so it must be called explicitly.",
         "class C { function __toString() { return \"S\"; } }\n$o = new C; echo $o->__toString(), \"|\", $o;   // => S|Array",
+    ),
+    (
+        "__get",
+        "Magic method",
+        "public function __get(string $name): mixed",
+        "Called when a property is read that the object does not carry — because no class declared it, because it was `unset`, or because its visibility puts it out of reach of the reading scope. Consulted BEFORE any access error, so a class with `__get` never reports `Cannot access private property`. While it runs for a given property it is not re-entered for that same property, so `__get($n) { return $this->$n; }` terminates rather than recursing.",
+        "class C { function __get($n) { return \"g:$n\"; } } echo (new C)->zz;   // => g:zz",
+    ),
+    (
+        "__set",
+        "Magic method",
+        "public function __set(string $name, mixed $value): void",
+        "Called when a property is WRITTEN that the object does not carry or cannot reach. A write it handles creates no real property, so `get_object_vars` stays empty. In a read-modify-write (`$o->p .= \"x\"`, `$o->p++`) it is used only when the class ALSO defines `__get`: `__set` is half of a pair, and without `__get` supplying the old value the reference reads and writes the property directly instead.",
+        "class C { function __set($n, $v) { echo \"set:$n\"; } } $o = new C; $o->zz = 1;   // => set:zz",
+    ),
+    (
+        "__isset",
+        "Magic method",
+        "public function __isset(string $name): bool",
+        "Called by `isset()` and `empty()` on a property the object does not carry or cannot reach. It answers the question by itself for `isset()`; for `empty()` and `??` a true answer is then followed by `__get` to obtain the value.",
+        "class C { function __isset($n) { return $n === \"ok\"; } }\n$o = new C; var_dump(isset($o->ok), isset($o->no));   // => bool(true) bool(false)",
+    ),
+    (
+        "__unset",
+        "Magic method",
+        "public function __unset(string $name): void",
+        "Called by `unset()` on a property the object does not carry or cannot reach. Like the others it is consulted before any access error, so a class defining it can be asked to unset a private property from outside without a fatal.",
+        "class C { function __unset($n) { echo \"unset:$n\"; } }\n$o = new C; unset($o->zz);   // => unset:zz",
     ),
     (
         "__rust_compile",
@@ -4043,35 +4071,54 @@ pub const CORPUS: &[Entry] = &[
     // possessive quantifiers, and recursion do not exist and make a pattern fail
     // to compile. Matching is on BYTES unless the `u` modifier is given, so `.`
     // is one byte and every reported offset is a byte offset. Delimiters: any
-    // non-alphanumeric, non-backslash, non-whitespace character, with `()`, `{}`,
-    // `[]`, and `<>` matched as pairs. Modifiers honoured: `i m s x U u`; `D A X
-    // S` are accepted as no-ops; anything else makes the call fail.
+    // non-alphanumeric, non-backslash character, with `()`, `{}`, `[]`, and `<>`
+    // matched as pairs and NESTED (so `{a{b}` is unterminated). The closing
+    // delimiter is found by scanning FORWARD honouring backslash escapes, so
+    // `/a\\//` has the body `a\\/`.
+    //
+    // Modifiers: the accepted set is `imnrsuxADJSUX`, matching the reference;
+    // any other letter is `Unknown modifier '<c>'`. Of those, `i m s x U u` are
+    // implemented and `n` (no auto-capture) is applied by rewriting each
+    // capturing group. DIVERGENCE: `A D J S X r` are accepted as NO-OPS, and
+    // `A` (anchored) is the one whose absence is observable — `preg_match("/a/A",
+    // "bar")` is 0 in the reference and 1 here, because anchoring every match
+    // attempt at the current offset is not something the Rust engine's safe API
+    // exposes.
+    //
+    // A pattern the engine rejects is a `Warning` naming the calling function and
+    // the function's error sentinel — NOT an exception — and leaves
+    // `preg_last_error()` at `PREG_INTERNAL_ERROR`. The delimiter and modifier
+    // faults are ported from `php_pcre.c`; five structural body faults are ported
+    // from PCRE2 with the offsets the reference reports. A body that is malformed
+    // in some OTHER way, or that uses a construct the Rust engine lacks
+    // (backreferences, look-around), still returns the sentinel but does so
+    // SILENTLY, since the reference would have compiled most of them.
     (
         "preg_match",
         "Regular expressions",
         "preg_match(string $pattern, string $subject, array &$matches = []): int|false",
-        "Returns 1 on a match, 0 on none, or `false` when the pattern will not compile. DIVERGENCE: `$matches` is only written when the caller ALREADY initialised the variable as an array — phplang has no by-reference out-parameter, so `preg_match($p, $s, $m)` on a fresh `$m` leaves it null. Write `$m = [];` first. The `$flags` and `$offset` arguments are not read.",
-        "$m = []; preg_match(\"/(\\d+)/\", \"ab 42\", $m); echo $m[1];   // => 42\npreg_match(\"/(\\d+)/\", \"ab 42\", $u); var_dump($u);   // => NULL",
+        "Returns 1 on a match, 0 on none, or `false` for a pattern that will not compile — which also raises `Warning: preg_match(): <reason>` and leaves `preg_last_error()` at `PREG_INTERNAL_ERROR`. `$matches` is a real by-reference out-parameter and is written whether or not the caller initialised it. The `$flags` and `$offset` arguments are not read.",
+        "preg_match(\"/(\\d+)/\", \"ab 42\", $m); echo $m[1];   // => 42",
     ),
     (
         "preg_match_all",
         "Regular expressions",
         "preg_match_all(string $pattern, string $subject, array &$matches = [], int $flags = PREG_PATTERN_ORDER): int|false",
-        "Returns the number of matches, or `false` on a pattern that will not compile. The returned COUNT is always correct; `$matches` carries the same pre-initialise-as-an-array requirement as `preg_match`. Only the `PREG_SET_ORDER` bit is honoured — `PREG_OFFSET_CAPTURE` and `PREG_UNMATCHED_AS_NULL` are not, and there is no `$offset` parameter.",
+        "Returns the number of matches, or `false` for a pattern that will not compile, with the same `Warning` and `preg_last_error()` state as `preg_match`. `$matches` is a real by-reference out-parameter. Only the `PREG_SET_ORDER` bit is honoured — `PREG_OFFSET_CAPTURE` and `PREG_UNMATCHED_AS_NULL` are not, and there is no `$offset` parameter.",
         "$m = []; echo preg_match_all(\"/\\d/\", \"a1b2\", $m), $m[0][1];   // => 22",
     ),
     (
         "preg_replace",
         "Regular expressions",
         "preg_replace(string|array $pattern, string|array $replacement, string|array $subject, int $limit = -1): string|array|null",
-        "Applies each pattern in turn. `$replacement` may be one string for every pattern or an array index-matched to the patterns (surplus patterns replace with `\"\"`). The `$1`, `${1}`, and `\\1` back-reference forms all work in the REPLACEMENT even though back-references in the pattern do not. A pattern that will not compile makes the whole call return null; the `&$count` argument does not exist.",
+        "Applies each pattern in turn. `$replacement` may be one string for every pattern or an array index-matched to the patterns (surplus patterns replace with `\"\"`). The `$1`, `${1}`, and `\\1` back-reference forms all work in the REPLACEMENT even though back-references in the pattern do not. The first pattern that will not compile ends the whole call at null, raising `Warning: preg_replace(): <reason>`; the `&$count` argument does not exist.",
         "echo preg_replace(\"/\\d+/\", \"#\", \"a1b22\");   // => a#b#",
     ),
     (
         "preg_replace_callback",
         "Regular expressions",
         "preg_replace_callback(string|array $pattern, callable $callback, string|array $subject, int $limit = -1): string|array|null",
-        "Calls the callback for each match with a fully POPULATED `$matches` array — this path passes it as an ordinary by-value argument, so it has none of `preg_match`'s out-parameter limitation. `$limit` is honoured and null is returned for an uncompilable pattern.",
+        "Calls the callback for each match with a fully POPULATED `$matches` array. `$limit` is honoured, and a pattern that will not compile returns null after raising `Warning: preg_replace_callback(): <reason>`.",
         "echo preg_replace_callback(\"/\\d/\", fn($m) => $m[0] * 2, \"a1b2\");   // => a2b4",
     ),
     (
@@ -4085,7 +4132,7 @@ pub const CORPUS: &[Entry] = &[
         "preg_quote",
         "Regular expressions",
         "preg_quote(string $str, ?string $delimiter = null): string",
-        "Backslash-escapes the PCRE special set `.\\+*?[^]$(){}=!<>|:-#`, plus the first character of `$delimiter` when supplied. A NUL byte becomes the four-character sequence `\\000`.",
+        "Backslash-escapes the PCRE special set `.\\+*?[^]$(){}=!<>|:-#`, plus the first character of `$delimiter` when supplied. A NUL byte becomes the four-character sequence `\\000`. It compiles nothing, so it never touches `preg_last_error()`.",
         "echo preg_quote(\"1+1\");   // => 1\\+1",
     ),
     (
@@ -4099,15 +4146,15 @@ pub const CORPUS: &[Entry] = &[
         "preg_last_error",
         "Regular expressions",
         "preg_last_error(): int",
-        "DIVERGENCE: a stub that always returns 0 (`PREG_NO_ERROR`). No error state is tracked — a compile failure is reported only through the calling function's `false` or null return.",
-        "echo preg_last_error();   // => 0",
+        "The outcome of the last `preg_*` call that reached the regex compiler: `PREG_INTERNAL_ERROR` (1) after a pattern the engine rejected, `PREG_NO_ERROR` (0) after one it accepted. The state is STICKY and cleared only by another compile — reading it does not clear it, and `preg_quote()` does not touch it — so a pattern that compiles resets it even when the match then finds nothing. DIVERGENCE: only these two codes are produced; the reference also reports backtrack- and recursion-limit exhaustion, which this engine has no equivalent of.",
+        "@preg_match(\"/[a\", \"x\"); echo preg_last_error();   // => 1",
     ),
     (
         "preg_last_error_msg",
         "Regular expressions",
         "preg_last_error_msg(): string",
-        "DIVERGENCE: a stub that always returns `\"No error\"`, whatever failed beforehand.",
-        "echo preg_last_error_msg();   // => No error",
+        "The message for the `preg_last_error()` code, and like it a pure reader that clears nothing. `\"No error\"` or `\"Internal error\"` in practice, the two codes this engine produces.",
+        "@preg_match(\"/[a\", \"x\"); echo preg_last_error_msg();   // => Internal error",
     ),
     // ══ JSON (stdlib::json) ═════════════════════════════════════════════════
     (
@@ -5429,14 +5476,14 @@ pub const CORPUS: &[Entry] = &[
         "ini_get",
         "System and runtime environment",
         "ini_get(string $option): string|false",
-        "The current value of an ini setting, always as a STRING, or false when the engine has no such setting. `error_reporting` reads back what was last written to it — the decimal mask after `error_reporting()` or `-d`, but the RAW string after an `ini_set`, which is why `ini_set(\"error_reporting\", \"12abc\")` leaves `ini_get` reporting `\"12abc\"` while the mask is 12. DIVERGENCE: only settings with an engine-level default are known (`precision`, `serialize_precision`, `display_errors`, `log_errors`, `html_errors`, `default_charset`, `max_execution_time`, `error_reporting`); ones whose value comes from a php.ini file, such as `memory_limit` and `date.timezone`, report false rather than a guess.",
-        "var_dump(ini_get(\"precision\"), ini_get(\"nosuch\"));   // => string(2) \"14\" bool(false)",
+        "The current value of an ini setting, always as a STRING, or false when the engine has no such setting. `error_reporting` reads back what was last written to it — the decimal mask after `error_reporting()` or `-d`, but the RAW string after an `ini_set`, which is why `ini_set(\"error_reporting\", \"12abc\")` leaves `ini_get` reporting `\"12abc\"` while the mask is 12. The settings known here are PHP core plus `date` and `pcre` — the two extensions PHP 8 cannot be built without — carrying the values the reference reports for them with NO php.ini loaded, which is how each was established. DIVERGENCE: a name belonging to an optional extension the reference happened to be built with (`mysqli.default_host`), or one whose default is that build's install prefix (`extension_dir`, `include_path`), reports false rather than a value that would be wrong on another machine.",
+        "var_dump(ini_get(\"memory_limit\"), ini_get(\"nosuch\"));   // => string(4) \"128M\" bool(false)",
     ),
     (
         "ini_set",
         "System and runtime environment",
         "ini_set(string $option, mixed $value): string|false",
-        "Set an ini setting, returning its previous value as a string — or false, changing nothing, for a name the engine does not know (`ini_set` cannot invent settings). Writing `error_reporting` also writes the mask, by ordinary string-to-int coercion and NOT the php.ini constant-expression scanner: `ini_set(\"error_reporting\", \"E_ALL & ~E_NOTICE\")` reads as 0 and mutes everything, exactly as in the reference. The symbolic spelling works only on the `php -d error_reporting=…` path. See `ini_get` for which names are known.",
+        "Set an ini setting, returning its previous value as a string — or false, changing nothing, for a name the engine does not know (`ini_set` cannot invent settings) or one that is not runtime-changeable. That second group is PHP's `PHP_INI_PERDIR`/`PHP_INI_SYSTEM` set, which only a php.ini or `-d` may write while `ini_get` still reads it: `post_max_size`, `output_buffering`, `max_input_vars`, `expose_php`, `allow_url_fopen`, `arg_separator.input`, `disable_functions`, `hard_timeout`, `max_input_nesting_level`, `max_input_time`, `max_memory_limit`, `output_handler`, `register_argc_argv`, `zend.multibyte`, `zend.script_encoding`. Writing `error_reporting` also writes the mask, by ordinary string-to-int coercion and NOT the php.ini constant-expression scanner: `ini_set(\"error_reporting\", \"E_ALL & ~E_NOTICE\")` reads as 0 and mutes everything, exactly as in the reference. The symbolic spelling works only on the `php -d error_reporting=…` path. DIVERGENCE: per-setting VALUE validation is not modelled — the reference refuses a value a setting will not take, with a warning and false, but `date.timezone` needs a zone database this build does not carry and `memory_limit`'s refusal quotes the process's live memory usage, which is not a reproducible number. Such a write is accepted here.",
         "var_dump(ini_set(\"error_reporting\", \"0\"), ini_get(\"error_reporting\"));   // => string(5) \"30719\" string(1) \"0\"",
     ),
     (

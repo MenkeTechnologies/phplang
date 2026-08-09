@@ -124,7 +124,11 @@ and at startup by
 .BR \-d .
 The
 .B @
-operator suppresses locally without touching the mask.
+operator suppresses locally without touching the mask, for the whole time its
+operand runs \(em including diagnostics raised inside the library functions the
+operand calls. It drops diagnostics only: an
+.I Error
+thrown while the operand runs still propagates.
 .PP
 A notice raised while the source is READ \(em \fIUsing ${var} in strings is
 deprecated\fR \(em is emitted before the program's first output and regardless

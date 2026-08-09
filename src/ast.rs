@@ -174,11 +174,34 @@ pub enum Expr {
     InstanceOf(Box<Expr>, String),
     /// `$target = &$source` — bind `target` as a reference alias of `source`.
     RefAssign(Box<Expr>, Box<Expr>),
-    /// A read in PHP's "isset mode": the operand of `isset()`, `empty()` or `@`,
-    /// and the left operand of `??`. A missing variable, array element or object
-    /// property is the question being asked rather than a mistake, so the read
-    /// raises no diagnostic. Evaluates exactly as the wrapped expression does.
+    /// A read in PHP's "isset mode": the operand of `empty()` and the left operand
+    /// of `??`. A missing variable, array element or object property is the
+    /// question being asked rather than a mistake, so the read raises no
+    /// diagnostic. Evaluates exactly as the wrapped expression does.
+    ///
+    /// On an object property this is the `__isset`-then-`__get` pair: the class is
+    /// asked whether the property is set, and only then for its value.
     Quiet(Box<Expr>),
+    /// `@expr` — the error-suppression operator. NOT an isset-mode read, despite
+    /// the family resemblance: the operand is evaluated exactly as it would be
+    /// without the `@`, and only the DIAGNOSTICS it raises are dropped. The
+    /// difference is visible wherever the two modes disagree — `@$o->p` on a class
+    /// with `__get` calls `__get` (an isset-mode read would ask `__isset` first),
+    /// and `@$o->p` on an unreachable private property still throws, because an
+    /// `Error` is not a diagnostic.
+    Suppress(Box<Expr>),
+    /// One `isset()` argument. Narrower than [`Quiet`](Expr::Quiet): it asks only
+    /// whether the target is set and never reads a value, so on an object property
+    /// it consults `__isset` and stops there — `isset($o->p)` is true for a class
+    /// whose `__isset` says so even when `__get` would return null.
+    IssetOf(Box<Expr>),
+    /// The `empty()` argument, whose value the `!` around it then tests. Sits
+    /// between the other two on object properties: like [`Quiet`](Expr::Quiet) it
+    /// wants a VALUE, but like [`IssetOf`](Expr::IssetOf) it will not read one
+    /// from a property `__isset` has not vouched for. A class with `__get` and no
+    /// `__isset` is therefore `empty()` without `__get` ever being called, while
+    /// `$o->p ?? 'd'` on that same class does call it.
+    EmptyOf(Box<Expr>),
     /// `yield`, `yield $v`, or `yield $k => $v` — suspend the enclosing generator,
     /// handing a value (and optional key) to the resumer. Evaluates to the value
     /// passed by the next `->send($x)` (null for `->next()`). A function whose body

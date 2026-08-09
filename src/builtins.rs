@@ -8,7 +8,7 @@
 //! by setting `vm.ip` past the end; `host::run_chunk_on` then surfaces it as an
 //! `Err`.
 
-use crate::host::{self, ops, with_host};
+use crate::host::{self, ops, with_host, PropAccess};
 use fusevm::{NumOp, Value, VM};
 
 /// Register every compiler-emitted builtin on a fresh VM.
@@ -62,7 +62,12 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::PROP_ENSURE_ARRAY, b_prop_ensure_array);
     vm.register_builtin(ops::PROP_TOUCH, b_prop_touch);
     vm.register_builtin(ops::PROP_SET_RW, b_prop_set_rw);
+    vm.register_builtin(ops::PROP_UNSET, b_prop_unset);
+    vm.register_builtin(ops::PROP_ISSET, b_prop_isset);
+    vm.register_builtin(ops::PROP_GET_EMPTY, b_prop_get_empty);
     vm.register_builtin(ops::PROP_INCDEC, b_prop_incdec);
+    vm.register_builtin(ops::SUPPRESS_PUSH, b_suppress_push);
+    vm.register_builtin(ops::SUPPRESS_POP, b_suppress_pop);
     vm.register_builtin(ops::MCALL, b_mcall);
     vm.register_builtin(ops::SCALL, b_scall);
     vm.register_builtin(ops::SCONST, b_sconst);
@@ -1095,36 +1100,137 @@ fn b_new(vm: &mut VM, argc: u8) -> Value {
     }
 }
 
+/// Run a magic property method (`__get`, `__set`, `__isset`, `__unset`) with the
+/// recursion guard held, so an access to the SAME property from inside its own
+/// magic method does not re-enter it. The guard is released on every path,
+/// including the one where the method throws.
+fn call_magic(recv: &Value, name: &str, magic: &'static str, args: Vec<Value>) -> Value {
+    let Some(class) = with_host(|h| h.object_class(recv)) else {
+        return Value::Undef;
+    };
+    with_host(|h| h.magic_enter(recv, name, magic));
+    let out = host::call_method(&class, magic, Some(recv.clone()), args);
+    with_host(|h| h.magic_leave());
+    out.unwrap_or(Value::Undef)
+}
+
+/// The receiver and property for a property opcode, plus the plan
+/// [`host::PhpHost::prop_access`] produced for `magic`. Every property opcode
+/// opens the same way, and the `Denied` arm has to reach `throw_php`, which needs
+/// the VM — so the shared part stops just short of acting on the plan.
+macro_rules! prop_plan {
+    ($vm:expr, $recv:expr, $name:expr, $magic:expr) => {{
+        mark_frame_line($vm);
+        with_host(|h| h.prop_access(&$recv, &$name, $magic))
+    }};
+}
+
 fn b_prop_get(vm: &mut VM, _: u8) -> Value {
     let name = pop_name(vm);
     let recv = vm.pop();
-    if let Err(e) = with_host(|h| h.check_prop_access(&recv, &name)) {
-        return fail(vm, e);
+    match prop_plan!(vm, recv, name, "__get") {
+        PropAccess::Direct => {
+            mark_warn_site(vm);
+            with_host(|h| h.prop_get_warn(&recv, &name))
+        }
+        PropAccess::Magic => {
+            let v = call_magic(&recv, &name, "__get", vec![Value::str(name.clone())]);
+            bubbled(vm, v)
+        }
+        PropAccess::Denied(msg) => throw_php(vm, "Error", &msg),
+        PropAccess::Absent => {
+            mark_warn_site(vm);
+            with_host(|h| h.prop_get_warn(&recv, &name))
+        }
     }
-    mark_warn_site(vm);
-    with_host(|h| h.prop_get_warn(&recv, &name))
 }
 
 /// `$o->p` read with no missing-property diagnostic — see `ops::PROP_GET_Q`.
+///
+/// This is the read `empty()` and `??` compile to. The reference does NOT raise
+/// an access error here — an unreachable property is simply "not set" — and it
+/// consults the magic methods in a specific order, all three arms of which were
+/// read back off it:
+///
+/// * `__isset` first, when the class has one. A false answer ends the read at
+///   null; `__get` is never called, so `$o->p ?? 'd'` on a class whose `__isset`
+///   says no is `'d'` without `__get` ever seeing the property.
+/// * `__get` for the value, after `__isset` allowed it — or straight away when
+///   the class has no `__isset` at all.
+/// * A class with `__isset` but no `__get` reads as null even when `__isset`
+///   returned true. `isset()` still says true, which is why that question has its
+///   own opcode (`ops::PROP_ISSET`) instead of testing this value against null.
 fn b_prop_get_q(vm: &mut VM, _: u8) -> Value {
     let name = pop_name(vm);
     let recv = vm.pop();
-    if let Err(e) = with_host(|h| h.check_prop_access(&recv, &name)) {
-        return fail(vm, e);
+    prop_quiet_read(vm, &recv, &name, true)
+}
+
+/// The read inside `empty($o->p)` — see `ops::PROP_GET_EMPTY`.
+fn b_prop_get_empty(vm: &mut VM, _: u8) -> Value {
+    let name = pop_name(vm);
+    let recv = vm.pop();
+    prop_quiet_read(vm, &recv, &name, false)
+}
+
+/// The shared body of the two isset-mode property reads. `get_without_isset`
+/// is the single arm they differ on: whether a class that has `__get` but no
+/// `__isset` may be read through `__get` anyway. `??` says yes, `empty()` says no.
+fn prop_quiet_read(vm: &mut VM, recv: &Value, name: &str, get_without_isset: bool) -> Value {
+    let recv = recv.clone();
+    let name = name.to_string();
+    if let PropAccess::Direct = prop_plan!(vm, recv, name, "__isset") {
+        return with_host(|h| h.prop_get(&recv, &name));
     }
-    with_host(|h| h.prop_get(&recv, &name))
+    // `__isset` gates the read, when there is one to ask.
+    let has_isset = matches!(prop_plan!(vm, recv, name, "__isset"), PropAccess::Magic);
+    if has_isset {
+        let present = call_magic(&recv, &name, "__isset", vec![Value::str(name.clone())]);
+        if bubble_throw(vm) {
+            return Value::Undef;
+        }
+        if !with_host(|h| h.is_truthy(&present)) {
+            return Value::Undef;
+        }
+    } else if !get_without_isset {
+        return Value::Undef;
+    }
+    match prop_plan!(vm, recv, name, "__get") {
+        PropAccess::Magic => {
+            let v = call_magic(&recv, &name, "__get", vec![Value::str(name.clone())]);
+            bubbled(vm, v)
+        }
+        PropAccess::Direct => with_host(|h| h.prop_get(&recv, &name)),
+        PropAccess::Denied(_) | PropAccess::Absent => Value::Undef,
+    }
 }
 
 fn b_prop_set(vm: &mut VM, _: u8) -> Value {
     let val = vm.pop();
     let name = pop_name(vm);
     let recv = vm.pop();
-    if let Err(e) = with_host(|h| h.check_prop_access(&recv, &name)) {
-        return fail(vm, e);
+    match prop_plan!(vm, recv, name, "__set") {
+        PropAccess::Direct => {
+            mark_warn_site(vm);
+            with_host(|h| h.prop_set_checked(&recv, &name, val.clone()));
+            val
+        }
+        PropAccess::Magic => {
+            call_magic(
+                &recv,
+                &name,
+                "__set",
+                vec![Value::str(name.clone()), val.clone()],
+            );
+            bubbled(vm, val)
+        }
+        PropAccess::Denied(msg) => throw_php(vm, "Error", &msg),
+        PropAccess::Absent => {
+            mark_warn_site(vm);
+            with_host(|h| h.prop_set_checked(&recv, &name, val.clone()));
+            val
+        }
     }
-    mark_warn_site(vm);
-    with_host(|h| h.prop_set_checked(&recv, &name, val.clone()));
-    val
 }
 
 /// `$o->name = val` for the write half of a compound assignment — see
@@ -1133,11 +1239,88 @@ fn b_prop_set_rw(vm: &mut VM, _: u8) -> Value {
     let val = vm.pop();
     let name = pop_name(vm);
     let recv = vm.pop();
-    if let Err(e) = with_host(|h| h.check_prop_access(&recv, &name)) {
-        return fail(vm, e);
+    // `__set` runs here only when `__get` supplied the value that was modified.
+    // A class with `__set` and NO `__get` does not use it for a read-modify-write
+    // at all: the reference reads the property directly (warning that it is
+    // undefined) and writes it directly, creating a real one. `__set` is part of
+    // the magic PAIR, and half a pair is not enough to divert the write.
+    let has_get = with_host(|h| {
+        h.object_class(&recv)
+            .is_some_and(|c| h.class_has_method(&c, "__get"))
+    });
+    match prop_plan!(vm, recv, name, "__set") {
+        PropAccess::Magic if has_get => {
+            call_magic(
+                &recv,
+                &name,
+                "__set",
+                vec![Value::str(name.clone()), val.clone()],
+            );
+            bubbled(vm, val)
+        }
+        PropAccess::Denied(msg) => throw_php(vm, "Error", &msg),
+        // Writing the slot itself — but only ONE of the two paths here announces
+        // a dynamic property, because only one of them is the first to know.
+        //
+        // With `__get` the `PROP_TOUCH` that opened this read-modify-write stayed
+        // silent (the read went to `__get`, creating nothing), so this write is
+        // what creates the property and the deprecation belongs here — after
+        // `__get` has printed, which is the order the reference uses.
+        //
+        // Without `__get` that touch already announced it, and announcing it a
+        // second time would print the deprecation twice.
+        _ if has_get => {
+            mark_warn_site(vm);
+            with_host(|h| h.prop_set_checked(&recv, &name, val.clone()));
+            val
+        }
+        _ => {
+            with_host(|h| h.prop_set(&recv, &name, val.clone()));
+            val
+        }
     }
-    with_host(|h| h.prop_set(&recv, &name, val.clone()));
-    val
+}
+
+/// `isset($o->name)` — see `ops::PROP_ISSET`. Stack `[recv, name]`.
+///
+/// Asks `__isset` and nothing else. An unreachable property is `false` rather
+/// than an error: `isset()` is allowed to ask about anything.
+fn b_prop_isset(vm: &mut VM, _: u8) -> Value {
+    let name = pop_name(vm);
+    let recv = vm.pop();
+    match prop_plan!(vm, recv, name, "__isset") {
+        PropAccess::Direct => {
+            let v = with_host(|h| h.prop_get(&recv, &name));
+            Value::bool(!matches!(v, Value::Undef))
+        }
+        PropAccess::Magic => {
+            let present = call_magic(&recv, &name, "__isset", vec![Value::str(name.clone())]);
+            if bubble_throw(vm) {
+                return Value::Undef;
+            }
+            Value::bool(with_host(|h| h.is_truthy(&present)))
+        }
+        PropAccess::Denied(_) | PropAccess::Absent => Value::bool(false),
+    }
+}
+
+/// `unset($o->name)` — see `ops::PROP_UNSET`. Stack `[recv, name]`.
+fn b_prop_unset(vm: &mut VM, _: u8) -> Value {
+    let name = pop_name(vm);
+    let recv = vm.pop();
+    match prop_plan!(vm, recv, name, "__unset") {
+        PropAccess::Direct => {
+            with_host(|h| h.prop_remove(&recv, &name));
+            Value::Undef
+        }
+        PropAccess::Magic => {
+            call_magic(&recv, &name, "__unset", vec![Value::str(name.clone())]);
+            bubbled(vm, Value::Undef)
+        }
+        PropAccess::Denied(msg) => throw_php(vm, "Error", &msg),
+        // Unsetting a property that is not there is not an error.
+        PropAccess::Absent => Value::Undef,
+    }
 }
 
 /// `$o->name` fetched for writing — see `ops::PROP_TOUCH`. Raises the
@@ -1146,6 +1329,14 @@ fn b_prop_set_rw(vm: &mut VM, _: u8) -> Value {
 fn b_prop_touch(vm: &mut VM, _: u8) -> Value {
     let name = pop_name(vm);
     let recv = vm.pop();
+    // A class with `__get` does not get a slot here: the read half will call
+    // `__get`, and nothing is created until the write half decides what to do.
+    // So the deprecation must not fire yet — and when the write does create a
+    // property, it fires AFTER `__get` has run, which is the order the reference
+    // prints (`[Gq]` then `Creation of dynamic property`).
+    if let PropAccess::Magic = prop_plan!(vm, recv, name, "__get") {
+        return recv;
+    }
     mark_warn_site(vm);
     with_host(|h| h.warn_dynamic_prop(&recv, &name));
     recv
@@ -1156,8 +1347,10 @@ fn b_prop_touch(vm: &mut VM, _: u8) -> Value {
 fn b_prop_ensure_array(vm: &mut VM, _: u8) -> Value {
     let name = pop_name(vm);
     let recv = vm.pop();
-    if let Err(e) = with_host(|h| h.check_prop_access(&recv, &name)) {
-        return fail(vm, e);
+    // A property out of reach still errors before anything is vivified; the
+    // other outcomes all end in a write, which is what this op is for.
+    if let PropAccess::Denied(msg) = prop_plan!(vm, recv, name, "__get") {
+        return throw_php(vm, "Error", &msg);
     }
     mark_warn_site(vm);
     with_host(|h| {
@@ -1168,6 +1361,20 @@ fn b_prop_ensure_array(vm: &mut VM, _: u8) -> Value {
     })
 }
 
+/// Open an `@expr` suppression region — see `ops::SUPPRESS_PUSH`.
+fn b_suppress_push(_: &mut VM, _: u8) -> Value {
+    with_host(|h| h.suppress_push());
+    Value::Undef
+}
+
+/// Close an `@expr` suppression region, passing the operand's value through —
+/// see `ops::SUPPRESS_POP`.
+fn b_suppress_pop(vm: &mut VM, _: u8) -> Value {
+    let v = vm.pop();
+    with_host(|h| h.suppress_pop());
+    v
+}
+
 /// `++`/`--` on `$o->name` — stack `[recv, name, code]`. The `code` bits match
 /// `b_incdec` (bit0 = increment, bit1 = prefix).
 fn b_prop_incdec(vm: &mut VM, _: u8) -> Value {
@@ -1176,23 +1383,50 @@ fn b_prop_incdec(vm: &mut VM, _: u8) -> Value {
     let recv = vm.pop();
     let inc = code & 1 != 0;
     let prefix = code & 2 != 0;
-    if let Err(e) = with_host(|h| h.check_prop_access(&recv, &name)) {
-        return fail(vm, e);
-    }
-    mark_warn_site(vm);
-    with_host(|h| {
-        // PHP raises the dynamic-property deprecation BEFORE the undefined-property
-        // warning here: the slot is created, then read.
-        h.warn_dynamic_prop(&recv, &name);
-        let old = h.prop_get_warn(&recv, &name);
-        let newv = h.incdec_value(&old, inc);
-        h.prop_set(&recv, &name, newv.clone());
-        if prefix {
-            newv
-        } else {
-            old
+    match prop_plan!(vm, recv, name, "__get") {
+        PropAccess::Denied(msg) => throw_php(vm, "Error", &msg),
+        // Same read-modify-write shape as `$o->p += 1`: `__get` supplies the old
+        // value, and `__set` takes the new one back only if the class has both.
+        PropAccess::Magic => {
+            let old = call_magic(&recv, &name, "__get", vec![Value::str(name.clone())]);
+            if bubble_throw(vm) {
+                return Value::Undef;
+            }
+            let newv = with_host(|h| h.incdec_value(&old, inc));
+            let has_set = with_host(|h| {
+                h.object_class(&recv)
+                    .is_some_and(|c| h.class_has_method(&c, "__set"))
+            });
+            if has_set {
+                call_magic(
+                    &recv,
+                    &name,
+                    "__set",
+                    vec![Value::str(name.clone()), newv.clone()],
+                );
+            } else {
+                mark_warn_site(vm);
+                with_host(|h| h.prop_set_checked(&recv, &name, newv.clone()));
+            }
+            bubbled(vm, if prefix { newv } else { old })
         }
-    })
+        _ => {
+            mark_warn_site(vm);
+            with_host(|h| {
+                // PHP raises the dynamic-property deprecation BEFORE the
+                // undefined-property warning here: the slot is created, then read.
+                h.warn_dynamic_prop(&recv, &name);
+                let old = h.prop_get_warn(&recv, &name);
+                let newv = h.incdec_value(&old, inc);
+                h.prop_set(&recv, &name, newv.clone());
+                if prefix {
+                    newv
+                } else {
+                    old
+                }
+            })
+        }
+    }
 }
 
 fn b_mcall(vm: &mut VM, argc: u8) -> Value {

@@ -501,3 +501,118 @@ fn ini_set_and_error_reporting_write_the_same_state() {
         "string(18) \"E_ALL & ~E_WARNING\"\nint(0)\n"
     );
 }
+
+// ── `@` is a run-time region, not a compile-time read mode ───────────────────
+
+#[test]
+fn suppression_reaches_a_diagnostic_raised_inside_a_library_function() {
+    // The warning is raised from Rust, with no opcode of its own to quieten, so
+    // only a run-time suppression region can reach it.
+    let noisy = r#"<?php range("ab", "c"); echo "|done";"#;
+    assert_eq!(
+        run(noisy),
+        format!(
+            "{}|done",
+            diag(
+                "Warning",
+                "range(): Argument #1 ($start) must be a single byte, \
+                 subsequent bytes are ignored"
+            )
+        )
+    );
+    assert_eq!(run(r#"<?php @range("ab", "c"); echo "|done";"#), "|done");
+    assert_eq!(
+        run(r#"<?php @preg_match("/[a/", "x"); echo "|done";"#),
+        "|done"
+    );
+}
+
+#[test]
+fn suppression_does_not_swallow_an_error() {
+    // `@` drops DIAGNOSTICS. An `Error` is not one, so it still propagates —
+    // which is the behaviour that separates `@$o->p` from `isset($o->p)`.
+    let src = r#"<?php class C { private $p = 1; } $o = new C;
+        try { echo @$o->p; } catch (Throwable $e) { echo get_class($e); }"#;
+    assert_eq!(run(src), "Error");
+}
+
+#[test]
+fn suppression_is_restored_when_an_exception_unwinds_out_of_it() {
+    // The region the `@` opened is never closed by its own opcode here, so
+    // without a restore on unwind everything after the catch would stay silent.
+    let src = r#"<?php
+        function boom() { throw new Exception("x"); }
+        try { @boom(); } catch (Throwable $e) {}
+        echo $undef; echo "|done";"#;
+    assert_eq!(
+        run(src),
+        format!("\nWarning: Undefined variable $undef in Command line code on line 4\n|done")
+    );
+}
+
+#[test]
+fn suppression_covers_only_its_own_operand() {
+    let src = r#"<?php echo @$a, $b; echo "|done";"#;
+    assert_eq!(
+        run(src),
+        format!("{}|done", diag("Warning", "Undefined variable $b"))
+    );
+}
+
+// ── ini_get / ini_set over the engine's own defaults ─────────────────────────
+
+#[test]
+fn ini_get_reports_the_engine_defaults() {
+    // Each value is what the reference reports with NO php.ini loaded (`php -n`),
+    // which is what makes it an engine default rather than a machine's config.
+    for (name, value) in [
+        ("memory_limit", r#"string(4) "128M""#),
+        ("date.timezone", r#"string(3) "UTC""#),
+        ("precision", r#"string(2) "14""#),
+        ("serialize_precision", r#"string(2) "-1""#),
+        ("max_execution_time", r#"string(1) "0""#),
+        ("post_max_size", r#"string(2) "8M""#),
+        ("pcre.backtrack_limit", r#"string(7) "1000000""#),
+        ("zend.assertions", r#"string(1) "1""#),
+        ("unserialize_max_depth", r#"string(4) "4096""#),
+        ("default_charset", r#"string(5) "UTF-8""#),
+    ] {
+        assert_eq!(
+            run(&format!(r#"<?php var_dump(ini_get("{name}"));"#)),
+            format!("{value}\n"),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn ini_get_refuses_a_name_whose_value_would_be_machine_specific() {
+    // An optional extension's setting, and one whose default is the build's
+    // install prefix: both would be wrong on another machine, so neither is known.
+    for name in ["mysqli.default_host", "extension_dir", "nosuchsetting"] {
+        assert_eq!(
+            run(&format!(r#"<?php var_dump(ini_get("{name}"));"#)),
+            "bool(false)\n",
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn ini_set_returns_the_previous_value_and_the_write_is_readable() {
+    let src = r#"<?php var_dump(ini_set("memory_limit", "256M"), ini_get("memory_limit"));"#;
+    assert_eq!(run(src), "string(4) \"128M\"\nstring(4) \"256M\"\n");
+}
+
+#[test]
+fn ini_set_refuses_a_setting_that_is_not_runtime_changeable() {
+    // PHP's PHP_INI_PERDIR / PHP_INI_SYSTEM set: `ini_get` reads them, `ini_set`
+    // reports false and changes nothing.
+    for name in ["post_max_size", "output_buffering", "expose_php"] {
+        let src = format!(
+            r#"<?php $before = ini_get("{name}");
+               var_dump(ini_set("{name}", "99"), ini_get("{name}") === $before);"#
+        );
+        assert_eq!(run(&src), "bool(false)\nbool(true)\n", "{name}");
+    }
+}

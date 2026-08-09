@@ -1,9 +1,15 @@
 //! Property and method visibility enforcement. `public` members are always
 //! reachable; `private` is reachable only from the declaring class, `protected`
-//! only from the same inheritance line. External access to a non-public member
-//! surfaces as a fatal error whose message matches the reference `php` CLI.
+//! only from the same inheritance line.
+//!
+//! An out-of-reach PROPERTY is a catchable `Error`, not a host-level abort: the
+//! reference throws, so `try { $o->priv; } catch (Error $e)` handles it and an
+//! uncaught one renders as an ordinary fatal-error block. Both halves are
+//! asserted below — the class and message a `catch` sees, and the verbatim
+//! rendering when nothing catches it, taken from the same program under the
+//! reference `php` 8.5.9.
 
-use phplang::eval_capture;
+use phplang::{compile, eval_capture, host, run_compiled};
 
 fn run(src: &str) -> String {
     eval_capture(src).unwrap_or_else(|e| panic!("eval error for {src:?}: {e}"))
@@ -11,6 +17,24 @@ fn run(src: &str) -> String {
 
 fn err(src: &str) -> String {
     eval_capture(src).expect_err("expected a visibility violation to surface as an Err")
+}
+
+/// Everything `src` wrote, including an uncaught-exception block — which
+/// `eval_capture` drops, since it reports that run as a failure.
+fn output_of(src: &str) -> String {
+    host::reset_host();
+    host::with_host(|h| h.begin_capture());
+    if let Ok(prog) = compile(src) {
+        let _ = run_compiled(prog);
+    }
+    host::with_host(|h| h.end_capture())
+}
+
+/// `get_class($e)|$e->getMessage()` for the `Error` `src` is expected to throw.
+fn caught(src: &str) -> String {
+    run(&format!(
+        "<?php try {{ {src} }} catch (Throwable $e) {{ echo get_class($e), \"|\", $e->getMessage(); }}"
+    ))
 }
 
 // ── properties ───────────────────────────────────────────────────────────────
@@ -24,18 +48,37 @@ fn public_property_reachable_externally() {
 }
 
 #[test]
-fn private_property_external_read_errors() {
+fn private_property_external_read_throws() {
     assert_eq!(
-        err(r#"<?php class C { private $x = 1; } $o = new C(); echo $o->x;"#),
-        "Cannot access private property C::$x"
+        caught(r#"class C { private $x = 1; } $o = new C(); echo $o->x;"#),
+        "Error|Cannot access private property C::$x"
     );
 }
 
 #[test]
-fn private_property_external_write_errors() {
+fn private_property_external_write_throws() {
     assert_eq!(
-        err(r#"<?php class C { private $x = 1; } $o = new C(); $o->x = 2;"#),
-        "Cannot access private property C::$x"
+        caught(r#"class C { private $x = 1; } $o = new C(); $o->x = 2;"#),
+        "Error|Cannot access private property C::$x"
+    );
+}
+
+#[test]
+fn private_property_external_unset_throws() {
+    assert_eq!(
+        caught(r#"class C { private $x = 1; } $o = new C(); unset($o->x);"#),
+        "Error|Cannot access private property C::$x"
+    );
+}
+
+#[test]
+fn an_uncaught_property_access_error_renders_as_a_fatal_block() {
+    // Verbatim stdout of the same program under the reference `php` 8.5.9.
+    assert_eq!(
+        output_of(r#"<?php class C { private $x = 1; } $o = new C(); $o->x = 2;"#),
+        "\nFatal error: Uncaught Error: Cannot access private property C::$x in \
+         Command line code:1\nStack trace:\n#0 {main}\n  thrown in Command line code \
+         on line 1\n"
     );
 }
 
@@ -63,10 +106,10 @@ fn private_property_same_class_other_instance_ok() {
 }
 
 #[test]
-fn protected_property_external_read_errors() {
+fn protected_property_external_read_throws() {
     assert_eq!(
-        err(r#"<?php class C { protected $x = 1; } $o = new C(); echo $o->x;"#),
-        "Cannot access protected property C::$x"
+        caught(r#"class C { protected $x = 1; } $o = new C(); echo $o->x;"#),
+        "Error|Cannot access protected property C::$x"
     );
 }
 
@@ -81,12 +124,14 @@ fn protected_property_subclass_access_ok() {
 }
 
 #[test]
-fn private_property_of_unrelated_class_errors() {
+fn private_property_of_unrelated_class_throws_naming_the_declaring_class() {
     assert_eq!(
-        err(r#"<?php class A { private $x = 1; }
+        caught(
+            r#"class A { private $x = 1; }
                 class B { function peek(A $a) { return $a->x; } }
-                $b = new B(); echo $b->peek(new A());"#),
-        "Cannot access private property A::$x"
+                $b = new B(); echo $b->peek(new A());"#
+        ),
+        "Error|Cannot access private property A::$x"
     );
 }
 

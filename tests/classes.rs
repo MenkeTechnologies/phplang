@@ -245,3 +245,140 @@ fn fluent_method_chaining() {
         echo $b->add("a")->add("b")->add("c")->build();"#;
     assert_eq!(run(src), "a-b-c");
 }
+
+// ── property overloading: __get / __set / __isset ────────────────────────────
+//
+// The magic methods fire for a property the object does not carry — undeclared,
+// `unset`, or out of reach of the reading scope — and are consulted BEFORE any
+// access error. Every expectation is verbatim output of the same program under
+// the reference `php` 8.5.9.
+
+/// A class carrying whichever magic methods `magic` declares, plus the private
+/// bag they read and write.
+fn with_magic(magic: &str, body: &str) -> String {
+    run(&format!(
+        r#"<?php class C {{ private $bag = [];
+            {magic}
+            }}
+            $o = new C; {body}"#
+    ))
+}
+
+const GET: &str = r#"function __get($n) { echo "[G$n]"; return $this->bag[$n] ?? "g"; }"#;
+const SET: &str = r#"function __set($n, $v) { echo "[S$n]"; $this->bag[$n] = $v; }"#;
+const ISSET: &str = r#"function __isset($n) { echo "[I$n]"; return isset($this->bag[$n]); }"#;
+
+#[test]
+fn magic_set_stores_without_creating_a_real_property() {
+    let src = format!("{SET} {GET}");
+    assert_eq!(
+        with_magic(
+            &src,
+            r#"$o->q = 7; echo "|", $o->q, "|", count(get_object_vars($o));"#
+        ),
+        // `get_object_vars` from outside sees only PUBLIC properties, and the
+        // magic write created none — so there is nothing left to count.
+        "[Sq]|[Gq]7|0"
+    );
+}
+
+#[test]
+fn magic_get_fires_for_a_property_that_was_unset() {
+    // Gone is indistinguishable from never-declared, so a declared PUBLIC
+    // property routes through `__get` once it has been removed.
+    let src = r#"<?php class C { public $p = 1; function __get($n) { return "g:$n"; } }
+        $o = new C; echo $o->p, "|"; unset($o->p); echo $o->p;"#;
+    assert_eq!(run(src), "1|g:p");
+}
+
+#[test]
+fn magic_get_is_consulted_before_the_visibility_error() {
+    let src = r#"<?php class C { private $p = 1; function __get($n) { return "g:$n"; } }
+        echo (new C)->p;"#;
+    assert_eq!(run(src), "g:p");
+}
+
+#[test]
+fn a_magic_method_is_not_re_entered_for_the_property_it_is_handling() {
+    // Without the guard this recurses until the stack gives out. The INNER read
+    // of the same name finds no property and takes the ordinary path, so `??`
+    // supplies the default.
+    let src = r#"<?php class C { function __get($n) { echo "[G$n]"; return $this->q ?? "d"; } }
+        var_dump((new C)->q);"#;
+    assert_eq!(run(src), "[Gq]string(1) \"d\"\n");
+}
+
+#[test]
+fn isset_empty_and_coalesce_consult_different_magic_methods() {
+    // `isset` asks `__isset` alone — true even though `__get` is never called.
+    assert_eq!(
+        with_magic(ISSET, r#"var_dump(isset($o->q));"#),
+        "[Iq]bool(false)\n"
+    );
+    // With no `__isset` at all, `isset` is false however `__get` would answer.
+    assert_eq!(with_magic(GET, "var_dump(isset($o->q));"), "bool(false)\n");
+    // `??` falls back to `__get` when there is no `__isset` …
+    assert_eq!(
+        with_magic(GET, r#"var_dump($o->q ?? "D");"#),
+        "[Gq]string(1) \"g\"\n"
+    );
+    // … but `empty()` will not read a property no `__isset` vouched for.
+    assert_eq!(with_magic(GET, "var_dump(empty($o->q));"), "bool(true)\n");
+    // A true `__isset` is what unlocks `__get` for both.
+    let both = format!("{GET} {ISSET} {SET}");
+    assert_eq!(
+        with_magic(&both, r#"$o->q = 1; var_dump(empty($o->q), $o->q ?? "D");"#),
+        // Both arguments are evaluated before `var_dump` prints anything, so
+        // all four magic calls come first.
+        "[Sq][Iq][Gq][Iq][Gq]bool(false)\nint(1)\n"
+    );
+}
+
+#[test]
+fn a_plain_read_asks_magic_get_where_isset_asks_magic_isset() {
+    // `@` is not an isset-mode read: it evaluates the operand normally.
+    let both = format!("{GET} {ISSET}");
+    assert_eq!(
+        with_magic(&both, r#"var_dump(@$o->q);"#),
+        "[Gq]string(1) \"g\"\n"
+    );
+    assert_eq!(
+        with_magic(&both, r#"var_dump(isset($o->q));"#),
+        "[Iq]bool(false)\n"
+    );
+}
+
+#[test]
+fn a_read_modify_write_uses_magic_set_only_when_magic_get_supplied_the_value() {
+    // Both halves present: the pair handles it, and no dynamic property is made.
+    let both = format!("{GET} {SET}");
+    assert_eq!(
+        with_magic(&both, r#"$o->n = 1; $o->n += 2; echo "|", $o->n;"#),
+        "[Sn][Gn][Sn]|[Gn]3"
+    );
+    // `__set` WITHOUT `__get` is not enough to divert the write: the reference
+    // reads and writes the property directly, so the deprecation and the
+    // undefined-property warning both appear and `__set` never runs.
+    let src = r#"<?php class C { function __set($n, $v) { echo "[S$n]"; } }
+        $o = new C; $o->q += 3; echo "|", $o->q;"#;
+    assert_eq!(
+        run(src),
+        "\nDeprecated: Creation of dynamic property C::$q is deprecated in \
+         Command line code on line 2\n\nWarning: Undefined property: C::$q in \
+         Command line code on line 2\n|3"
+    );
+}
+
+#[test]
+fn a_write_through_magic_set_never_reports_a_dynamic_property() {
+    // The deprecation is about creating a real property, and `__set` creates none.
+    assert_eq!(with_magic(SET, "$o->zz = 1; echo \"|ok\";"), "[Szz]|ok");
+}
+
+#[test]
+fn magic_get_and_set_are_skipped_from_inside_the_class() {
+    // A private property is directly reachable there, so nothing magic fires.
+    let src =
+        format!("{GET} {SET} function go() {{ $this->bag = [1]; return count($this->bag); }}");
+    assert_eq!(with_magic(&src, "echo $o->go();"), "1");
+}

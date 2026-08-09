@@ -1526,6 +1526,50 @@ impl Compiler {
                 b.patch_jump(jend, end);
             }
             Expr::Quiet(inner) => self.compile_quiet(b, inner)?,
+            // `@expr` — the operand compiles NORMALLY, wrapped in a run-time
+            // suppression region. Not `compile_quiet`: `@` drops diagnostics, it
+            // does not change what the operand means, and the region is what
+            // catches the diagnostics raised inside the functions it calls
+            // (`@preg_match('/[a', $s)`, `@range('ab', 'c')`) — those are raised
+            // from Rust and have no opcode to quieten.
+            Expr::Suppress(inner) => {
+                b.emit(Op::CallBuiltin(ops::SUPPRESS_PUSH, 0), self.cur_line);
+                b.emit(Op::Pop, self.cur_line);
+                self.compile_expr(b, inner)?;
+                b.emit(Op::CallBuiltin(ops::SUPPRESS_POP, 1), self.cur_line);
+            }
+            // One `isset()` argument. A property target gets its own opcode
+            // because `isset` asks `__isset` and NOTHING else: a class whose
+            // `__isset` returns true is set even if `__get` would answer null, so
+            // the answer cannot be recovered from a value the way it can for a
+            // variable or an array element.
+            Expr::IssetOf(inner) => match inner.as_ref() {
+                Expr::PropGet(recv, name) => {
+                    self.compile_quiet(b, recv)?;
+                    let idx = b.add_constant(Value::str(name.clone()));
+                    b.emit(Op::LoadConst(idx), self.cur_line);
+                    b.emit(Op::CallBuiltin(ops::PROP_ISSET, 2), self.cur_line);
+                }
+                other => {
+                    // Everything else: set means "reads as something other than
+                    // null", which an isset-mode read answers directly.
+                    self.compile_quiet(b, other)?;
+                    let idx = b.add_constant(Value::Undef);
+                    b.emit(Op::LoadConst(idx), self.cur_line);
+                    b.emit(Op::CallBuiltin(ops::STRICT_NE, 2), self.cur_line);
+                }
+            },
+            // The `empty()` argument. Only a property target differs from an
+            // ordinary isset-mode read — see `ops::PROP_GET_EMPTY`.
+            Expr::EmptyOf(inner) => match inner.as_ref() {
+                Expr::PropGet(recv, name) => {
+                    self.compile_quiet(b, recv)?;
+                    let idx = b.add_constant(Value::str(name.clone()));
+                    b.emit(Op::LoadConst(idx), self.cur_line);
+                    b.emit(Op::CallBuiltin(ops::PROP_GET_EMPTY, 2), self.cur_line);
+                }
+                other => self.compile_quiet(b, other)?,
+            },
             Expr::Coalesce(a, els) => {
                 // `a ?? b` — use `b` only when `a` is null (=== null). The left
                 // operand is an isset-mode read: `$a['k'] ?? $d` is exactly the
@@ -1789,10 +1833,18 @@ impl Compiler {
         }
     }
 
-    /// Compile one `unset()` target: a plain `$var` (remove the scope variable) or
-    /// an array element `$a[k1]..[kN]` (remove the deepest key).
+    /// Compile one `unset()` target: a plain `$var` (remove the scope variable),
+    /// an object property `$o->p` (remove the property, or call `__unset`), or an
+    /// array element `$a[k1]..[kN]` (remove the deepest key).
     fn compile_unset_target(&mut self, b: &mut ChunkBuilder, t: &Expr) -> Result<(), String> {
         match t {
+            Expr::PropGet(recv, prop) => {
+                self.compile_expr(b, recv)?;
+                let pi = b.add_constant(Value::str(prop.clone()));
+                b.emit(Op::LoadConst(pi), self.cur_line);
+                b.emit(Op::CallBuiltin(ops::PROP_UNSET, 2), self.cur_line);
+                b.emit(Op::Pop, self.cur_line);
+            }
             Expr::Var(name) => {
                 let idx = b.add_constant(Value::str(name.clone()));
                 b.emit(Op::LoadConst(idx), 0);
@@ -2635,9 +2687,13 @@ fn collect_free_vars(e: &Expr, out: &mut Vec<String>) {
             collect_free_vars(a, out);
             collect_free_vars(b, out);
         }
-        Expr::Append(a) | Expr::Unary(_, a) | Expr::Spread(a) | Expr::Quiet(a) => {
-            collect_free_vars(a, out)
-        }
+        Expr::Append(a)
+        | Expr::Unary(_, a)
+        | Expr::Spread(a)
+        | Expr::Quiet(a)
+        | Expr::Suppress(a)
+        | Expr::IssetOf(a)
+        | Expr::EmptyOf(a) => collect_free_vars(a, out),
         Expr::Assign(a, _, b) => {
             collect_free_vars(a, out);
             collect_free_vars(b, out);
