@@ -913,3 +913,85 @@ fn filter_validate_regexp_uses_the_same_compiler_as_preg() {
         echo preg_last_error();"#;
     assert_eq!(run(state), "1");
 }
+
+// ── PCRE's end-of-subject anchors ────────────────────────────────────────────
+//
+// `$` (unmodified) and `\Z` both match at the end of the subject AND just before
+// a newline that ends it. Neither engine's `$` means that, and `fancy-regex`'s
+// `\Z` means something else again, so both are rewritten to a look-ahead. Every
+// expectation below was read off reference PHP 8.5.
+
+#[test]
+fn dollar_matches_before_a_newline_that_ends_the_subject() {
+    assert_eq!(run(r#"<?php echo preg_match('/a$/', "a\n");"#), "1");
+    assert_eq!(run(r#"<?php echo preg_match('/a$/', "a");"#), "1");
+    // ONE final newline, not any run of them, and not a `\r` before it.
+    assert_eq!(run(r#"<?php echo preg_match('/a$/', "a\n\n");"#), "0");
+    assert_eq!(run(r#"<?php echo preg_match('/a$/', "a\r\n");"#), "0");
+    // The anchor is zero-width: the newline is not part of the match.
+    let m = r#"<?php $m = []; preg_match('/(a)$/', "xa\n", $m); echo json_encode($m);"#;
+    assert_eq!(run(m), r#"["a","a"]"#);
+    // Both positions are real, so the walk finds two of them.
+    assert_eq!(run(r#"<?php echo preg_match_all('/$/', "a\n");"#), "2");
+    assert_eq!(
+        run(r#"<?php echo json_encode(preg_replace('/$/', 'X', "a\n"));"#),
+        r#""aX\nX""#
+    );
+    assert_eq!(
+        run(r#"<?php echo json_encode(preg_split('/a$/', "a\n"));"#),
+        r#"["","\n"]"#
+    );
+    // The empty-match retry runs against the rewritten body too: `x*$` matches
+    // empty at 1, then non-empty, then empty again at each `$` position.
+    assert_eq!(
+        run(r#"<?php echo json_encode(preg_replace('/x*$/', '-', "ax\n"));"#),
+        r#""a--\n-""#
+    );
+}
+
+#[test]
+fn d_and_m_give_dollar_their_own_meaning_and_keep_it() {
+    // `D` (PCRE2_DOLLAR_ENDONLY) drops the second position — which is what an
+    // un-rewritten `$` already does, so this is the case that must NOT change.
+    assert_eq!(run(r#"<?php echo preg_match('/a$/D', "a\n");"#), "0");
+    // `/m` is end-of-LINE, which both engines already have.
+    assert_eq!(run(r#"<?php echo preg_match('/a$/m', "a\nb");"#), "1");
+    assert_eq!(run(r#"<?php echo preg_match_all('/a$/m', "a\na\n");"#), "2");
+    // Inline, where the modifier letter is in the body rather than the flags.
+    assert_eq!(run(r#"<?php echo preg_match('/(?m)a$/', "a\n");"#), "1");
+    // `/m` overrides `/D` in PCRE, so `Dm` is the `/m` answer.
+    assert_eq!(run(r#"<?php echo preg_match_all('/$/Dm', "a\n");"#), "2");
+    // `\z` is the absolute end and is not touched by any of this.
+    assert_eq!(run(r#"<?php echo preg_match('/a\z/', "a\n");"#), "0");
+}
+
+#[test]
+fn backslash_z_is_the_end_or_just_before_a_final_newline() {
+    // `fancy-regex` HAS a `\Z`, and it is not PCRE's: it also matches before a
+    // newline that is not final, which makes these two the ones that catch a
+    // rewrite done with `\Z` instead of the look-ahead.
+    assert_eq!(run(r#"<?php echo preg_match('/a\Z/', "a\n\n");"#), "0");
+    assert_eq!(run(r#"<?php echo preg_match_all('/\Z/', "a\n\n");"#), "2");
+    assert_eq!(run(r#"<?php echo preg_match('/a\Z/', "a\n");"#), "1");
+    assert_eq!(run(r#"<?php echo preg_match('/a\Z/', "a");"#), "1");
+}
+
+#[test]
+fn the_rewrite_does_not_change_byte_semantics_or_a_literal_dollar() {
+    // Without `/u` PCRE reads a BYTE, so `.` cannot span the two bytes of `é`
+    // and this is 0. The rewritten body runs on the codepoint-oriented engine,
+    // where `.` would span them, so a subject that is not ASCII is left to the
+    // compiled engine unless `/u` put PCRE in UTF mode as well.
+    assert_eq!(run("<?php echo preg_match('/^.$/', \"\u{e9}\\n\");"), "0");
+    assert_eq!(run("<?php echo preg_match('/^.$/u', \"\u{e9}\\n\");"), "1");
+    assert_eq!(
+        run("<?php echo preg_match('/^.a$/u', \"\u{e9}a\\n\");"),
+        "1"
+    );
+    // An escaped or classed `$` is a literal and is not an anchor.
+    assert_eq!(run(r#"<?php echo preg_match('/[$]/', 'a$');"#), "1");
+    assert_eq!(run(r#"<?php echo preg_match('/a\$/', 'a$');"#), "1");
+    // `A` (anchored) still applies on the rewritten body.
+    assert_eq!(run(r#"<?php echo preg_match('/a$/A', "a\n");"#), "1");
+    assert_eq!(run(r#"<?php echo preg_match('/b$/A', "ab\n");"#), "0");
+}

@@ -45,13 +45,34 @@
 //! engines reject outright, so they take the silent `Unsupported` path rather
 //! than matching wrongly.
 //!
-//! DIVERGENCE — `D` (PCRE2_DOLLAR_ENDONLY) is accepted and ignored. It is the
-//! inverse of the usual engine-subset gap: both engines' `$` is already
-//! end-of-haystack only, so `/a$/D` is right by accident and the *unmodified*
-//! `/a$/` is what differs — `preg_match("/a$/", "a\n")` is 1 in the reference
-//! and 0 here. Fixing it means rewriting a `$` to the look-ahead `(?=\n?\z)`,
-//! which every pattern containing one would then pay for by moving to the
-//! backtracking engine.
+//! PCRE's end-of-subject anchors are the inverse of the usual engine-subset gap.
+//! Both engines' `$` is end-of-haystack only, which is what `D`
+//! (PCRE2_DOLLAR_ENDONLY) asks for, so `/a$/D` is right as it stands and the
+//! *unmodified* `/a$/` is what differs: PCRE's `$` also matches just before a
+//! newline that ENDS the subject, so `preg_match("/a$/", "a\n")` is 1. The only
+//! construct either crate has for that is the look-ahead [`END_ANCHOR`], which
+//! lives on the backtracking engine — the `regex` crate has neither it nor
+//! `\Z`.
+//!
+//! Moving every pattern containing a `$` onto that engine would be a steep
+//! price, and it is not the price: the second position only EXISTS on a subject
+//! that ends in a newline, which is a property of the subject, not the pattern.
+//! So the compiled engine keeps the pattern and answers for every other subject,
+//! and the rewritten body is built — and compiled — only when one ends in `\n`.
+//! See [`Pattern::dollar_variant`]. `/m` and `/D` opt out entirely: both already
+//! give `$` a meaning the compiled engine has.
+//!
+//! `\Z` is the same anchor under every modifier, so it is rewritten once at scan
+//! time and needs no such variant. It is NOT spelled `\Z` on the second engine,
+//! which has a `\Z` of its own that also matches before a NON-final newline
+//! (`/a\Z/` on `"a\n\n"` is 1 there and 0 in the reference).
+//!
+//! DIVERGENCE — a subject that is not ASCII and a pattern without `/u` keep the
+//! old answer for `$`. The rewritten body runs on the `&str` engine, where `.`
+//! is a codepoint and PCRE without `/u` reads a byte, so routing it there would
+//! trade this divergence for another (`preg_match('/^.$/', "\xc3\xa9\n")` is 0
+//! in the reference, and 1 with a codepoint `.`). With `/u` the two agree and
+//! the rewrite applies.
 //!
 //! Neither crate's own match ITERATOR walks a subject the way PCRE does — both
 //! suppress a zero-width match sitting immediately after a non-empty one, and
@@ -267,6 +288,41 @@ enum Engine {
     Fancy(fancy_regex::Regex),
 }
 
+/// The look-ahead that spells out PCRE's default end-of-subject anchor: the end
+/// of the subject, or just before a newline that ENDS it. Neither engine's `$`
+/// means that (both are end-of-subject only) and neither has PCRE's `\Z`, so a
+/// body carrying either is rewritten to this — see [`scan_body`].
+///
+/// `fancy-regex` DOES have a `\Z`, and it is not this one: `\Z` there also
+/// matches before a newline that is not final, so `/a\Z/` on `"a\n\n"` answers 1
+/// where the reference answers 0. The look-ahead is what agrees; `\Z` was
+/// measured against the reference and rejected.
+const END_ANCHOR: &str = "(?=\\n?\\z)";
+
+/// The `$`-rewritten form of a pattern, compiled on demand.
+///
+/// It exists because PCRE's default `$` has a second match position — one before
+/// a newline that ends the subject — that only shows on a subject that ends in a
+/// newline. That is a property of the SUBJECT, not of the pattern, which is what
+/// keeps the cost off the common path: the compiled engine already answers
+/// correctly for every subject that does not end in `\n`, and this variant is
+/// built (and even compiled) only when one does.
+struct DollarNl {
+    /// The body with each anchoring `$` replaced by [`END_ANCHOR`].
+    body: String,
+    /// `/u` was set, so PCRE is in UTF mode and agrees with the codepoint-
+    /// oriented engine about a non-ASCII subject. Without it the two read a
+    /// non-ASCII byte differently and this variant is not used — see
+    /// [`Pattern::dollar_variant`].
+    unicode: bool,
+    /// Built on first need. `None` once built means the rewritten body is one
+    /// the backtracking engine will not take, and the compiled engine answers.
+    re: std::cell::OnceCell<Option<fancy_regex::Regex>>,
+    /// The same rewritten body compiled to reject a zero-length match — the
+    /// NOTEMPTY companion of [`Pattern::notempty`], for this variant.
+    notempty: std::cell::OnceCell<Option<fancy_regex::Regex>>,
+}
+
 /// The builder settings a pattern was compiled with, kept so the NOTEMPTY
 /// companion of [`Pattern`] can be built from the same body later.
 #[derive(Clone)]
@@ -296,6 +352,10 @@ pub(crate) struct Pattern {
     /// ever asks for it, and `None` once built means it cannot exist (a pattern
     /// that matches ONLY empty, or a body the second engine will not take).
     notempty: std::cell::OnceCell<Option<fancy_regex::Regex>>,
+    /// The `$`-rewritten form, for a subject that ends in a newline. `None` when
+    /// the body has no anchoring `$`, or when `/m` or `/D` already gives the
+    /// compiled engine's `$` the right meaning.
+    dollar_nl: Option<DollarNl>,
 }
 
 impl Pattern {
@@ -322,6 +382,9 @@ impl Pattern {
     /// `PREG_BACKTRACK_LIMIT_ERROR` and truncates the match list there, which is
     /// what PCRE reports for the same subject.
     fn captures_all<'h>(&self, hay: &'h [u8]) -> Vec<Caps<'h>> {
+        // Resolved once for the whole walk: it depends on the subject, not the
+        // offset, and the test that picks it scans the subject.
+        let dn = self.dollar_variant(hay);
         let mut out = Vec::new();
         let mut pos = 0usize;
         // PCRE's `g_notempty`: set after an empty match, it turns the next
@@ -331,9 +394,9 @@ impl Pattern {
         // zero-width match lives — but anything past it is not.
         while pos <= hay.len() {
             let hit = if retry_nonempty {
-                self.captures_nonempty_at(hay, pos)
+                self.captures_nonempty_at(dn, hay, pos)
             } else {
-                self.captures_at(hay, pos)
+                self.captures_at(dn, hay, pos)
                     .filter(|c| !self.anchored || c.get(0).is_some_and(|m| m.start() == pos))
             };
             let Some(caps) = hit else {
@@ -365,52 +428,77 @@ impl Pattern {
     /// A body that can ONLY match empty is rejected at compile time there, and a
     /// non-UTF-8 subject cannot reach the `&str` engine at all; both are "no
     /// such match", which is the right answer in each case.
-    fn captures_nonempty_at<'h>(&self, hay: &'h [u8], pos: usize) -> Option<Caps<'h>> {
-        let re = self
-            .notempty
-            .get_or_init(|| self.build_notempty())
+    fn captures_nonempty_at<'h>(
+        &self,
+        dn: Option<&DollarNl>,
+        hay: &'h [u8],
+        pos: usize,
+    ) -> Option<Caps<'h>> {
+        // The retry has to ask the same question the walk is asking, so it uses
+        // the `$`-rewritten body whenever the walk does.
+        let (cell, body) = match dn {
+            Some(d) => (&d.notempty, &d.body),
+            None => (&self.notempty, &self.body),
+        };
+        let re = cell
+            .get_or_init(|| build_fancy(body, &self.flags, true))
             .as_ref()?;
-        let text = std::str::from_utf8(hay).ok()?;
-        if !text.is_char_boundary(pos) {
-            return None;
-        }
-        let caps = re.captures_from_pos(text, pos).ok()??;
-        let m = caps.get(0)?;
+        let caps = fancy_captures_at(re, hay, pos)?;
         // `captures_from_pos` is not anchored; PCRE's retry is.
-        if m.start() != pos {
+        if caps.get(0)?.start() != pos {
             return None;
         }
-        Some(Caps {
-            groups: (0..caps.len())
-                .map(|i| caps.get(i).map(|g| (g.start(), g.end())))
-                .collect(),
-            hay,
-        })
+        Some(caps)
     }
 
-    fn build_notempty(&self) -> Option<fancy_regex::Regex> {
-        let body = if self.flags.swap_greed {
-            format!("(?U){}", self.body)
-        } else {
-            self.body.clone()
-        };
-        let mut b = fancy_regex::RegexBuilder::new(&body);
-        b.case_insensitive(self.flags.case_insensitive);
-        b.multi_line(self.flags.multi_line);
-        b.dot_matches_new_line(self.flags.dot_all);
-        b.ignore_whitespace(self.flags.extended);
-        b.find_not_empty(true);
-        b.build().ok()
+    /// The `$`-rewritten variant to run against `hay`, or `None` when the
+    /// compiled engine already answers correctly for it.
+    ///
+    /// Three tests, cheapest first. A subject that does not end in `\n` has no
+    /// second `$` position at all, so the engines agree and nothing is built —
+    /// that is the common path, and it costs one byte comparison.
+    ///
+    /// A non-ASCII subject is left to the compiled engine unless `/u` is set:
+    /// the rewritten body runs on the `&str` engine, where `.` is a codepoint,
+    /// and without `/u` PCRE reads a byte. Routing it there would trade this
+    /// divergence for another one — `preg_match('/^.$/', "\xc3\xa9\n")` is 0 in
+    /// the reference, and a codepoint `.` makes it 1. With `/u` PCRE is in UTF
+    /// mode too and the two agree.
+    ///
+    /// A rewritten body the backtracking engine will not take is `None`, which
+    /// falls back to the compiled engine — the answer it gave before.
+    fn dollar_variant(&self, hay: &[u8]) -> Option<&DollarNl> {
+        let d = self.dollar_nl.as_ref()?;
+        if !hay.ends_with(b"\n") {
+            return None;
+        }
+        if !hay.is_ascii() && !(d.unicode && std::str::from_utf8(hay).is_ok()) {
+            return None;
+        }
+        d.re.get_or_init(|| build_fancy(&d.body, &self.flags, false))
+            .as_ref()?;
+        Some(d)
     }
 
     /// The first match, honouring `A`.
     fn captures_first<'h>(&self, hay: &'h [u8]) -> Option<Caps<'h>> {
-        self.captures_at(hay, 0)
+        let dn = self.dollar_variant(hay);
+        self.captures_at(dn, hay, 0)
             .filter(|c| !self.anchored || c.get(0).is_some_and(|m| m.start() == 0))
     }
 
     /// The leftmost match at or after `pos`, whichever engine holds the pattern.
-    fn captures_at<'h>(&self, hay: &'h [u8], pos: usize) -> Option<Caps<'h>> {
+    fn captures_at<'h>(
+        &self,
+        dn: Option<&DollarNl>,
+        hay: &'h [u8],
+        pos: usize,
+    ) -> Option<Caps<'h>> {
+        if let Some(d) = dn {
+            // `dollar_variant` returns `Some` only after this compiled.
+            let re = d.re.get()?.as_ref()?;
+            return fancy_captures_at(re, hay, pos);
+        }
         match &self.engine {
             Engine::Bytes(re) => {
                 let caps = re.captures_at(hay, pos)?;
@@ -421,30 +509,7 @@ impl Pattern {
                     hay,
                 })
             }
-            Engine::Fancy(re) => {
-                // The `&str` engine cannot be handed a non-UTF-8 subject, nor a
-                // start offset inside a codepoint. Either is a no-match rather
-                // than a panic.
-                let text = std::str::from_utf8(hay).ok()?;
-                if !text.is_char_boundary(pos) {
-                    return None;
-                }
-                match re.captures_from_pos(text, pos) {
-                    Ok(caps) => {
-                        let caps = caps?;
-                        Some(Caps {
-                            groups: (0..caps.len())
-                                .map(|i| caps.get(i).map(|m| (m.start(), m.end())))
-                                .collect(),
-                            hay,
-                        })
-                    }
-                    Err(e) => {
-                        with_host(|h| h.set_preg_error(runtime_error_code(&e)));
-                        None
-                    }
-                }
-            }
+            Engine::Fancy(re) => fancy_captures_at(re, hay, pos),
         }
     }
 
@@ -483,6 +548,54 @@ fn push_keyed(out: &mut Vec<(Value, Value)>, names: &[Option<String>], i: usize,
         out.push((Value::str(name.clone()), dup));
     }
     out.push((Value::int(i as i64), v));
+}
+
+/// Build `body` on the backtracking engine with a pattern's modifiers.
+///
+/// `U` (ungreedy) has no builder switch there, so it rides as a leading inline
+/// `(?U)`, which applies to the whole pattern — what the modifier means.
+/// `not_empty` is PCRE2_NOTEMPTY; a body that can match ONLY empty is rejected
+/// with it set, which is the right answer for the retry that asks for it.
+fn build_fancy(body: &str, flags: &Flags, not_empty: bool) -> Option<fancy_regex::Regex> {
+    let body = if flags.swap_greed {
+        format!("(?U){body}")
+    } else {
+        body.to_string()
+    };
+    let mut b = fancy_regex::RegexBuilder::new(&body);
+    b.case_insensitive(flags.case_insensitive);
+    b.multi_line(flags.multi_line);
+    b.dot_matches_new_line(flags.dot_all);
+    b.ignore_whitespace(flags.extended);
+    b.find_not_empty(not_empty);
+    b.build().ok()
+}
+
+/// One match attempt on the backtracking engine, which reads `&str`.
+///
+/// It cannot be handed a non-UTF-8 subject, nor a start offset inside a
+/// codepoint. Either is a no-match rather than a panic. A backtrack blow-up is a
+/// runtime fault: it records the code PCRE reports and yields no match.
+fn fancy_captures_at<'h>(re: &fancy_regex::Regex, hay: &'h [u8], pos: usize) -> Option<Caps<'h>> {
+    let text = std::str::from_utf8(hay).ok()?;
+    if !text.is_char_boundary(pos) {
+        return None;
+    }
+    match re.captures_from_pos(text, pos) {
+        Ok(caps) => {
+            let caps = caps?;
+            Some(Caps {
+                groups: (0..caps.len())
+                    .map(|i| caps.get(i).map(|m| (m.start(), m.end())))
+                    .collect(),
+                hay,
+            })
+        }
+        Err(e) => {
+            with_host(|h| h.set_preg_error(runtime_error_code(&e)));
+            None
+        }
+    }
 }
 
 /// The next index at or after `from` that starts a UTF-8 codepoint, saturating
@@ -591,6 +704,11 @@ fn compile(pattern: &str) -> Result<Pattern, PatternError> {
     let mut extended = false;
     let mut swap_greed = false;
     let mut anchored = false;
+    // `D` — PCRE2_DOLLAR_ENDONLY. It drops `$`'s second match position, which is
+    // exactly what both engines' `$` already does, so it is applied by NOT
+    // rewriting. `/m` overrides it in PCRE (`/$/Dm` on "a\n" matches twice), and
+    // the rewrite is off under `/m` anyway.
+    let mut dollar_endonly = false;
     for f in flags.chars() {
         match f {
             'i' => case_insensitive = true,
@@ -601,8 +719,9 @@ fn compile(pattern: &str) -> Result<Pattern, PatternError> {
             'u' => unicode = true,
             'n' => no_auto_capture = true,
             'A' => anchored = true,
+            'D' => dollar_endonly = true,
             // Accepted by the reference, no Rust-engine analogue → no-ops.
-            'r' | 'D' | 'X' | 'S' | 'J' => {}
+            'r' | 'X' | 'S' | 'J' => {}
             // PHP tolerates trailing whitespace/newlines after the pattern.
             c if c.is_whitespace() => {}
             other => {
@@ -610,10 +729,30 @@ fn compile(pattern: &str) -> Result<Pattern, PatternError> {
             }
         }
     }
-    let translated = match scan_body(&body, no_auto_capture) {
+    let scanned = match scan_body(&body, no_auto_capture) {
         Ok(t) => t,
         Err(msg) => return Err(PatternError::Php(format!("Compilation failed: {msg}"))),
     };
+    let translated = scanned.text;
+    let flags = Flags {
+        case_insensitive,
+        multi_line,
+        dot_all,
+        extended,
+        swap_greed,
+    };
+    // `/m` gives `$` its end-of-LINE meaning, which both engines already have,
+    // and `/D` drops the second position entirely. The rewrite is for the
+    // unmodified `$` only.
+    let dollar_nl = scanned
+        .dollar_nl
+        .filter(|_| !multi_line && !dollar_endonly)
+        .map(|body| DollarNl {
+            body,
+            unicode,
+            re: std::cell::OnceCell::new(),
+            notempty: std::cell::OnceCell::new(),
+        });
     let mut b = RegexBuilder::new(&translated);
     b.case_insensitive(case_insensitive);
     b.multi_line(multi_line);
@@ -627,34 +766,16 @@ fn compile(pattern: &str) -> Result<Pattern, PatternError> {
         // quantifier — all PCRE, none of them the `regex` crate's. Retry on the
         // backtracking engine, which has them.
         Err(_) => {
-            // `U` (ungreedy) has no builder switch on the second engine, but its
-            // parser takes the inline form; leading it applies to the whole
-            // pattern, which is what the modifier means.
-            let body = if swap_greed {
-                format!("(?U){translated}")
-            } else {
-                translated.clone()
-            };
-            let mut fb = fancy_regex::RegexBuilder::new(&body);
-            fb.case_insensitive(case_insensitive);
-            fb.multi_line(multi_line);
-            fb.dot_matches_new_line(dot_all);
-            fb.ignore_whitespace(extended);
-            Engine::Fancy(fb.build().map_err(|_| PatternError::Unsupported)?)
+            Engine::Fancy(build_fancy(&translated, &flags, false).ok_or(PatternError::Unsupported)?)
         }
     };
     Ok(Pattern {
         engine,
         anchored,
         body: translated,
-        flags: Flags {
-            case_insensitive,
-            multi_line,
-            dot_all,
-            extended,
-            swap_greed,
-        },
+        flags,
         notempty: std::cell::OnceCell::new(),
+        dollar_nl,
     })
 }
 
@@ -682,9 +803,14 @@ fn compile(pattern: &str) -> Result<Pattern, PatternError> {
 /// The direction that matters is false POSITIVES: claiming a fault in a body
 /// PCRE accepts would break working patterns. Hence the scan tracks escapes and
 /// character classes, inside which `(`, `)` and quantifiers are all literal.
-fn scan_body(body: &str, no_auto_capture: bool) -> Result<String, String> {
+fn scan_body(body: &str, no_auto_capture: bool) -> Result<Scanned, String> {
     let c: Vec<char> = body.chars().collect();
     let mut out = String::with_capacity(body.len());
+    // Where an anchoring `$` was emitted into `out`, for the rewritten variant,
+    // and whether the body sets `m` inline — which changes what `$` means and so
+    // takes the variant off the table.
+    let mut dollars: Vec<usize> = Vec::new();
+    let mut inline_multi_line = false;
     let mut depth: usize = 0;
     // Whether a quantifier (`*`, `+`, `?`, `{n,m}`) may legally appear here —
     // true only just after something repeatable. It is false at the start of the
@@ -696,10 +822,30 @@ fn scan_body(body: &str, no_auto_capture: bool) -> Result<String, String> {
         match c[i] {
             // An escape consumes the next character; the pair is repeatable.
             '\\' if i + 1 < c.len() => {
-                out.push(c[i]);
-                out.push(c[i + 1]);
+                // PCRE's `\Z` is end-of-subject-or-before-a-final-newline, which
+                // no engine here has — `regex` rejects `\Z` outright and
+                // `fancy-regex` spells a DIFFERENT anchor with it. Both are
+                // answered by the look-ahead. Unlike `$`, `\Z` means this under
+                // every modifier, so it is rewritten here once and needs no
+                // subject-dependent variant.
+                if c[i + 1] == 'Z' {
+                    out.push_str(END_ANCHOR);
+                } else {
+                    out.push(c[i]);
+                    out.push(c[i + 1]);
+                }
                 repeatable = true;
                 i += 2;
+            }
+            // Outside a class and unescaped, `$` is always PCRE's end anchor.
+            // It is emitted unchanged — the compiled engine's `$` is right for
+            // every subject that does not end in a newline — and its offset is
+            // recorded so the variant for the subjects that do can be spliced.
+            '$' => {
+                dollars.push(out.len());
+                out.push('$');
+                repeatable = true;
+                i += 1;
             }
             // A character class: everything up to the terminating `]` is literal.
             // `]` in the first position (after an optional `^`) is a literal `]`,
@@ -745,6 +891,17 @@ fn scan_body(body: &str, no_auto_capture: bool) -> Result<String, String> {
                     // reference calls `/(?/` a missing closing parenthesis.
                     out.push_str("(?");
                     i += 1;
+                    // An inline flag set — `(?m)`, `(?im-sx:` — that touches `m`
+                    // changes what `$` means partway through the body. The scan
+                    // only reads letters and `-`, so `(?<name>`, `(?=`, `(?:`
+                    // and `(?P<name>` all stop before any of them counts.
+                    let mut k = i;
+                    while k < c.len() && (c[k].is_ascii_alphabetic() || c[k] == '-') {
+                        if c[k] == 'm' {
+                            inline_multi_line = true;
+                        }
+                        k += 1;
+                    }
                 } else if no_auto_capture {
                     // `/n` — an unnamed group does not capture.
                     out.push_str("(?:");
@@ -839,7 +996,29 @@ fn scan_body(body: &str, no_auto_capture: bool) -> Result<String, String> {
         // As with the character class, the offset is where the body ran out.
         return Err(format!("missing closing parenthesis at offset {}", c.len()));
     }
-    Ok(out)
+    let dollar_nl = (!dollars.is_empty() && !inline_multi_line).then(|| {
+        let mut v = String::with_capacity(out.len() + dollars.len() * END_ANCHOR.len());
+        let mut last = 0;
+        for &d in &dollars {
+            v.push_str(&out[last..d]);
+            v.push_str(END_ANCHOR);
+            last = d + 1; // `$` is one byte
+        }
+        v.push_str(&out[last..]);
+        v
+    });
+    Ok(Scanned {
+        text: out,
+        dollar_nl,
+    })
+}
+
+/// What one [`scan_body`] walk produces: the body in the engines' syntax, and
+/// the `$`-rewritten form for a subject that ends in a newline.
+struct Scanned {
+    text: String,
+    /// `None` when the body has no anchoring `$`, or sets `m` inline.
+    dollar_nl: Option<String>,
 }
 
 /// Read a `{n}` / `{n,}` / `{n,m}` / `{,m}` quantifier starting at `open` (which
