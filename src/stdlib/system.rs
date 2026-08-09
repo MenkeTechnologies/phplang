@@ -87,13 +87,9 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
                 .map(|(k, v)| (Value::str(k), v))
                 .collect(),
         ),
-        // get_declared_classes() -> list of declared class names.
-        "get_declared_classes" => make_list(
-            with_host(|h| h.all_class_names())
-                .into_iter()
-                .map(Value::str)
-                .collect(),
-        ),
+        // NOTE: `get_declared_classes` is NOT handled here. `stdlib::dispatch`
+        // reaches `reflection` before `system`, so a copy in this module would
+        // never run — it lives in `stdlib::reflection` alone.
         // Iterator helpers — materialize any Traversable to an array via the
         // host's foreach normalization.
         "iterator_to_array" => {
