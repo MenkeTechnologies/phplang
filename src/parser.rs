@@ -3,6 +3,117 @@
 use crate::ast::*;
 use crate::lexer::{self, Spanned, Tok};
 
+/// The words PHP's scanner turns into keyword tokens rather than identifiers, in
+/// the canonical spelling a syntax error echoes back — lowercase for ordinary
+/// keywords, uppercase for the magic constants, and `die` folded onto `exit`,
+/// which is the token it produces. Matched case-insensitively.
+///
+/// `true`, `false`, `null`, `self`, `parent`, `enum` and the scalar type names are
+/// deliberately absent: the scanner leaves them as identifiers, and PHP reports
+/// them as `identifier "…"`.
+const RESERVED_WORDS: &[&str] = &[
+    "abstract",
+    "and",
+    "array",
+    "as",
+    "break",
+    "callable",
+    "case",
+    "catch",
+    "class",
+    "clone",
+    "const",
+    "continue",
+    "declare",
+    "default",
+    "do",
+    "echo",
+    "else",
+    "elseif",
+    "empty",
+    "enddeclare",
+    "endfor",
+    "endforeach",
+    "endif",
+    "endswitch",
+    "endwhile",
+    "eval",
+    "exit",
+    "extends",
+    "final",
+    "finally",
+    "fn",
+    "for",
+    "foreach",
+    "function",
+    "global",
+    "goto",
+    "if",
+    "implements",
+    "include",
+    "include_once",
+    "instanceof",
+    "insteadof",
+    "interface",
+    "isset",
+    "list",
+    "match",
+    "namespace",
+    "new",
+    "or",
+    "print",
+    "private",
+    "protected",
+    "public",
+    "readonly",
+    "require",
+    "require_once",
+    "return",
+    "static",
+    "switch",
+    "throw",
+    "trait",
+    "try",
+    "unset",
+    "use",
+    "var",
+    "while",
+    "xor",
+    "yield",
+    "__CLASS__",
+    "__DIR__",
+    "__FILE__",
+    "__FUNCTION__",
+    "__LINE__",
+    "__METHOD__",
+    "__NAMESPACE__",
+];
+
+/// The canonical keyword spelling for `word`, or `None` if the scanner would
+/// leave it an identifier.
+fn reserved_spelling(word: &str) -> Option<&'static str> {
+    // `die` is an alias the scanner folds onto the `exit` token, so a syntax
+    // error on `die` reports `token "exit"`.
+    if word.eq_ignore_ascii_case("die") {
+        return Some("exit");
+    }
+    RESERVED_WORDS
+        .iter()
+        .find(|k| k.eq_ignore_ascii_case(word))
+        .copied()
+}
+
+/// Whether `e` is the `variable` PHP's grammar requires either side of a
+/// `++`/`--`: a plain `$v`, an array or string element, an instance or static
+/// property. Everything else — a literal, a call result, a parenthesised
+/// expression — is a syntax error at the operator, not a runtime failure.
+fn is_incdec_target(e: &Expr) -> bool {
+    matches!(
+        e,
+        Expr::Var(_) | Expr::Index(..) | Expr::PropGet(..) | Expr::StaticProp(..)
+    )
+}
+
 /// Map a `(type)` cast keyword to the conversion function it desugars to.
 /// `(array)` and `(object)` have no PHP-callable equivalent, so they lower to
 /// the internal `__cast_array`/`__cast_object` builtins. `(unset)` was removed
@@ -71,8 +182,22 @@ impl Parser {
         self.toks.get(self.pos).map(|s| &s.tok)
     }
 
+    /// The line of the token at the cursor. Past the end there is no such token,
+    /// so the last one's line stands in — PHP reports `unexpected end of file`
+    /// against the final line of the source, not line zero.
     fn line(&self) -> u32 {
-        self.toks.get(self.pos).map(|s| s.line).unwrap_or(0)
+        self.line_at(self.pos)
+    }
+
+    /// The line of the token at `idx`, or — past the end, where there is none —
+    /// the last token's, since PHP reports `unexpected end of file` against the
+    /// final line of the source rather than line zero.
+    fn line_at(&self, idx: usize) -> u32 {
+        self.toks
+            .get(idx)
+            .or_else(|| self.toks.last())
+            .map(|s| s.line)
+            .unwrap_or(1)
     }
 
     fn next(&mut self) -> Option<Tok> {
@@ -109,11 +234,70 @@ impl Parser {
         if self.eat_punct(p) {
             Ok(())
         } else {
-            Err(format!(
-                "expected '{p}' but found {:?} (line {})",
-                self.peek(),
-                self.line()
-            ))
+            Err(self.syntax_error())
+        }
+    }
+
+    // ── syntax errors ──────────────────────────────────────────────────────
+
+    /// PHP's `syntax error, …` diagnostic for the token at the cursor, in the
+    /// display form the CLI prints (the `Parse error: ` severity and the leading
+    /// blank line are added by [`crate::host::PhpHost::fatal`]).
+    ///
+    /// DIVERGENCE: the reference message often carries a `, expecting "X" or "Y"`
+    /// suffix listing the tokens its LALR state would have accepted. That set is a
+    /// property of PHP's generated parser tables, not of the grammar as written
+    /// here, so it is omitted rather than guessed at — an invented list would be
+    /// wrong more often than no list.
+    fn syntax_error(&self) -> String {
+        self.syntax_error_at(self.pos)
+    }
+
+    /// [`syntax_error`](Self::syntax_error) for a token the caller has already
+    /// consumed — a `match self.next()` arm reports `self.pos - 1`, the token it
+    /// just took, not the one after it.
+    fn syntax_error_at(&self, idx: usize) -> String {
+        crate::host::with_host(|h| {
+            format!(
+                "syntax error, unexpected {} in {} on line {}",
+                self.tok_desc_at(idx),
+                h.script_name(),
+                self.line_at(idx)
+            )
+        })
+    }
+
+    /// How PHP names the token at the cursor inside a syntax error. Literals are
+    /// echoed back in their source spelling and named by kind; a reserved word and
+    /// every operator or delimiter are quoted as a bare `token "…"`.
+    fn tok_desc_at(&self, idx: usize) -> String {
+        let Some(sp) = self.toks.get(idx) else {
+            return "end of file".to_string();
+        };
+        let raw = |fallback: String| -> String {
+            sp.raw.as_ref().map(|r| r.to_string()).unwrap_or(fallback)
+        };
+        match &sp.tok {
+            Tok::Int(n) => format!("integer \"{}\"", raw(n.to_string())),
+            Tok::Float(f) => format!("floating-point number \"{}\"", raw(f.to_string())),
+            Tok::Str(s) => format!("single-quoted string \"{s}\""),
+            Tok::Interp(parts) => {
+                // A double-quoted string with no interpolation is reported with
+                // its text; anything with an embedded expression has no single
+                // spelling, so only the kind is named.
+                match parts.as_slice() {
+                    [StrPart::Lit(s)] => format!("double-quoted string \"{s}\""),
+                    _ => "double-quoted string".to_string(),
+                }
+            }
+            Tok::Var(v) => format!("variable \"${v}\""),
+            Tok::Ident(id) => match reserved_spelling(id) {
+                Some(kw) => format!("token \"{kw}\""),
+                None => format!("identifier \"{id}\""),
+            },
+            Tok::Punct(p) => format!("token \"{p}\""),
+            Tok::InlineHtml(_) => "inline HTML".to_string(),
+            Tok::OpenEcho => "token \"<?=\"".to_string(),
         }
     }
 
@@ -341,10 +525,7 @@ impl Parser {
         self.pos += 1; // do
         let body = self.body()?;
         if !self.eat_kw("while") {
-            return Err(format!(
-                "expected 'while' after 'do' body (line {})",
-                self.line()
-            ));
+            return Err(self.syntax_error());
         }
         self.expect_punct("(")?;
         let cond = self.expression()?;
@@ -374,10 +555,7 @@ impl Parser {
                 }
                 None
             } else {
-                return Err(format!(
-                    "expected 'case' or 'default' in switch (line {})",
-                    self.line()
-                ));
+                return Err(self.syntax_error());
             };
             // The case body runs until the next case/default or the closing brace.
             let mut body = Vec::new();
@@ -434,7 +612,7 @@ impl Parser {
         self.expect_punct("(")?;
         let arr = self.expression()?;
         if !self.eat_kw("as") {
-            return Err(format!("expected 'as' in foreach (line {})", self.line()));
+            return Err(self.syntax_error());
         }
         // A `&` before the value var marks by-reference iteration (writes back).
         let ref1 = self.eat_punct("&");
@@ -460,20 +638,14 @@ impl Parser {
     fn member_name(&mut self) -> Result<String, String> {
         match self.next() {
             Some(Tok::Ident(n)) => Ok(n),
-            other => Err(format!(
-                "expected a member name but found {other:?} (line {})",
-                self.line()
-            )),
+            _ => Err(self.syntax_error_at(self.pos - 1)),
         }
     }
 
     fn expect_var(&mut self) -> Result<String, String> {
         match self.next() {
             Some(Tok::Var(n)) => Ok(n),
-            other => Err(format!(
-                "expected a $variable but found {other:?} (line {})",
-                self.line()
-            )),
+            _ => Err(self.syntax_error_at(self.pos - 1)),
         }
     }
 
@@ -482,12 +654,7 @@ impl Parser {
         let by_ref_return = self.eat_punct("&");
         let name = match self.next() {
             Some(Tok::Ident(n)) => n,
-            other => {
-                return Err(format!(
-                    "expected function name but found {other:?} (line {})",
-                    self.line()
-                ))
-            }
+            _ => return Err(self.syntax_error_at(self.pos - 1)),
         };
         let params = self.param_list()?;
         self.skip_return_type();
@@ -569,10 +736,7 @@ impl Parser {
             None
         };
         if catches.is_empty() && finally.is_none() {
-            return Err(format!(
-                "'try' must be followed by 'catch' or 'finally' (line {})",
-                self.line()
-            ));
+            return Err(self.syntax_error());
         }
         Ok(StmtKind::Try {
             body,
@@ -588,12 +752,7 @@ impl Parser {
         self.eat_punct("\\");
         let mut name = match self.next() {
             Some(Tok::Ident(n)) => n,
-            other => {
-                return Err(format!(
-                    "expected a class name but found {other:?} (line {})",
-                    self.line()
-                ))
-            }
+            _ => return Err(self.syntax_error_at(self.pos - 1)),
         };
         while self.eat_punct("\\") {
             if let Some(Tok::Ident(n)) = self.next() {
@@ -758,12 +917,7 @@ impl Parser {
         self.pos += 1; // class / interface / trait / enum
         let name = match self.next() {
             Some(Tok::Ident(n)) => n,
-            other => {
-                return Err(format!(
-                    "expected class name but found {other:?} (line {})",
-                    self.line()
-                ))
-            }
+            _ => return Err(self.syntax_error_at(self.pos - 1)),
         };
         // A backed enum names its scalar backing type after `:` (`enum E: string`).
         let mut enum_backing = None;
@@ -808,12 +962,7 @@ impl Parser {
                 self.pos += 1;
                 let cname = match self.next() {
                     Some(Tok::Ident(n)) => n,
-                    other => {
-                        return Err(format!(
-                            "expected enum case name but found {other:?} (line {})",
-                            self.line()
-                        ))
-                    }
+                    _ => return Err(self.syntax_error_at(self.pos - 1)),
                 };
                 let value = if self.eat_punct("=") {
                     Some(self.expression()?)
@@ -869,12 +1018,7 @@ impl Parser {
                 loop {
                     let cname = match self.next() {
                         Some(Tok::Ident(n)) => n,
-                        other => {
-                            return Err(format!(
-                                "expected constant name but found {other:?} (line {})",
-                                self.line()
-                            ))
-                        }
+                        _ => return Err(self.syntax_error_at(self.pos - 1)),
                     };
                     self.expect_punct("=")?;
                     consts.push((cname, self.expression()?));
@@ -888,12 +1032,7 @@ impl Parser {
                 let by_ref_return = self.eat_punct("&"); // return-by-ref marker
                 let mname = match self.next() {
                     Some(Tok::Ident(n)) => n,
-                    other => {
-                        return Err(format!(
-                            "expected method name but found {other:?} (line {})",
-                            self.line()
-                        ))
-                    }
+                    _ => return Err(self.syntax_error_at(self.pos - 1)),
                 };
                 let params = self.param_list()?;
                 self.skip_return_type();
@@ -1182,20 +1321,10 @@ impl Parser {
             return Ok(Expr::Unary(UnOp::Pos, Box::new(self.unary()?)));
         }
         if self.eat_punct("++") {
-            let t = self.unary()?;
-            return Ok(Expr::IncDec {
-                target: Box::new(t),
-                inc: true,
-                prefix: true,
-            });
+            return self.incdec_prefix(true);
         }
         if self.eat_punct("--") {
-            let t = self.unary()?;
-            return Ok(Expr::IncDec {
-                target: Box::new(t),
-                inc: false,
-                prefix: true,
-            });
+            return self.incdec_prefix(false);
         }
         let e = self.power()?;
         // `$x instanceof ClassName` (bareword class, optionally `\`-qualified).
@@ -1204,6 +1333,30 @@ impl Parser {
             return Ok(Expr::InstanceOf(Box::new(e), cls));
         }
         Ok(e)
+    }
+
+    /// A prefix `++`/`--`, whose operand PHP's grammar requires to be a
+    /// *variable* — so a non-variable operand is a syntax error at parse time,
+    /// not a failure further down the pipeline.
+    ///
+    /// Where it is caught depends on the operand, and this follows the reference:
+    /// a bare number can never begin a variable, so the number itself is the
+    /// unexpected token; anything dereferencable (a string, an array literal, a
+    /// parenthesised expression) parses first and only then fails, at the token
+    /// standing where a `->` or `[` would have had to be.
+    fn incdec_prefix(&mut self, inc: bool) -> Result<Expr, String> {
+        if matches!(self.peek(), Some(Tok::Int(_) | Tok::Float(_))) {
+            return Err(self.syntax_error());
+        }
+        let target = self.unary()?;
+        if !is_incdec_target(&target) {
+            return Err(self.syntax_error());
+        }
+        Ok(Expr::IncDec {
+            target: Box::new(target),
+            inc,
+            prefix: true,
+        })
     }
 
     /// The exponent level, sitting *below* unary so `-2 ** 2` parses as
@@ -1295,18 +1448,18 @@ impl Parser {
                     let args = self.arg_list()?;
                     e = Expr::CallValue(Box::new(e), args);
                 }
-            } else if self.at_punct("++") {
+            } else if self.at_punct("++") || self.at_punct("--") {
+                // Postfix `++`/`--` also takes a *variable*. Unlike the prefix
+                // form the operand is already parsed, so the operator itself is
+                // the token PHP reports as unexpected.
+                if !is_incdec_target(&e) {
+                    return Err(self.syntax_error());
+                }
+                let inc = self.at_punct("++");
                 self.pos += 1;
                 e = Expr::IncDec {
                     target: Box::new(e),
-                    inc: true,
-                    prefix: false,
-                };
-            } else if self.at_punct("--") {
-                self.pos += 1;
-                e = Expr::IncDec {
-                    target: Box::new(e),
-                    inc: false,
+                    inc,
                     prefix: false,
                 };
             } else {
@@ -1360,12 +1513,7 @@ impl Parser {
                 self.eat_punct("\\"); // optional global-namespace prefix
                 let class = match self.next() {
                     Some(Tok::Ident(n)) => n,
-                    other => {
-                        return Err(format!(
-                            "expected a class name after 'new' but found {other:?} (line {})",
-                            self.line()
-                        ))
-                    }
+                    _ => return Err(self.syntax_error_at(self.pos - 1)),
                 };
                 let args = if self.eat_punct("(") {
                     self.arg_list()?
@@ -1463,7 +1611,7 @@ impl Parser {
                     Ok(Expr::ConstFetch(name))
                 }
             }
-            other => Err(format!("unexpected token {other:?} (line {})", self.line())),
+            _ => Err(self.syntax_error_at(self.pos - 1)),
         }
     }
 

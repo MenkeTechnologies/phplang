@@ -1832,15 +1832,15 @@ pub const CORPUS: &[Entry] = &[
     (
         "Exception",
         "Prelude class",
-        "class Exception {\n    protected $message = \"\"; protected $code = 0;\n    __construct($message = \"\", $code = 0)\n    getMessage(): string   getCode(): int   __toString(): string\n}",
-        "One of the two disjoint roots of the exception hierarchy. `catch (Throwable)` is special-cased in the host to match this root or `Error`. DIVERGENCE: PHP's `getFile`, `getLine`, `getTrace`, `getTraceAsString`, and `getPrevious` are not declared, and the constructor takes no `$previous` argument.",
+        "class Exception {\n    protected $message = \"\"; protected $code = 0; protected $previous = null;\n    protected $file = \"\"; protected $line = 0; protected $trace = \"\";\n    __construct($message = \"\", $code = 0, $previous = null)\n    getMessage(): string   getCode(): int   getPrevious(): ?Throwable\n    getFile(): string   getLine(): int   getTraceAsString(): string\n    __toString(): string\n}",
+        "One of the two disjoint roots of the exception hierarchy. `catch (Throwable)` is special-cased in the host to match this root or `Error`. `file`, `line` and `trace` are recorded when the object is *constructed*, as the reference engine records them, so `getLine()` reports the `new` site even when the `throw` is on a later line. DIVERGENCE: `getTrace()` — the structured array form — is not declared; only the rendered `getTraceAsString()` is.",
         "try { throw new Exception(\"boom\", 7); }\ncatch (Exception $e) { echo $e->getMessage(), $e->getCode(); }   // => boom7",
     ),
     (
         "Error",
         "Prelude class",
-        "class Error {\n    protected $message = \"\"; protected $code = 0;\n    __construct($message = \"\", $code = 0)\n    getMessage(): string   getCode(): int   __toString(): string\n}",
-        "The other root of the hierarchy, for engine-level failures. It does NOT extend `Exception` — the two roots are disjoint, exactly as in PHP, so `catch (Exception)` never catches an `Error`. A zero divisor throws `DivisionByZeroError`, and a method call on a non-object throws `Error`. DIVERGENCE: most other runtime failures — a bad standard-library argument, a call to an undefined function — still abort with a host-level `php: <message>` on stderr that no `catch` block can intercept.",
+        "class Error {\n    protected $message = \"\"; protected $code = 0; protected $previous = null;\n    protected $file = \"\"; protected $line = 0; protected $trace = \"\";\n    __construct($message = \"\", $code = 0, $previous = null)\n    getMessage(): string   getCode(): int   getPrevious(): ?Throwable\n    getFile(): string   getLine(): int   getTraceAsString(): string\n    __toString(): string\n}",
+        "The other root of the hierarchy, for engine-level failures. It does NOT extend `Exception` — the two roots are disjoint, exactly as in PHP, so `catch (Exception)` never catches an `Error`. A zero divisor throws `DivisionByZeroError`, and a method call on a non-object throws `Error`. Reaching the top uncaught prints the reference's `Fatal error: Uncaught <Class>: <message> in <file>:<line>` block, stack trace and all, on stdout. DIVERGENCE: most other runtime failures — a bad standard-library argument, a call to an undefined function — still abort with a host-level `php: <message>` on stderr that no `catch` block can intercept.",
         "try { throw new TypeError(\"t\"); }\ncatch (Exception $e) { echo \"E\"; } catch (Error $e) { echo \"R\"; }   // => R",
     ),
     (
@@ -2292,7 +2292,7 @@ pub const CORPUS: &[Entry] = &[
         "range",
         "Core library — arrays",
         "range(mixed $start, mixed $end, int|float $step = 1): array",
-        "An inclusive sequence. Two non-numeric single-character strings produce a character range walked by codepoint; anything else produces a numeric range. A step of zero is an error.",
+        "An inclusive sequence. Two non-numeric single-character strings produce a character range walked by codepoint; anything else produces a numeric range. A step of zero is an error. DIVERGENCE: a step wider than the span (`range(9, 10, 2)`), like every other bad-argument case in the library, aborts with an uncatchable host-level `php: <message>` on stderr rather than throwing the `ValueError` PHP throws.",
         "echo implode(\",\", range(1, 4)), \" \", implode(\"\", range(\"a\", \"c\"));   // => 1,2,3,4 abc",
     ),
     (
@@ -5671,7 +5671,7 @@ pub const CORPUS: &[Entry] = &[
         "set_exception_handler",
         "Runtime and diagnostics",
         "set_exception_handler(?callable $callback): null",
-        "DIVERGENCE: shares the `set_error_handler` arm — the callback is discarded and an uncaught exception still aborts with the host's own message.",
+        "DIVERGENCE: shares the `set_error_handler` arm — the callback is discarded, so an uncaught exception still ends the program with the standard `Fatal error: Uncaught …` block instead of being routed to the handler.",
         "",
     ),
     (

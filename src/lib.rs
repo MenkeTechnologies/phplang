@@ -42,11 +42,20 @@ pub fn compile_debug(src: &str) -> Result<compiler::Program, String> {
 /// code can subclass them. `Exception` and `Error` are the two disjoint roots
 /// (`catch (Throwable)` — handled in the host — matches either); the rest inherit
 /// their `__construct`/`getMessage`/`getCode`/`getPrevious`/`__toString`.
+///
+/// `file`, `line` and `trace` are filled in by `host::seed_throwable` at
+/// construction, exactly when the reference engine records them, so `getFile`,
+/// `getLine` and `getTraceAsString` report the `new` site rather than the
+/// `throw` site. DIVERGENCE: `getTrace()` (the structured array form) is not
+/// provided — only the rendered `getTraceAsString()`.
 const EXCEPTION_PRELUDE: &str = r#"<?php
 class Exception {
     protected $message = "";
     protected $code = 0;
     protected $previous = null;
+    protected $file = "";
+    protected $line = 0;
+    protected $trace = "";
     public function __construct($message = "", $code = 0, $previous = null) {
         $this->message = $message;
         $this->code = $code;
@@ -55,12 +64,18 @@ class Exception {
     public function getMessage() { return $this->message; }
     public function getCode() { return $this->code; }
     public function getPrevious() { return $this->previous; }
+    public function getFile() { return $this->file; }
+    public function getLine() { return $this->line; }
+    public function getTraceAsString() { return $this->trace; }
     public function __toString() { return $this->message; }
 }
 class Error {
     protected $message = "";
     protected $code = 0;
     protected $previous = null;
+    protected $file = "";
+    protected $line = 0;
+    protected $trace = "";
     public function __construct($message = "", $code = 0, $previous = null) {
         $this->message = $message;
         $this->code = $code;
@@ -69,6 +84,9 @@ class Error {
     public function getMessage() { return $this->message; }
     public function getCode() { return $this->code; }
     public function getPrevious() { return $this->previous; }
+    public function getFile() { return $this->file; }
+    public function getLine() { return $this->line; }
+    public function getTraceAsString() { return $this->trace; }
     public function __toString() { return $this->message; }
 }
 class RuntimeException extends Exception {}
@@ -379,6 +397,40 @@ pub fn run_compiled(prog: compiler::Program) -> Result<Value, String> {
 pub fn eval_str(src: &str) -> Result<Value, String> {
     host::reset_host();
     run_compiled(compile(src)?)
+}
+
+/// Compile `src`, displaying a syntax error the way the PHP CLI does: a
+/// `Parse error: …` copy on stdout and a `PHP `-prefixed copy on stderr. The
+/// error is still returned so the caller can take an exit status from it, with
+/// [`host::fatal_reported`] marking that it has already been shown.
+///
+/// Only the *parser*'s failures are framed this way. A later compile failure has
+/// no reference equivalent (it is scaffold-specific), so it falls through to the
+/// terse `php: …` form.
+fn compile_cli(src: &str) -> Result<compiler::Program, String> {
+    let stmts = match parser::parse(src) {
+        Ok(s) => s,
+        Err(e) => {
+            host::with_host(|h| h.fatal("Parse error", &e));
+            return Err(e);
+        }
+    };
+    compiler::compile(&stmts, false)
+}
+
+/// [`eval_str`] for the CLI: identical, except a syntax error is displayed in
+/// PHP's shape rather than left to the caller to print tersely.
+pub fn eval_cli(src: &str) -> Result<Value, String> {
+    host::reset_host();
+    run_compiled(compile_cli(src)?)
+}
+
+/// [`eval_file`] for the CLI — see [`eval_cli`].
+pub fn eval_file_cli(path: &str) -> Result<Value, String> {
+    let src = std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?;
+    host::reset_host();
+    set_script_name(path);
+    run_compiled(compile_cli(&src)?)
 }
 
 /// Read and run a `.php` file on a fresh host.

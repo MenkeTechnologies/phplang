@@ -913,6 +913,7 @@ impl Compiler {
         self.classes.push((
             decl.name.to_ascii_lowercase(),
             ClassDef {
+                name: decl.name.clone(),
                 parent: decl.parent.clone(),
                 interfaces: decl.implements.clone(),
                 consts,
@@ -1199,7 +1200,7 @@ impl Compiler {
                 self.compile_arg_pairs(b, args)?;
                 b.emit(
                     Op::CallBuiltin(ops::CALL_NAMED, (args.len() * 2 + 1) as u8),
-                    0,
+                    self.cur_line,
                 );
             }
             Expr::Call(name, args) => {
@@ -1251,7 +1252,7 @@ impl Compiler {
                     }
                     b.emit(
                         Op::CallBuiltin(ops::CALL_SPREAD, (args.len() * 2 + 1) as u8),
-                        0,
+                        self.cur_line,
                     );
                 } else {
                     let idx = b.add_constant(Value::str(name.clone()));
@@ -1267,7 +1268,10 @@ impl Compiler {
                             _ => self.compile_expr(b, a)?,
                         }
                     }
-                    b.emit(Op::CallBuiltin(ops::CALL, (args.len() + 1) as u8), 0);
+                    b.emit(
+                        Op::CallBuiltin(ops::CALL, (args.len() + 1) as u8),
+                        self.cur_line,
+                    );
                     // By-reference parameters: write the callee's final values back
                     // to the caller's argument variables (leaving the call result).
                     if let Some(positions) = byref {
@@ -1316,7 +1320,7 @@ impl Compiler {
                 self.compile_arg_pairs(b, args)?;
                 b.emit(
                     Op::CallBuiltin(ops::CALLVALUE_NAMED, (args.len() * 2 + 1) as u8),
-                    0,
+                    self.cur_line,
                 );
             }
             Expr::CallValue(callee, args) => {
@@ -1324,7 +1328,10 @@ impl Compiler {
                 for a in args {
                     self.compile_expr(b, a)?;
                 }
-                b.emit(Op::CallBuiltin(ops::CALL_VALUE, (args.len() + 1) as u8), 0);
+                b.emit(
+                    Op::CallBuiltin(ops::CALL_VALUE, (args.len() + 1) as u8),
+                    self.cur_line,
+                );
             }
             Expr::Closure { params, uses, body } => {
                 self.compile_closure(b, params, uses, body)?;
@@ -1356,7 +1363,7 @@ impl Compiler {
                 self.compile_arg_pairs(b, args)?;
                 b.emit(
                     Op::CallBuiltin(ops::NEW_NAMED, (args.len() * 2 + 1) as u8),
-                    0,
+                    self.cur_line,
                 );
             }
             Expr::New(class, args) => {
@@ -1364,7 +1371,10 @@ impl Compiler {
                 for a in args {
                     self.compile_expr(b, a)?;
                 }
-                b.emit(Op::CallBuiltin(ops::NEW, (args.len() + 1) as u8), 0);
+                b.emit(
+                    Op::CallBuiltin(ops::NEW, (args.len() + 1) as u8),
+                    self.cur_line,
+                );
             }
             Expr::PropGet(recv, name) => {
                 self.compile_expr(b, recv)?;
@@ -1379,7 +1389,7 @@ impl Compiler {
                 self.compile_arg_pairs(b, args)?;
                 b.emit(
                     Op::CallBuiltin(ops::MCALL_NAMED, (args.len() * 2 + 2) as u8),
-                    0,
+                    self.cur_line,
                 );
             }
             Expr::MethodCall(recv, name, args) => {
@@ -1389,7 +1399,10 @@ impl Compiler {
                 for a in args {
                     self.compile_expr(b, a)?;
                 }
-                b.emit(Op::CallBuiltin(ops::MCALL, (args.len() + 2) as u8), 0);
+                b.emit(
+                    Op::CallBuiltin(ops::MCALL, (args.len() + 2) as u8),
+                    self.cur_line,
+                );
             }
             // `$o?->prop` — evaluate the receiver once; short-circuit to null when
             // it is null, else read the property.
@@ -1412,7 +1425,10 @@ impl Compiler {
                     for a in args {
                         c.compile_expr(b, a)?;
                     }
-                    b.emit(Op::CallBuiltin(ops::MCALL, (args.len() + 2) as u8), 0);
+                    b.emit(
+                        Op::CallBuiltin(ops::MCALL, (args.len() + 2) as u8),
+                        c.cur_line,
+                    );
                     Ok(())
                 })?;
             }
@@ -1448,7 +1464,7 @@ impl Compiler {
                 self.compile_arg_pairs(b, args)?;
                 b.emit(
                     Op::CallBuiltin(ops::SCALL_NAMED, (args.len() * 2 + 2) as u8),
-                    0,
+                    self.cur_line,
                 );
             }
             Expr::StaticCall(class, name, args) => {
@@ -1459,7 +1475,10 @@ impl Compiler {
                 for a in args {
                     self.compile_expr(b, a)?;
                 }
-                b.emit(Op::CallBuiltin(ops::SCALL, (args.len() + 2) as u8), 0);
+                b.emit(
+                    Op::CallBuiltin(ops::SCALL, (args.len() + 2) as u8),
+                    self.cur_line,
+                );
             }
             Expr::Ternary(c, t, f) => {
                 self.compile_truthy(b, c)?;
@@ -1511,7 +1530,7 @@ impl Compiler {
                 // the current chunk. As an expression it produces no value, but
                 // the THROW builtin leaves an Undef the surrounding context pops.
                 self.compile_expr(b, inner)?;
-                b.emit(Op::CallBuiltin(ops::THROW, 1), 0);
+                b.emit(Op::CallBuiltin(ops::THROW, 1), self.cur_line);
             }
             Expr::ConstFetch(name) => {
                 let idx = b.add_constant(Value::str(name.clone()));
@@ -1842,8 +1861,8 @@ impl Compiler {
             b.emit(Op::LoadConst(pfx), 0);
             self.emit_get_var(b, &m_t);
             b.emit(Op::CallBuiltin(ops::CONCAT, 2), 0); // message string
-            b.emit(Op::CallBuiltin(ops::NEW, 2), 0); // the exception object
-            b.emit(Op::CallBuiltin(ops::THROW, 1), 0); // record + unwind
+            b.emit(Op::CallBuiltin(ops::NEW, 2), self.cur_line); // the exception object
+            b.emit(Op::CallBuiltin(ops::THROW, 1), self.cur_line); // record + unwind
             None
         };
 
@@ -1931,13 +1950,13 @@ impl Compiler {
                 b.emit(Op::Mul, 0);
             }
             BinOp::Div => {
-                b.emit(Op::CallBuiltin(ops::DIV, 2), 0);
+                b.emit(Op::CallBuiltin(ops::DIV, 2), self.cur_line);
             }
             BinOp::Mod => {
-                b.emit(Op::CallBuiltin(ops::MOD, 2), 0);
+                b.emit(Op::CallBuiltin(ops::MOD, 2), self.cur_line);
             }
             BinOp::Pow => {
-                b.emit(Op::CallBuiltin(ops::POW, 2), 0);
+                b.emit(Op::CallBuiltin(ops::POW, 2), self.cur_line);
             }
             BinOp::Concat => {
                 b.emit(Op::CallBuiltin(ops::CONCAT, 2), 0);
@@ -1979,10 +1998,10 @@ impl Compiler {
                 b.emit(Op::CallBuiltin(ops::BITXOR, 2), 0);
             }
             BinOp::Shl => {
-                b.emit(Op::CallBuiltin(ops::SHL, 2), 0);
+                b.emit(Op::CallBuiltin(ops::SHL, 2), self.cur_line);
             }
             BinOp::Shr => {
-                b.emit(Op::CallBuiltin(ops::SHR, 2), 0);
+                b.emit(Op::CallBuiltin(ops::SHR, 2), self.cur_line);
             }
             BinOp::And | BinOp::Or => unreachable!("handled above"),
         }
@@ -2447,13 +2466,13 @@ impl Compiler {
                 b.emit(Op::Mul, 0);
             }
             BinOp::Div => {
-                b.emit(Op::CallBuiltin(ops::DIV, 2), 0);
+                b.emit(Op::CallBuiltin(ops::DIV, 2), self.cur_line);
             }
             BinOp::Mod => {
-                b.emit(Op::CallBuiltin(ops::MOD, 2), 0);
+                b.emit(Op::CallBuiltin(ops::MOD, 2), self.cur_line);
             }
             BinOp::Pow => {
-                b.emit(Op::CallBuiltin(ops::POW, 2), 0);
+                b.emit(Op::CallBuiltin(ops::POW, 2), self.cur_line);
             }
             BinOp::Concat => {
                 b.emit(Op::CallBuiltin(ops::CONCAT, 2), 0);
@@ -2468,10 +2487,10 @@ impl Compiler {
                 b.emit(Op::CallBuiltin(ops::BITXOR, 2), 0);
             }
             BinOp::Shl => {
-                b.emit(Op::CallBuiltin(ops::SHL, 2), 0);
+                b.emit(Op::CallBuiltin(ops::SHL, 2), self.cur_line);
             }
             BinOp::Shr => {
-                b.emit(Op::CallBuiltin(ops::SHR, 2), 0);
+                b.emit(Op::CallBuiltin(ops::SHR, 2), self.cur_line);
             }
             _ => unreachable!("compound assignment only uses arithmetic/bitwise/concat ops"),
         }

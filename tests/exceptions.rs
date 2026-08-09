@@ -157,18 +157,30 @@ fn multi_catch_union() {
 
 // ── an uncaught exception is a top-level fatal error ─────────────────────────
 
+/// The full shape reference PHP 8.5 reports for a top-level uncaught throw,
+/// verified byte-for-byte against `php -r 'throw new Exception("unhandled");'`:
+/// class, message, the site the exception was *constructed* at, a `#0 {main}`
+/// trace, and the `thrown in` tail.
 #[test]
 fn uncaught_is_fatal_error() {
     let src = r#"<?php throw new Exception("unhandled");"#;
     let err = eval_str(src).expect_err("uncaught exception must surface as an Err");
-    assert_eq!(err, "PHP Fatal error:  Uncaught Exception: unhandled");
+    assert_eq!(
+        err,
+        "Fatal error:  Uncaught Exception: unhandled in Command line code:1\n\
+         Stack trace:\n#0 {main}\n  thrown in Command line code on line 1"
+    );
 }
 
 #[test]
 fn uncaught_error_root_shapes_fatal() {
     let err = eval_str(r#"<?php throw new TypeError("nope");"#)
         .expect_err("uncaught error must surface as an Err");
-    assert_eq!(err, "PHP Fatal error:  Uncaught TypeError: nope");
+    assert_eq!(
+        err,
+        "Fatal error:  Uncaught TypeError: nope in Command line code:1\n\
+         Stack trace:\n#0 {main}\n  thrown in Command line code on line 1"
+    );
 }
 
 // ── extra coverage ───────────────────────────────────────────────────────────

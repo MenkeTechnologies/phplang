@@ -1,10 +1,18 @@
 //! The `php` binary entry point.
 //!
 //! Dispatch: `-a` starts the interactive REPL; `-r` runs a one-liner; otherwise
-//! a `.php` file is run. Errors go to stderr in terse `php: <reason>` form;
-//! nothing else is printed.
+//! a `.php` file is run.
+//!
+//! A fatal or parse error is reported the way the PHP CLI reports it — the
+//! *display* copy on stdout (written by the runtime itself, so it interleaves
+//! with the program's own output and lands inside an open `ob_start` buffer) and
+//! a `PHP `-prefixed *log* copy on stderr — and exits 255. Anything with no PHP
+//! equivalent still goes to stderr in terse `php: <reason>` form.
 
 use std::process::ExitCode;
+
+/// What the PHP CLI exits with after a fatal or parse error.
+const FATAL_EXIT: u8 = 255;
 
 fn main() -> ExitCode {
     let cli = phplang::cli::parse();
@@ -45,7 +53,7 @@ fn main() -> ExitCode {
         if cli.tiers {
             return finish(tiers(&file));
         }
-        return match phplang::eval_file(&file) {
+        return match phplang::eval_file_cli(&file) {
             Ok(_) => ExitCode::SUCCESS,
             Err(e) => fail(&e),
         };
@@ -62,7 +70,7 @@ fn main() -> ExitCode {
 }
 
 fn run_source(src: &str) -> ExitCode {
-    match phplang::eval_str(src) {
+    match phplang::eval_cli(src) {
         Ok(_) => ExitCode::SUCCESS,
         Err(e) => fail(&e),
     }
@@ -154,7 +162,12 @@ fn atty_stdin() -> bool {
     unsafe { libc::isatty(libc::STDIN_FILENO) == 1 }
 }
 
+/// Report a failed run. A diagnostic the runtime already displayed in PHP's own
+/// shape (on both streams) is not printed again — only its exit status is taken.
 fn fail(msg: &str) -> ExitCode {
+    if phplang::host::fatal_reported() {
+        return ExitCode::from(FATAL_EXIT);
+    }
     eprintln!("php: {msg}");
     ExitCode::FAILURE
 }

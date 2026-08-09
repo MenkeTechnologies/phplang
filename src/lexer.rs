@@ -27,6 +27,12 @@ pub enum Tok {
 pub struct Spanned {
     pub tok: Tok,
     pub line: u32,
+    /// The literal's source spelling, kept only for numbers — `0x1f`, `07`,
+    /// `1_000`, `2.0` and `1e3` all lex to a value whose default rendering is not
+    /// the text the author wrote, and PHP echoes that text back verbatim in a
+    /// syntax error (`unexpected integer "0x1f"`). `None` for every other token,
+    /// whose spelling the token itself already carries.
+    pub raw: Option<Box<str>>,
 }
 
 /// The multi-character operators, longest first so `===` beats `==` beats `=`.
@@ -176,6 +182,7 @@ impl<'a> Lexer<'a> {
     }
 
     fn lex_number(&mut self) {
+        let tok_start = self.pos;
         // Radix-prefixed integer literals: `0x`/`0X` hex, `0b`/`0B` binary,
         // `0o`/`0O` octal (PHP 8.1). Underscores are permitted as separators.
         if self.src[self.pos] == b'0' {
@@ -205,7 +212,8 @@ impl<'a> Lexer<'a> {
                     .chars()
                     .filter(|c| *c != '_')
                     .collect();
-                self.push(parse_radix(&digits, radix));
+                let raw = String::from_utf8_lossy(&self.src[tok_start..self.pos]).into_owned();
+                self.push_num(parse_radix(&digits, radix), &raw);
                 return;
             }
         }
@@ -231,25 +239,23 @@ impl<'a> Lexer<'a> {
                 break;
             }
         }
-        let raw: String = String::from_utf8_lossy(&self.src[start..self.pos])
-            .chars()
-            .filter(|c| *c != '_')
-            .collect();
+        let src_text = String::from_utf8_lossy(&self.src[start..self.pos]).into_owned();
+        let raw: String = src_text.chars().filter(|c| *c != '_').collect();
         if is_float {
-            self.push(Tok::Float(raw.parse().unwrap_or(0.0)));
+            self.push_num(Tok::Float(raw.parse().unwrap_or(0.0)), &src_text);
             return;
         }
         // A leading-zero integer with all-octal digits is an octal literal
         // (`0755`), the classic PHP form; a `0` alone stays decimal zero.
         if raw.len() > 1 && raw.starts_with('0') && raw.bytes().all(|b| (b'0'..=b'7').contains(&b))
         {
-            self.push(parse_radix(&raw[1..], 8));
+            self.push_num(parse_radix(&raw[1..], 8), &src_text);
             return;
         }
         match raw.parse::<i64>() {
-            Ok(n) => self.push(Tok::Int(n)),
+            Ok(n) => self.push_num(Tok::Int(n), &src_text),
             // Integer literal that overflows i64 becomes a float, as PHP does.
-            Err(_) => self.push(Tok::Float(raw.parse().unwrap_or(0.0))),
+            Err(_) => self.push_num(Tok::Float(raw.parse().unwrap_or(0.0)), &src_text),
         }
     }
 
@@ -520,6 +526,17 @@ impl<'a> Lexer<'a> {
         self.out.push(Spanned {
             tok,
             line: self.line,
+            raw: None,
+        });
+    }
+
+    /// [`push`](Self::push) for a numeric literal, recording the source spelling
+    /// alongside the parsed value — see [`Spanned::raw`].
+    fn push_num(&mut self, tok: Tok, raw: &str) {
+        self.out.push(Spanned {
+            tok,
+            line: self.line,
+            raw: Some(raw.into()),
         });
     }
 

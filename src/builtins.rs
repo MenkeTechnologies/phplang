@@ -231,6 +231,7 @@ fn b_callvalue_named(vm: &mut VM, argc: u8) -> Value {
     let pairs = pop_args(vm, argc as usize - 1);
     let callee = vm.pop();
     let (pos, named) = split_named(pairs);
+    mark_frame_line(vm);
     match host::call_value_named(callee, pos, named) {
         Ok(v) => bubbled(vm, v),
         Err(e) => fail(vm, e),
@@ -243,6 +244,7 @@ fn b_mcall_named(vm: &mut VM, argc: u8) -> Value {
     let method = pop_name(vm);
     let recv = vm.pop();
     let (pos, named) = split_named(pairs);
+    mark_frame_line(vm);
     // Built-in `Closure`/`Generator` methods take positional args (no named form).
     if with_host(|h| h.is_closure(&recv)) {
         return match host::call_closure_method(&recv, &method, pos) {
@@ -287,6 +289,7 @@ fn b_scall_named(vm: &mut VM, argc: u8) -> Value {
         let t = h.get_var("this");
         matches!(t, Value::Obj(_)).then_some(t)
     });
+    mark_frame_line(vm);
     match host::call_method_named(&class, &method, this, pos, named) {
         Ok(v) => bubbled(vm, v),
         Err(e) => fail(vm, e),
@@ -298,6 +301,7 @@ fn b_new_named(vm: &mut VM, argc: u8) -> Value {
     let pairs = pop_args(vm, argc as usize - 1);
     let class = pop_name(vm);
     let (pos, named) = split_named(pairs);
+    mark_frame_line(vm);
     match host::new_object_named(&class, pos, named) {
         Ok(v) => bubbled(vm, v),
         Err(e) => fail(vm, e),
@@ -706,6 +710,7 @@ fn fail(vm: &mut VM, msg: impl Into<String>) -> Value {
 /// Used by the zero-divisor arithmetic, which PHP 8 reports as a catchable
 /// `DivisionByZeroError` rather than a fatal error.
 fn throw_php(vm: &mut VM, class: &str, message: &str) -> Value {
+    mark_frame_line(vm);
     match pending_php_throw(class, message) {
         Ok(_) => {
             vm.ip = vm.chunk.ops.len();
@@ -762,13 +767,26 @@ fn b_echo(vm: &mut VM, argc: u8) -> Value {
 /// `ip - 1`, and the chunk's parallel line table gives its line. Reading it here
 /// costs nothing on the paths that never warn.
 fn mark_warn_site(vm: &VM) {
-    let line = vm
-        .ip
+    with_host(|h| h.set_warn_line(cur_op_line(vm)));
+}
+
+/// The source line of the op being dispatched. `VM::ip` has already advanced past
+/// it, so the executing op is at `ip - 1` in the chunk's parallel line table.
+fn cur_op_line(vm: &VM) -> u32 {
+    vm.ip
         .checked_sub(1)
         .and_then(|i| vm.chunk.lines.get(i))
         .copied()
-        .unwrap_or(0);
-    with_host(|h| h.set_warn_line(line));
+        .unwrap_or(0)
+}
+
+/// Record the executing op's line as the current call frame's position, so an
+/// exception created below here can report its own line and name this frame's
+/// call site in its backtrace. Called by the ops that can enter a new frame or
+/// raise a throw — nothing else needs it, and reading the line table costs a
+/// bounds-checked index.
+fn mark_frame_line(vm: &VM) {
+    with_host(|h| h.set_cur_line(cur_op_line(vm)));
 }
 
 fn b_getvar(vm: &mut VM, _: u8) -> Value {
@@ -817,6 +835,7 @@ fn b_truthy(vm: &mut VM, _: u8) -> Value {
 fn b_call(vm: &mut VM, argc: u8) -> Value {
     let args = pop_args(vm, argc as usize - 1);
     let name = pop_name(vm);
+    mark_frame_line(vm);
     match host::call_function(&name, args) {
         Ok(v) => bubbled(vm, v),
         Err(e) => fail(vm, e),
@@ -856,6 +875,7 @@ fn b_call_spread(vm: &mut VM, argc: u8) -> Value {
             }
         }
     });
+    mark_frame_line(vm);
     match host::call_function(&name, args) {
         Ok(v) => bubbled(vm, v),
         Err(e) => fail(vm, e),
@@ -884,6 +904,7 @@ fn b_mkclosure(vm: &mut VM, argc: u8) -> Value {
 fn b_call_value(vm: &mut VM, argc: u8) -> Value {
     let args = pop_args(vm, argc as usize - 1);
     let callee = vm.pop();
+    mark_frame_line(vm);
     match host::call_value(callee, args) {
         Ok(v) => bubbled(vm, v),
         Err(e) => fail(vm, e),
@@ -1056,6 +1077,7 @@ fn b_arr_mut(vm: &mut VM, argc: u8) -> Value {
 fn b_new(vm: &mut VM, argc: u8) -> Value {
     let mut args = pop_args(vm, argc as usize);
     let class = with_host(|h| h.to_str(&args.remove(0)));
+    mark_frame_line(vm);
     match host::new_object(&class, args) {
         Ok(v) => bubbled(vm, v),
         Err(e) => fail(vm, e),
@@ -1132,6 +1154,7 @@ fn b_mcall(vm: &mut VM, argc: u8) -> Value {
     let mut args = pop_args(vm, argc as usize);
     let recv = args.remove(0);
     let method = with_host(|h| h.to_str(&args.remove(0)));
+    mark_frame_line(vm);
     // `Closure` and `Generator` are built-in objects with no PHP class; dispatch
     // their methods before the ordinary class-method resolution.
     if with_host(|h| h.is_closure(&recv)) {
@@ -1178,6 +1201,7 @@ fn b_scall(vm: &mut VM, argc: u8) -> Value {
         let t = h.get_var("this");
         matches!(t, Value::Obj(_)).then_some(t)
     });
+    mark_frame_line(vm);
     match host::call_method(&class, &method, this, args) {
         Ok(v) => bubbled(vm, v),
         Err(e) => fail(vm, e),

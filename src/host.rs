@@ -216,6 +216,12 @@ pub struct ClosureCall {
 /// were resolved to concrete class names at compile time.
 #[derive(Debug, Clone)]
 pub struct ClassDef {
+    /// The class name in its declared spelling. The map is keyed by the
+    /// lowercased name (PHP class lookup is case-insensitive), so this is the
+    /// only place the source casing survives for display — a stack trace names
+    /// the class that DEFINED the method, which may have no live instance to
+    /// read the spelling back from.
+    pub name: String,
     pub parent: Option<String>,
     /// Implemented interfaces (lowercased) — for an `interface`, the interfaces it
     /// extends. Consulted by `class_is_a`/`instanceof`/`catch`.
@@ -354,8 +360,11 @@ struct Scope {
     /// `PhpHost::ref_cells`; reads/writes of such a name go through the cell so
     /// aliased variables observe each other's mutations.
     refs: FxHashMap<String, usize>,
-    /// The source line this frame is currently executing (DAP line hook). Only
-    /// meaningful under `--dap`; `0` otherwise.
+    /// The source line this frame is currently executing. Under `--dap` every
+    /// statement updates it; on the normal path only the ops that can start a
+    /// call or raise a throw do (see `builtins::mark_frame_line`), which is all
+    /// an exception backtrace needs — the frame's line at the moment it called
+    /// deeper is exactly the call-site line PHP prints for the frame above it.
     line: u32,
     /// The function name for a call frame, `None` for the global scope. Reported
     /// as the frame name in a DAP `stackTrace`.
@@ -433,6 +442,10 @@ pub struct PhpHost {
     /// Each holds a suspended stackful coroutine plus its swapped-out execution
     /// context (its own call frame, in-flight signal/throw).
     generators: Vec<GenCell>,
+    /// Set once a fatal error has been displayed in PHP's own shape (see
+    /// [`PhpHost::fatal`]), so the CLI wrapper reports the exit status without
+    /// printing the message a second time in its terse `php: …` form.
+    fatal_reported: bool,
 }
 
 impl Default for PhpHost {
@@ -468,6 +481,7 @@ impl PhpHost {
             pending_lsb: None,
             ret_ref_slot: None,
             generators: Vec::new(),
+            fatal_reported: false,
         };
         h.init_superglobals();
         h
@@ -720,10 +734,23 @@ impl PhpHost {
         self.script_name = name.into();
     }
 
+    /// What a diagnostic names as the source — the script path, or
+    /// `"Command line code"` for `php -r`.
+    pub fn script_name(&self) -> &str {
+        &self.script_name
+    }
+
     /// Record the line a diagnostic raised next belongs to. Called by the builtin
     /// that is about to warn, from the line table of the op it is executing.
     pub fn set_warn_line(&mut self, line: u32) {
         self.warn_line = line;
+    }
+
+    /// The line the innermost frame is executing — where an exception created
+    /// right now records itself as having been raised, and the call site the
+    /// frame below it reports in a backtrace.
+    pub fn cur_frame_line(&self) -> u32 {
+        self.scopes.last().map(|s| s.line).unwrap_or(0)
     }
 
     /// Enter/leave an `@expr` suppression region.
@@ -765,6 +792,127 @@ impl PhpHost {
             self.script_name, self.warn_line
         );
         self.write_out(&text);
+    }
+
+    /// One argument as a stack trace renders it. PHP does not print values in
+    /// full here: a string is single-quoted and cut to 15 characters with a
+    /// literal `...` inside the quotes, and an array or object collapses to its
+    /// kind, so a trace can never be arbitrarily long.
+    fn trace_arg(&self, v: &Value) -> String {
+        match v {
+            Value::Undef => "NULL".to_string(),
+            Value::Bool(true) => "true".to_string(),
+            Value::Bool(false) => "false".to_string(),
+            Value::Str(s) => {
+                if s.chars().count() > 15 {
+                    let cut: String = s.chars().take(15).collect();
+                    format!("'{cut}...'")
+                } else {
+                    format!("'{s}'")
+                }
+            }
+            Value::Obj(_) if self.is_array(v) => "Array".to_string(),
+            Value::Obj(_) if self.is_closure(v) => "Object(Closure)".to_string(),
+            Value::Obj(_) => match self.object_class(v) {
+                Some(c) => format!("Object({c})"),
+                None => "Object(stdClass)".to_string(),
+            },
+            other => self.to_str(other),
+        }
+    }
+
+    /// A frame's name as a trace prints it: `f`, `A->m` for an instance method,
+    /// `A::m` for a static one. Frames are recorded as `Class::method` with the
+    /// class lowercased (that is the lookup key); the declared spelling comes back
+    /// off the `ClassDef`, and the arrow form from whether the frame bound `$this`.
+    fn trace_frame_name(&self, scope: &Scope) -> String {
+        let Some(name) = &scope.name else {
+            return String::new();
+        };
+        let Some((class, method)) = name.split_once("::") else {
+            return name.clone();
+        };
+        let class = self
+            .classes
+            .get(class)
+            .map(|d| d.name.as_str())
+            .unwrap_or(class);
+        let sep = if scope.vars.contains_key("this") {
+            "->"
+        } else {
+            "::"
+        };
+        format!("{class}{sep}{method}")
+    }
+
+    /// PHP's `Stack trace:` body for the call stack as it stands right now —
+    /// captured when an exception object is *created*, which is when PHP snapshots
+    /// it, because by the time the throw reaches the top the frames are gone.
+    ///
+    /// Frame `#i` names the function that was entered and the file/line of the
+    /// call that entered it, so its call site is the *caller's* current line. The
+    /// global scope is not a frame: it closes the list as `#N {main}`.
+    ///
+    /// DIVERGENCE: a frame entered from inside a library function (an `array_map`
+    /// callback, say) prints that call site rather than PHP's `[internal
+    /// function]`, and a closure frame prints `{closure}` rather than PHP 8.4's
+    /// `{closure:file:line}`.
+    pub fn backtrace(&self) -> String {
+        let mut out = String::new();
+        let mut n = 0;
+        for i in (1..self.scopes.len()).rev() {
+            let scope = &self.scopes[i];
+            let args = self
+                .array_pairs(&self.get_var_in(i, "@args"))
+                .unwrap_or_default()
+                .iter()
+                .map(|(_, v)| self.trace_arg(v))
+                .collect::<Vec<_>>()
+                .join(", ");
+            out.push_str(&format!(
+                "#{n} {}({}): {}({args})\n",
+                self.script_name,
+                self.scopes[i - 1].line,
+                self.trace_frame_name(scope)
+            ));
+            n += 1;
+        }
+        out.push_str(&format!("#{n} {{main}}"));
+        out
+    }
+
+    /// Read a variable out of a specific frame — the backtrace needs each frame's
+    /// own hidden `@args`, not the innermost one's.
+    fn get_var_in(&self, idx: usize, name: &str) -> Value {
+        self.scopes
+            .get(idx)
+            .and_then(|s| s.vars.get(name))
+            .cloned()
+            .unwrap_or(Value::Undef)
+    }
+
+    /// Report a fatal error the way the PHP CLI does: the *display* copy goes on
+    /// the output stream (so it lands inside an open `ob_start` buffer and
+    /// interleaves with the program's own output exactly as the reference does),
+    /// and `log_errors` puts a `PHP `-prefixed copy on stderr.
+    pub fn fatal(&mut self, severity: &str, body: &str) {
+        self.write_out(&format!("\n{severity}: {body}\n"));
+        eprintln!("PHP {severity}:  {body}");
+        self.fatal_reported = true;
+    }
+
+    /// Whether a fatal has already been displayed in PHP's shape, so the CLI
+    /// wrapper must not print it again.
+    pub fn fatal_reported(&self) -> bool {
+        self.fatal_reported
+    }
+
+    /// Flush every still-open output buffer, innermost first — what PHP's
+    /// shutdown does, so `ob_start()` without a matching end still prints.
+    pub fn ob_flush_all(&mut self) {
+        while !self.ob_stack.is_empty() {
+            self.ob_end_flush();
+        }
     }
 
     /// The type name PHP uses inside a diagnostic — the short spelling (`int`,
@@ -1176,7 +1324,13 @@ impl PhpHost {
         self.scopes.len()
     }
 
-    /// Record the source line the innermost frame is executing (DAP line hook).
+    /// Record the source line the innermost frame is executing.
+    ///
+    /// Two callers, one meaning. Under `--dap` the per-statement line hook drives
+    /// it; on every path the ops that can enter a frame or raise a throw record
+    /// the op's own line, which is what a backtrace reads back as the call site.
+    /// Distinct from [`set_warn_line`](Self::set_warn_line), which is the line of
+    /// the op that is warning *now* and need not survive a nested call returning.
     pub fn set_cur_line(&mut self, line: u32) {
         if let Some(s) = self.scopes.last_mut() {
             s.line = line;
@@ -3471,18 +3625,31 @@ pub fn run_main(chunk: Chunk) -> Result<Value, String> {
     let r = run_chunk_on(chunk);
     // A top-level `return` just ends the program; clear any leftover signal.
     with_host(|h| h.signal.take());
-    // An exception that reached the top uncaught is a fatal error, shaped like
-    // the PHP CLI's `PHP Fatal error:  Uncaught <Class>: <message>`.
+    // An exception that reached the top uncaught is a fatal error, displayed in
+    // the PHP CLI's shape. `write_out` puts it where the reference puts it — on
+    // stdout, inside any open output buffer — and the returned string is the
+    // stderr log copy, which the CLI wrapper reports without re-displaying.
     if let Some(exc) = with_host(|h| h.pending_throw.take()) {
-        let (class, msg) = with_host(|h| {
+        let body = with_host(|h| {
             let class = h
                 .object_class(&exc)
                 .unwrap_or_else(|| "Exception".to_string());
             let msg = h.to_str(&h.prop_get(&exc, "message"));
-            (class, msg)
+            let file = h.to_str(&h.prop_get(&exc, "file"));
+            let line = h.prop_get(&exc, "line").to_int();
+            let trace = h.to_str(&h.prop_get(&exc, "trace"));
+            format!(
+                "Uncaught {class}: {msg} in {file}:{line}\nStack trace:\n{trace}\n  \
+                 thrown in {file} on line {line}"
+            )
         });
-        return Err(format!("PHP Fatal error:  Uncaught {class}: {msg}"));
+        with_host(|h| {
+            h.fatal("Fatal error", &body);
+            h.ob_flush_all();
+        });
+        return Err(format!("Fatal error:  {body}"));
     }
+    with_host(|h| h.ob_flush_all());
     r
 }
 
@@ -3894,6 +4061,28 @@ pub fn call_closure_method(
 
 // ── objects (new / method dispatch / constants) ─────────────────────────────
 
+/// Record on a freshly allocated Throwable where it was raised.
+///
+/// PHP fixes `file`, `line` and the backtrace when the exception object is
+/// *constructed*, not when it is thrown — `throw $e;` on a later line still
+/// reports the `new` site — and that is also the only moment the frames are
+/// still on the stack. `getFile`/`getLine`/`getTraceAsString` read the three
+/// back, and the uncaught-exception fatal prints all of them.
+fn seed_throwable(class: &str, obj: &Value) {
+    with_host(|h| {
+        let cl = class.to_ascii_lowercase();
+        if !h.class_is_a(&cl, "exception") && !h.class_is_a(&cl, "error") {
+            return;
+        }
+        let file = h.script_name().to_string();
+        let line = h.cur_frame_line() as i64;
+        let trace = h.backtrace();
+        h.prop_set(obj, "file", Value::str(file));
+        h.prop_set(obj, "line", Value::int(line));
+        h.prop_set(obj, "trace", Value::str(trace));
+    });
+}
+
 /// `new Class(args)`: allocate an object seeded with its (inherited) property
 /// defaults, then run its constructor. Property-default and constructor code run
 /// on fresh VMs, so no host borrow is held across them.
@@ -3921,6 +4110,7 @@ pub fn new_object(class: &str, args: Vec<Value>) -> Result<Value, String> {
         });
         Value::Obj((h.objs.len() - 1) as u32)
     });
+    seed_throwable(class, &obj);
     // Run the constructor if one exists anywhere in the chain.
     if with_host(|h| h.resolve_method(&cl, "__construct").is_some()) {
         // `static::` inside the constructor is the instantiated class in its
@@ -3956,6 +4146,7 @@ pub fn new_object_named(
         });
         Value::Obj((h.objs.len() - 1) as u32)
     });
+    seed_throwable(class, &obj);
     if with_host(|h| h.resolve_method(&cl, "__construct").is_some()) {
         with_host(|h| h.lsb_set_for_next_call(class));
         call_method_named(&cl, "__construct", Some(obj.clone()), args, named)?;
@@ -4243,6 +4434,12 @@ pub fn foreach_prep(v: Value) -> Result<Value, String> {
         }
         a
     }))
+}
+
+/// Whether the run already displayed a fatal in PHP's own shape, so the CLI
+/// wrapper reports only the exit status instead of printing a second, terse copy.
+pub fn fatal_reported() -> bool {
+    with_host(|h| h.fatal_reported())
 }
 
 /// Record a pending `return` value for the enclosing function frame.

@@ -245,11 +245,18 @@ in-code:
   (`array_multisort`, `sscanf`'s trailing arguments).
 - A diagnostic names the *statement's* line. PHP names the line of the
   expression, so a statement spanning several lines reports its first.
-- An **uncaught exception** prints a terse `php: …` line on stderr rather than
-  PHP's `Fatal error: Uncaught …` block on stdout with a stack trace: the frames
-  carry no call-site line outside `--dap`, so the trace cannot be reproduced.
-  A **parse error** likewise has no stdout rendering, and phplang accepts a few
-  things PHP's grammar rejects (`--$literal`).
+- A **bad argument to a library function** (`range(9, 10, 2)`) aborts with an
+  uncatchable host-level `php: …` line on stderr instead of throwing PHP's
+  `ValueError`/`TypeError`, so no `catch` sees it and no `Fatal error: Uncaught …`
+  block reaches stdout. Closing it needs both halves: the library's argument
+  errors raised as real throws, *and* internal-function frames in the trace,
+  since PHP renders such a throw as `#0 <file>(<line>): range(9, 10, 2)`.
+- A **stack trace** frame entered from inside a library function (an `array_map`
+  callback) prints its call site rather than PHP's `[internal function]`, and a
+  closure frame prints `{closure}` rather than PHP 8.4's `{closure:file:line}`.
+- A **syntax error** reproduces PHP's `unexpected <token>` text but not the
+  `, expecting "X" or "Y"` clause that often follows it: the expected set comes
+  out of PHP's generated LALR tables, not the grammar as written here.
 - `Deprecated: Creation of dynamic property …` is not emitted: `#[…]` attributes
   lex as comments, so `#[AllowDynamicProperties]` cannot be seen and the notice
   would fire on classes that opted out.
