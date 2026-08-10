@@ -936,7 +936,10 @@ impl Parser {
                             .to_string(),
                     ));
                 }
-                self.strict_types = v == 1;
+                // A LATCH, not an assignment: once a file has turned strict typing on, a
+                // later `declare(strict_types=0)` does not turn it back off — measured both
+                // orders against the reference, and both stay strict.
+                self.strict_types |= v == 1;
                 here_strict = true;
             } else {
                 // A non-`strict_types` directive: its value is an ordinary

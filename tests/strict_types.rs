@@ -284,6 +284,35 @@ fn a_preceding_declare_does_not_disqualify_strict_types() {
 }
 
 #[test]
+fn a_second_declare_cannot_turn_strict_typing_back_off() {
+    // The mode is a LATCH, not an assignment: once a file has turned it on, a
+    // later `declare(strict_types=0)` does not restore coercion. Both orders end
+    // strict, which is what distinguishes a latch from "last value wins" — an
+    // engine that simply stored the last value passes every other test in this
+    // file and fails only the first case here.
+    for decl in [
+        "declare(strict_types=1); declare(strict_types=0);",
+        "declare(strict_types=0); declare(strict_types=1);",
+    ] {
+        assert_eq!(
+            caught(decl, "function f(int $x) { var_dump($x); } f(\"5\");"),
+            "TypeError|f(): Argument #1 ($x) must be of type int, string given, \
+             called in Command line code on line 1",
+            "declarations {decl}"
+        );
+    }
+    // …and two zeroes still mean coercive, so the latch is not simply "any
+    // `strict_types` at all turns it on".
+    assert_eq!(
+        caught(
+            "declare(strict_types=0); declare(strict_types=0);",
+            "function f(int $x) { var_dump($x); } f(\"5\");"
+        ),
+        "int(5)\n"
+    );
+}
+
+#[test]
 fn strict_types_rejects_block_mode_but_ticks_accepts_it() {
     assert_eq!(
         compile_fatal("<?php declare(strict_types=1) { echo \"in\"; }"),

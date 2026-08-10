@@ -572,13 +572,24 @@ fn gen_stricttypes(seed: u64) -> Vec<String> {
 /// rejections, and an all-valid pool would leave every rule unexercised.
 fn gen_declaresyntax(seed: u64) -> Vec<String> {
     let r = &mut Rng::seed(seed);
-    match r.below(8) {
+    match r.below(9) {
         // Legal, and the baseline the rejections are read against.
         0 => vec!["declare(strict_types=1); echo \"ok\";".to_string()],
         // Not the first statement — the rule most likely to be got wrong.
         1 => vec!["echo \"before\"; declare(strict_types=1);".to_string()],
         // A preceding `declare` does NOT disqualify it, unlike any other statement.
         2 => vec!["declare(ticks=1); declare(strict_types=1); echo \"ok\";".to_string()],
+        // Two of them, in both orders. The mode is a LATCH rather than an
+        // assignment — once on it stays on — so a `=0` after a `=1` must NOT
+        // restore coercion, and an engine that simply stored the last value
+        // would pass every single-`declare` arm above and fail only here.
+        8 => vec![format!(
+            "declare(strict_types={}); declare(strict_types={}); \
+             function f(int $x) {{ var_dump($x); }} \
+             try {{ f(\"5\"); }} catch (Throwable $e) {{ echo get_class($e); }}",
+            r.below(2),
+            r.below(2)
+        )],
         // Block mode: a compile error for `strict_types` specifically…
         3 => vec!["declare(strict_types=1) { echo \"in\"; }".to_string()],
         // …but perfectly legal for `ticks`.
