@@ -474,17 +474,40 @@ fn compile_cli(src: &str) -> Result<compiler::Program, String> {
 }
 
 /// [`eval_str`] for the CLI: identical, except a syntax error is displayed in
-/// PHP's shape rather than left to the caller to print tersely.
-pub fn eval_cli(src: &str) -> Result<Value, String> {
+/// PHP's shape rather than left to the caller to print tersely, and the trailing
+/// command-line arguments reach the program as `$argv`.
+pub fn eval_cli(src: &str, args: &[String]) -> Result<Value, String> {
     host::reset_host();
+    // `php -r` code names itself `Command line code` in diagnostics and
+    // `__FILE__`, but `Standard input code` in `$argv[0]`. The reference really
+    // does disagree with itself here, so the two are set from different values.
+    host::with_host(|h| h.set_script_args(None, args));
+    run_compiled(compile_cli(src)?)
+}
+
+/// [`eval_cli`] for a script read from standard input (`php < script.php`).
+///
+/// The SAME source names itself differently under the three CLI entry points, so
+/// the name cannot be inferred from the text: `php -r` code is `Command line
+/// code`, a named file is its resolved path, and stdin is `Standard input code`.
+/// Every diagnostic quotes it, and so does `__FILE__`.
+pub fn eval_stdin_cli(src: &str, args: &[String]) -> Result<Value, String> {
+    host::reset_host();
+    host::with_host(|h| {
+        h.set_script_name("Standard input code");
+        h.set_script_args(None, args);
+    });
     run_compiled(compile_cli(src)?)
 }
 
 /// [`eval_file`] for the CLI — see [`eval_cli`].
-pub fn eval_file_cli(path: &str) -> Result<Value, String> {
+pub fn eval_file_cli(path: &str, args: &[String]) -> Result<Value, String> {
     let src = std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?;
     host::reset_host();
     set_script_name(path);
+    // `$argv[0]` is the path AS WRITTEN on the command line, where the diagnostic
+    // name just set is the resolved one — `php sub/s.php` reports both.
+    host::with_host(|h| h.set_script_args(Some(path), args));
     run_compiled(compile_cli(&src)?)
 }
 

@@ -461,6 +461,63 @@ pub const CORPUS: &[Entry] = &[
         "Inline Rust FFI. The block is lifted out before lexing and replaced with a `__rust_compile(…)` call carrying the base64-encoded body; every `pub extern \"C\"` function it exports becomes callable from PHP as a bareword. Unique to phplang — reference PHP has no such construct.",
         "rust { pub extern \"C\" fn add(a: i64, b: i64) -> i64 { a + b } }\necho add(2, 3);   // => 5",
     ),
+    // ══ Language construct: magic constants ════════════════════════════════
+    (
+        "__LINE__",
+        "Language construct",
+        "__LINE__: int",
+        "The line the constant is WRITTEN on, resolved by the parse rather than looked up at run time. A function reporting `__LINE__` therefore reports where the constant stands inside it, not the line it was called from.",
+        "echo __LINE__;   // => 1",
+    ),
+    (
+        "__FILE__",
+        "Language construct",
+        "__FILE__: string",
+        "The running script's name, which is whatever the ENTRY POINT called it: a named file is its resolved path, `php -r` code is `Command line code`, and a script on standard input is `Standard input code`. It is the same name every diagnostic quotes, so the two can never disagree.",
+        "echo __FILE__;   // => Command line code",
+    ),
+    (
+        "__DIR__",
+        "Language construct",
+        "__DIR__: string",
+        "The directory part of `__FILE__`. Code with no file behind it — `php -r`, or a script on standard input — has no directory to report, and answers the working directory instead, as the reference does.",
+        "var_dump(__DIR__ === getcwd());   // => bool(true)",
+    ),
+    (
+        "__FUNCTION__",
+        "Language construct",
+        "__FUNCTION__: string",
+        "The enclosing function's name, or `\"\"` at file scope. A CLOSURE has no name of its own, so PHP 8.4 builds it one out of the scope the closure was written in: `{closure:<scope>:<line>}`, where the scope is `__FILE__` at file scope, `f()` inside a function, `C::m()` inside a method — and the closure's own name when closures nest, so the two compose.",
+        "function g() { echo __FUNCTION__; } g();   // => g",
+    ),
+    (
+        "__CLASS__",
+        "Language construct",
+        "__CLASS__: string",
+        "The class the code was WRITTEN in, or `\"\"` outside one — so an inherited method reports the class that declared it, not the subclass the call arrived through. Two cases are answered from the running frame instead, because a parse cannot settle them: inside a TRAIT method it is the class that used the trait (one trait, many users), and inside an anonymous class it is the generated `class@anonymous` name `get_class` reports. A named function declared inside a method body belongs to no class and reports `\"\"`.",
+        "class C { function m() { echo __CLASS__; } } class D extends C {} (new D)->m();   // => C",
+    ),
+    (
+        "__METHOD__",
+        "Language construct",
+        "__METHOD__: string",
+        "`Class::method` for a method, and just the name for a free function — there is no `::` half to prepend outside a class. A trait's method reports the TRAIT (`T::tm`) even though `__CLASS__` in the same body reports the using class. Inside a closure it is the closure's name, the same string `__FUNCTION__` gives.",
+        "class C { function m() { echo __METHOD__; } } (new C)->m();   // => C::m",
+    ),
+    (
+        "__NAMESPACE__",
+        "Language construct",
+        "__NAMESPACE__: string",
+        "The enclosing `namespace` declaration in full — `A\\B`, not the last segment a class reference folds to — and `\"\"` with no declaration. DIVERGENCE: phplang's namespaces are flat, so while this constant is exact, the class and function names around it stay unqualified where the reference qualifies them.",
+        "namespace A\\B; echo __NAMESPACE__;   // => A\\B",
+    ),
+    (
+        "__TRAIT__",
+        "Language construct",
+        "__TRAIT__: string",
+        "The enclosing `trait` declaration's name, and `\"\"` everywhere else — including inside a class that merely USES the trait, once the method is being read as part of that class's own body.",
+        "trait T { function t() { echo __TRAIT__; } } class C { use T; } (new C)->t();   // => T",
+    ),
     // ══ Operator ════════════════════════════════════════════════════════════
     (
         "+",

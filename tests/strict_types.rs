@@ -383,11 +383,48 @@ fn union_and_qualified_types_parse_where_they_used_to_be_syntax_errors() {
 }
 
 #[test]
-fn a_by_reference_typed_parameter_is_left_alone() {
-    // A by-ref parameter is an alias the callee may rewrite, so it is not coerced
-    // on the way in — asserting the value arrives as written, not as converted.
+fn a_by_reference_typed_parameter_is_coerced_through_the_reference() {
+    // CORRECTED EXPECTATION. This test previously asserted `string(1) "5"` under
+    // the belief that a by-ref parameter is an alias the callee may rewrite and so
+    // is not coerced on the way in. That belief is wrong about PHP, and the pin was
+    // frozen against it:
+    //
+    //   $ php -r 'function f(int &$x) { var_dump($x); } $v = "5"; f($v); var_dump($v);'
+    //   int(5)
+    //   int(5)
+    //
+    // php 8.5.9 coerces a by-reference argument exactly as it coerces a by-value
+    // one, and writes the converted value back THROUGH the reference before the
+    // body runs — the second `int(5)` is the caller's own variable, which the body
+    // above never touches. The old expectation is kept below, re-scoped to what it
+    // actually described: the by-ref parameter is still an alias, so what the body
+    // stores reaches the caller.
     assert_eq!(
-        output_of("<?php function f(int &$x) { var_dump($x); } $v = \"5\"; f($v);"),
-        "string(1) \"5\"\n"
+        output_of("<?php function f(int &$x) { var_dump($x); } $v = \"5\"; f($v); var_dump($v);"),
+        "int(5)\nint(5)\n"
+    );
+    // The alias half, which the original assertion existed to protect: a write in
+    // the callee is a write to the caller's variable.
+    assert_eq!(
+        output_of("<?php function f(int &$x) { $x = 9; } $v = \"5\"; f($v); var_dump($v);"),
+        "int(9)\n"
+    );
+    // A string that cannot convert is rejected in a by-ref position too, rather
+    // than being passed through unchecked.
+    assert_eq!(
+        caught("", "function f(int &$x) {} $v = \"abc\"; f($v);"),
+        "TypeError|f(): Argument #1 ($x) must be of type int, string given, \
+         called in Command line code on line 1"
+    );
+    // …and strict mode refuses the numeric string that coercive mode converts,
+    // which is the same switch the rest of this file tests, reaching through the
+    // reference rather than around it.
+    assert_eq!(
+        caught(
+            "declare(strict_types=1);",
+            "function f(int &$x) { var_dump($x); } $v = \"5\"; f($v);"
+        ),
+        "TypeError|f(): Argument #1 ($x) must be of type int, string given, \
+         called in Command line code on line 1"
     );
 }

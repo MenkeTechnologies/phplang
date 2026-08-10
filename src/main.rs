@@ -15,7 +15,7 @@ use std::process::ExitCode;
 const FATAL_EXIT: u8 = 255;
 
 fn main() -> ExitCode {
-    let cli = phplang::cli::parse();
+    let mut cli = phplang::cli::parse();
 
     // `-d name=value` must take effect before the source is read: it can change
     // the error level that decides whether a COMPILE-time notice is displayed.
@@ -40,11 +40,20 @@ fn main() -> ExitCode {
         };
     }
 
-    if let Some(code) = cli.run {
+    if let Some(code) = cli.run.take() {
         // `php -r` code carries no opening tag; it is raw PHP. Prepend `<?php`
         // so the lexer starts in PHP mode instead of echoing it as inline HTML.
         let src = format!("<?php {code}");
-        return run_source(&src);
+        // With `-r` there is no script to name, so the FILE positional the parser
+        // filled is really the program's first argument: `php -r CODE a b` must
+        // reach the program as `$argv = ["Standard input code", "a", "b"]`.
+        let mut args = Vec::new();
+        args.extend(cli.file.take());
+        args.append(&mut cli.argv);
+        return match phplang::eval_cli(&src, &args) {
+            Ok(_) => ExitCode::SUCCESS,
+            Err(e) => fail(&e),
+        };
     }
 
     if let Some(file) = cli.file {
@@ -63,7 +72,7 @@ fn main() -> ExitCode {
         if cli.tiers {
             return finish(tiers(&file));
         }
-        return match phplang::eval_file_cli(&file) {
+        return match phplang::eval_file_cli(&file, &cli.argv) {
             Ok(_) => ExitCode::SUCCESS,
             Err(e) => fail(&e),
         };
@@ -74,13 +83,11 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    // No file and non-interactive stdin: run stdin as a script.
+    // No file and non-interactive stdin: run stdin as a script. The reference
+    // names it `Standard input code` rather than `Command line code`, which is
+    // what every diagnostic and `__FILE__` in it quote.
     let src = std::io::read_to_string(std::io::stdin()).unwrap_or_default();
-    run_source(&src)
-}
-
-fn run_source(src: &str) -> ExitCode {
-    match phplang::eval_cli(src) {
+    match phplang::eval_stdin_cli(&src, &cli.argv) {
         Ok(_) => ExitCode::SUCCESS,
         Err(e) => fail(&e),
     }

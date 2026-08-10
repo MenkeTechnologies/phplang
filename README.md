@@ -95,10 +95,16 @@ source ──▶ lexer ──▶ parser ──▶ compiler ──▶ fusevm::Chu
 ```sh
 php script.php              # run a file
 php -r 'echo 1 + 1;'        # run a one-liner (no <?php tag needed)
+php < script.php            # run a script on stdin
 php -a                      # interactive REPL (persistent state per line)
 php --dump-bytecode f.php   # print the lowered fusevm bytecode
 php --tiers f.php           # run it, then report which fusevm tiers took it
 ```
+
+The three script entry points name the script differently, and the name is
+observable: every diagnostic quotes it and `__FILE__` returns it. A file is its
+resolved path, `-r` is `Command line code`, and stdin is `Standard input code` —
+the same three names the reference uses.
 
 A `man/php.1` man page and runnable `examples/*.php` ship with the crate.
 
@@ -170,7 +176,11 @@ end-to-end (see `tests/basic.rs`):
   references to a container slot in either direction (`$r = &$a['x']['y']`,
   `$r = &$o->p`, `$a[] = &$v`, `$o->p = &$v`), return-by-reference
   (`function &f()`), `foreach ($a as &$v)`, by-reference parameters
-  (`function f(&$x)`), and by-reference destructuring targets (`[&$x, $y] = $a`
+  (`function f(&$x)`) on every kind of call — a free function, an instance or
+  static method, a closure, an arrow function, and a `?->` call that actually
+  ran — with a declared scalar type coerced through the reference before the
+  body runs (`function f(int &$x)` called with `"5"` leaves the caller's
+  variable `int(5)`), and by-reference destructuring targets (`[&$x, $y] = $a`
   in both spellings, keyed, nested, alongside holes, and inside `foreach`, each
   aliasing the subject's element so a write through the target reaches the
   subject); a referenced element stays shared across an array copy and
@@ -178,6 +188,20 @@ end-to-end (see `tests/basic.rs`):
   (`$arr = [&$a]`) is a distinct feature and is rejected rather than copied.
   Namespaces are accepted in a flat model
   (`namespace X;` / `use A\B\C;`; qualified names fold to their short name).
+- The **magic constants** `__LINE__`, `__FILE__`, `__DIR__`, `__FUNCTION__`,
+  `__CLASS__`, `__METHOD__`, `__NAMESPACE__` and `__TRAIT__`, resolved where they
+  are WRITTEN rather than where the call arrives: `__CLASS__` in an inherited
+  method names the class that declared it, and a closure carries the PHP 8.4 name
+  `{closure:<scope>:<line>}` built from the scope it was written in (nesting
+  composes — `{closure:{closure:f():3}:4}`). The two answers a parse cannot settle
+  come from the running frame: `__CLASS__` inside a trait method is the class that
+  USED the trait, and inside an anonymous class it is the generated
+  `class@anonymous` name `get_class` reports. `__FILE__` is whatever the entry
+  point named the script — a resolved path, `Command line code` for `-r`, or
+  `Standard input code` for a script on stdin — and `__DIR__` falls back to the
+  working directory when there is no file. In the flat namespace model
+  `__NAMESPACE__` is the declared namespace in full, while class and function
+  names stay unqualified.
 - **Enums** (PHP 8.1): pure enums (`enum Suit { case Hearts; … }` with
   `Suit::Hearts`, `->name`, `Suit::cases()`, singleton `===` identity) and backed
   enums (`enum Status: string { case Active = 'active'; }` with `->value`,
@@ -350,9 +374,6 @@ documented in-code:
 - A closure's frame reads `{closure}` where PHP 8.4+ writes
   `{closure:file:line}`, so a `TypeError` from a typed closure parameter differs
   in that name alone.
-- A typed parameter that is also by-reference (`int &$x`) is not checked: it is
-  an alias the callee may rewrite, and reading through it to check would report
-  on a value the caller still owns.
 - Default parameter values are not restricted to constant expressions, and a
   default is not checked against the parameter's declared type (upstream checks
   it once, at declaration).

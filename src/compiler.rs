@@ -183,6 +183,76 @@ impl Compiler {
     ///
     /// A user function of the same name shadows the builtin, and
     /// [`Compiler::collect_byref`] runs after this and overwrites the entry.
+    /// Emit the post-call write-back for the by-reference parameters at
+    /// `positions`: read each one's final value out of the returning call and
+    /// store it back into the caller's argument, leaving the call's own result on
+    /// the stack. This is what makes `f($v)` on `function f(int &$x)` leave `$v`
+    /// changed — including by the coercion the parameter's declared type applies,
+    /// which happens before the body runs at all.
+    ///
+    /// `guarded` is for the call sites whose callee is only known at run time — a
+    /// method call, a static call, `$f(…)`. They cannot say WHICH positions are
+    /// by-reference, so they offer every argument that could be written to and let
+    /// each write-back test [`ops::BYREF_LIVE`] first. An unguarded write-back at
+    /// such a site would store a null into a variable a by-value call never
+    /// touched.
+    fn emit_byref_writeback(
+        &mut self,
+        b: &mut ChunkBuilder,
+        args: &[Expr],
+        positions: &[usize],
+        guarded: bool,
+    ) -> Result<(), String> {
+        for &pos in positions {
+            let Some(arg) = args.get(pos) else { continue };
+            // Only an lvalue can receive one. A literal or a call result in a
+            // by-reference position is a diagnostic in the reference, not a write.
+            if !matches!(
+                arg,
+                Expr::Var(_) | Expr::Index(..) | Expr::PropGet(..) | Expr::StaticProp(..)
+            ) {
+                continue;
+            }
+            let skip = if guarded {
+                b.emit(Op::LoadInt(pos as i64), 0);
+                b.emit(Op::CallBuiltin(ops::BYREF_LIVE, 1), 0);
+                Some(b.emit(Op::JumpIfFalse(0), 0))
+            } else {
+                None
+            };
+            match arg {
+                Expr::Var(vname) => {
+                    let nidx = b.add_constant(Value::str(vname.clone()));
+                    b.emit(Op::LoadConst(nidx), 0);
+                    b.emit(Op::LoadInt(pos as i64), 0);
+                    b.emit(Op::CallBuiltin(ops::BYREF_OUT, 1), 0);
+                    b.emit(Op::CallBuiltin(ops::SETVAR, 2), 0);
+                    b.emit(Op::Pop, 0);
+                }
+                // `f($a[k])` / `f($o->p)` against a by-reference parameter writes
+                // back into the element or the property, so the OUT value is parked
+                // in a temporary and assigned through the normal lvalue path (which
+                // knows how to reach either).
+                _ => {
+                    let tmp = self.tmp_name("bo");
+                    self.emit_set_var(b, &tmp, |_, b| {
+                        b.emit(Op::LoadInt(pos as i64), 0);
+                        b.emit(Op::CallBuiltin(ops::BYREF_OUT, 1), 0);
+                        Ok(())
+                    })?;
+                    let back = Expr::Assign(Box::new(arg.clone()), None, Box::new(Expr::Var(tmp)));
+                    self.compile_expr(b, &back)?;
+                    b.emit(Op::Pop, 0);
+                }
+            }
+            if let Some(j) = skip {
+                let end = b.current_pos();
+                b.patch_jump(j, end);
+            }
+        }
+        Ok(())
+    }
+
     fn seed_builtin_byref(&mut self) {
         const BYREF_BUILTINS: &[(&str, &[usize])] = &[
             ("preg_match", &[2]),
@@ -1700,41 +1770,10 @@ impl Compiler {
                     );
                     // By-reference parameters: write the callee's final values back
                     // to the caller's argument variables (leaving the call result).
+                    // The callee is named here, so which positions those are is a
+                    // compile-time fact and no run-time guard is needed.
                     if let Some(positions) = byref {
-                        for pos in positions {
-                            let Some(arg) = args.get(pos) else { continue };
-                            match arg {
-                                Expr::Var(vname) => {
-                                    let nidx = b.add_constant(Value::str(vname.clone()));
-                                    b.emit(Op::LoadConst(nidx), 0);
-                                    b.emit(Op::LoadInt(pos as i64), 0);
-                                    b.emit(Op::CallBuiltin(ops::BYREF_OUT, 1), 0);
-                                    b.emit(Op::CallBuiltin(ops::SETVAR, 2), 0);
-                                    b.emit(Op::Pop, 0);
-                                }
-                                // `f($a[k])` / `f($o->p)` against a by-reference
-                                // parameter writes back into the element or the
-                                // property, so the OUT value is parked in a
-                                // temporary and assigned through the normal lvalue
-                                // path (which knows how to reach either).
-                                Expr::Index(..) | Expr::PropGet(..) | Expr::StaticProp(..) => {
-                                    let tmp = self.tmp_name("bo");
-                                    self.emit_set_var(b, &tmp, |_, b| {
-                                        b.emit(Op::LoadInt(pos as i64), 0);
-                                        b.emit(Op::CallBuiltin(ops::BYREF_OUT, 1), 0);
-                                        Ok(())
-                                    })?;
-                                    let back = Expr::Assign(
-                                        Box::new(arg.clone()),
-                                        None,
-                                        Box::new(Expr::Var(tmp)),
-                                    );
-                                    self.compile_expr(b, &back)?;
-                                    b.emit(Op::Pop, 0);
-                                }
-                                _ => {}
-                            }
-                        }
+                        self.emit_byref_writeback(b, args, &positions, false)?;
                     }
                 }
             }
@@ -1758,6 +1797,8 @@ impl Compiler {
                     Op::CallBuiltin(ops::CALL_VALUE, (args.len() + 1) as u8),
                     self.cur_line,
                 );
+                let all = (0..args.len()).collect::<Vec<_>>();
+                self.emit_byref_writeback(b, args, &all, true)?;
             }
             Expr::Closure {
                 params,
@@ -1858,6 +1899,8 @@ impl Compiler {
                     Op::CallBuiltin(ops::MCALL, (args.len() + 2) as u8),
                     self.cur_line,
                 );
+                let all = (0..args.len()).collect::<Vec<_>>();
+                self.emit_byref_writeback(b, args, &all, true)?;
             }
             // `$o?->prop` — evaluate the receiver once; short-circuit to null when
             // it is null, else read the property.
@@ -1884,6 +1927,10 @@ impl Compiler {
                         Op::CallBuiltin(ops::MCALL, (args.len() + 2) as u8),
                         c.cur_line,
                     );
+                    // Inside the non-null branch, so a short-circuited `?->`
+                    // writes nothing back — there was no call to write back from.
+                    let all = (0..args.len()).collect::<Vec<_>>();
+                    c.emit_byref_writeback(b, args, &all, true)?;
                     Ok(())
                 })?;
             }
@@ -1943,6 +1990,8 @@ impl Compiler {
                     Op::CallBuiltin(ops::SCALL, (args.len() + 2) as u8),
                     self.cur_line,
                 );
+                let all = (0..args.len()).collect::<Vec<_>>();
+                self.emit_byref_writeback(b, args, &all, true)?;
             }
             Expr::Ternary(c, t, f) => {
                 self.compile_truthy(b, c)?;
@@ -2059,6 +2108,24 @@ impl Compiler {
                 // Sited: an undefined constant throws from here, and the `Error`
                 // reports this op's line.
                 b.emit(Op::CallBuiltin(ops::CONST_FETCH, 1), self.cur_line);
+            }
+            // A magic constant the parse could not settle: the affixes it carries
+            // are compile-time literals, and only the piece between them is read
+            // from the host.
+            Expr::Magic(m) => {
+                let (op, prefix, suffix) = match m {
+                    MagicConst::File { prefix, suffix } => (ops::MAGIC_FILE, prefix, suffix),
+                    MagicConst::Class { prefix, suffix } => (ops::MAGIC_CLASS, prefix, suffix),
+                    MagicConst::Dir => {
+                        b.emit(Op::CallBuiltin(ops::MAGIC_DIR, 0), 0);
+                        return Ok(());
+                    }
+                };
+                let p = b.add_constant(Value::str(prefix.clone()));
+                b.emit(Op::LoadConst(p), 0);
+                let s = b.add_constant(Value::str(suffix.clone()));
+                b.emit(Op::LoadConst(s), 0);
+                b.emit(Op::CallBuiltin(op, 2), 0);
             }
             Expr::Unset(targets) => {
                 for t in targets {
@@ -3345,7 +3412,9 @@ fn collect_free_vars(e: &Expr, out: &mut Vec<String>) {
             }
         }
         Expr::Throw(inner) | Expr::Clone(inner) => collect_free_vars(inner, out),
-        Expr::ConstFetch(_) => {}
+        // A magic constant closes over nothing: every part of it is either a
+        // compile-time literal or read from the host.
+        Expr::ConstFetch(_) | Expr::Magic(_) => {}
         Expr::Unset(targets) => {
             for t in targets {
                 collect_free_vars(t, out);

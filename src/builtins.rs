@@ -84,6 +84,9 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::SIG_CONTINUE, b_sig_continue);
     vm.register_builtin(ops::SIG_LEVEL, b_sig_level);
     vm.register_builtin(ops::CONST_FETCH, b_const_fetch);
+    vm.register_builtin(ops::MAGIC_FILE, b_magic_file);
+    vm.register_builtin(ops::MAGIC_DIR, b_magic_dir);
+    vm.register_builtin(ops::MAGIC_CLASS, b_magic_class);
     vm.register_builtin(ops::UNSET_VAR, b_unset_var);
     vm.register_builtin(ops::UNSET_PATH, b_unset_path);
     vm.register_builtin(ops::FOREACH_PREP, b_foreach_prep);
@@ -106,6 +109,7 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::RET_REF, b_ret_ref);
     vm.register_builtin(ops::REF_SLOT_RET, b_ref_slot_ret);
     vm.register_builtin(ops::BYREF_OUT, b_byref_out);
+    vm.register_builtin(ops::BYREF_LIVE, b_byref_live);
     vm.register_builtin(ops::SPROP_GET, b_sprop_get);
     vm.register_builtin(ops::SPROP_SET, b_sprop_set);
     vm.register_builtin(ops::SPROP_INCDEC, b_sprop_incdec);
@@ -403,6 +407,13 @@ fn b_byref_out(vm: &mut VM, _: u8) -> Value {
     with_host(|h| h.byref_out_get(pos))
 }
 
+/// Whether the call that just returned took parameter `pos` by reference — the
+/// guard a call site emits when its callee is not known until run time.
+fn b_byref_live(vm: &mut VM, _: u8) -> Value {
+    let pos = vm.pop().to_int().max(0) as usize;
+    Value::bool(with_host(|h| h.byref_out_live(pos)))
+}
+
 /// `$target = &$source` — bind the two names to a shared cell; leaves the value.
 /// `use (&$v)`: the enclosing variable's reference cell, as a handle the
 /// closure carries until its frame is built.
@@ -612,6 +623,31 @@ fn b_const_fetch(vm: &mut VM, _: u8) -> Value {
             throw_php(vm, "Error", &undefined_constant(&name))
         }
     }
+}
+
+/// `__FILE__`, wrapped in the affixes the compiler emitted: empty for `__FILE__`
+/// itself, and `{closure:` / `:<line>}` for a closure declared at file scope,
+/// whose PHP-given name embeds the script's own.
+fn b_magic_file(vm: &mut VM, _: u8) -> Value {
+    let suffix = pop_name(vm);
+    let prefix = pop_name(vm);
+    let file = with_host(|h| h.script_name().to_string());
+    Value::str(format!("{prefix}{file}{suffix}"))
+}
+
+fn b_magic_dir(vm: &mut VM, _: u8) -> Value {
+    let _ = vm;
+    Value::str(with_host(|h| h.magic_dir()))
+}
+
+/// `__CLASS__` where the parse could not name the class, wrapped in the affixes
+/// the compiler emitted — `::q` builds an anonymous class's `__METHOD__` out of
+/// the same node.
+fn b_magic_class(vm: &mut VM, _: u8) -> Value {
+    let suffix = pop_name(vm);
+    let prefix = pop_name(vm);
+    let class = with_host(|h| h.magic_class());
+    Value::str(format!("{prefix}{class}{suffix}"))
 }
 
 /// The message PHP raises for a constant that is not defined, shared by the

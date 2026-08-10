@@ -103,6 +103,28 @@ fn reserved_spelling(word: &str) -> Option<&'static str> {
         .copied()
 }
 
+/// PHP's magic constants, in the uppercase spelling they are written in. Matched
+/// case-insensitively, as the scanner does — `__line__` is the same token.
+const MAGIC_CONSTS: &[&str] = &[
+    "__LINE__",
+    "__FILE__",
+    "__DIR__",
+    "__FUNCTION__",
+    "__CLASS__",
+    "__METHOD__",
+    "__NAMESPACE__",
+    "__TRAIT__",
+];
+
+/// The canonical spelling of the magic constant `word` names, or `None` when it
+/// is an ordinary identifier.
+fn magic_const_spelling(word: &str) -> Option<&'static str> {
+    MAGIC_CONSTS
+        .iter()
+        .find(|k| k.eq_ignore_ascii_case(word))
+        .copied()
+}
+
 /// Whether `e` is the `variable` PHP's grammar requires either side of a
 /// `++`/`--`: a plain `$v`, an array or string element, an instance or static
 /// property. Everything else — a literal, a call result, a parenthesised
@@ -202,6 +224,7 @@ pub fn parse_meta(src: &str) -> Result<(Vec<Stmt>, ParseMeta), ParseFail> {
         only_declares_so_far: true,
         strict_types: false,
         declare_warnings: Vec::new(),
+        magic: MagicCtx::file_scope(),
     };
     let mut stmts = Vec::new();
     while !p.at_end() {
@@ -248,6 +271,10 @@ fn resolve_interp_parts(parts: Vec<StrPart>) -> Result<Vec<InterpPart>, String> 
                     only_declares_so_far: false,
                     strict_types: false,
                     declare_warnings: Vec::new(),
+                    // An interpolation holds no declaration, so no magic
+                    // constant it could contain would read anything but the
+                    // file scope this starts at.
+                    magic: MagicCtx::file_scope(),
                 };
                 let e = inner.expression()?;
                 if !inner.at_punct(";") {
@@ -285,6 +312,89 @@ struct Parser {
     /// upstream, so `if (x) { const A = 1; }` is a syntax error there and must
     /// be one here.
     top_level: bool,
+    /// The declaration the cursor is inside, as PHP's magic constants report it.
+    /// Saved and restored around every construct that opens a new one.
+    magic: MagicCtx,
+}
+
+/// A name PHP's magic constants report, in the two shapes it can take.
+#[derive(Clone)]
+enum MagicName {
+    /// Settled by the parse.
+    Plain(String),
+    /// Built around something only the host knows — the script's name, or the
+    /// class the frame is running.
+    Dynamic(MagicConst),
+}
+
+impl MagicName {
+    /// The name PHP gives a closure declared on `line` with `self` as its
+    /// enclosing scope: `{closure:<scope>:<line>}`. Nesting composes, so a
+    /// closure inside a closure reads `{closure:{closure:f():3}:4}`.
+    fn closure_at(&self, line: u32) -> MagicName {
+        match self {
+            MagicName::Plain(s) => MagicName::Plain(format!("{{closure:{s}:{line}}}")),
+            MagicName::Dynamic(m) => MagicName::Dynamic(m.wrap("{closure:", &format!(":{line}}}"))),
+        }
+    }
+
+    /// This name with `suffix` appended — how a method name is built from the
+    /// class that declares it.
+    fn then(&self, suffix: &str) -> MagicName {
+        match self {
+            MagicName::Plain(s) => MagicName::Plain(format!("{s}{suffix}")),
+            MagicName::Dynamic(m) => MagicName::Dynamic(m.wrap("", suffix)),
+        }
+    }
+
+    /// This name as the expression that produces it.
+    fn to_expr(&self) -> Expr {
+        match self {
+            MagicName::Plain(s) => Expr::Str(s.clone()),
+            MagicName::Dynamic(m) => Expr::Magic(m.clone()),
+        }
+    }
+}
+
+/// What each magic constant answers at the cursor's position.
+#[derive(Clone)]
+struct MagicCtx {
+    /// `__NAMESPACE__`.
+    namespace: String,
+    /// `__CLASS__`.
+    class: MagicName,
+    /// What `__METHOD__` prefixes a method name with. NOT always `class`: a
+    /// trait's methods report the trait, while `__CLASS__` in them reports the
+    /// class that used it.
+    owner: MagicName,
+    /// `__TRAIT__` — the enclosing `trait` declaration, empty everywhere else.
+    trait_name: String,
+    /// `__FUNCTION__`.
+    function: MagicName,
+    /// `__METHOD__`.
+    method: MagicName,
+    /// What a closure declared here names as its enclosing scope. At file scope
+    /// that is the script itself, which is why it is not simply `method`.
+    scope: MagicName,
+}
+
+impl MagicCtx {
+    /// File scope: every name empty, and a closure declared here is named after
+    /// the script.
+    fn file_scope() -> Self {
+        MagicCtx {
+            namespace: String::new(),
+            class: MagicName::Plain(String::new()),
+            owner: MagicName::Plain(String::new()),
+            trait_name: String::new(),
+            function: MagicName::Plain(String::new()),
+            method: MagicName::Plain(String::new()),
+            scope: MagicName::Dynamic(MagicConst::File {
+                prefix: String::new(),
+                suffix: String::new(),
+            }),
+        }
+    }
 }
 
 impl Parser {
@@ -320,6 +430,84 @@ impl Parser {
         let t = self.toks.get(self.pos).map(|s| s.tok.clone());
         self.pos += 1;
         t
+    }
+
+    // ── magic constants ────────────────────────────────────────────────────
+
+    /// The expression the magic constant `name` — a canonical spelling from
+    /// [`MAGIC_CONSTS`] — evaluates to at the cursor. The keyword itself has
+    /// already been consumed, so `__LINE__` reads the token before the cursor.
+    fn magic_const(&self, name: &str) -> Expr {
+        match name {
+            "__LINE__" => Expr::Int(i64::from(self.line_at(self.pos - 1))),
+            "__FILE__" => Expr::Magic(MagicConst::File {
+                prefix: String::new(),
+                suffix: String::new(),
+            }),
+            "__DIR__" => Expr::Magic(MagicConst::Dir),
+            "__NAMESPACE__" => Expr::Str(self.magic.namespace.clone()),
+            "__TRAIT__" => Expr::Str(self.magic.trait_name.clone()),
+            "__CLASS__" => self.magic.class.to_expr(),
+            "__FUNCTION__" => self.magic.function.to_expr(),
+            "__METHOD__" => self.magic.method.to_expr(),
+            _ => unreachable!("not a magic constant: {name}"),
+        }
+    }
+
+    /// Enter a named function's body, returning the context to restore after it.
+    ///
+    /// A named function is never inside a class as far as the magic constants are
+    /// concerned — declaring one inside a method body puts it in the global
+    /// function table, and `__CLASS__` in it is empty — so the class context is
+    /// dropped rather than inherited.
+    fn enter_function(&mut self, name: &str) -> MagicCtx {
+        let ctx = MagicCtx {
+            namespace: self.magic.namespace.clone(),
+            class: MagicName::Plain(String::new()),
+            owner: MagicName::Plain(String::new()),
+            trait_name: String::new(),
+            function: MagicName::Plain(name.to_string()),
+            // A free function's `__METHOD__` is just its name — there is no
+            // `::` half to prepend.
+            method: MagicName::Plain(name.to_string()),
+            scope: MagicName::Plain(format!("{name}()")),
+        };
+        std::mem::replace(&mut self.magic, ctx)
+    }
+
+    /// Enter a method body, returning the context to restore after it. The
+    /// declaring class or trait is whatever the surrounding class declaration put
+    /// in `owner`, so this needs only the method's own name.
+    fn enter_method(&mut self, name: &str) -> MagicCtx {
+        let method = self.magic.owner.then(&format!("::{name}"));
+        let ctx = MagicCtx {
+            namespace: self.magic.namespace.clone(),
+            class: self.magic.class.clone(),
+            owner: self.magic.owner.clone(),
+            trait_name: self.magic.trait_name.clone(),
+            function: MagicName::Plain(name.to_string()),
+            scope: method.then("()"),
+            method,
+        };
+        std::mem::replace(&mut self.magic, ctx)
+    }
+
+    /// Enter a closure or arrow function declared on `line`, returning the context
+    /// to restore after it. A closure has no name of its own, so PHP builds one
+    /// from the scope it was written in; the class context carries through, which
+    /// is why `__CLASS__` inside a closure in a method still names that class.
+    fn enter_closure(&mut self, line: u32) -> MagicCtx {
+        let name = self.magic.scope.closure_at(line);
+        let ctx = MagicCtx {
+            namespace: self.magic.namespace.clone(),
+            class: self.magic.class.clone(),
+            owner: self.magic.owner.clone(),
+            trait_name: self.magic.trait_name.clone(),
+            function: name.clone(),
+            method: name.clone(),
+            scope: name,
+        };
+        std::mem::replace(&mut self.magic, ctx)
     }
 
     fn at_punct(&self, p: &str) -> bool {
@@ -860,9 +1048,11 @@ impl Parser {
             Some(Tok::Ident(n)) => n,
             _ => return Err(self.syntax_error_at(self.pos - 1)),
         };
+        let saved = self.enter_function(&name);
         let params = self.param_list()?;
         let ret = self.return_type()?;
         let body = self.block()?;
+        self.magic = saved;
         Ok(StmtKind::Function {
             name,
             params,
@@ -990,7 +1180,20 @@ impl Parser {
     fn namespace_stmt(&mut self) -> Result<StmtKind, String> {
         self.pos += 1; // namespace
         if matches!(self.peek(), Some(Tok::Ident(_))) || self.at_punct("\\") {
-            let _ = self.expect_type_name()?;
+            // The FULL name is kept, unlike a class reference: `__NAMESPACE__`
+            // answers `A\B`, not the last segment the flat model folds to.
+            self.eat_punct("\\");
+            let mut ns = match self.next() {
+                Some(Tok::Ident(n)) => n,
+                _ => return Err(self.syntax_error_at(self.pos - 1)),
+            };
+            while self.eat_punct("\\") {
+                if let Some(Tok::Ident(n)) = self.next() {
+                    ns.push('\\');
+                    ns.push_str(&n);
+                }
+            }
+            self.magic.namespace = ns;
         }
         if self.at_punct("{") {
             Ok(StmtKind::Block(self.namespace_block()?))
@@ -1415,6 +1618,29 @@ impl Parser {
         if is_enum && self.eat_punct(":") {
             enum_backing = Some(self.expect_type_name()?);
         }
+        // A trait's own name is not what `__CLASS__` answers inside it: its
+        // methods run as members of whichever class used the trait, so that half
+        // waits for run time while `__TRAIT__` is settled here.
+        let entered = MagicCtx {
+            class: if is_trait {
+                MagicName::Dynamic(MagicConst::Class {
+                    prefix: String::new(),
+                    suffix: String::new(),
+                })
+            } else {
+                MagicName::Plain(name.clone())
+            },
+            // `__METHOD__` names the DECLARING class or trait, so a trait's
+            // methods stay `T::m` even once flattened into the class that used it.
+            owner: MagicName::Plain(name.clone()),
+            trait_name: if is_trait {
+                name.clone()
+            } else {
+                String::new()
+            },
+            ..self.magic.clone()
+        };
+        let saved = std::mem::replace(&mut self.magic, entered);
         let decl = self.class_rest(
             name,
             is_interface,
@@ -1422,7 +1648,9 @@ impl Parser {
             is_abstract,
             is_readonly_class,
             enum_backing,
-        )?;
+        );
+        self.magic = saved;
+        let decl = decl?;
         Ok(StmtKind::Class(ClassDecl { attributes, ..decl }))
     }
 
@@ -1558,6 +1786,7 @@ impl Parser {
                     Some(Tok::Ident(n)) => n,
                     _ => return Err(self.syntax_error_at(self.pos - 1)),
                 };
+                let saved = self.enter_method(&mname);
                 let params = self.param_list()?;
                 let ret = self.return_type()?;
                 // An abstract/interface method has no body, just `;`.
@@ -1566,6 +1795,7 @@ impl Parser {
                 } else {
                     self.block()?
                 };
+                self.magic = saved;
                 methods.push(Method {
                     name: mname,
                     params,
@@ -2159,6 +2389,20 @@ impl Parser {
                     } else {
                         Vec::new()
                     };
+                    // The generated `class@anonymous <file>:<line>$<n>` name is
+                    // the compiler's to mint, so `__CLASS__` here waits for the
+                    // running frame to report it.
+                    let dynamic = MagicName::Dynamic(MagicConst::Class {
+                        prefix: String::new(),
+                        suffix: String::new(),
+                    });
+                    let entered = MagicCtx {
+                        class: dynamic.clone(),
+                        owner: dynamic,
+                        trait_name: String::new(),
+                        ..self.magic.clone()
+                    };
+                    let saved = std::mem::replace(&mut self.magic, entered);
                     let decl = self.class_rest(
                         "class@anonymous".to_string(),
                         false,
@@ -2166,7 +2410,9 @@ impl Parser {
                         false,
                         false,
                         None,
-                    )?;
+                    );
+                    self.magic = saved;
+                    let decl = decl?;
                     return Ok(Expr::NewAnon {
                         decl: Box::new(decl),
                         args,
@@ -2194,6 +2440,7 @@ impl Parser {
             // (A *named* function is a statement, caught in `statement()`; only
             // the expression form — `function (` — reaches here.)
             Some(Tok::Ident(kw)) if kw.eq_ignore_ascii_case("function") && self.at_punct("(") => {
+                let saved = self.enter_closure(self.line_at(self.pos - 1));
                 let params = self.param_list()?;
                 let mut uses = Vec::new();
                 if self.eat_kw("use") {
@@ -2214,6 +2461,7 @@ impl Parser {
                 }
                 let ret = self.return_type()?;
                 let body = self.block()?;
+                self.magic = saved;
                 Ok(Expr::Closure {
                     params,
                     uses,
@@ -2223,15 +2471,25 @@ impl Parser {
             }
             // An arrow function `fn (params) => expr` — implicit by-value capture.
             Some(Tok::Ident(kw)) if kw.eq_ignore_ascii_case("fn") && self.at_punct("(") => {
+                let saved = self.enter_closure(self.line_at(self.pos - 1));
                 let params = self.param_list()?;
                 let ret = self.return_type()?;
                 self.expect_punct("=>")?;
                 let body = self.expression()?;
+                self.magic = saved;
                 Ok(Expr::ArrowFn {
                     params,
                     body: Box::new(body),
                     ret,
                 })
+            }
+            // A magic constant. PHP resolves these where they are WRITTEN, so the
+            // answer comes from the parse context rather than from any table —
+            // which is also why `__CLASS__` in an inherited method names the class
+            // that declared it and not the one the call arrived through.
+            Some(Tok::Ident(kw)) if magic_const_spelling(&kw).is_some() => {
+                let name = magic_const_spelling(&kw).expect("guarded by the match arm above");
+                Ok(self.magic_const(name))
             }
             Some(Tok::Ident(name)) => {
                 // A `\`-qualified name — `Foo\BAR`, `A\B\C`. Any LEADING `\` was

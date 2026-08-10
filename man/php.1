@@ -83,6 +83,18 @@ or
 or to read the script from stdin (non-interactive stdin with no
 .I FILE
 runs stdin as a script).
+.PP
+The entry point names the script, and the name is observable \(em every
+diagnostic quotes it and
+.I __FILE__
+returns it. A
+.I FILE
+is its resolved path,
+.B \-r
+code is
+.IR "Command line code" ,
+and a script on stdin is
+.IR "Standard input code" .
 .TP
 .I ARGV
 Trailing arguments passed through to the running PHP program as

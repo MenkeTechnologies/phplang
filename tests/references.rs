@@ -205,3 +205,104 @@ fn a_by_value_call_of_a_by_reference_function_still_yields_the_value() {
         echo implode(",", $z);"#;
     assert_eq!(run(src), "2|1,77,3");
 }
+
+// ── by-reference parameters on every kind of call ───────────────────────────
+//
+// The write-back is the whole observable of `&$x`: without it the callee's
+// changes die with its frame. It used to be emitted only for a call to a NAMED
+// function, so a method, a static method or a closure took its argument by
+// reference and then silently dropped what it wrote. Every case below is
+// byte-parity with `php` 8.5.9, and each is paired with the by-value twin that
+// must NOT write back — a call site that wrote back unconditionally would pass
+// the first half of each pair and fail the second.
+
+#[test]
+fn an_instance_method_writes_a_by_reference_parameter_back() {
+    assert_eq!(
+        run(r#"<?php class C { function m(&$x) { $x = 9; } }
+            $v = 1; (new C)->m($v); var_dump($v);"#),
+        "int(9)\n"
+    );
+    assert_eq!(
+        run(r#"<?php class C { function m($x) { $x = 9; } }
+            $v = 1; (new C)->m($v); var_dump($v);"#),
+        "int(1)\n"
+    );
+}
+
+#[test]
+fn a_static_method_writes_a_by_reference_parameter_back() {
+    assert_eq!(
+        run(r#"<?php class C { static function s(&$x) { $x = 9; } }
+            $v = 1; C::s($v); var_dump($v);"#),
+        "int(9)\n"
+    );
+    assert_eq!(
+        run(r#"<?php class C { static function s($x) { $x = 9; } }
+            $v = 1; C::s($v); var_dump($v);"#),
+        "int(1)\n"
+    );
+}
+
+#[test]
+fn a_closure_and_an_arrow_function_write_a_by_reference_parameter_back() {
+    assert_eq!(
+        run(r#"<?php $f = function (&$x) { $x = 9; }; $v = 1; $f($v); var_dump($v);"#),
+        "int(9)\n"
+    );
+    assert_eq!(
+        run(r#"<?php $f = fn(&$x) => $x = 9; $v = 1; $f($v); var_dump($v);"#),
+        "int(9)\n"
+    );
+    assert_eq!(
+        run(r#"<?php $f = function ($x) { $x = 9; }; $v = 1; $f($v); var_dump($v);"#),
+        "int(1)\n"
+    );
+}
+
+#[test]
+fn a_by_value_call_after_a_by_reference_one_does_not_inherit_its_write_back() {
+    // The failure this guards against is specific: a call site that cannot name
+    // its callee has to ASK whether the position was by reference, and one that
+    // guesses would store the previous call's leftover value here.
+    assert_eq!(
+        run(
+            r#"<?php class C { function a(&$x) { $x = 1; } function b($y) {} }
+            $o = new C; $p = 0; $o->a($p); $q = 5; $o->b($q); var_dump($p, $q);"#
+        ),
+        "int(1)\nint(5)\n"
+    );
+}
+
+#[test]
+fn a_method_writes_back_into_an_element_or_a_property() {
+    assert_eq!(
+        run(r#"<?php class C { function m(&$x) { $x = 9; } }
+            $a = [0]; (new C)->m($a[0]); var_dump($a);"#),
+        "array(1) {\n  [0]=>\n  int(9)\n}\n"
+    );
+    assert_eq!(
+        run(
+            r#"<?php class C { public $p = 0; function m(&$x) { $x = 9; } }
+            $o = new C; $o->m($o->p); var_dump($o->p);"#
+        ),
+        "int(9)\n"
+    );
+}
+
+#[test]
+fn a_nullsafe_call_writes_back_only_when_it_actually_ran() {
+    assert_eq!(
+        run(r#"<?php class C { function m(&$x) { $x = 9; } }
+            $o = new C; $v = 1; $o?->m($v); var_dump($v);"#),
+        "int(9)\n"
+    );
+    // Short-circuited: no call happened, so nothing may be written back — and in
+    // particular not the value some earlier call left behind.
+    assert_eq!(
+        run(r#"<?php class C { function m(&$x) { $x = 9; } }
+            $live = new C; $seed = 0; $live->m($seed);
+            $o = null; $v = 1; $o?->m($v); var_dump($seed, $v);"#),
+        "int(9)\nint(1)\n"
+    );
+}

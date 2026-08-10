@@ -466,6 +466,54 @@ echo (new B)-&gt;f();   // =&gt; 9</code></pre>
           <pre><code class="lang-php">rust { pub extern "C" fn add(a: i64, b: i64) -&gt; i64 { a + b } }
 echo add(2, 3);   // =&gt; 5</code></pre>
         </article>
+        <article class="doc-entry" id="doc-language-construct-9">
+          <h3><a class="doc-anchor" href="#doc-language-construct-9">#</a> <code>__LINE__</code></h3>
+          <pre><code class="lang-php">__LINE__: int</code></pre>
+          <p>The line the constant is WRITTEN on, resolved by the parse rather than looked up at run time. A function reporting `__LINE__` therefore reports where the constant stands inside it, not the line it was called from.</p>
+          <pre><code class="lang-php">echo __LINE__;   // =&gt; 1</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-language-construct-10">
+          <h3><a class="doc-anchor" href="#doc-language-construct-10">#</a> <code>__FILE__</code></h3>
+          <pre><code class="lang-php">__FILE__: string</code></pre>
+          <p>The running script's name, which is whatever the ENTRY POINT called it: a named file is its resolved path, `php -r` code is `Command line code`, and a script on standard input is `Standard input code`. It is the same name every diagnostic quotes, so the two can never disagree.</p>
+          <pre><code class="lang-php">echo __FILE__;   // =&gt; Command line code</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-language-construct-11">
+          <h3><a class="doc-anchor" href="#doc-language-construct-11">#</a> <code>__DIR__</code></h3>
+          <pre><code class="lang-php">__DIR__: string</code></pre>
+          <p>The directory part of `__FILE__`. Code with no file behind it — `php -r`, or a script on standard input — has no directory to report, and answers the working directory instead, as the reference does.</p>
+          <pre><code class="lang-php">var_dump(__DIR__ === getcwd());   // =&gt; bool(true)</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-language-construct-12">
+          <h3><a class="doc-anchor" href="#doc-language-construct-12">#</a> <code>__FUNCTION__</code></h3>
+          <pre><code class="lang-php">__FUNCTION__: string</code></pre>
+          <p>The enclosing function's name, or `""` at file scope. A CLOSURE has no name of its own, so PHP 8.4 builds it one out of the scope the closure was written in: `{closure:&lt;scope&gt;:&lt;line&gt;}`, where the scope is `__FILE__` at file scope, `f()` inside a function, `C::m()` inside a method — and the closure's own name when closures nest, so the two compose.</p>
+          <pre><code class="lang-php">function g() { echo __FUNCTION__; } g();   // =&gt; g</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-language-construct-13">
+          <h3><a class="doc-anchor" href="#doc-language-construct-13">#</a> <code>__CLASS__</code></h3>
+          <pre><code class="lang-php">__CLASS__: string</code></pre>
+          <p>The class the code was WRITTEN in, or `""` outside one — so an inherited method reports the class that declared it, not the subclass the call arrived through. Two cases are answered from the running frame instead, because a parse cannot settle them: inside a TRAIT method it is the class that used the trait (one trait, many users), and inside an anonymous class it is the generated `class@anonymous` name `get_class` reports. A named function declared inside a method body belongs to no class and reports `""`.</p>
+          <pre><code class="lang-php">class C { function m() { echo __CLASS__; } } class D extends C {} (new D)-&gt;m();   // =&gt; C</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-language-construct-14">
+          <h3><a class="doc-anchor" href="#doc-language-construct-14">#</a> <code>__METHOD__</code></h3>
+          <pre><code class="lang-php">__METHOD__: string</code></pre>
+          <p>`Class::method` for a method, and just the name for a free function — there is no `::` half to prepend outside a class. A trait's method reports the TRAIT (`T::tm`) even though `__CLASS__` in the same body reports the using class. Inside a closure it is the closure's name, the same string `__FUNCTION__` gives.</p>
+          <pre><code class="lang-php">class C { function m() { echo __METHOD__; } } (new C)-&gt;m();   // =&gt; C::m</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-language-construct-15">
+          <h3><a class="doc-anchor" href="#doc-language-construct-15">#</a> <code>__NAMESPACE__</code></h3>
+          <pre><code class="lang-php">__NAMESPACE__: string</code></pre>
+          <p>The enclosing `namespace` declaration in full — `A\B`, not the last segment a class reference folds to — and `""` with no declaration. DIVERGENCE: phplang's namespaces are flat, so while this constant is exact, the class and function names around it stay unqualified where the reference qualifies them.</p>
+          <pre><code class="lang-php">namespace A\B; echo __NAMESPACE__;   // =&gt; A\B</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-language-construct-16">
+          <h3><a class="doc-anchor" href="#doc-language-construct-16">#</a> <code>__TRAIT__</code></h3>
+          <pre><code class="lang-php">__TRAIT__: string</code></pre>
+          <p>The enclosing `trait` declaration's name, and `""` everywhere else — including inside a class that merely USES the trait, once the method is being read as part of that class's own body.</p>
+          <pre><code class="lang-php">trait T { function t() { echo __TRAIT__; } } class C { use T; } (new C)-&gt;t();   // =&gt; T</code></pre>
+        </article>
       </section>
 
       <section class="tutorial-section" id="ch-operator">

@@ -245,6 +245,24 @@ pub mod ops {
     /// answer false, and a redefinition must warn at the point of the second
     /// declaration. Both need the statement to run in source order.
     pub const CONST_DECL: u16 = 111;
+
+    /// `[prefix, suffix] -> string`. `{prefix}{__FILE__}{suffix}` — the running
+    /// script's name, optionally wrapped. The affixes are how a closure declared
+    /// at file scope gets its `{closure:<file>:<line>}` name.
+    pub const MAGIC_FILE: u16 = 112;
+
+    /// `[] -> string`. `__DIR__`.
+    pub const MAGIC_DIR: u16 = 113;
+
+    /// `[prefix, suffix] -> string`. `{prefix}{__CLASS__}{suffix}` where the parse
+    /// could not name the class — inside a trait method (the USING class) or an
+    /// anonymous class. The affixes build such a class's `__METHOD__`.
+    pub const MAGIC_CLASS: u16 = 114;
+
+    /// `[pos] -> Bool`. Whether the call that just returned took its parameter at
+    /// `pos` by reference. Guards the write-back at a call site whose callee is
+    /// not a compile-time fact — a method call, a static call, or `$f(…)`.
+    pub const BYREF_LIVE: u16 = 115;
 }
 
 /// Sub-ops for the by-reference array mutators lowered through `ops::ARR_MUT`
@@ -511,6 +529,10 @@ pub struct PhpHost {
     /// The most recent call's by-reference parameters' final values, indexed by
     /// parameter position — read by the caller's post-call write-back (`BYREF_OUT`).
     byref_out: Vec<Value>,
+    /// Which positions of `byref_out` the last call actually took by reference.
+    /// The call sites that cannot know their callee statically test this before
+    /// writing anything back — see [`PhpHost::byref_out_live`].
+    byref_live: Vec<bool>,
     /// Static-property storage, keyed by `"declaringclass::prop"` (lowercased
     /// class). One cell per declaring class is shared by every subclass and every
     /// instance, matching PHP's static-property semantics.
@@ -805,6 +827,7 @@ impl PhpHost {
             ob_stack: Vec::new(),
             ref_cells: Vec::new(),
             byref_out: Vec::new(),
+            byref_live: Vec::new(),
             static_props: FxHashMap::default(),
             static_slots: FxHashMap::default(),
             enum_case_cache: FxHashMap::default(),
@@ -848,6 +871,25 @@ impl PhpHost {
         self.byref_out.get(pos).cloned().unwrap_or(Value::Undef)
     }
 
+    /// Whether the call that just returned had a by-reference parameter at `pos`.
+    ///
+    /// A call site that cannot know the callee statically — a method call, whose
+    /// receiver's class is a run-time fact, or `$f(…)` on a variable holding any
+    /// callable — asks this before writing anything back. Without it a write-back
+    /// emitted "just in case" would store the previous call's leftovers, or a
+    /// null, into a variable the callee never took by reference.
+    pub fn byref_out_live(&self, pos: usize) -> bool {
+        self.byref_live.get(pos).copied().unwrap_or(false)
+    }
+
+    /// Record which of a returning call's parameters were by-reference, and their
+    /// final values. Positions the callee did not take by reference are cleared,
+    /// so nothing survives from the call before.
+    pub fn byref_out_set(&mut self, vals: Vec<Value>, live: Vec<bool>) {
+        self.byref_out = vals;
+        self.byref_live = live;
+    }
+
     /// Publish one by-reference OUT value from a *builtin* — `preg_match`'s
     /// `$matches`, `parse_str`'s result array. A user function fills the whole
     /// vector from its frame when it returns; a builtin has no frame, so it
@@ -855,14 +897,17 @@ impl PhpHost {
     pub fn byref_out_put(&mut self, pos: usize, v: Value) {
         if self.byref_out.len() <= pos {
             self.byref_out.resize(pos + 1, Value::Undef);
+            self.byref_live.resize(pos + 1, false);
         }
         self.byref_out[pos] = v;
+        self.byref_live[pos] = true;
     }
 
     /// Drop the previous call's OUT values, so a call that writes none cannot
     /// be read as having written the one before it.
     pub fn byref_out_clear(&mut self) {
         self.byref_out.clear();
+        self.byref_live.clear();
     }
 
     /// Seed the superglobal arrays in the global scope: `$_ENV`/`$_SERVER` from
@@ -883,7 +928,17 @@ impl PhpHost {
         // A few conventional `$_SERVER` entries on top of the environment.
         self.arr_set_key(&s, &Value::str("PHP_SELF"), Value::str(String::new()));
         self.arr_set_key(&s, &Value::str("SCRIPT_NAME"), Value::str(String::new()));
-        self.arr_set_key(&s, &Value::str("REQUEST_TIME"), Value::int(0));
+        // Empty rather than a stand-in name when there is no file, which is what
+        // the reference reports for `php -r` and for a script on stdin.
+        self.arr_set_key(
+            &s,
+            &Value::str("SCRIPT_FILENAME"),
+            Value::str(String::new()),
+        );
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs() as i64);
+        self.arr_set_key(&s, &Value::str("REQUEST_TIME"), Value::int(now));
         self.set_var("_SERVER", s);
         for name in [
             "_GET", "_POST", "_REQUEST", "_COOKIE", "_FILES", "_SESSION", "GLOBALS",
@@ -895,6 +950,44 @@ impl PhpHost {
         self.arr_push_auto(&argv, Value::str(String::new()));
         self.set_var("argv", argv);
         self.set_var("argc", Value::int(1));
+    }
+
+    /// Publish the command line into the superglobals the reference fills from
+    /// it: `$argv`/`$argc`, their `$_SERVER` copies, and the three `$_SERVER`
+    /// names that report the script.
+    ///
+    /// `script` is the `FILE` argument VERBATIM, not the resolved path
+    /// [`PhpHost::script_name`] carries — the reference keeps the two apart, so
+    /// `php sub/s.php` has `$argv[0] === "sub/s.php"` while `__FILE__` is the
+    /// absolute path. Code with no file reports `Standard input code`, and it
+    /// reports that for `php -r` too, where `__FILE__` says `Command line code`
+    /// instead; the two names genuinely disagree there.
+    ///
+    /// `SCRIPT_FILENAME` is the one that does NOT fall back to a stand-in name:
+    /// with no file (`file` is `None`) it stays the empty string.
+    pub fn set_script_args(&mut self, file: Option<&str>, args: &[String]) {
+        let script = file.unwrap_or("Standard input code").to_string();
+        let argv = self.new_array();
+        self.arr_push_auto(&argv, Value::str(script.clone()));
+        for a in args {
+            self.arr_push_auto(&argv, Value::str(a.clone()));
+        }
+        let argc = Value::int(args.len() as i64 + 1);
+        self.set_var("argv", argv.clone());
+        self.set_var("argc", argc.clone());
+        let server = self.get_var("_SERVER");
+        for (k, v) in [
+            ("argv", argv),
+            ("argc", argc),
+            ("PHP_SELF", Value::str(script.clone())),
+            ("SCRIPT_NAME", Value::str(script)),
+            (
+                "SCRIPT_FILENAME",
+                Value::str(file.unwrap_or_default().to_string()),
+            ),
+        ] {
+            self.arr_set_key(&server, &Value::str(k.to_string()), v);
+        }
     }
 
     /// A snapshot of all defined constants as `(name, value)` pairs — for
@@ -2725,6 +2818,36 @@ impl PhpHost {
     fn current_class_ctx(&self) -> Option<String> {
         let name = self.scopes.last()?.name.as_ref()?;
         name.rsplit_once("::").map(|(cls, _)| cls.to_string())
+    }
+
+    /// `__CLASS__` for the frame that is running, used where the parse could not
+    /// name the class: a trait method (whose `__CLASS__` is the class that USED
+    /// the trait) and an anonymous class (whose name the compiler mints).
+    ///
+    /// The DECLARED spelling is returned, and the whole of it — an anonymous
+    /// class keeps the NUL-separated unique tail, which is what `get_class`
+    /// reports for it too, and `__CLASS__` and `get_class($this)` agree in the
+    /// reference.
+    pub fn magic_class(&self) -> String {
+        let Some(cls) = self.current_class_ctx() else {
+            return String::new();
+        };
+        self.classes.get(&cls).map_or(cls, |d| d.name.clone())
+    }
+
+    /// `__DIR__` — the directory the script lives in.
+    ///
+    /// `php -r` code has no file, and the reference answers the working directory
+    /// for it; the same goes for a script read from standard input. Both are
+    /// recognised by [`PhpHost::script_name`] not being a path.
+    pub fn magic_dir(&self) -> String {
+        let name = self.script_name();
+        if name.starts_with('/') {
+            if let Some(parent) = std::path::Path::new(name).parent() {
+                return parent.display().to_string();
+            }
+        }
+        std::env::current_dir().map_or_else(|_| String::new(), |p| p.display().to_string())
     }
 
     /// The class (lowercased) that declared `name` `readonly`, walking up from
@@ -4923,13 +5046,39 @@ fn check_arg_types(
 fn coerce_arg(p: Option<&Param>, v: Value) -> Result<Result<Value, String>, String> {
     let Some(p) = p else { return Ok(Ok(v)) };
     let Some(ty) = &p.ty else { return Ok(Ok(v)) };
-    // A by-reference parameter arrives as a cell rather than a value; checking it
-    // would read through an alias the callee may legitimately rewrite, so it is
-    // left alone — as is a default, which PHP checks at declaration, not per call.
-    if p.by_ref {
-        return Ok(Ok(v));
-    }
     let ty = ty.clone();
+    // A by-reference parameter is checked and coerced like any other, and the
+    // converted value is written back THROUGH the reference before the body runs:
+    // `function f(int &$x)` called with a `$v` holding `"5"` leaves `$v` as
+    // `int(5)` even if the body never touches `$x`. An argument that arrives as a
+    // reference cell is therefore rewritten in place, so the caller's variable and
+    // the parameter still name one storage location.
+    if p.by_ref {
+        let line = p.line;
+        return Ok(with_host(|h| {
+            let slot = h.ref_slot_of_value(&v);
+            let cur = match slot {
+                Some(s) => h.ref_cell_value(s),
+                None => v.clone(),
+            };
+            let saved = h.warn_line;
+            h.warn_line = line;
+            let r = h.apply_scalar_type(cur, &ty);
+            h.warn_line = saved;
+            r.map(|converted| match slot {
+                Some(s) => {
+                    h.ref_cell_set(s, converted);
+                    // The HANDLE is what the binder needs: it aliases the
+                    // parameter to the cell just rewritten.
+                    v
+                }
+                // No cell: the caller writes the parameter's final value back
+                // itself when the call returns, so converting the value is all
+                // this side has to do.
+                None => converted,
+            })
+        }));
+    }
     // A lossy implicit conversion is reported against the PARAMETER's declaration,
     // not against the call — `f(int $x)` on line 2 called from line 9 names line 2
     // — so the diagnostic line is moved for the duration of the check and put back
@@ -5178,19 +5327,20 @@ fn invoke(
     let r = run_chunk_on(body);
     let sig = with_host(|h| {
         // Capture by-reference parameters' final values (read from the still-open
-        // callee frame) so the caller can write them back after the call.
-        if params.iter().any(|p| p.by_ref) {
-            h.byref_out = params
-                .iter()
-                .map(|p| {
-                    if p.by_ref {
-                        h.get_var(&p.name)
-                    } else {
-                        Value::Undef
-                    }
-                })
-                .collect();
-        }
+        // callee frame) so the caller can write them back after the call. Recorded
+        // for EVERY call, so a callee with no by-reference parameter clears what
+        // the previous one left rather than letting a caller read it back.
+        let vals = params
+            .iter()
+            .map(|p| {
+                if p.by_ref {
+                    h.get_var(&p.name)
+                } else {
+                    Value::Undef
+                }
+            })
+            .collect();
+        h.byref_out_set(vals, params.iter().map(|p| p.by_ref).collect());
         h.scopes.pop();
         h.signal.take()
     });

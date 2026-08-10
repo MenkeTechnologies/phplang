@@ -260,6 +260,10 @@ pub enum Expr {
     /// runtime it resolves against the constant table, falling back to the bare
     /// name as a string when undefined (PHP 7 leniency, minus the notice).
     ConstFetch(String),
+    /// One of PHP's magic constants in the part of its answer the parse could not
+    /// settle. See [`MagicConst`]; everything a parse CAN settle never reaches
+    /// here, arriving as the [`Expr::Str`] or [`Expr::Int`] it resolved to.
+    Magic(MagicConst),
     /// `unset($a, $b[$k], …)` — remove each variable or array element. Evaluates
     /// to null (a statement-level construct in PHP).
     Unset(Vec<Expr>),
@@ -310,6 +314,58 @@ pub enum Expr {
     /// generator. Evaluates to the delegated generator's `return` value (null for
     /// an array / a generator with no `return`).
     YieldFrom(Box<Expr>),
+}
+
+/// The run-time half of PHP's magic constants.
+///
+/// PHP resolves `__LINE__`, `__FILE__`, `__DIR__`, `__FUNCTION__`, `__CLASS__`,
+/// `__METHOD__`, `__NAMESPACE__` and `__TRAIT__` at COMPILE time — they are
+/// literals in the emitted opcodes, not table lookups, which is why they answer
+/// from the declaration they were written in rather than from the running call.
+/// The parser resolves each one the same way and hands back a plain literal; the
+/// two cases below are the only ones a parse cannot answer, and they are the ones
+/// that need the host.
+/// Each variant is `{prefix}{X}{suffix}` for one run-time piece `X`. The affixes
+/// are never idle decoration: PHP names a closure after the scope it was written
+/// in (`{closure:<scope>:<line>}`), so when that scope is itself a run-time
+/// answer the closure's `__FUNCTION__` wraps it rather than replacing it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MagicConst {
+    /// `X` is `__FILE__`: the running script's name — its resolved path,
+    /// `Command line code` for `php -r`, or `Standard input code` for a script on
+    /// stdin. The parser cannot know which, because one source runs under all
+    /// three.
+    File { prefix: String, suffix: String },
+    /// `X` is the running frame's class, for the two places a parse cannot name
+    /// it: a TRAIT method (whose `__CLASS__` is the class that used the trait)
+    /// and an anonymous class (whose `class@anonymous …` name the compiler mints).
+    Class { prefix: String, suffix: String },
+    /// `__DIR__` — the directory part of `__FILE__`, or the working directory when
+    /// the script has no file to take a directory from.
+    Dir,
+}
+
+impl MagicConst {
+    /// The same constant with more text around it. Used to build a closure's name
+    /// out of the enclosing scope's, which composes: a closure inside a closure
+    /// inside a trait method wraps twice.
+    pub fn wrap(&self, before: &str, after: &str) -> MagicConst {
+        let wrapped = |prefix: &String, suffix: &String| {
+            (format!("{before}{prefix}"), format!("{suffix}{after}"))
+        };
+        match self {
+            MagicConst::File { prefix, suffix } => {
+                let (prefix, suffix) = wrapped(prefix, suffix);
+                MagicConst::File { prefix, suffix }
+            }
+            MagicConst::Class { prefix, suffix } => {
+                let (prefix, suffix) = wrapped(prefix, suffix);
+                MagicConst::Class { prefix, suffix }
+            }
+            // `__DIR__` names no scope, so nothing is ever built around it.
+            MagicConst::Dir => MagicConst::Dir,
+        }
+    }
 }
 
 /// One arm of a `match` expression. `conds` is `None` for the `default` arm;
