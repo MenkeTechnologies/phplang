@@ -23,9 +23,9 @@
 //! invariant, and the `Barren` verdict exists because it does not hold: an arm
 //! can echo a value that is legitimately empty (`str_repeat($s, 0)`,
 //! `strpbrk()` returning false, an `array_filter` that keeps nothing, `!!0`,
-//! `$x = ""; $x ?? "d"`). Measured over a 60k run, 281 cases in SEVEN of the 49
-//! modes — unary, strfns, coalesce, arr3, str2, stredge, closures — with no mode
-//! above 5.8% of its own cases. All incidental; none is a mode whose programs
+//! `$x = ""; $x ?? "d"`). Measured over a 62k run, 327 cases in SEVEN of the 54
+//! modes — unary, coalesce, strfns, str2, arr3, stredge, closures — with no mode
+//! above 8.3% of its own cases. All incidental; none is a mode whose programs
 //! structurally lack an output construct. Wrapping those arms' values in a
 //! delimiter, the way `sprintf_rich` already does, would take the count to zero
 //! without weakening what they compare.
@@ -506,6 +506,91 @@ fn gen_mathfns(seed: u64) -> Vec<String> {
         3 => vec![format!("echo floor({});", ff(r))],
         4 => vec![format!("echo ceil({});", ff(r))],
         _ => vec![format!("echo round({}, {});", ff(r), r.below(3))],
+    }
+}
+
+/// Scalar parameter and return types, under BOTH typing modes.
+///
+/// This mode exists because the generator was BLIND to the whole construct: a grep
+/// for a typed parameter (`(int $`, `(string $`, …) over this file returned ZERO
+/// hits before it was added, and `declare` returned none either. Every previous
+/// "0 divergences" run therefore scored scalar type declarations not at all — and
+/// they were in fact inert, coercing nothing and rejecting nothing, so a run could
+/// report a clean sweep while `function f(int $x)` handed `$x` straight through as
+/// the string it was given.
+///
+/// Each program declares one typed function and calls it with one value, under a
+/// randomly chosen mode. The call is CAUGHT and its `getMessage()` printed, which
+/// is this file's established idiom for a diagnostic — and here also keeps the
+/// comparison off the uncaught rendering, whose definition-site file and line
+/// this engine does not yet carry (see the `DIVERGENCE` note in `README.md`).
+///
+/// Closures are absent on purpose and the omission is a REAL one, not an inherited
+/// note: PHP 8.4 renders a closure's frame `{closure:file:line}` where this engine
+/// renders `{closure}`, so a typed closure would diverge on the name rather than on
+/// the typing this mode is here to test. Verified against the reference, not assumed.
+fn gen_stricttypes(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    // Both spellings of the mode, plus the file that declares nothing — the
+    // default is coercive, and a run that only ever emitted the `declare` would
+    // score the flag's presence rather than its effect.
+    let decl = *r.pick(&[
+        "declare(strict_types=1);",
+        "declare(strict_types=0);",
+        "",
+        "declare(ticks=1);",
+    ]);
+    let ty = *r.pick(&["int", "float", "string", "bool", "?int", "?string"]);
+    // Values spanning every arm of the conversion table: exact hits, the int→float
+    // widening that survives strict mode, the fully-numeric strings that convert
+    // only in coercive mode, the trailing-garbage string that converts in NEITHER,
+    // and the non-scalars that are a TypeError under both.
+    let val = *r.pick(&[
+        "5", "-3", "0", "5.0", "5.5", "\"5\"", "\"5.5\"", "\"5abc\"", "\"abc\"", "\"\"", "true",
+        "false", "null", "[1]",
+    ]);
+    let body = match r.below(3) {
+        // A return type, exercised by returning the parameter straight back.
+        0 => format!("function f({ty} $x): {ty} {{ return $x; }}"),
+        // A return type that does NOT match the parameter, so the return check
+        // fires on a value the parameter check already accepted.
+        1 => format!("function f({ty} $x): string {{ return $x; }}"),
+        _ => format!("function f({ty} $x) {{ var_dump($x); }}"),
+    };
+    vec![format!(
+        "{decl} {body} try {{ var_dump(f({val})); }} \
+         catch (Throwable $e) {{ echo get_class($e), \"|\", $e->getMessage(), \"|\"; }}"
+    )]
+}
+
+/// The `declare` statement's own syntax rules, every one of which PHP enforces at
+/// COMPILE time — the script produces no output at all before the diagnostic, so an
+/// engine that accepted the form and failed later would print the leading `echo`
+/// and be caught here by that alone.
+///
+/// The `declare` in each program is deliberately NOT always legal: the point is the
+/// rejections, and an all-valid pool would leave every rule unexercised.
+fn gen_declaresyntax(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    match r.below(8) {
+        // Legal, and the baseline the rejections are read against.
+        0 => vec!["declare(strict_types=1); echo \"ok\";".to_string()],
+        // Not the first statement — the rule most likely to be got wrong.
+        1 => vec!["echo \"before\"; declare(strict_types=1);".to_string()],
+        // A preceding `declare` does NOT disqualify it, unlike any other statement.
+        2 => vec!["declare(ticks=1); declare(strict_types=1); echo \"ok\";".to_string()],
+        // Block mode: a compile error for `strict_types` specifically…
+        3 => vec!["declare(strict_types=1) { echo \"in\"; }".to_string()],
+        // …but perfectly legal for `ticks`.
+        4 => vec!["declare(ticks=1) { echo \"in\"; }".to_string()],
+        // A value that is neither 0 nor 1, and one that is not a literal at all.
+        5 => vec![format!(
+            "declare(strict_types={}); echo \"ok\";",
+            r.pick(&["2", "-1", "0", "1"])
+        )],
+        6 => vec!["declare(strict_types=$x); echo \"ok\";".to_string()],
+        // An unrecognised directive warns and carries on.
+        _ => vec!["declare(encoding='UTF-8'); echo \"ok\";".to_string()],
     }
 }
 
@@ -2537,6 +2622,14 @@ const MODES: &[Mode] = &[
     Mode {
         name: "ini",
         gen: gen_ini,
+    },
+    Mode {
+        name: "stricttypes",
+        gen: gen_stricttypes,
+    },
+    Mode {
+        name: "declaresyntax",
+        gen: gen_declaresyntax,
     },
 ];
 
