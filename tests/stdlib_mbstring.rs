@@ -31,8 +31,14 @@ fn str_split_codepoints() {
     );
     // Empty string yields an empty array (PHP 8).
     assert_eq!(run(r#"<?php echo count(mb_str_split(""));"#), "0");
-    // length < 1 is a ValueError.
-    assert!(eval_capture(r#"<?php mb_str_split("abc", 0);"#).is_err());
+    // length < 1 is a ValueError, pinned by class and message — `is_err()` alone
+    // would pass for any failure at all.
+    assert_eq!(
+        run(
+            r#"<?php try { mb_str_split("abc", 0); } catch (Throwable $e) { echo get_class($e), ': ', $e->getMessage(); }"#
+        ),
+        "ValueError: mb_str_split(): Argument #2 ($length) must be greater than 0"
+    );
 }
 
 #[test]
@@ -106,7 +112,12 @@ fn substr_count_and_pad() {
         "2"
     );
     assert_eq!(run(r#"<?php echo mb_substr_count("aaa", "aa");"#), "1");
-    assert!(eval_capture(r#"<?php mb_substr_count("abc", "");"#).is_err());
+    assert_eq!(
+        run(
+            r#"<?php try { mb_substr_count("abc", ""); } catch (Throwable $e) { echo get_class($e), ': ', $e->getMessage(); }"#
+        ),
+        "ValueError: mb_substr_count(): Argument #2 ($needle) must not be empty"
+    );
     // Codepoint-counted padding.
     assert_eq!(run(r#"<?php echo mb_str_pad("é", 3, "-");"#), "é--");
     assert_eq!(
@@ -187,10 +198,26 @@ fn convert_and_detect_encoding() {
 #[test]
 fn strpos_offset_out_of_range_is_valueerror() {
     // PHP 8: an offset outside [-len, len] raises a ValueError (not `false`).
-    assert!(eval_capture(r#"<?php mb_strpos("abc", "b", 10);"#).is_err());
-    assert!(eval_capture(r#"<?php mb_strpos("abc", "a", -4);"#).is_err());
-    assert!(eval_capture(r#"<?php mb_strrpos("abc", "a", 10);"#).is_err());
-    assert!(eval_capture(r#"<?php mb_strrpos("abc", "a", -10);"#).is_err());
+    // Each names ITS OWN function in the message, so a shared literal or a
+    // mis-threaded `ci` flag is visible here; `is_err()` could not see either.
+    for (call, func) in [
+        (r#"mb_strpos("abc", "b", 10)"#, "mb_strpos"),
+        (r#"mb_strpos("abc", "a", -4)"#, "mb_strpos"),
+        (r#"mb_stripos("abc", "a", -4)"#, "mb_stripos"),
+        (r#"mb_strrpos("abc", "a", 10)"#, "mb_strrpos"),
+        (r#"mb_strrpos("abc", "a", -10)"#, "mb_strrpos"),
+        (r#"mb_strripos("abc", "a", 10)"#, "mb_strripos"),
+    ] {
+        assert_eq!(
+            run(&format!(
+                r#"<?php try {{ {call}; }} catch (Throwable $e) {{ echo get_class($e), ': ', $e->getMessage(); }}"#
+            )),
+            format!(
+                "ValueError: {func}(): Argument #3 ($offset) must be contained in argument #1 ($haystack)"
+            ),
+            "{call}"
+        );
+    }
     // Boundary offsets (== len, == -len) are valid, not errors.
     assert_eq!(run(r#"<?php echo mb_strpos("abc", "", 3);"#), "3");
     assert_eq!(run(r#"<?php echo mb_strpos("abc", "a", -3);"#), "0");

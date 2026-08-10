@@ -130,6 +130,29 @@ fn a_qualified_call_is_still_rejected() {
     // upstream, and fatals — which this flat model does not track. Folding to
     // the last segment would answer 7 where the reference fatals, turning an
     // error into a silently wrong value, so the call form is left alone.
-    assert!(eval_capture(r#"<?php echo Foo\strlen('abc');"#).is_err());
-    assert!(eval_capture(r#"<?php namespace A; function f() { return 7; } echo A\f();"#).is_err());
+    //
+    // `is_err()` used to be the whole assertion here, and it passed for the
+    // WRONG REASON: the reference reaches a runtime `Error: Call to undefined
+    // function Foo\strlen()`, while this engine does not parse the call form at
+    // all and stops at a Parse error. Both are failures, so the old predicate
+    // could not tell the recorded divergence from parity — nor would it have
+    // noticed if the parse error moved to a different token or line.
+    //
+    //   $ php -r 'echo Foo\strlen("abc");'
+    //   PHP Fatal error:  Uncaught Error: Call to undefined function Foo\strlen()
+    for src in [
+        r#"<?php echo Foo\strlen('abc');"#,
+        r#"<?php namespace A; function f() { return 7; } echo A\f();"#,
+    ] {
+        let e = eval_capture(src).unwrap_err();
+        assert_eq!(
+            e, "syntax error, unexpected token \"(\" in Command line code on line 1",
+            "expected the recorded parse-error divergence for {src:?}"
+        );
+        // The one thing that must never happen is the call silently answering.
+        assert!(
+            !e.contains('7'),
+            "the call resolved instead of failing: {e}"
+        );
+    }
 }

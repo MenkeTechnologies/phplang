@@ -10,20 +10,35 @@ fn run_example(name: &str) -> String {
     eval_capture(&src).unwrap_or_else(|e| panic!("eval error running {name}: {e}"))
 }
 
+/// Asserted as the WHOLE output rather than as eleven `contains` checks.
+///
+/// The substring form could not see ordering, could not see anything extra the
+/// example printed, and `contains("42")` in particular matched the `42` inside
+/// any other number on the page. The exact text below is byte-identical to what
+/// `php 8.5.9` prints for the same file:
+///
+/// ```text
+/// $ diff <(php examples/hello.php) <(target/debug/php examples/hello.php)
+/// ```
+///
+/// Note the trailing space after `i=2` — the loop separator, which no `contains`
+/// assertion could have pinned.
 #[test]
 fn hello_example_runs_and_prints_expected() {
-    let out = run_example("hello.php");
-    assert!(out.contains("<h1>phplang</h1>"));
-    assert!(out.contains("Hello, world!"));
-    assert!(out.contains("42")); // 6 * 7
-    assert!(out.contains("2.5")); // 10 / 4
-    assert!(out.contains("1024")); // 2 ** 10
-    assert!(out.contains("ada is 36"));
-    assert!(out.contains("sum = 10"));
-    assert!(out.contains("i=0 i=1 i=2"));
-    assert!(out.contains("5! = 120"));
-    assert!(out.contains("DONE 4 1,2,3,4"));
-    assert!(out.contains("<footer>bye</footer>"));
+    assert_eq!(
+        run_example("hello.php"),
+        "<h1>phplang</h1>\n\
+         Hello, world!\n\
+         42\n\
+         2.5\n\
+         1024\n\
+         ada is 36\n\
+         sum = 10\n\
+         i=0 i=1 i=2 \n\
+         5! = 120\n\
+         DONE 4 1,2,3,4\n\
+         <footer>bye</footer>\n"
+    );
 }
 
 #[test]

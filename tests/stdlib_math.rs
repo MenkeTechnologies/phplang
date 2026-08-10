@@ -122,10 +122,22 @@ fn base_convert_various() {
     assert_eq!(run("<?php echo base_convert('0', 10, 2);"), "0");
 }
 
+/// The BOUNDARY, which the message test beside this one does not cover: 2 and 36
+/// are accepted and 1 and 37 are not. `is_err()` on the two failing calls alone
+/// would still pass if the accepted range had shrunk to nothing.
 #[test]
 fn base_convert_out_of_range_errors() {
-    assert!(eval_capture("<?php echo base_convert('1', 1, 10);").is_err());
-    assert!(eval_capture("<?php echo base_convert('1', 10, 37);").is_err());
+    for bad in ["base_convert('1', 1, 10)", "base_convert('1', 10, 37)"] {
+        assert!(
+            eval_capture(&format!("<?php echo {bad};")).is_err(),
+            "{bad} should be rejected"
+        );
+    }
+    // Both ends of the accepted range work.
+    assert_eq!(run("<?php echo base_convert('101', 2, 10);"), "5");
+    assert_eq!(run("<?php echo base_convert('z', 36, 10);"), "35");
+    assert_eq!(run("<?php echo base_convert('5', 10, 2);"), "101");
+    assert_eq!(run("<?php echo base_convert('35', 10, 36);"), "z");
 }
 
 // Regression (fix 4): the out-of-range message ends with "(inclusive)" to match
@@ -205,10 +217,16 @@ fn rand_swaps_inverted_bounds() {
     );
 }
 
+/// The boundary beside the message test: EQUAL bounds are accepted, so the guard
+/// must be `min > max` and not `min >= max`. Two `is_err()` calls cannot see the
+/// difference.
 #[test]
 fn inverted_bounds_error() {
     assert!(eval_capture("<?php echo mt_rand(10, 1);").is_err());
     assert!(eval_capture("<?php echo random_int(10, 1);").is_err());
+    assert_eq!(run("<?php echo mt_rand(4, 4);"), "4");
+    assert_eq!(run("<?php echo random_int(4, 4);"), "4");
+    assert_eq!(run("<?php echo mt_rand(-4, -4);"), "-4");
 }
 
 // Regression (fix 3): mt_rand and random_int each emit their own PHP 8 message

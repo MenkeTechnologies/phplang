@@ -83,7 +83,15 @@ fn math_functions() {
 
 #[test]
 fn intdiv_by_zero_errors() {
-    assert!(eval_capture("<?php echo intdiv(1, 0);").is_err());
+    // A zero divisor is a DivisionByZeroError specifically — intdiv's OTHER
+    // failure (PHP_INT_MIN / -1) is an ArithmeticError, and `is_err()` could not
+    // tell the two apart even though a `catch (DivisionByZeroError)` can.
+    assert_eq!(
+        run(
+            "<?php try { intdiv(1, 0); } catch (Throwable $e) { echo get_class($e), ': ', $e->getMessage(); }"
+        ),
+        "DivisionByZeroError: Division by zero"
+    );
 }
 
 #[test]

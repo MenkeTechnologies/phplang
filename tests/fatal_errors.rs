@@ -429,7 +429,20 @@ fn a_const_declaration_outside_top_level_is_rejected_at_the_const() {
     // The restriction is on PLACEMENT, not on the keyword: the same declaration
     // parses at file scope, and `namespace Name { }` does not leave top level.
     // (A class body's `const` is a different production entirely.)
-    assert!(phplang::parser::parse("<?php const A = 1;").is_ok());
-    assert!(phplang::parser::parse("<?php namespace N { const A = 1; }").is_ok());
-    assert!(phplang::parser::parse("<?php class K { const A = 1; }").is_ok());
+    // Asserted by RUNNING them, not by `parse(...).is_ok()`: a parse that
+    // succeeded but dropped the declaration would satisfy `is_ok()` while
+    // leaving the constant undefined, which is the failure this negative control
+    // exists to rule out.
+    assert_eq!(
+        phplang::eval_capture("<?php const A = 1; echo A;").unwrap(),
+        "1"
+    );
+    assert_eq!(
+        phplang::eval_capture("<?php namespace N { const A = 1; echo A; }").unwrap(),
+        "1"
+    );
+    assert_eq!(
+        phplang::eval_capture("<?php class K { const A = 1; } echo K::A;").unwrap(),
+        "1"
+    );
 }

@@ -67,7 +67,15 @@ fn array_chunk_preserve_keys() {
 
 #[test]
 fn array_chunk_bad_size_errors() {
-    assert!(eval_capture("<?php array_chunk([1,2],0);").is_err());
+    assert_eq!(
+        run(
+            "<?php try { array_chunk([1,2], 0); } catch (Throwable $e) { echo get_class($e), ': ', $e->getMessage(); }"
+        ),
+        "ValueError: array_chunk(): Argument #2 ($length) must be greater than 0"
+    );
+    // A size of 1 is the smallest ACCEPTED value, so the boundary is pinned from
+    // both sides rather than only from the failing one.
+    assert_eq!(run("<?php echo count(array_chunk([1,2], 1));"), "2");
 }
 
 // ── array_fill_keys / array_pad ──────────────────────────────────────────────
@@ -338,7 +346,24 @@ fn array_rand_multiple_distinct_keys() {
 
 #[test]
 fn array_rand_out_of_range_errors() {
-    assert!(eval_capture("<?php array_rand([1,2],5);").is_err());
+    assert_eq!(
+        run(
+            "<?php try { array_rand([1,2], 5); } catch (Throwable $e) { echo get_class($e), ': ', $e->getMessage(); }"
+        ),
+        "ValueError: array_rand(): Argument #2 ($num) must be between 1 and the number of elements in argument #1 ($array)"
+    );
+    // Zero is rejected from the other end, and an empty array has no valid $num
+    // at all.
+    assert_eq!(
+        run("<?php try { array_rand([1,2], 0); } catch (Throwable $e) { echo get_class($e); }"),
+        "ValueError"
+    );
+    assert_eq!(
+        run("<?php try { array_rand([], 1); } catch (Throwable $e) { echo get_class($e); }"),
+        "ValueError"
+    );
+    // Asking for exactly as many as there are is valid.
+    assert_eq!(run("<?php echo count(array_rand([1,2], 2));"), "2");
 }
 
 // ── array_walk ───────────────────────────────────────────────────────────────

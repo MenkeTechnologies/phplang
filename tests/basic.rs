@@ -127,5 +127,19 @@ fn library_functions() {
 
 #[test]
 fn division_by_zero_is_an_error() {
-    assert!(eval_capture("<?php echo 1 / 0;").is_err());
+    assert_eq!(
+        run(
+            "<?php try { echo 1 / 0; } catch (Throwable $e) { echo get_class($e), ': ', $e->getMessage(); }"
+        ),
+        "DivisionByZeroError: Division by zero"
+    );
+    // The modulo form reports a different message from the division form.
+    assert_eq!(
+        run(
+            "<?php try { echo 1 % 0; } catch (Throwable $e) { echo get_class($e), ': ', $e->getMessage(); }"
+        ),
+        "DivisionByZeroError: Modulo by zero"
+    );
+    // `fdiv` is the one that does NOT raise, so the guard cannot be global.
+    assert_eq!(run("<?php echo fdiv(1, 0);"), "INF");
 }

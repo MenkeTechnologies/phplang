@@ -213,7 +213,14 @@ fn strrpos_negative_offset_window() {
 #[test]
 fn strncasecmp_negative_length_is_valueerror() {
     // Bug 4: a negative $length raises a PHP-8 ValueError, not a coerced compare.
-    assert!(eval_capture(r#"<?php echo strncasecmp("a", "b", -1);"#).is_err());
+    // Pinned by class AND message: `is_err()` alone would also pass if the call
+    // failed for some unrelated reason, or if the message named another argument.
+    assert_eq!(
+        run(
+            r#"<?php try { strncasecmp("a", "b", -1); } catch (Throwable $e) { echo get_class($e), ': ', $e->getMessage(); }"#
+        ),
+        "ValueError: strncasecmp(): Argument #3 ($length) must be greater than or equal to 0"
+    );
     // Zero length still compares equal (no bytes compared).
     assert_eq!(run(r#"<?php echo strncasecmp("abc", "xyz", 0);"#), "0");
 }
