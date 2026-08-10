@@ -2760,8 +2760,24 @@ pub fn call_library(name: &str, args: &[Value]) -> Result<Value, String> {
         // rejects a scalar with a TypeError rather than answering 1.
         "count" | "sizeof" => {
             let a = arg(args, 0);
+            // `$mode` is COUNT_NORMAL (0) or COUNT_RECURSIVE (1) and nothing
+            // else — any other value is a ValueError, checked before the
+            // subject so `count(1, 99)` reports the mode.
+            let mode = args.get(1).map(|m| m.to_int()).unwrap_or(0);
+            if mode != 0 && mode != 1 {
+                return Err(throws(
+                    "ValueError",
+                    "count(): Argument #2 ($mode) must be either COUNT_NORMAL or COUNT_RECURSIVE",
+                ));
+            }
             if with_host(|h| h.is_array(&a)) {
-                Value::int(with_host(|h| h.array_len(&a)))
+                Value::int(with_host(|h| {
+                    if mode == 1 {
+                        count_recursive(h, &a)
+                    } else {
+                        h.array_len(&a)
+                    }
+                }))
             } else if let Some(class) = with_host(|h| {
                 h.object_class(&a)
                     .filter(|c| h.class_is_a_pub(c, "Countable"))
@@ -4772,6 +4788,27 @@ fn php_var_export_object(h: &host::PhpHost, v: &Value, depth: usize) -> String {
     }
     out.push_str(&format!("{pad}{}", if std { ")" } else { "))" }));
     out
+}
+
+/// `count($a, COUNT_RECURSIVE)` — every element at every depth. A nested array
+/// counts as one element AND contributes its own contents, so `[1, [2, 3]]` is
+/// 4 rather than 2.
+///
+/// Recursion is into ARRAYS only. A `Countable` nested inside counts as a single
+/// element and its own `count()` is never consulted — `count([new C], …)` is 1
+/// however large `C` says it is — and a plain object is likewise one element.
+fn count_recursive(h: &host::PhpHost, v: &Value) -> i64 {
+    h.array_pairs(v)
+        .unwrap_or_default()
+        .iter()
+        .map(|(_, val)| {
+            if h.is_array(val) {
+                1 + count_recursive(h, val)
+            } else {
+                1
+            }
+        })
+        .sum()
 }
 
 /// Whether `v` contains a NAN or INF anywhere, including nested in arrays and

@@ -478,3 +478,56 @@ fn array_walk_by_reference_callback_writes_back_scalars() {
         r#"{"x":2,"y":3}"#
     );
 }
+
+/// `count($a, COUNT_RECURSIVE)` counts every element at every depth: a nested
+/// array is one element AND contributes its own contents.
+///
+/// Byte-parity with `php` 8.5.9. The `$mode` argument used to be read by
+/// nothing, so `COUNT_RECURSIVE` answered the top-level count — the divergence
+/// was recorded in the corpus as `// => 2 (PHP 8 prints: 4)`.
+#[test]
+fn count_recursive_counts_every_depth() {
+    assert_eq!(run("<?php echo count([1, [2, 3]], COUNT_RECURSIVE);"), "4");
+    assert_eq!(
+        run("<?php echo count([1, [2, [3, 4]]], COUNT_RECURSIVE);"),
+        "6"
+    );
+    // An empty nested array still counts as the one element it is.
+    assert_eq!(run("<?php echo count([[], []], COUNT_RECURSIVE);"), "2");
+    assert_eq!(run("<?php echo count([], COUNT_RECURSIVE);"), "0");
+    // COUNT_NORMAL is the default and stays the top-level count.
+    assert_eq!(run("<?php echo count([1, [2, 3]], COUNT_NORMAL);"), "2");
+    assert_eq!(run("<?php echo count([1, [2, 3]]);"), "2");
+}
+
+#[test]
+fn count_recursive_does_not_descend_into_objects() {
+    // A nested `Countable` is ONE element; its own count() is not consulted,
+    // so a class reporting 5 must not add 5 here.
+    assert_eq!(
+        run(
+            "<?php class C implements Countable { public function count(): int { return 5; } }
+            echo count([new C], COUNT_RECURSIVE);"
+        ),
+        "1"
+    );
+    // A plain object is likewise a single element, whatever its properties.
+    assert_eq!(
+        run(r#"<?php $o = (object)["a" => 1]; echo count([$o, [1]], COUNT_RECURSIVE);"#),
+        "3"
+    );
+}
+
+#[test]
+fn count_rejects_a_mode_that_is_neither_normal_nor_recursive() {
+    assert_eq!(
+        run(r#"<?php try { echo count([1], 99); } catch (Throwable $e) {
+            echo get_class($e), "|", $e->getMessage(); }"#),
+        "ValueError|count(): Argument #2 ($mode) must be either COUNT_NORMAL or COUNT_RECURSIVE"
+    );
+    assert_eq!(
+        run(r#"<?php try { echo count([1], -1); } catch (Throwable $e) {
+            echo get_class($e), "|", $e->getMessage(); }"#),
+        "ValueError|count(): Argument #2 ($mode) must be either COUNT_NORMAL or COUNT_RECURSIVE"
+    );
+}

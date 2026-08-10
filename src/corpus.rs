@@ -260,9 +260,9 @@ pub const CORPUS: &[Entry] = &[
     (
         "const",
         "Keyword",
-        "const NAME = expr;   //  inside a class or interface body",
-        "Declares a class or interface constant, read back through `ClassName::NAME`. Several may be declared in one comma-separated statement.",
-        "class A { const K = 7; } echo A::K;   // => 7",
+        "const NAME = expr[, NAME2 = expr2]*;",
+        "Declares a constant. Inside a class or interface body it is a class constant, read back through `ClassName::NAME`. At statement level it is a GLOBAL constant, read back as a bareword — the declaration spelling of `define()`, and top-level only, so a function body or an `if` block rejects it the way PHP's grammar does. It is not hoisted: the constant exists from the statement onwards, so a `defined()` above it answers false. Redefining warns and keeps the FIRST value, through either spelling. Several names may be declared in one comma-separated statement, and a later one may read an earlier one.",
+        "class A { const K = 7; } echo A::K;   // => 7\nconst G = 1, H = G + 1; echo H;   // => 2",
     ),
     (
         "static",
@@ -1095,8 +1095,8 @@ pub const CORPUS: &[Entry] = &[
         "COUNT_RECURSIVE",
         "Predefined constant",
         "COUNT_RECURSIVE: int = 1",
-        "`count()` mode that should also count nested elements. DIVERGENCE: the core `count` arm never reads its second argument, so this behaves like `COUNT_NORMAL`.",
-        "echo count([1, [2, 3]], COUNT_RECURSIVE);   // => 2   (PHP 8 prints: 4)",
+        "`count()` mode that counts nested elements too: a nested array counts as one element AND contributes its own contents, at every depth. Recursion is into arrays only — a nested `Countable` is a single element and its own `count()` is not consulted.",
+        "echo count([1, [2, 3]], COUNT_RECURSIVE);   // => 4",
     ),
     (
         "STR_PAD_RIGHT",
@@ -2305,15 +2305,15 @@ pub const CORPUS: &[Entry] = &[
     (
         "count",
         "Core library — arrays",
-        "count(array|mixed $value): int",
-        "Number of elements in an array; any non-array counts as 1. DIVERGENCE: the `$mode` argument is not read, so `COUNT_RECURSIVE` counts only the top level.",
+        "count(Countable|array $value, int $mode = COUNT_NORMAL): int",
+        "Number of elements in an array, or what a `Countable`'s own `count()` returns. Anything else is a `TypeError` — PHP 8 stopped answering 1 for a scalar. `$mode` is `COUNT_NORMAL` or `COUNT_RECURSIVE`, and any other value is a `ValueError`.",
         "echo count([1, 2, 3]);   // => 3",
     ),
     (
         "sizeof",
         "Core library — arrays",
-        "sizeof(array|mixed $value): int",
-        "The alias of `count`, sharing its match arm and its `COUNT_RECURSIVE` limitation.",
+        "sizeof(Countable|array $value, int $mode = COUNT_NORMAL): int",
+        "The alias of `count`, sharing its match arm and therefore its modes and its errors exactly.",
         "",
     ),
     (

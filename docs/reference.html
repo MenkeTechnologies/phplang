@@ -227,57 +227,64 @@ list('k' =&gt; $v) = expr;</code></pre>
           <pre><code class="lang-php">list($a, $b) = [1, 2]; echo $a . $b;   // =&gt; 12</code></pre>
         </article>
         <article class="doc-entry" id="doc-keyword-24">
-          <h3><a class="doc-anchor" href="#doc-keyword-24">#</a> <code>class</code></h3>
-          <pre><code class="lang-php">[abstract|final] class Name [extends Parent] [implements I, …] { members }</code></pre>
-          <p>Declares a class: constants, properties, static properties, and methods. `abstract` marks the class un-instantiable; `final` is parsed and ignored.</p>
-          <pre><code class="lang-php">class C { public $x = 1; } $o = new C; echo $o-&gt;x;   // =&gt; 1</code></pre>
+          <h3><a class="doc-anchor" href="#doc-keyword-24">#</a> <code>clone</code></h3>
+          <pre><code class="lang-php">clone $object</code></pre>
+          <p>Duplicates an object: a new instance of the same class carrying a copy of the properties, then `__clone()` on the copy if the class defines one. The copy is shallow the way PHP means it — an array property is a value and travels as a copy, an object property is a handle and stays shared with the original. Binds tighter than every operator, so `clone $a-&gt;b` clones the property and `clone $a instanceof C` tests the clone. A non-object is `TypeError: clone(): Argument #1 ($object) must be of type object, int given`; a live generator holds a suspended stack and is refused with `Error: Trying to clone an uncloneable object of class Generator`.</p>
+          <pre><code class="lang-php">class C { public $n = 1; } $a = new C; $b = clone $a; $b-&gt;n = 2; echo $a-&gt;n, $b-&gt;n;   // =&gt; 12</code></pre>
         </article>
         <article class="doc-entry" id="doc-keyword-25">
-          <h3><a class="doc-anchor" href="#doc-keyword-25">#</a> <code>interface</code></h3>
+          <h3><a class="doc-anchor" href="#doc-keyword-25">#</a> <code>class</code></h3>
+          <pre><code class="lang-php">[abstract|final|readonly] class Name [extends Parent] [implements I, …] { members }</code></pre>
+          <p>Declares a class: constants, properties, static properties, and methods. `abstract` marks the class un-instantiable; `readonly` makes every property it declares readonly; `final` is parsed and ignored.</p>
+          <pre><code class="lang-php">class C { public $x = 1; } $o = new C; echo $o-&gt;x;   // =&gt; 1</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-keyword-26">
+          <h3><a class="doc-anchor" href="#doc-keyword-26">#</a> <code>interface</code></h3>
           <pre><code class="lang-php">interface Name [extends I, …] { const …; function m(); }</code></pre>
           <p>Declares an interface, stored in the same class table as classes so `instanceof` and `class_exists` both see it. DIVERGENCE: `interface_exists()` is a hardcoded `false`, so it disagrees with `instanceof` on the very same name.</p>
           <pre><code class="lang-php">interface I {} class C implements I {} $o = new C;
 var_dump($o instanceof I, interface_exists("I"));   // =&gt; bool(true) bool(false)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-keyword-26">
-          <h3><a class="doc-anchor" href="#doc-keyword-26">#</a> <code>trait</code></h3>
+        <article class="doc-entry" id="doc-keyword-27">
+          <h3><a class="doc-anchor" href="#doc-keyword-27">#</a> <code>trait</code></h3>
           <pre><code class="lang-php">trait Name { members }   //  then: use Name; inside a class</code></pre>
           <p>Declares a reusable member bundle that a class pulls in with `use`, optionally adapted by an `insteadof`/`as` block. A `use` naming a trait that was never declared is a throwable `Error`; an unresolved method collision is a fatal raised when the declaration is reached, so output produced before it is still printed. DIVERGENCE: `trait_exists()` is a hardcoded `false` even for a trait that was declared and successfully used; two definitions of the same property with different defaults are merged silently rather than refused.</p>
           <pre><code class="lang-php">trait T { function f() { return 3; } } class C { use T; } echo (new C)-&gt;f();   // =&gt; 3</code></pre>
         </article>
-        <article class="doc-entry" id="doc-keyword-27">
-          <h3><a class="doc-anchor" href="#doc-keyword-27">#</a> <code>enum</code></h3>
+        <article class="doc-entry" id="doc-keyword-28">
+          <h3><a class="doc-anchor" href="#doc-keyword-28">#</a> <code>enum</code></h3>
           <pre><code class="lang-php">enum Name [: backing-type] [implements I] { case A [= value]; … }</code></pre>
           <p>Declares an enum. Cases are class constants holding a case object with `-&gt;name` and, for a backed enum, `-&gt;value`. Every enum implicitly implements `UnitEnum`, and a backed one also `BackedEnum`. `enum` is only treated as a declaration when a name and `{`, `:`, or `implements` follow, so a bareword `enum` still parses as an identifier. DIVERGENCE: `enum_exists()` is a hardcoded `false`.</p>
           <pre><code class="lang-php">enum Suit: string { case Hearts = "H"; } echo Suit::Hearts-&gt;value;   // =&gt; H</code></pre>
         </article>
-        <article class="doc-entry" id="doc-keyword-28">
-          <h3><a class="doc-anchor" href="#doc-keyword-28">#</a> <code>extends</code></h3>
+        <article class="doc-entry" id="doc-keyword-29">
+          <h3><a class="doc-anchor" href="#doc-keyword-29">#</a> <code>extends</code></h3>
           <pre><code class="lang-php">class C extends Parent    //  interface I extends A, B</code></pre>
           <p>Single inheritance for a class — the child inherits its parent's methods, properties, and constants. An interface may extend several parents, which the parser records as implemented interfaces.</p>
           <pre><code class="lang-php">class A { function f() { return 1; } } class B extends A {} echo (new B)-&gt;f();   // =&gt; 1</code></pre>
         </article>
-        <article class="doc-entry" id="doc-keyword-29">
-          <h3><a class="doc-anchor" href="#doc-keyword-29">#</a> <code>implements</code></h3>
+        <article class="doc-entry" id="doc-keyword-30">
+          <h3><a class="doc-anchor" href="#doc-keyword-30">#</a> <code>implements</code></h3>
           <pre><code class="lang-php">class C implements I, J</code></pre>
           <p>Lists the interfaces a class satisfies. `instanceof` walks this list transitively, including through parent classes. DIVERGENCE: `class_implements()` always returns an empty array, so it does not report what `instanceof` honours.</p>
           <pre><code class="lang-php">interface I {} class C implements I {} var_dump((new C) instanceof I);   // =&gt; bool(true)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-keyword-30">
-          <h3><a class="doc-anchor" href="#doc-keyword-30">#</a> <code>new</code></h3>
+        <article class="doc-entry" id="doc-keyword-31">
+          <h3><a class="doc-anchor" href="#doc-keyword-31">#</a> <code>new</code></h3>
           <pre><code class="lang-php">new ClassName[(args)]
 new class[(args)] [extends P] [implements I, …] { members }</code></pre>
           <p>Instantiates a class, running `__construct` with the given arguments. The parentheses are optional when there are no arguments. The class name is a bareword — `new $className` is not parsed. `new class` declares the class inline: its arguments come BEFORE the `extends`/`implements` clauses, and the declaration is compiled once, so the same site in a loop yields instances of one class. Its generated name is `Base@anonymous\0&lt;script&gt;:&lt;line&gt;$&lt;n&gt;` — the parent, else the first interface, else `class` — so `get_class` returns a unique string while `var_dump` and diagnostics print the readable head alone.</p>
           <pre><code class="lang-php">class C { function __construct($x) { $this-&gt;x = $x; } } echo (new C(5))-&gt;x;   // =&gt; 5</code></pre>
         </article>
-        <article class="doc-entry" id="doc-keyword-31">
-          <h3><a class="doc-anchor" href="#doc-keyword-31">#</a> <code>const</code></h3>
-          <pre><code class="lang-php">const NAME = expr;   //  inside a class or interface body</code></pre>
-          <p>Declares a class or interface constant, read back through `ClassName::NAME`. Several may be declared in one comma-separated statement.</p>
-          <pre><code class="lang-php">class A { const K = 7; } echo A::K;   // =&gt; 7</code></pre>
-        </article>
         <article class="doc-entry" id="doc-keyword-32">
-          <h3><a class="doc-anchor" href="#doc-keyword-32">#</a> <code>static</code></h3>
+          <h3><a class="doc-anchor" href="#doc-keyword-32">#</a> <code>const</code></h3>
+          <pre><code class="lang-php">const NAME = expr[, NAME2 = expr2]*;</code></pre>
+          <p>Declares a constant. Inside a class or interface body it is a class constant, read back through `ClassName::NAME`. At statement level it is a GLOBAL constant, read back as a bareword — the declaration spelling of `define()`, and top-level only, so a function body or an `if` block rejects it the way PHP's grammar does. It is not hoisted: the constant exists from the statement onwards, so a `defined()` above it answers false. Redefining warns and keeps the FIRST value, through either spelling. Several names may be declared in one comma-separated statement, and a later one may read an earlier one.</p>
+          <pre><code class="lang-php">class A { const K = 7; } echo A::K;   // =&gt; 7
+const G = 1, H = G + 1; echo H;   // =&gt; 2</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-keyword-33">
+          <h3><a class="doc-anchor" href="#doc-keyword-33">#</a> <code>static</code></h3>
           <pre><code class="lang-php">static $var [= expr];
 static function m() { … }
 static public $prop;
@@ -285,115 +292,116 @@ static::member</code></pre>
           <p>Four roles, told apart by what follows. Before a `$variable` in a function body it declares a static local that survives between calls; before a member it marks it static; as a `::` qualifier it is late static binding. DIVERGENCE: `static function () { … }` as a closure modifier is NOT parsed and is a syntax error.</p>
           <pre><code class="lang-php">class A { static $n = 4; } echo A::$n;   // =&gt; 4</code></pre>
         </article>
-        <article class="doc-entry" id="doc-keyword-33">
-          <h3><a class="doc-anchor" href="#doc-keyword-33">#</a> <code>public</code></h3>
+        <article class="doc-entry" id="doc-keyword-34">
+          <h3><a class="doc-anchor" href="#doc-keyword-34">#</a> <code>public</code></h3>
           <pre><code class="lang-php">public $prop;   public function m() { … }   public function __construct(public $x)</code></pre>
           <p>Marks a member publicly visible (the default when no visibility keyword is given). In a constructor parameter list it promotes the parameter to a property.</p>
           <pre><code class="lang-php">class C { public $x = 2; } echo (new C)-&gt;x;   // =&gt; 2</code></pre>
         </article>
-        <article class="doc-entry" id="doc-keyword-34">
-          <h3><a class="doc-anchor" href="#doc-keyword-34">#</a> <code>protected</code></h3>
+        <article class="doc-entry" id="doc-keyword-35">
+          <h3><a class="doc-anchor" href="#doc-keyword-35">#</a> <code>protected</code></h3>
           <pre><code class="lang-php">protected $prop;   protected function m() { … }</code></pre>
           <p>Marks a member reachable only from the declaring class and its subclasses. Visibility IS enforced: reading, writing or unsetting the property from outside throws a catchable `Error: Cannot access protected property C::$x` — unless the class defines the matching magic method (`__get`, `__set`, `__unset`), which is consulted first and makes the access succeed instead.</p>
           <pre><code class="lang-php">class A { protected $x = 1; }
 class B extends A { function g() { return $this-&gt;x; } }
 echo (new B)-&gt;g();   // =&gt; 1</code></pre>
         </article>
-        <article class="doc-entry" id="doc-keyword-35">
-          <h3><a class="doc-anchor" href="#doc-keyword-35">#</a> <code>private</code></h3>
+        <article class="doc-entry" id="doc-keyword-36">
+          <h3><a class="doc-anchor" href="#doc-keyword-36">#</a> <code>private</code></h3>
           <pre><code class="lang-php">private $prop;   private function m() { … }</code></pre>
           <p>Marks a member reachable only from the declaring class. Enforced for both properties and methods. A property access from outside throws a catchable `Error: Cannot access private property C::$x`, naming the class that DECLARED it, unless the class defines the matching magic method (`__get`, `__set`, `__unset`), which is consulted first. `isset()` never throws here — an unreachable property is simply not set. DIVERGENCE: a method call from outside still aborts with the uncatchable host error `php: Call to private method C::m() from global scope`.</p>
           <pre><code class="lang-php">class C { private $x = 4; function get() { return $this-&gt;x; } }
 echo (new C)-&gt;get();   // =&gt; 4</code></pre>
         </article>
-        <article class="doc-entry" id="doc-keyword-36">
-          <h3><a class="doc-anchor" href="#doc-keyword-36">#</a> <code>readonly</code></h3>
-          <pre><code class="lang-php">readonly $prop;   function __construct(public readonly $x)</code></pre>
-          <p>Accepted on a property declaration and on a promoted constructor parameter. DIVERGENCE: it is parsed and discarded — a readonly property can be reassigned freely.</p>
-          <pre><code class="lang-php">class C { public readonly $x; function __construct() { $this-&gt;x = 1; $this-&gt;x = 2; } }
-echo (new C)-&gt;x;   // =&gt; 2   (PHP 8: Error)</code></pre>
-        </article>
         <article class="doc-entry" id="doc-keyword-37">
-          <h3><a class="doc-anchor" href="#doc-keyword-37">#</a> <code>abstract</code></h3>
+          <h3><a class="doc-anchor" href="#doc-keyword-37">#</a> <code>readonly</code></h3>
+          <pre><code class="lang-php">readonly $prop;   function __construct(public readonly $x)   readonly class C</code></pre>
+          <p>Marks a property writable exactly once. Accepted on a property declaration, on a promoted constructor parameter, and on the class itself (`readonly class`, which applies it to every property the class declares, promoted parameters included); a trait's readonly property stays readonly in the class that uses it. The one write must come from the declaring class or a subclass, so an outside write to a still-uninitialized property is `Error: Cannot modify protected(set) readonly property C::$x from global scope` and every later write anywhere is `Error: Cannot modify readonly property C::$x`. Writing THROUGH the property (`$o-&gt;arr[] = 1`) is `Error: Cannot indirectly modify readonly property C::$arr` and `unset()` on an initialized one is `Error: Cannot unset readonly property C::$x`. `__clone` is the single reopening: it may rewrite the copy's readonly properties, which lock again when it returns.</p>
+          <pre><code class="lang-php">class C { public readonly $x; function __construct() { $this-&gt;x = 1; } }
+$c = new C; try { $c-&gt;x = 2; } catch (Error $e) { echo $e-&gt;getMessage(); }
+// =&gt; Cannot modify readonly property C::$x</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-keyword-38">
+          <h3><a class="doc-anchor" href="#doc-keyword-38">#</a> <code>abstract</code></h3>
           <pre><code class="lang-php">abstract class C { abstract function m(); }</code></pre>
           <p>On a class it marks it un-instantiable. On a method it is parsed and discarded; an abstract method is simply a method whose body is `;`, so calling an un-overridden one returns null instead of raising a fatal error.</p>
           <pre><code class="lang-php">abstract class A { abstract function f(); } class B extends A { function f() { return 9; } }
 echo (new B)-&gt;f();   // =&gt; 9</code></pre>
         </article>
-        <article class="doc-entry" id="doc-keyword-38">
-          <h3><a class="doc-anchor" href="#doc-keyword-38">#</a> <code>final</code></h3>
+        <article class="doc-entry" id="doc-keyword-39">
+          <h3><a class="doc-anchor" href="#doc-keyword-39">#</a> <code>final</code></h3>
           <pre><code class="lang-php">final class C { … }   final function m() { … }</code></pre>
           <p>Parsed and discarded on both classes and methods. DIVERGENCE: a `final` class can still be extended and a `final` method still overridden.</p>
           <pre><code class="lang-php">final class A {} class B extends A {} echo get_class(new B);   // =&gt; B   (PHP 8: fatal error)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-keyword-39">
-          <h3><a class="doc-anchor" href="#doc-keyword-39">#</a> <code>var</code></h3>
+        <article class="doc-entry" id="doc-keyword-40">
+          <h3><a class="doc-anchor" href="#doc-keyword-40">#</a> <code>var</code></h3>
           <pre><code class="lang-php">var $prop;</code></pre>
           <p>The PHP 4 property declaration keyword. Accepted and treated as `public`.</p>
           <pre><code class="lang-php">class C { var $x = 5; } echo (new C)-&gt;x;   // =&gt; 5</code></pre>
         </article>
-        <article class="doc-entry" id="doc-keyword-40">
-          <h3><a class="doc-anchor" href="#doc-keyword-40">#</a> <code>instanceof</code></h3>
+        <article class="doc-entry" id="doc-keyword-41">
+          <h3><a class="doc-anchor" href="#doc-keyword-41">#</a> <code>instanceof</code></h3>
           <pre><code class="lang-php">expr instanceof ClassName</code></pre>
           <p>True when the value is an object whose class is, extends, or implements the named class — the check walks the parent chain and every implemented interface transitively. `Throwable` is special-cased to match both the `Exception` and `Error` roots.</p>
           <pre><code class="lang-php">class A {} class B extends A {} var_dump(new B instanceof A);   // =&gt; bool(true)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-keyword-41">
-          <h3><a class="doc-anchor" href="#doc-keyword-41">#</a> <code>try</code></h3>
+        <article class="doc-entry" id="doc-keyword-42">
+          <h3><a class="doc-anchor" href="#doc-keyword-42">#</a> <code>try</code></h3>
           <pre><code class="lang-php">try { body } catch (T [$e]) { … } [finally { … }]</code></pre>
           <p>Guards a block. At least one `catch` or a `finally` must follow, matching PHP's own rule.</p>
           <pre><code class="lang-php">try { echo "a"; } finally { echo "b"; }   // =&gt; ab</code></pre>
         </article>
-        <article class="doc-entry" id="doc-keyword-42">
-          <h3><a class="doc-anchor" href="#doc-keyword-42">#</a> <code>catch</code></h3>
+        <article class="doc-entry" id="doc-keyword-43">
+          <h3><a class="doc-anchor" href="#doc-keyword-43">#</a> <code>catch</code></h3>
           <pre><code class="lang-php">catch (A | B [$e]) { body }</code></pre>
           <p>Handles a thrown object whose class matches any type in the `|`-separated union. The bound variable is optional (PHP 8 syntax). A leading `\` and any `Ns\` prefix are folded away, so `\RuntimeException` and `RuntimeException` name the same class.</p>
           <pre><code class="lang-php">try { throw new Exception("x"); } catch (Exception $e) { echo $e-&gt;getMessage(); }   // =&gt; x</code></pre>
         </article>
-        <article class="doc-entry" id="doc-keyword-43">
-          <h3><a class="doc-anchor" href="#doc-keyword-43">#</a> <code>finally</code></h3>
+        <article class="doc-entry" id="doc-keyword-44">
+          <h3><a class="doc-anchor" href="#doc-keyword-44">#</a> <code>finally</code></h3>
           <pre><code class="lang-php">finally { body }</code></pre>
           <p>Runs after the `try`/`catch` on every exit path — normal fall-through, `return`, a rethrown exception, `break`, and `continue`.</p>
           <pre><code class="lang-php">try { echo "t"; } finally { echo "f"; }   // =&gt; tf</code></pre>
         </article>
-        <article class="doc-entry" id="doc-keyword-44">
-          <h3><a class="doc-anchor" href="#doc-keyword-44">#</a> <code>throw</code></h3>
+        <article class="doc-entry" id="doc-keyword-45">
+          <h3><a class="doc-anchor" href="#doc-keyword-45">#</a> <code>throw</code></h3>
           <pre><code class="lang-php">throw expr;   //  also usable as an expression</code></pre>
           <p>Raises an exception. It is both a statement and a PHP 8 expression, so `$x ?? throw new E` and `cond ? throw new E : $v` both parse.</p>
           <pre><code class="lang-php">try { throw new Exception("boom"); } catch (Exception $e) { echo $e-&gt;getMessage(); }   // =&gt; boom</code></pre>
         </article>
-        <article class="doc-entry" id="doc-keyword-45">
-          <h3><a class="doc-anchor" href="#doc-keyword-45">#</a> <code>namespace</code></h3>
+        <article class="doc-entry" id="doc-keyword-46">
+          <h3><a class="doc-anchor" href="#doc-keyword-46">#</a> <code>namespace</code></h3>
           <pre><code class="lang-php">namespace Name;   //  or  namespace Name { … }</code></pre>
           <p>Accepted and discarded: phplang resolves every name in one flat namespace, folding a qualified name to its last segment. The block form runs its body inline.</p>
           <pre><code class="lang-php">namespace App; function f() { return 1; } echo f();   // =&gt; 1</code></pre>
         </article>
-        <article class="doc-entry" id="doc-keyword-46">
-          <h3><a class="doc-anchor" href="#doc-keyword-46">#</a> <code>true</code></h3>
+        <article class="doc-entry" id="doc-keyword-47">
+          <h3><a class="doc-anchor" href="#doc-keyword-47">#</a> <code>true</code></h3>
           <pre><code class="lang-php">true</code></pre>
           <p>The boolean true literal, matched case-insensitively.</p>
           <pre><code class="lang-php">echo true ? "y" : "n";   // =&gt; y</code></pre>
         </article>
-        <article class="doc-entry" id="doc-keyword-47">
-          <h3><a class="doc-anchor" href="#doc-keyword-47">#</a> <code>false</code></h3>
+        <article class="doc-entry" id="doc-keyword-48">
+          <h3><a class="doc-anchor" href="#doc-keyword-48">#</a> <code>false</code></h3>
           <pre><code class="lang-php">false</code></pre>
           <p>The boolean false literal, matched case-insensitively.</p>
           <pre><code class="lang-php">echo false ? "y" : "n";   // =&gt; n</code></pre>
         </article>
-        <article class="doc-entry" id="doc-keyword-48">
-          <h3><a class="doc-anchor" href="#doc-keyword-48">#</a> <code>null</code></h3>
+        <article class="doc-entry" id="doc-keyword-49">
+          <h3><a class="doc-anchor" href="#doc-keyword-49">#</a> <code>null</code></h3>
           <pre><code class="lang-php">null</code></pre>
           <p>The null literal — the absent or unset value, matched case-insensitively. Reading an undefined variable or a missing array key also produces it, quietly.</p>
           <pre><code class="lang-php">echo null ?? "fallback";   // =&gt; fallback</code></pre>
         </article>
-        <article class="doc-entry" id="doc-keyword-49">
-          <h3><a class="doc-anchor" href="#doc-keyword-49">#</a> <code>and</code></h3>
+        <article class="doc-entry" id="doc-keyword-50">
+          <h3><a class="doc-anchor" href="#doc-keyword-50">#</a> <code>and</code></h3>
           <pre><code class="lang-php">expr and expr</code></pre>
           <p>Logical AND that short-circuits. DIVERGENCE: the parser gives it the same binding power as `&amp;&amp;`, whereas PHP puts `and` below assignment — so `$x = true and false;` assigns `false` here and `true` in PHP 8.</p>
           <pre><code class="lang-php">echo (true and false) ? "y" : "n";   // =&gt; n</code></pre>
         </article>
-        <article class="doc-entry" id="doc-keyword-50">
-          <h3><a class="doc-anchor" href="#doc-keyword-50">#</a> <code>or</code></h3>
+        <article class="doc-entry" id="doc-keyword-51">
+          <h3><a class="doc-anchor" href="#doc-keyword-51">#</a> <code>or</code></h3>
           <pre><code class="lang-php">expr or expr</code></pre>
           <p>Logical OR that short-circuits. It carries the same precedence as `||`, with the same divergence from PHP's low-precedence `or` described under `and`. There is no `xor` — it is not a token the parser recognizes.</p>
           <pre><code class="lang-php">echo (false or true) ? "y" : "n";   // =&gt; y</code></pre>
@@ -622,9 +630,9 @@ $o = new C; echo $o-&gt;x, $o-&gt;f();   // =&gt; 12</code></pre>
         </article>
         <article class="doc-entry" id="doc-operator-28">
           <h3><a class="doc-anchor" href="#doc-operator-28">#</a> <code>::</code></h3>
-          <pre><code class="lang-php">Class::CONST   Class::$staticProp   Class::method(args)   Class::class</code></pre>
-          <p>Scope resolution: class constants, static properties, static and parent method calls, and the `::class` name literal. The left side must be a bareword class name — `self`, `parent`, and `static` included.</p>
-          <pre><code class="lang-php">class A { const K = 1; static $s = 2; } echo A::K, A::$s, A::class;   // =&gt; 12A</code></pre>
+          <pre><code class="lang-php">Class::CONST   Class::$staticProp   Class::method(args)   Class::class   $cls::CONST</code></pre>
+          <p>Scope resolution: class constants, static properties, static and parent method calls, and the `::class` name literal. The left side is either a bareword class name — `self`, `parent`, and `static` included — or a dereferenceable expression whose value names the class at run time: a string is the class name, an object contributes its own. A value that is neither is `Error: Class name must be a valid object or a string`, and a string naming nothing is `Error: Class "X" not found`. `::class` is stricter than the rest: it answers for an object only, and refuses even a class-name string with `TypeError: Cannot use "::class" on string`.</p>
+          <pre><code class="lang-php">class A { const K = 1; static $s = 2; } $c = "A"; echo A::K, $c::$s, (new A)::class;   // =&gt; 12A</code></pre>
         </article>
         <article class="doc-entry" id="doc-operator-29">
           <h3><a class="doc-anchor" href="#doc-operator-29">#</a> <code>[]</code></h3>
@@ -978,8 +986,8 @@ $o = new C; unset($o-&gt;zz);   // =&gt; unset:zz</code></pre>
         <article class="doc-entry" id="doc-predefined-constant-44">
           <h3><a class="doc-anchor" href="#doc-predefined-constant-44">#</a> <code>COUNT_RECURSIVE</code></h3>
           <pre><code class="lang-php">COUNT_RECURSIVE: int = 1</code></pre>
-          <p>`count()` mode that should also count nested elements. DIVERGENCE: the core `count` arm never reads its second argument, so this behaves like `COUNT_NORMAL`.</p>
-          <pre><code class="lang-php">echo count([1, [2, 3]], COUNT_RECURSIVE);   // =&gt; 2   (PHP 8 prints: 4)</code></pre>
+          <p>`count()` mode that counts nested elements too: a nested array counts as one element AND contributes its own contents, at every depth. Recursion is into arrays only — a nested `Countable` is a single element and its own `count()` is not consulted.</p>
+          <pre><code class="lang-php">echo count([1, [2, 3]], COUNT_RECURSIVE);   // =&gt; 4</code></pre>
         </article>
         <article class="doc-entry" id="doc-predefined-constant-45">
           <h3><a class="doc-anchor" href="#doc-predefined-constant-45">#</a> <code>STR_PAD_RIGHT</code></h3>
@@ -1979,14 +1987,14 @@ echo $q-&gt;extract();   // =&gt; hi</code></pre>
         <h2>Core library — arrays</h2>
         <article class="doc-entry" id="doc-core-library-arrays-1">
           <h3><a class="doc-anchor" href="#doc-core-library-arrays-1">#</a> <code>count</code></h3>
-          <pre><code class="lang-php">count(array|mixed $value): int</code></pre>
-          <p>Number of elements in an array; any non-array counts as 1. DIVERGENCE: the `$mode` argument is not read, so `COUNT_RECURSIVE` counts only the top level.</p>
+          <pre><code class="lang-php">count(Countable|array $value, int $mode = COUNT_NORMAL): int</code></pre>
+          <p>Number of elements in an array, or what a `Countable`'s own `count()` returns. Anything else is a `TypeError` — PHP 8 stopped answering 1 for a scalar. `$mode` is `COUNT_NORMAL` or `COUNT_RECURSIVE`, and any other value is a `ValueError`.</p>
           <pre><code class="lang-php">echo count([1, 2, 3]);   // =&gt; 3</code></pre>
         </article>
         <article class="doc-entry" id="doc-core-library-arrays-2">
           <h3><a class="doc-anchor" href="#doc-core-library-arrays-2">#</a> <code>sizeof</code></h3>
-          <pre><code class="lang-php">sizeof(array|mixed $value): int</code></pre>
-          <p>The alias of `count`, sharing its match arm and its `COUNT_RECURSIVE` limitation.</p>
+          <pre><code class="lang-php">sizeof(Countable|array $value, int $mode = COUNT_NORMAL): int</code></pre>
+          <p>The alias of `count`, sharing its match arm and therefore its modes and its errors exactly.</p>
         </article>
         <article class="doc-entry" id="doc-core-library-arrays-3">
           <h3><a class="doc-anchor" href="#doc-core-library-arrays-3">#</a> <code>array_keys</code></h3>
