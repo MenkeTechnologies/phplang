@@ -409,7 +409,7 @@ pub const CORPUS: &[Entry] = &[
         "echo",
         "Language construct",
         "echo expr[, expr …];   //  also: <?= expr ?>",
-        "Writes one or more values to standard output and has no return value. The short echo tag `<?=` is the single-argument form. DIVERGENCE: an object argument prints `Array` — `__toString` is not consulted.",
+        "Writes one or more values to standard output and has no return value. The short echo tag `<?=` is the single-argument form. An object argument is converted through `__toString`, as it is everywhere a value becomes a string.",
         "echo \"hi\", \"!\";   // => hi!",
     ),
     (

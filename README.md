@@ -219,8 +219,18 @@ end-to-end (see `tests/basic.rs`):
   `RuntimeException`, `LogicException`, `InvalidArgumentException`, `TypeError`,
   `ValueError`, `UnhandledMatchError`, `DivisionByZeroError`) that user classes
   can subclass, and `getMessage()`/`getCode()`/`getPrevious()`/`__toString()`.
-- **Diagnostics.** `Warning` and `Deprecated` notices go to *stdout*, interleaved
-  with the program's output exactly as PHP's CLI defaults put them: undefined
+- **Diagnostics.** Every diagnostic is written TWICE, under two independent ini
+  flags, exactly as the reference writes it: `display_errors` puts the copy the
+  program sees on *stdout*, interleaved with its output and inside any open
+  `ob_start` buffer, and `log_errors` puts a `PHP `-prefixed copy on *stderr*.
+  Both default on; `-d display_errors=0` leaves only the stderr copy and
+  `-d log_errors=0` only the stdout one. A fatal and a parse error are not
+  exempt from either, nor from the `error_reporting` mask — `php -d
+  error_reporting=0` runs an uncaught exception to completion in silence and
+  still exits 255. `trigger_error` raises a real diagnostic through the same
+  path, so it obeys all three gates, rejects a level that is not one of the four
+  `E_USER_*` with the reference's `ValueError`, and ends the request on
+  `E_USER_ERROR`. The diagnostics themselves cover undefined
   variables, array keys and properties, array offsets on a non-array, string
   offsets past the end, the `++`/`--` cases that have no effect, and PHP 8.2's
   `Creation of dynamic property C::$p is deprecated`. `isset()`, `empty()` and
@@ -298,8 +308,20 @@ end-to-end (see `tests/basic.rs`):
   variadic introspection (`func_get_args`/`func_num_args`), `fopen` file streams
   (`fread`/`fwrite`/`fgets`/`fseek`/`fclose`), the `unset()` construct, `spl_object_id`,
   and the `@` error-suppression operator.
-- A large standard library (475+ functions, incl. bcmath and gmp arbitrary precision), split into category modules under
-  `src/stdlib/` and consulted through a per-category dispatch chain:
+- **`exit` / `die`** — the request ends where they stand. Parentheses and the
+  argument are both optional; an int becomes the process exit status (modulo
+  256, so `exit(300)` leaves 44 and `exit(-1)` leaves 255), a string is printed
+  and the status is 0, a bool or float narrows, an explicit null is deprecated,
+  and anything else is a `TypeError`. The unwind is not catchable and does not
+  run a `finally`, but open output buffers still flush. PHP 8.4 also registered
+  them as callable functions, so `function_exists("exit")` is true and
+  `$f = "exit"; $f(3);` works.
+- A large standard library (see the
+  [builtin reference](https://menketechnologies.github.io/phplang/reference.html)
+  for the current surface — it is generated from the same corpus a test pins to
+  the runtime's registration tables, so it cannot drift), incl. bcmath and gmp
+  arbitrary precision, split into category modules under `src/stdlib/` and
+  consulted through a per-category dispatch chain:
   - **strings** — `str_*`, `substr*`, `strpos`/`stripos`/`strrpos`, `strstr`,
     `strtr`, `sprintf`/`vsprintf`/`sscanf`, `number_format`, `nl2br`,
     `addslashes`, `str_rot13`, `similar_text`, `levenshtein`, `mb_*`, …
@@ -379,24 +401,32 @@ documented in-code:
   it once, at declaration).
 - The by-reference OUT parameter is implemented for `preg_match`/
   `preg_match_all`/`preg_replace`(`_callback`)/`parse_str`/`similar_text`/
-  `str_replace`/`settype` and not for the rest of the library
-  (`array_multisort`, `sscanf`'s trailing arguments).
+  `str_replace`/`settype`/`array_multisort` and not for the rest of the library
+  — `sscanf`'s trailing arguments are the one that remains, so
+  `sscanf($s, "%d %s", $a, $b)` returns the parsed array where the reference
+  returns the count and fills `$a`/`$b`. The two-argument form is exact.
 - A diagnostic names the *statement's* line. PHP names the line of the
   expression, so a statement spanning several lines reports its first.
 - A `preg_*` pattern the REFERENCE also rejects reproduces its `Warning` and its
-  `preg_last_error()` state. One the reference would have compiled but NEITHER
-  engine can (pattern recursion, a conditional group) still returns the error
-  sentinel SILENTLY — there is no diagnostic to copy. The `D` modifier is
-  accepted and ignored; it is right by accident, because both engines' `$` is
-  already end-of-haystack only, so the *unmodified* `/a$/` is what differs —
-  `preg_match("/a$/", "a\n")` is 1 in the reference and 0 here.
+  `preg_last_error()` state. **Pattern RECURSION is the one construct that now
+  compiles and answers WRONGLY rather than failing**: `preg_match('/\((?:[^()]|
+  (?R))*\)/', '(a(b))')` matches in both engines, but the reference captures
+  `(a(b))` where this one captures `(b)`. There is no diagnostic to copy and no
+  error sentinel to return — the answer is simply not the reference's, which
+  makes it the most dangerous shape a gap can take. Conditional groups
+  (`(?(1)…|…)`), look-around, backreferences, atomic groups and possessive
+  quantifiers all match the reference.
 - A pattern that only the `fancy-regex` engine will take matches as if `/u` were
   set, because that engine works over `&str`: `.` is one codepoint rather than
   one byte. This is visible only for a NON-ASCII subject, and only for a pattern
   the byte engine already refused.
-- A **stack trace** frame entered from inside a library function (an `array_map`
-  callback) prints its call site rather than PHP's `[internal function]`, and a
-  closure frame prints `{closure}` rather than PHP 8.4's `{closure:file:line}`.
+- A **stack trace** taken inside a library callback is SHORTER than PHP's, not
+  merely differently spelled. Where the reference prints three frames for a
+  throw inside an `array_map` callback — `#0 [internal function]: {closure:…}`,
+  `#1 …: array_map(Object(Closure), Array)`, `#2 {main}` — this engine prints
+  two, naming the callback's call site and omitting the `array_map` frame
+  entirely. A closure frame also prints `{closure}` rather than PHP 8.4's
+  `{closure:file:line}`.
 - A **syntax error** reproduces PHP's `unexpected <token>` text but not the
   `, expecting "X" or "Y"` clause that often follows it: the expected set comes
   out of PHP's generated LALR tables, not the grammar as written here.
@@ -420,10 +450,17 @@ call stack, locals, and expression `evaluate`) are.
 
 `parity-fuzz` is a differential fuzzer: it generates seed-deterministic PHP
 snippets, runs each through both the reference `php` and phplang, and reports
-every case where stdout or success/failure diverges. It is a development tool —
-it needs a reference `php` on `PATH`, so CI never runs it. Neither side is run
-with `error_reporting` turned down: PHP writes `Warning`/`Deprecated`/`Fatal
-error` to stdout, so those are part of the output being compared.
+every case where **stdout, stderr or the exact exit code** differs. It is a
+development tool — it needs a reference `php` on `PATH`, so CI never runs it.
+Neither side is run with `error_reporting` turned down: PHP writes
+`Warning`/`Deprecated`/`Fatal error` to stdout *and* a `PHP `-prefixed copy to
+stderr, so both copies are part of what is compared.
+
+All three observables are compared because each omission was a blind spot
+rather than a decision. stderr used to be piped to `/dev/null`, which made the
+harness structurally incapable of reporting a stderr-only divergence however
+many cases it ran; the exit code used to be compared only as zero-vs-nonzero,
+which made `exit(3)` and `exit(9)` the same answer.
 
 ```sh
 cargo build --bin parity-fuzz
