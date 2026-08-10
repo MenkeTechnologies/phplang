@@ -106,8 +106,31 @@ fn base_to_decimal_ints() {
     assert_eq!(run("<?php echo bindec('11111111');"), "255");
     assert_eq!(run("<?php echo octdec('100');"), "64");
     assert_eq!(run("<?php echo octdec('777');"), "511");
-    // Invalid digits are silently ignored (PHP behavior).
-    assert_eq!(run("<?php echo bindec('1a0b1');"), "5");
+    // A base-matching literal prefix is dropped, with no diagnostic:
+    //
+    // ```text
+    // $ php -r "echo bindec('0b101');"   => 5
+    // $ php -r "echo octdec('0o17');"    => 15
+    // $ php -r "echo hexdec('0x1f');"    => 31
+    // ```
+    assert_eq!(run("<?php echo bindec('0b101');"), "5");
+    assert_eq!(run("<?php echo octdec('0o17');"), "15");
+    assert_eq!(run("<?php echo hexdec('0x1f');"), "31");
+    // Characters the base cannot use ARE ignored — but not silently. The old
+    // expectation here was `"5"` with no diagnostic, which pinned phplang's own
+    // behaviour rather than the reference's:
+    //
+    // ```text
+    // $ php -r "echo bindec('1a0b1');"
+    //
+    // Deprecated: Invalid characters passed for attempted conversion, these have been ignored in Command line code on line 1
+    // 5
+    // ```
+    let ignored = "\nDeprecated: Invalid characters passed for attempted conversion, \
+                   these have been ignored in Command line code on line 1\n";
+    assert_eq!(run("<?php echo bindec('1a0b1');"), format!("{ignored}5"));
+    assert_eq!(run("<?php echo hexdec('zz');"), format!("{ignored}0"));
+    assert_eq!(run("<?php echo octdec('9');"), format!("{ignored}0"));
 }
 
 #[test]
@@ -190,9 +213,28 @@ fn rand_bounds_are_inclusive_and_respected() {
 
 #[test]
 fn rand_no_args_within_getrandmax() {
+    // The bound is pinned to the value PHP fixes for mt_getrandmax(), not read
+    // back out of the engine under test: `$r <= mt_getrandmax()` alone compares
+    // the engine against itself, and `$r >= 0` is trivially true, so the old
+    // form passed for an `mt_rand` hardwired to return 0.
     assert_eq!(
-        run("<?php $r = mt_rand(); echo ($r >= 0 && $r <= mt_getrandmax()) ? 'ok' : 'bad';"),
+        run("<?php echo mt_getrandmax();"),
+        "2147483647",
+        "mt_getrandmax() is fixed at 2^31-1 in the reference"
+    );
+    assert_eq!(
+        run("<?php $r = mt_rand(); echo ($r >= 0 && $r <= 2147483647) ? 'ok' : 'bad';"),
         "ok"
+    );
+    // …and that it actually varies. A constant generator passes every range
+    // check ever written; 40 draws collapsing to one value does not happen by
+    // chance for a real PRNG.
+    assert_eq!(
+        run(
+            "<?php $s = []; for ($i = 0; $i < 40; $i++) { $s[mt_rand()] = 1; } \
+             echo count($s) > 1 ? 'varies' : 'constant';"
+        ),
+        "varies"
     );
 }
 

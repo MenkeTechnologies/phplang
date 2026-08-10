@@ -252,7 +252,7 @@ fn b_callvalue_named(vm: &mut VM, argc: u8) -> Value {
     mark_frame_line(vm);
     match host::call_value_named(callee, pos, named) {
         Ok(v) => bubbled(vm, v),
-        Err(e) => fail(vm, e),
+        Err(e) => fail_or_throw(vm, e),
     }
 }
 
@@ -325,7 +325,7 @@ fn b_scall_named(vm: &mut VM, argc: u8) -> Value {
     };
     match r {
         Ok(v) => bubbled(vm, v),
-        Err(e) => fail(vm, e),
+        Err(e) => fail_or_throw(vm, e),
     }
 }
 
@@ -337,7 +337,7 @@ fn b_new_named(vm: &mut VM, argc: u8) -> Value {
     mark_frame_line(vm);
     match host::new_object_named(&class, pos, named) {
         Ok(v) => bubbled(vm, v),
-        Err(e) => fail(vm, e),
+        Err(e) => fail_or_throw(vm, e),
     }
 }
 
@@ -487,10 +487,13 @@ fn b_ref_to_append(vm: &mut VM, argc: u8) -> Value {
     let slot = vm.pop().to_int() as usize;
     let keys = pop_args(vm, argc as usize - 2);
     let name = pop_name(vm);
-    with_host(|h| {
-        h.append_elem_to_slot(&name, &keys, slot);
-        h.ref_cell_value(slot)
-    })
+    match with_host(|h| -> Result<Value, String> {
+        h.append_elem_to_slot(&name, &keys, slot)?;
+        Ok(h.ref_cell_value(slot))
+    }) {
+        Ok(v) => v,
+        Err(e) => fail_or_throw(vm, throws_bare("Error", e)),
+    }
 }
 
 /// Stack `[recv, prop, slot]` — make `$recv->prop` a reference to `slot`'s cell.
@@ -1320,7 +1323,10 @@ fn b_call_value(vm: &mut VM, argc: u8) -> Value {
     mark_frame_line(vm);
     match host::call_value(callee, args) {
         Ok(v) => bubbled(vm, v),
-        Err(e) => fail(vm, e),
+        // `fail_or_throw`, not `fail`: "not callable" is a catchable `Error` in
+        // the reference, and a scaffold failure here would be invisible to
+        // `try`/`catch`.
+        Err(e) => fail_or_throw(vm, e),
     }
 }
 
@@ -1511,7 +1517,16 @@ fn b_index_set(vm: &mut VM, _: u8) -> Value {
         }
         return bubbled(vm, val);
     }
-    with_host(|h| h.index_set_var(&name, &key, val.clone()));
+    // The write can warn (`String offset cast occurred`) or throw, and both name
+    // this line, so the current op's line has to be recorded first.
+    let line = cur_op_line(vm);
+    mark_frame_line(vm);
+    if let Err(e) = with_host(|h| {
+        h.set_warn_line(line);
+        h.index_set_var(&name, &key, val.clone())
+    }) {
+        return fail_or_throw(vm, e);
+    }
     val
 }
 
@@ -1527,7 +1542,9 @@ fn b_arr_append(vm: &mut VM, _: u8) -> Value {
         }
         return bubbled(vm, val);
     }
-    with_host(|h| h.append_var(&name, val.clone()));
+    if let Err(e) = with_host(|h| h.append_var(&name, val.clone())) {
+        return fail_or_throw(vm, throws_bare("Error", e));
+    }
     val
 }
 
@@ -1643,14 +1660,18 @@ fn b_arr_mut(vm: &mut VM, argc: u8) -> Value {
     let name = with_host(|h| h.to_str(&args[0]));
     let sub = args[1].to_int();
     let extra: Vec<Value> = args.split_off(2);
-    with_host(|h| match sub {
+    let r = with_host(|h| match sub {
         arrmut::PUSH => h.arr_push_var(&name, extra),
-        arrmut::POP => h.arr_pop_var(&name),
-        arrmut::SHIFT => h.arr_shift_var(&name),
-        arrmut::UNSHIFT => h.arr_unshift_var(&name, extra),
-        arrmut::SPLICE => h.arr_splice_var(&name, &extra),
-        _ => Value::Undef,
-    })
+        arrmut::POP => Ok(h.arr_pop_var(&name)),
+        arrmut::SHIFT => Ok(h.arr_shift_var(&name)),
+        arrmut::UNSHIFT => Ok(h.arr_unshift_var(&name, extra)),
+        arrmut::SPLICE => Ok(h.arr_splice_var(&name, &extra)),
+        _ => Ok(Value::Undef),
+    });
+    match r {
+        Ok(v) => v,
+        Err(e) => fail_or_throw(vm, throws_bare("Error", e)),
+    }
 }
 
 // ── object builtins (classes / OOP) ──────────────────────────────────────────
@@ -1661,7 +1682,8 @@ fn b_new(vm: &mut VM, argc: u8) -> Value {
     mark_frame_line(vm);
     match host::new_object(&class, args) {
         Ok(v) => bubbled(vm, v),
-        Err(e) => fail(vm, e),
+        // "Cannot instantiate …" and "Class … not found" are catchable `Error`s.
+        Err(e) => fail_or_throw(vm, e),
     }
 }
 
@@ -2109,7 +2131,8 @@ fn b_scall(vm: &mut VM, argc: u8) -> Value {
     };
     match r {
         Ok(v) => bubbled(vm, v),
-        Err(e) => fail(vm, e),
+        // `Enum::from()` raises a catchable ValueError through this path.
+        Err(e) => fail_or_throw(vm, e),
     }
 }
 
@@ -2768,6 +2791,45 @@ pub fn untag_throw(e: &str) -> Option<(&str, &str)> {
     e.strip_prefix(THROW_TAG)?.split_once(THROW_TAG)
 }
 
+/// Marker for a throw that carries a `getCode()` as well as a message — see
+/// [`throws_code`].
+const CODE_THROW_TAG: &str = "\u{1}cthrow\u{1}";
+
+/// [`throws`] for an exception whose `getCode()` is meaningful. `JsonException`
+/// is the case that forces it: its code is the `JSON_ERROR_*` constant, and a
+/// caller distinguishes a syntax error from a depth error by reading it.
+pub fn throws_code(class: &str, code: i64, message: impl std::fmt::Display) -> String {
+    format!("{CODE_THROW_TAG}{class}{CODE_THROW_TAG}{code}{CODE_THROW_TAG}{message}")
+}
+
+/// Split a [`throws_code`] error back into `(class, code, message)`.
+pub fn untag_throw_code(e: &str) -> Option<(&str, i64, &str)> {
+    let rest = e.strip_prefix(CODE_THROW_TAG)?;
+    let (class, rest) = rest.split_once(CODE_THROW_TAG)?;
+    let (code, message) = rest.split_once(CODE_THROW_TAG)?;
+    Some((class, code.parse().ok()?, message))
+}
+
+/// Marker for a library failure the reference reports BELOW the exception
+/// machinery — see [`fatals`].
+const FATAL_TAG: &str = "\u{1}lfatal\u{1}";
+
+/// Tag a library failure as an uncatchable `Fatal error` rather than a throw.
+///
+/// A handful of engine failures are not Throwables at all: an allocation whose
+/// size arithmetic overflows is reported straight to the output and stops the
+/// program, so no `try`/`catch` can intercept it. Rendering one as a
+/// `ValueError` would let user code swallow something the reference never lets
+/// it swallow.
+pub fn fatals(message: impl std::fmt::Display) -> String {
+    format!("{FATAL_TAG}{message}")
+}
+
+/// Split a [`fatals`] error back into its message.
+pub fn untag_fatal(e: &str) -> Option<&str> {
+    e.strip_prefix(FATAL_TAG)
+}
+
 /// Marker for a throw raised *at* the call site rather than inside the callee —
 /// see [`throws_bare`].
 const BARE_THROW_TAG: &str = "\u{1}bthrow\u{1}";
@@ -2903,14 +2965,29 @@ pub fn call_library(name: &str, args: &[Value]) -> Result<Value, String> {
                     "str_repeat(): Argument #2 ($times) must be greater than or equal to 0",
                 ));
             }
-            with_host(|h| Value::str(h.to_str(&arg(args, 0)).repeat(n as usize)))
+            // `zend_string_safe_alloc(len, times, 0, 0)` sizes the result as
+            // `len * times + 32` (the 32 is the interned-string header). When
+            // that arithmetic overflows `size_t` the engine stops with a fatal
+            // naming the three operands — not a ValueError, and not catchable.
+            let src = with_host(|h| h.to_str(&arg(args, 0)));
+            let len = src.len();
+            if len
+                .checked_mul(n as usize)
+                .and_then(|p| p.checked_add(32))
+                .is_none()
+            {
+                return Err(fatals(format!(
+                    "Possible integer overflow in memory allocation ({len} * {n} + 32)"
+                )));
+            }
+            Value::str(src.repeat(n as usize))
         }
         "strrev" => {
             with_host(|h| Value::str(h.to_str(&arg(args, 0)).chars().rev().collect::<String>()))
         }
-        "wordwrap" => with_host(|h| php_wordwrap(h, args)),
+        "wordwrap" => with_host(|h| php_wordwrap(h, args))?,
         "substr" => with_host(|h| Value::str(php_substr(&h.to_str(&arg(args, 0)), args))),
-        "strpos" => with_host(|h| php_strpos(h, args)),
+        "strpos" => with_host(|h| php_strpos(h, args))?,
         "str_replace" => with_host(|h| php_str_replace(h, args)),
         // The `(array)` / `(object)` casts, which have no PHP-callable spelling.
         "__cast_array" => with_host(|h| php_cast_array(h, &arg(args, 0))),
@@ -2929,9 +3006,13 @@ pub fn call_library(name: &str, args: &[Value]) -> Result<Value, String> {
         "sqrt" => with_host(|h| Value::float(h.to_number(&arg(args, 0)).to_float().sqrt())),
         "round" => with_host(|h| {
             let x = h.to_number(&arg(args, 0)).to_float();
+            // `ZEND_LONG_INT_OVFL`/`UDFL`: a `$precision` outside the int range
+            // SATURATES rather than wrapping, so `round(1.5, 2147483648)` is
+            // `round(1.5, INT_MAX)` and not `round(1.5, INT_MIN)`.
             let p = args.get(1).map(|v| v.to_int()).unwrap_or(0);
+            let places = p.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
             let mode = args.get(2).map(|v| v.to_int()).unwrap_or(1);
-            Value::float(php_round(x, p as i32, mode))
+            Value::float(php_round(x, places, mode))
         }),
         "intval" => with_host(|h| {
             let v = arg(args, 0);
@@ -2975,16 +3056,16 @@ pub fn call_library(name: &str, args: &[Value]) -> Result<Value, String> {
         "in_array" => with_host(|h| php_in_array(h, args)),
         "array_keys" => with_host(|h| h.array_keys(&arg(args, 0))),
         "array_values" => with_host(|h| php_array_values(h, &arg(args, 0))),
-        "array_push" => with_host(|h| php_array_push(h, args)),
+        "array_push" => with_host(|h| php_array_push(h, args))?,
         "range" => with_host(|h| php_range(h, args))?,
-        "sprintf" => with_host(|h| Value::str(php_sprintf(h, args))),
-        "printf" => with_host(|h| {
-            let s = php_sprintf(h, args);
-            h.write_out(&s);
+        "sprintf" => with_host(|h| php_sprintf(h, args, false)).map(Value::str)?,
+        "printf" => {
+            let s = with_host(|h| php_sprintf(h, args, false))?;
+            with_host(|h| h.write_out(&s));
             Value::int(s.len() as i64)
-        }),
+        }
         "print_r" => with_host(|h| {
-            let s = php_print_r(h, &arg(args, 0), 0);
+            let s = php_print_r(h, &arg(args, 0), 0, &mut host::Visiting::default());
             if args.get(1).map(|v| h.is_truthy(v)).unwrap_or(false) {
                 Value::str(s)
             } else {
@@ -3051,16 +3132,27 @@ pub fn call_library(name: &str, args: &[Value]) -> Result<Value, String> {
         // `$format`/`$characters` arguments; it is intentionally not handled here
         // so the full version wins (this core arm was a count-only stub).
         "chr" => with_host(|h| {
-            let n = (h.to_number(&arg(args, 0)).to_int().rem_euclid(256)) as u8;
+            let raw = h.to_number(&arg(args, 0)).to_int();
+            // The wrap still happens — the reference only DEPRECATES relying on
+            // it, it does not refuse the call.
+            if !(0..=255).contains(&raw) {
+                h.deprecated(
+                    "chr(): Providing a value not in-between 0 and 255 is deprecated, this \
+                     is because a byte value must be in the [0, 255] interval. The value \
+                     used will be constrained using % 256",
+                );
+            }
+            let n = raw.rem_euclid(256) as u8;
             Value::str((n as char).to_string())
         }),
-        "ord" => {
-            with_host(|h| Value::int(h.to_str(&arg(args, 0)).bytes().next().unwrap_or(0) as i64))
-        }
-        "dechex" => with_host(|h| Value::str(format!("{:x}", h.to_number(&arg(args, 0)).to_int()))),
-        "hexdec" => with_host(|h| {
-            Value::int(i64::from_str_radix(h.to_str(&arg(args, 0)).trim(), 16).unwrap_or(0))
+        "ord" => with_host(|h| {
+            let s = h.to_str(&arg(args, 0));
+            if s.is_empty() {
+                h.deprecated("ord(): Providing an empty string is deprecated");
+            }
+            Value::int(s.bytes().next().unwrap_or(0) as i64)
         }),
+        "dechex" => with_host(|h| Value::str(format!("{:x}", h.to_number(&arg(args, 0)).to_int()))),
         "bin2hex" => with_host(|h| {
             let s = h.to_str(&arg(args, 0));
             Value::str(s.bytes().map(|b| format!("{b:02x}")).collect::<String>())
@@ -3110,7 +3202,7 @@ pub fn call_library(name: &str, args: &[Value]) -> Result<Value, String> {
         "arsort" => with_host(|h| php_asort(h, &arg(args, 0), true, sort_flags(args))),
         "ksort" => with_host(|h| php_ksort(h, &arg(args, 0), false, sort_flags(args))),
         "krsort" => with_host(|h| php_ksort(h, &arg(args, 0), true, sort_flags(args))),
-        "array_fill" => with_host(|h| php_array_fill(h, args)),
+        "array_fill" => with_host(|h| php_array_fill(h, args))?,
         "array_combine" => with_host(|h| php_array_combine(h, args))?,
         "array_diff" => with_host(|h| php_array_diff(h, args, false)),
         "array_intersect" => with_host(|h| php_array_diff(h, args, true)),
@@ -3118,7 +3210,7 @@ pub fn call_library(name: &str, args: &[Value]) -> Result<Value, String> {
         // ── type / util ──────────────────────────────────────────────────
         "boolval" => with_host(|h| Value::bool(h.is_truthy(&arg(args, 0)))),
         "var_export" => with_host(|h| {
-            let s = php_var_export(h, &arg(args, 0), 0);
+            let s = php_var_export(h, &arg(args, 0), 0, &mut host::Visiting::default());
             if args.get(1).map(|v| h.is_truthy(v)).unwrap_or(false) {
                 Value::str(s)
             } else {
@@ -3130,25 +3222,29 @@ pub fn call_library(name: &str, args: &[Value]) -> Result<Value, String> {
             // Objects are resolved to plain data FIRST, outside the host borrow:
             // `jsonSerialize()` is PHP code and cannot run while the host is
             // borrowed. See `json_prepare`.
+            let flags = arg(args, 1).to_int();
             let prepared = match json_prepare(&arg(args, 0)) {
                 Ok(v) => v,
                 Err(code) => {
-                    crate::stdlib::json::set_last_error(code);
-                    return Ok(Value::bool(false));
+                    return match crate::stdlib::json::fail(code, flags) {
+                        Some(e) => Err(e),
+                        None => Ok(Value::bool(false)),
+                    }
                 }
             };
-            with_host(|h| {
-                // JSON has no NAN/INF literal, so the encoder bails out entirely
-                // and reports JSON_ERROR_INF_OR_NAN rather than emitting invalid
-                // JSON.
-                if has_nonfinite_float(h, &prepared) {
-                    crate::stdlib::json::set_last_error(crate::stdlib::json::JSON_ERROR_INF_OR_NAN);
-                    Value::bool(false)
-                } else {
-                    crate::stdlib::json::set_last_error(0);
-                    Value::str(php_json_encode(h, &prepared, arg(args, 1).to_int(), 0))
-                }
-            })
+            // JSON has no NAN/INF literal, so the encoder bails out entirely and
+            // reports JSON_ERROR_INF_OR_NAN rather than emitting invalid JSON.
+            if with_host(|h| has_nonfinite_float(h, &prepared)) {
+                return match crate::stdlib::json::fail(
+                    crate::stdlib::json::JSON_ERROR_INF_OR_NAN,
+                    flags,
+                ) {
+                    Some(e) => Err(e),
+                    None => Ok(Value::bool(false)),
+                };
+            }
+            crate::stdlib::json::set_last_error(0);
+            with_host(|h| Value::str(php_json_encode(h, &prepared, flags, 0)))
         }
 
         // Extended standard library lives in `src/stdlib/*`, one module per
@@ -3275,13 +3371,42 @@ fn php_substr(s: &str, args: &[Value]) -> String {
         .collect()
 }
 
-fn php_strpos(h: &host::PhpHost, args: &[Value]) -> Value {
+/// `strpos($haystack, $needle, $offset = 0)`.
+///
+/// `$offset` was previously ignored outright — `strpos("abcabc", "a", 3)`
+/// answered 0 instead of 3. It counts BYTES from the start, or from the end when
+/// negative, and an offset outside `[-strlen, strlen]` is a ValueError rather
+/// than a no-match: PHP distinguishes "looked and did not find" from "you cannot
+/// look there".
+fn php_strpos(h: &host::PhpHost, args: &[Value]) -> Result<Value, String> {
     let hay = h.to_str(&arg(args, 0));
     let needle = h.to_str(&arg(args, 1));
-    match hay.find(&needle) {
-        Some(byte_idx) => Value::int(hay[..byte_idx].chars().count() as i64),
-        None => Value::bool(false),
+    let len = hay.len() as i64;
+    let raw = args.get(2).map(|v| h.to_number(v).to_int()).unwrap_or(0);
+    let start = if raw < 0 { len + raw } else { raw };
+    if start < 0 || start > len {
+        return Err(throws(
+            "ValueError",
+            "strpos(): Argument #3 ($offset) must be contained in argument #1 ($haystack)",
+        ));
     }
+    // Search the BYTE view: a `$offset` that lands mid-character must not panic
+    // the way slicing the `&str` would.
+    let from = start as usize;
+    let hb = hay.as_bytes();
+    let nb = needle.as_bytes();
+    if nb.is_empty() {
+        return Ok(Value::int(start));
+    }
+    if nb.len() > hb.len() - from {
+        return Ok(Value::bool(false));
+    }
+    for i in from..=(hb.len() - nb.len()) {
+        if &hb[i..i + nb.len()] == nb {
+            return Ok(Value::int(i as i64));
+        }
+    }
+    Ok(Value::bool(false))
 }
 
 /// `str_replace($search, $replace, $subject, &$count)`.
@@ -3483,7 +3608,19 @@ fn php_implode(args: &[Value]) -> Value {
         .collect();
     // Each element is joined *as a string*, so one with `__toString` runs it —
     // which re-enters the host, hence the conversion outside the borrow.
-    let parts: Vec<String> = vals.iter().map(host::to_str_ext).collect();
+    //
+    // An element that is itself an ARRAY has no string form: the reference warns
+    // `Array to string conversion` (once per such element) and joins the literal
+    // text `Array`.
+    let parts: Vec<String> = vals
+        .iter()
+        .map(|v| {
+            if with_host(|h| h.is_array(v)) {
+                with_host(|h| h.warn("Array to string conversion"));
+            }
+            host::to_str_ext(v)
+        })
+        .collect();
     Value::str(parts.join(&glue))
 }
 
@@ -3597,135 +3734,453 @@ fn php_array_values(h: &mut host::PhpHost, v: &Value) -> Value {
     arr
 }
 
-fn php_array_push(h: &mut host::PhpHost, args: &[Value]) -> Value {
+fn php_array_push(h: &mut host::PhpHost, args: &[Value]) -> Result<Value, String> {
     let arr = arg(args, 0);
     for v in &args[1.min(args.len())..] {
+        // Same refusal as `$a[] =`: an append onto a saturated array has no key
+        // to take, and the reference raises a catchable `Error` rather than
+        // overwriting `PHP_INT_MAX`.
+        if h.append_slot_taken(&arr) {
+            return Err(throws_bare("Error", host::NEXT_ELEMENT_OCCUPIED));
+        }
         h.arr_push_auto(&arr, v.clone());
     }
-    Value::int(h.array_len(&arr))
+    Ok(Value::int(h.array_len(&arr)))
 }
 
-/// `range($start, $end, $step = 1)`: an inclusive sequence. Character ranges
-/// (both bounds non-numeric single-byte-anchored strings) walk byte codepoints;
-/// numeric ranges are integer unless any bound/step is a float. `$step` is taken
-/// as its absolute value (direction comes from `$start` vs `$end`). Like PHP,
-/// a `$step` that exceeds the span between distinct bounds is a fatal ValueError.
-fn php_range(h: &mut host::PhpHost, args: &[Value]) -> Result<Value, String> {
-    const STEP_ERR: &str = "range(): Argument #3 ($step) must be less than the range \
-                            spanned by argument #1 ($start) and argument #2 ($end)";
-    let a0 = arg(args, 0);
-    let a1 = arg(args, 1);
-    let arr = h.new_array();
+/// How `range()` reads one of its bounds, ported from `php_range_process_input`
+/// in `ext/standard/array.c`. The ORDER matters and is load-bearing: the caller
+/// tests `>= Str` to mean "spell this range in characters" and `!= Ambig` to
+/// mean "the user really wrote a string", exactly as the C compares the zval
+/// type ids `IS_LONG < IS_DOUBLE < IS_STRING < IS_ARRAY`. `Ambig` stands in for
+/// the C's `IS_ARRAY` sentinel: a ONE-BYTE numeric string like `"5"`, which can
+/// be read either as the int 5 or as the character `5`, and whose reading is
+/// decided by what the other bound turned out to be.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum RangeInput {
+    Long,
+    Double,
+    Str,
+    Ambig,
+}
 
-    // Character range: both bounds are non-empty, non-numeric strings.
-    if let (Value::Str(s0), Value::Str(s1)) = (&a0, &a1) {
-        if !s0.is_empty()
-            && !s1.is_empty()
-            && !host::is_numeric_string(s0)
-            && !host::is_numeric_string(s1)
-        {
-            // A character range walks BYTES, so only the first byte of each bound
-            // is used; PHP warns (per bound, `$start` before `$end`) that the rest
-            // is discarded rather than silently truncating.
-            for (pos, name, s) in [(1, "start", s0), (2, "end", s1)] {
-                if s.len() > 1 {
-                    h.warn(format_args!(
-                        "range(): Argument #{pos} (${name}) must be a single byte, \
-                         subsequent bytes are ignored"
+/// Read one `range()` bound into both an int and a float view, reporting which
+/// of them is meaningful. Port of `php_range_process_input`.
+///
+/// The diagnostics are part of the contract, not decoration: an empty string
+/// warns and becomes 0, and a multi-byte non-numeric string warns that only its
+/// first byte survives.
+fn range_process_input(
+    h: &mut host::PhpHost,
+    input: &Value,
+    arg_num: u32,
+    arg_name: &str,
+) -> Result<(RangeInput, i64, f64), String> {
+    let finite = |d: f64, h: &mut host::PhpHost| -> Result<(), String> {
+        let _ = h;
+        if d.is_infinite() {
+            return Err(throws(
+                "ValueError",
+                format!(
+                    "range(): Argument #{arg_num} (${arg_name}) must be a finite number, \
+                     INF provided"
+                ),
+            ));
+        }
+        if d.is_nan() {
+            return Err(throws(
+                "ValueError",
+                format!(
+                    "range(): Argument #{arg_num} (${arg_name}) must be a finite number, \
+                     NAN provided"
+                ),
+            ));
+        }
+        Ok(())
+    };
+
+    match input {
+        Value::Int(n) => Ok((RangeInput::Long, *n, *n as f64)),
+        Value::Float(d) => {
+            finite(*d, h)?;
+            Ok((RangeInput::Double, 0, *d))
+        }
+        Value::Str(s) => {
+            if s.is_empty() {
+                h.warn(format_args!(
+                    "range(): Argument #{arg_num} (${arg_name}) must not be empty, casted to 0"
+                ));
+                return Ok((RangeInput::Long, 0, 0.0));
+            }
+            match host::parse_php_number_full(s) {
+                Some(Value::Float(d)) => {
+                    finite(d, h)?;
+                    Ok((RangeInput::Double, 0, d))
+                }
+                Some(Value::Int(n)) => Ok((
+                    if s.len() == 1 {
+                        RangeInput::Ambig
+                    } else {
+                        RangeInput::Long
+                    },
+                    n,
+                    n as f64,
+                )),
+                _ => {
+                    if s.len() != 1 {
+                        h.warn(format_args!(
+                            "range(): Argument #{arg_num} (${arg_name}) must be a single byte, \
+                             subsequent bytes are ignored"
+                        ));
+                    }
+                    Ok((RangeInput::Str, 0, 0.0))
+                }
+            }
+        }
+        // `Z_PARAM_NUMBER_OR_STR` in weak mode: bool and null coerce, everything
+        // else is rejected before the body runs.
+        Value::Bool(b) => Ok((RangeInput::Long, i64::from(*b), f64::from(*b))),
+        Value::Undef => {
+            h.deprecated(format_args!(
+                "range(): Passing null to parameter #{arg_num} (${arg_name}) of type \
+                 string|int|float is deprecated"
+            ));
+            Ok((RangeInput::Long, 0, 0.0))
+        }
+        other => {
+            let t = h.type_name_for_error(other);
+            Err(throws(
+                "TypeError",
+                format!(
+                    "range(): Argument #{arg_num} (${arg_name}) must be of type \
+                     string|int|float, {t} given"
+                ),
+            ))
+        }
+    }
+}
+
+/// The engine's hard cap on a hash-table's element count, `HT_MAX_SIZE`. Every
+/// `range()` size overflow message quotes it verbatim.
+const HT_MAX_SIZE: u64 = 1 << 30;
+
+/// `range($start, $end, $step = 1)`: an inclusive sequence of ints, floats, or
+/// single-byte characters.
+///
+/// Ported from `PHP_FUNCTION(range)` in `ext/standard/array.c` (PHP 8.5). The
+/// structure follows the C: `$step` is validated FIRST and independently of the
+/// bounds (so `range("", "", 0)` reports the step, never the empty strings),
+/// then each bound is classified by [`range_process_input`], then one of three
+/// generators runs. Direction comes from `$start` vs `$end`; a negative `$step`
+/// is only legal when the range is decreasing.
+///
+/// The three ValueErrors are distinct and PHP distinguishes them: `cannot be 0`,
+/// `must be greater than 0 for increasing ranges`, and `must be less than the
+/// range spanned by …`. A range whose element count would exceed `HT_MAX_SIZE`
+/// is a fourth, with the counts spelled out.
+fn php_range(h: &mut host::PhpHost, args: &[Value]) -> Result<Value, String> {
+    const NEGATIVE_STEP_ERR: &str =
+        "range(): Argument #3 ($step) must be greater than 0 for increasing ranges";
+    const BOUNDARY_ERR: &str = "range(): Argument #3 ($step) must be less than the range \
+                                spanned by argument #1 ($start) and argument #2 ($end)";
+
+    // ── $step, before anything else ──────────────────────────────────────────
+    let mut is_step_double = false;
+    let mut is_step_negative = false;
+    let mut step_double = 1.0f64;
+    let mut step: i64 = 1;
+
+    if let Some(user_step) = args.get(2) {
+        // `Z_PARAM_NUMBER` (weak): int/float pass, a numeric string and bool
+        // coerce, null coerces with a deprecation, anything else is a TypeError.
+        let num = match user_step {
+            Value::Int(_) | Value::Float(_) => user_step.clone(),
+            Value::Bool(b) => Value::int(i64::from(*b)),
+            Value::Undef => {
+                h.deprecated(
+                    "range(): Passing null to parameter #3 ($step) of type int|float \
+                     is deprecated",
+                );
+                Value::int(0)
+            }
+            Value::Str(s) => match host::parse_php_number_full(s) {
+                Some(v) => v,
+                None => {
+                    return Err(throws(
+                        "TypeError",
+                        "range(): Argument #3 ($step) must be of type int|float, string given",
+                    ))
+                }
+            },
+            other => {
+                let t = h.type_name_for_error(other);
+                return Err(throws(
+                    "TypeError",
+                    format!("range(): Argument #3 ($step) must be of type int|float, {t} given"),
+                ));
+            }
+        };
+
+        match num {
+            Value::Float(mut d) => {
+                if d.is_infinite() {
+                    return Err(throws(
+                        "ValueError",
+                        "range(): Argument #3 ($step) must be a finite number, INF provided",
                     ));
                 }
-            }
-            let low = s0.as_bytes()[0] as i64;
-            let high = s1.as_bytes()[0] as i64;
-            let step = args
-                .get(2)
-                .map(|v| h.to_number(v).to_int().abs())
-                .unwrap_or(1)
-                .max(1);
-            if low != high && (low - high).abs() < step {
-                return Err(throws("ValueError", STEP_ERR));
-            }
-            let mut c = low;
-            if low <= high {
-                while c <= high {
-                    h.arr_push_auto(&arr, Value::str(((c as u8) as char).to_string()));
-                    c += step;
+                if d.is_nan() {
+                    return Err(throws(
+                        "ValueError",
+                        "range(): Argument #3 ($step) must be a finite number, NAN provided",
+                    ));
                 }
+                if d < 0.0 {
+                    is_step_negative = true;
+                    d *= -1.0;
+                }
+                step_double = d;
+                // `zend_dval_to_lval_silent` then `zend_is_long_compatible`: a
+                // step of `2.0` is an INT step and keeps an int range int, while
+                // `2.5` forces the whole range to floats.
+                step = d as i64;
+                if (step as f64) != d {
+                    is_step_double = true;
+                }
+            }
+            other => {
+                step = other.to_int();
+                if step < 0 {
+                    // `-step` would overflow, so the reference rejects the value
+                    // rather than negating it.
+                    if step == i64::MIN {
+                        return Err(throws(
+                            "ValueError",
+                            format!("range(): Argument #3 ($step) must be greater than {step}"),
+                        ));
+                    }
+                    is_step_negative = true;
+                    step = -step;
+                }
+                step_double = step as f64;
+            }
+        }
+
+        if step_double == 0.0 {
+            return Err(throws(
+                "ValueError",
+                "range(): Argument #3 ($step) cannot be 0",
+            ));
+        }
+    }
+
+    // ── the two bounds ───────────────────────────────────────────────────────
+    let user_start = arg(args, 0);
+    let user_end = arg(args, 1);
+    let (mut start_type, start_long, start_double) =
+        range_process_input(h, &user_start, 1, "start")?;
+    let (mut end_type, end_long, end_double) = range_process_input(h, &user_end, 2, "end")?;
+
+    let arr = h.new_array();
+
+    // ── character range ──────────────────────────────────────────────────────
+    if start_type >= RangeInput::Str || end_type >= RangeInput::Str {
+        let mut fall_through_to_numeric = false;
+
+        if start_type < RangeInput::Str || end_type < RangeInput::Str {
+            // Exactly one side reads as a character. The other is coerced to 0,
+            // and PHP says so — unless the character side was merely AMBIGUOUS
+            // (a one-byte numeric string), in which case reading it as a number
+            // was always legitimate and there is nothing to warn about.
+            if start_type < RangeInput::Str {
+                if end_type != RangeInput::Ambig {
+                    h.warn(
+                        "range(): Argument #1 ($start) must be a single byte string if \
+                         argument #2 ($end) is a single byte string, argument #2 ($end) \
+                         converted to 0",
+                    );
+                }
+                end_type = RangeInput::Long;
             } else {
-                while c >= high {
-                    h.arr_push_auto(&arr, Value::str(((c as u8) as char).to_string()));
-                    c -= step;
+                if start_type != RangeInput::Ambig {
+                    h.warn(
+                        "range(): Argument #2 ($end) must be a single byte string if \
+                         argument #1 ($start) is a single byte string, argument #1 ($start) \
+                         converted to 0",
+                    );
+                }
+                start_type = RangeInput::Long;
+            }
+            fall_through_to_numeric = true;
+        } else if is_step_double {
+            // A fractional step cannot walk characters. Both bounds become 0.
+            if start_type == RangeInput::Str || end_type == RangeInput::Str {
+                h.warn(
+                    "range(): Argument #3 ($step) must be of type int when generating an \
+                     array of characters, inputs converted to 0",
+                );
+            }
+            start_type = RangeInput::Long;
+            end_type = RangeInput::Long;
+            fall_through_to_numeric = true;
+        }
+
+        if !fall_through_to_numeric {
+            let low = h.to_str(&user_start).as_bytes()[0];
+            let high = h.to_str(&user_end).as_bytes()[0];
+            let ustep = step as u64;
+            match low.cmp(&high) {
+                std::cmp::Ordering::Greater => {
+                    if u64::from(low - high) < ustep {
+                        return Err(throws("ValueError", BOUNDARY_ERR));
+                    }
+                    let mut c = low;
+                    while c >= high {
+                        h.arr_push_auto(&arr, Value::str((c as char).to_string()));
+                        if (c as i64) - (step) < 0 {
+                            break;
+                        }
+                        c -= step as u8;
+                    }
+                }
+                std::cmp::Ordering::Less => {
+                    if is_step_negative {
+                        return Err(throws("ValueError", NEGATIVE_STEP_ERR));
+                    }
+                    if u64::from(high - low) < ustep {
+                        return Err(throws("ValueError", BOUNDARY_ERR));
+                    }
+                    let mut c = low;
+                    while c <= high {
+                        h.arr_push_auto(&arr, Value::str((c as char).to_string()));
+                        if (c as i64) + step > 255 {
+                            break;
+                        }
+                        c += step as u8;
+                    }
+                }
+                std::cmp::Ordering::Equal => {
+                    h.arr_push_auto(&arr, Value::str((low as char).to_string()));
                 }
             }
             return Ok(arr);
         }
     }
 
-    // Numeric range. Float if any bound or the step is a float.
-    let n0 = h.to_number(&a0);
-    let n1 = h.to_number(&a1);
-    let nstep = args.get(2).map(|v| h.to_number(v));
-    let is_float = matches!(n0, Value::Float(_))
-        || matches!(n1, Value::Float(_))
-        || matches!(nstep, Some(Value::Float(_)));
+    // ── numeric range ────────────────────────────────────────────────────────
+    if start_type == RangeInput::Double || end_type == RangeInput::Double || is_step_double {
+        // `RANGE_CHECK_DOUBLE_INIT_ARRAY`: the size is computed from the SPAN,
+        // and the message names the smaller bound `start=` whichever way the
+        // range runs — the C macro is called with its operands swapped for the
+        // decreasing case, so both directions print the same text.
+        let check = |span_hi: f64, span_lo: f64| -> Result<u64, String> {
+            let calc = ((span_hi - span_lo) / step_double) + 1.0;
+            if calc >= HT_MAX_SIZE as f64 {
+                let exceed = calc - HT_MAX_SIZE as f64;
+                return Err(throws(
+                    "ValueError",
+                    format!(
+                        "The supplied range exceeds the maximum array size by {exceed:.1} \
+                         elements: start={span_lo:.1}, end={span_hi:.1}, step={step_double:.1}. \
+                         Max size: {}",
+                        HT_MAX_SIZE
+                    ),
+                ));
+            }
+            Ok(calc.round() as u64)
+        };
 
-    if is_float {
-        let low = n0.to_float();
-        let high = n1.to_float();
-        let mut step = nstep.as_ref().map(|v| v.to_float().abs()).unwrap_or(1.0);
-        if step == 0.0 {
-            step = 1.0;
-        }
-        if (low - high).abs() >= f64::EPSILON && (low - high).abs() < step {
-            return Err(throws("ValueError", STEP_ERR));
-        }
-        if (low - high).abs() < f64::EPSILON {
-            h.arr_push_auto(&arr, Value::float(low));
-        } else if low < high {
-            let mut i = 0.0f64;
-            loop {
-                let v = low + i * step;
-                if v > high + f64::EPSILON * high {
-                    break;
-                }
-                h.arr_push_auto(&arr, Value::float(v));
-                i += 1.0;
+        if start_double > end_double {
+            if start_double - end_double < step_double {
+                return Err(throws("ValueError", BOUNDARY_ERR));
+            }
+            let size = check(start_double, end_double)?;
+            let mut element = start_double;
+            let mut i = 0u64;
+            while i < size && element >= end_double {
+                h.arr_push_auto(&arr, Value::float(element));
+                i += 1;
+                element = start_double - (i as f64 * step_double);
+            }
+        } else if end_double > start_double {
+            if is_step_negative {
+                return Err(throws("ValueError", NEGATIVE_STEP_ERR));
+            }
+            if end_double - start_double < step_double {
+                return Err(throws("ValueError", BOUNDARY_ERR));
+            }
+            let size = check(end_double, start_double)?;
+            let mut element = start_double;
+            let mut i = 0u64;
+            while i < size && element <= end_double {
+                h.arr_push_auto(&arr, Value::float(element));
+                i += 1;
+                element = start_double + (i as f64 * step_double);
             }
         } else {
-            let mut i = 0.0f64;
-            loop {
-                let v = low - i * step;
-                if v < high - f64::EPSILON * high {
-                    break;
-                }
-                h.arr_push_auto(&arr, Value::float(v));
-                i += 1.0;
+            h.arr_push_auto(&arr, Value::float(start_double));
+        }
+        return Ok(arr);
+    }
+
+    // Both bounds are ints and the step is a whole number. Every subtraction
+    // here is UNSIGNED and wrapping, which is what lets the reference span the
+    // full i64 width without overflowing before it can report the size error.
+    let ustep = step as u64;
+    let check = |span_hi: i64, span_lo: i64| -> Result<u64, String> {
+        let calc = (span_hi as u64).wrapping_sub(span_lo as u64) / ustep;
+        if calc >= HT_MAX_SIZE - 1 {
+            let excess = calc - (HT_MAX_SIZE - 1);
+            return Err(throws(
+                "ValueError",
+                format!(
+                    "The supplied range exceeds the maximum array size by {excess} elements: \
+                     start={span_lo}, end={span_hi}, step={step}. Calculated size: {calc}. \
+                     Maximum size: {HT_MAX_SIZE}."
+                ),
+            ));
+        }
+        Ok(calc + 1)
+    };
+
+    match start_long.cmp(&end_long) {
+        std::cmp::Ordering::Greater => {
+            if (start_long as u64).wrapping_sub(end_long as u64) < ustep {
+                return Err(throws("ValueError", BOUNDARY_ERR));
+            }
+            let size = check(start_long, end_long)?;
+            for i in 0..size {
+                let v = (start_long as u64).wrapping_sub(i.wrapping_mul(ustep)) as i64;
+                h.arr_push_auto(&arr, Value::int(v));
             }
         }
-    } else {
-        let low = n0.to_int();
-        let high = n1.to_int();
-        let step = nstep.as_ref().map(|v| v.to_int().abs()).unwrap_or(1).max(1);
-        if low != high && (low - high).abs() < step {
-            return Err(throws("ValueError", STEP_ERR));
+        std::cmp::Ordering::Less => {
+            if is_step_negative {
+                return Err(throws("ValueError", NEGATIVE_STEP_ERR));
+            }
+            if (end_long as u64).wrapping_sub(start_long as u64) < ustep {
+                return Err(throws("ValueError", BOUNDARY_ERR));
+            }
+            let size = check(end_long, start_long)?;
+            for i in 0..size {
+                let v = (start_long as u64).wrapping_add(i.wrapping_mul(ustep)) as i64;
+                h.arr_push_auto(&arr, Value::int(v));
+            }
         }
-        let mut i = low;
-        if low <= high {
-            while i <= high {
-                h.arr_push_auto(&arr, Value::int(i));
-                i += step;
-            }
-        } else {
-            while i >= high {
-                h.arr_push_auto(&arr, Value::int(i));
-                i -= step;
-            }
+        std::cmp::Ordering::Equal => {
+            h.arr_push_auto(&arr, Value::int(start_long));
         }
     }
     Ok(arr)
 }
 
+/// Every conversion character the reference's `switch` has a case for. Anything
+/// else is a ValueError, which is why `%i` — a C spelling many people expect to
+/// work — is rejected rather than treated as `%d`.
+const KNOWN_CONVERSIONS: &str = "sdugGhHeEfFcoxXb%";
+
 /// A parsed conversion spec `%[argnum$][flags][width][.precision]conv`.
+#[derive(Clone, Copy)]
 struct FmtSpec {
     argnum: Option<usize>,
     left: bool,
@@ -3738,11 +4193,28 @@ struct FmtSpec {
 
 /// `sprintf`: a format engine covering PHP's flags (`- + 0 ' `), width, precision,
 /// positional args (`%2$s`), and the `d i u f F e E g G s x X o b c %` conversions.
-fn php_sprintf(h: &host::PhpHost, args: &[Value]) -> String {
+///
+/// `args[0]` is the format; the conversions consume `args[1..]`. A conversion
+/// that reaches past the end does NOT render — the reference records the highest
+/// index it wanted and reports the shortfall once, after the whole format has
+/// been walked, so `sprintf("%d %d")` names the second missing argument and not
+/// the first.
+///
+/// `array_form` selects which failure that shortfall is. `vsprintf`/`vprintf`
+/// were handed an array, so a short one is a ValueError about the array; plain
+/// `sprintf`/`printf` were handed loose parameters, so it is an
+/// ArgumentCountError whose counts include the format string itself.
+pub(crate) fn php_sprintf(
+    h: &mut host::PhpHost,
+    args: &[Value],
+    array_form: bool,
+) -> Result<String, String> {
     let fmt: Vec<char> = h.to_str(&arg(args, 0)).chars().collect();
     let mut out = String::new();
     let mut i = 0;
     let mut next_arg = 1usize;
+    // Highest 1-based `args` index a conversion asked for and did not get.
+    let mut max_missing: Option<usize> = None;
     while i < fmt.len() {
         if fmt[i] != '%' {
             out.push(fmt[i]);
@@ -3755,7 +4227,7 @@ fn php_sprintf(h: &host::PhpHost, args: &[Value]) -> String {
             i += 1;
             continue;
         }
-        let Some(spec) = parse_spec(&fmt, &mut i) else {
+        let Some(spec) = parse_spec(&fmt, &mut i)? else {
             out.push('%');
             continue;
         };
@@ -3764,14 +4236,58 @@ fn php_sprintf(h: &host::PhpHost, args: &[Value]) -> String {
             next_arg += 1;
             a
         });
+        if ai >= args.len() {
+            // The reference records the gap and moves on WITHOUT looking at the
+            // conversion character, which is why `sprintf("%")` reports a
+            // missing argument rather than a missing specifier.
+            max_missing = Some(max_missing.map_or(ai, |m: usize| m.max(ai)));
+            continue;
+        }
+        if spec.conv == '\0' {
+            return Err(throws(
+                "ValueError",
+                "Missing format specifier at end of string",
+            ));
+        }
+        if !KNOWN_CONVERSIONS.contains(spec.conv) {
+            return Err(throws(
+                "ValueError",
+                format!("Unknown format specifier \"{}\"", spec.conv),
+            ));
+        }
         out.push_str(&render_spec(h, &spec, &arg(args, ai)));
     }
-    out
+    if let Some(missing) = max_missing {
+        // `missing` is a 1-based index into `args`; the reference counts the
+        // supplied arguments as `args.len() - 1` (the format is not one of them).
+        let supplied = args.len() - 1;
+        return Err(if array_form {
+            throws(
+                "ValueError",
+                format!("The arguments array must contain {missing} items, {supplied} given"),
+            )
+        } else {
+            throws(
+                "ArgumentCountError",
+                format!(
+                    "{} arguments are required, {} given",
+                    missing + 1,
+                    supplied + 1
+                ),
+            )
+        });
+    }
+    Ok(out)
 }
 
-/// Parse one conversion spec, advancing `i` past it. Returns `None` (and leaves
-/// `i` unmoved past a stray `%`) if the spec is malformed.
-fn parse_spec(fmt: &[char], i: &mut usize) -> Option<FmtSpec> {
+/// Parse one conversion spec, advancing `i` past it. `Ok(None)` (with `i` left
+/// just past a stray `%`) means the spec is malformed and the `%` is literal.
+///
+/// `Err` is reserved for the three faults the reference reports as a throw
+/// rather than as literal text: a `'` padding flag with nothing after it, and a
+/// width or precision whose digit run exceeds `INT_MAX`. Accumulating those
+/// digits into a `usize` is what used to overflow.
+fn parse_spec(fmt: &[char], i: &mut usize) -> Result<Option<FmtSpec>, String> {
     let mut j = *i;
     // Positional `N$`.
     let mut argnum = None;
@@ -3795,7 +4311,10 @@ fn parse_spec(fmt: &[char], i: &mut usize) -> Option<FmtSpec> {
             Some(' ') => pad = ' ',
             Some('0') => pad = '0',
             Some('\'') => {
-                pad = *fmt.get(j + 1)?;
+                let Some(c) = fmt.get(j + 1) else {
+                    return Err(throws("ValueError", "Missing padding character"));
+                };
+                pad = *c;
                 j += 2;
                 continue;
             }
@@ -3803,27 +4322,61 @@ fn parse_spec(fmt: &[char], i: &mut usize) -> Option<FmtSpec> {
         }
         j += 1;
     }
-    // Width.
+    // Width. `php_sprintf_getnumber` reads the digit run with `strtol` and
+    // rejects anything AT or past `INT_MAX` — the bound is exclusive even though
+    // the message reads "between 0 and 2147483647". Accumulating the digits
+    // without that cap is what overflowed.
     let mut width = 0usize;
+    let mut saw_width = false;
     while let Some(d) = fmt.get(j).filter(|c| c.is_ascii_digit()) {
-        width = width * 10 + (*d as usize - '0' as usize);
+        saw_width = true;
+        width = width
+            .saturating_mul(10)
+            .saturating_add(*d as usize - '0' as usize);
         j += 1;
     }
-    // Precision.
+    if saw_width && width >= i32::MAX as usize {
+        return Err(throws(
+            "ValueError",
+            format!("Width must be between 0 and {}", i32::MAX),
+        ));
+    }
+    // Precision, under the same cap.
     let mut precision = None;
     if fmt.get(j) == Some(&'.') {
         j += 1;
         let mut p = 0usize;
+        let mut saw_prec = false;
         while let Some(d) = fmt.get(j).filter(|c| c.is_ascii_digit()) {
-            p = p * 10 + (*d as usize - '0' as usize);
+            saw_prec = true;
+            p = p
+                .saturating_mul(10)
+                .saturating_add(*d as usize - '0' as usize);
             j += 1;
+        }
+        if saw_prec && p >= i32::MAX as usize {
+            return Err(throws(
+                "ValueError",
+                format!("Precision must be between 0 and {}", i32::MAX),
+            ));
         }
         precision = Some(p);
     }
-    let conv = *fmt.get(j)?;
-    j += 1;
+    // `l` is a C length modifier the reference silently swallows, so `%ld` is
+    // `%d`. Consuming it here is why `%l` alone reports a MISSING specifier
+    // rather than an unknown one.
+    if fmt.get(j) == Some(&'l') {
+        j += 1;
+    }
+    // Running off the end leaves the conversion unset. The reference still
+    // consumes an argument for the spec first, so this cannot be reported until
+    // the argument has been looked for — see [`php_sprintf`].
+    let conv = fmt.get(j).copied().unwrap_or('\0');
+    if conv != '\0' {
+        j += 1;
+    }
     *i = j;
-    Some(FmtSpec {
+    Ok(Some(FmtSpec {
         argnum,
         left,
         plus,
@@ -3831,11 +4384,32 @@ fn parse_spec(fmt: &[char], i: &mut usize) -> Option<FmtSpec> {
         width,
         precision,
         conv,
-    })
+    }))
 }
 
 /// Render one parsed spec against its argument value.
-fn render_spec(h: &host::PhpHost, s: &FmtSpec, v: &Value) -> String {
+///
+/// The float conversions cap `$precision` at 53 digits — the most an IEEE double
+/// can carry — and the reference says so with an E_NOTICE before truncating.
+/// That cap is also what keeps a `%.2147483646f` from trying to build a
+/// two-gigabyte string.
+fn render_spec(h: &mut host::PhpHost, s: &FmtSpec, v: &Value) -> String {
+    const MAX_FLOAT_PRECISION: usize = 53;
+    let s = &if matches!(s.conv, 'f' | 'F' | 'e' | 'E' | 'g' | 'G' | 'h' | 'H')
+        && s.precision.is_some_and(|p| p > MAX_FLOAT_PRECISION)
+    {
+        let asked = s.precision.unwrap_or(0);
+        h.notice(format_args!(
+            "sprintf(): Requested precision of {asked} digits was truncated to \
+             PHP maximum of {MAX_FLOAT_PRECISION} digits"
+        ));
+        FmtSpec {
+            precision: Some(MAX_FLOAT_PRECISION),
+            ..*s
+        }
+    } else {
+        FmtSpec { ..*s }
+    };
     // `body` = the value with sign but no field padding; `is_num` gates
     // zero-padding-after-sign.
     let (body, is_num) = match s.conv {
@@ -3878,11 +4452,15 @@ fn render_spec(h: &host::PhpHost, s: &FmtSpec, v: &Value) -> String {
             let f = h.to_number(v).to_float();
             (fmt_exp(f, s.precision.unwrap_or(6), s.conv == 'E'), true)
         }
-        'g' | 'G' => {
+        // `h`/`H` are `g`/`G` with the decimal separator pinned to `.` instead of
+        // taken from the locale. phplang never consults the locale, so the two
+        // pairs render identically here.
+        'g' | 'G' | 'h' | 'H' => {
             let f = h.to_number(v).to_float();
             let p = s.precision.unwrap_or(6).max(1);
             let g = host::php_gcvt(f, p);
-            (if s.conv == 'g' { g.to_lowercase() } else { g }, true)
+            let lower = s.conv == 'g' || s.conv == 'h';
+            (if lower { g.to_lowercase() } else { g }, true)
         }
         's' => {
             let mut txt = h.to_str(v);
@@ -3946,9 +4524,20 @@ fn pad_field(body: String, s: &FmtSpec, is_num: bool) -> String {
 }
 
 /// `wordwrap($str, $width = 75, $break = "\n", $cut = false)`.
-fn php_wordwrap(h: &host::PhpHost, args: &[Value]) -> Value {
+fn php_wordwrap(h: &host::PhpHost, args: &[Value]) -> Result<Value, String> {
     let text = h.to_str(&arg(args, 0));
-    let width = args.get(1).map(|v| v.to_int()).unwrap_or(75).max(1) as usize;
+    let raw_width = args.get(1).map(|v| v.to_int()).unwrap_or(75);
+    let cut_flag = args.get(3).map(|v| h.is_truthy(v)).unwrap_or(false);
+    // A zero width with cutting on has no answer — every word is longer than the
+    // line — and the reference refuses rather than looping or clamping.
+    if raw_width == 0 && cut_flag {
+        return Err(throws(
+            "ValueError",
+            "wordwrap(): Argument #4 ($cut_long_words) cannot be true when \
+             argument #2 ($width) is 0",
+        ));
+    }
+    let width = raw_width.max(1) as usize;
     let brk = args
         .get(2)
         .map(|v| h.to_str(v))
@@ -3994,7 +4583,7 @@ fn php_wordwrap(h: &host::PhpHost, args: &[Value]) -> Value {
             }
         }
     }
-    Value::str(out)
+    Ok(Value::str(out))
 }
 
 /// Tiny postfix-apply helper so integer→radix formatting reads left-to-right.
@@ -4006,8 +4595,13 @@ trait Pipe: Sized {
 impl Pipe for u64 {}
 
 /// `print_r` rendering (arrays one level indented, as PHP).
-fn php_print_r(h: &host::PhpHost, v: &Value, depth: usize) -> String {
+fn php_print_r(h: &host::PhpHost, v: &Value, depth: usize, seen: &mut host::Visiting) -> String {
     if let Some(pairs) = h.array_pairs(v) {
+        // The head is printed either way; only the block is replaced, which is
+        // why the reference's output reads `Array\n *RECURSION*`.
+        if !seen.enter(v) {
+            return "Array\n *RECURSION*".to_string();
+        }
         let pad = "    ".repeat(depth);
         let inner = "    ".repeat(depth + 1);
         let mut s = format!("Array\n{pad}(\n");
@@ -4015,13 +4609,14 @@ fn php_print_r(h: &host::PhpHost, v: &Value, depth: usize) -> String {
             s.push_str(&format!(
                 "{inner}[{}] => {}\n",
                 h.to_str(&k),
-                php_print_r(h, &val, depth + 2)
+                php_print_r(h, &val, depth + 2, seen)
             ));
         }
         s.push_str(&format!("{pad})\n"));
+        seen.leave();
         s
     } else if h.is_object(v) {
-        php_print_r_object(h, v, depth)
+        php_print_r_object(h, v, depth, seen)
     } else {
         h.to_str(v)
     }
@@ -4034,7 +4629,12 @@ fn php_print_r(h: &host::PhpHost, v: &Value, depth: usize) -> String {
 /// An `enum` case heads its block `Suit Enum:string` (a backed enum, naming the
 /// backing type) or `Suit Enum` (a pure one), which is why it cannot simply reuse
 /// the object path.
-fn php_print_r_object(h: &host::PhpHost, v: &Value, depth: usize) -> String {
+fn php_print_r_object(
+    h: &host::PhpHost,
+    v: &Value,
+    depth: usize,
+    seen: &mut host::Visiting,
+) -> String {
     let pad = "    ".repeat(depth);
     let inner = "    ".repeat(depth + 1);
     let class = h.object_class(v).unwrap_or_else(|| "stdClass".to_string());
@@ -4045,6 +4645,9 @@ fn php_print_r_object(h: &host::PhpHost, v: &Value, depth: usize) -> String {
         Some((_, None)) => format!("{shown} Enum"),
         None => format!("{shown} Object"),
     };
+    if !seen.enter(v) {
+        return format!("{head}\n *RECURSION*");
+    }
     let mut s = format!("{head}\n{pad}(\n");
     for (name, val) in h.object_props(v) {
         let label = match h.prop_visibility(&class, &name) {
@@ -4056,10 +4659,11 @@ fn php_print_r_object(h: &host::PhpHost, v: &Value, depth: usize) -> String {
         };
         s.push_str(&format!(
             "{inner}[{label}] => {}\n",
-            php_print_r(h, &val, depth + 2)
+            php_print_r(h, &val, depth + 2, seen)
         ));
     }
     s.push_str(&format!("{pad})\n"));
+    seen.leave();
     s
 }
 
@@ -4074,13 +4678,42 @@ fn enum_backing_type(backing: &Value) -> &'static str {
 
 /// `var_dump` rendering for scalars and one level of arrays.
 fn php_var_dump(h: &host::PhpHost, v: &Value, depth: usize) -> String {
-    php_var_dump_ref(h, v, depth, false)
+    php_var_dump_ref(h, v, depth, false, &mut host::Visiting::default())
 }
 
 /// `var_dump` of one value. `is_ref` marks a slot a `&` binding has turned into a
 /// reference: PHP prefixes such a value's type with `&` (`&int(2)`), between the
 /// indentation and the type, at every nesting level.
-fn php_var_dump_ref(h: &host::PhpHost, v: &Value, depth: usize, is_ref: bool) -> String {
+fn php_var_dump_ref(
+    h: &host::PhpHost,
+    v: &Value,
+    depth: usize,
+    is_ref: bool,
+    seen: &mut host::Visiting,
+) -> String {
+    let pad = "  ".repeat(depth);
+    // Unlike `print_r`, `var_dump` replaces the WHOLE value — type header and
+    // all — with the marker.
+    if h.is_object(v) || h.is_array(v) {
+        if !seen.enter(v) {
+            return format!("{pad}*RECURSION*\n");
+        }
+        let out = php_var_dump_body(h, v, depth, is_ref, seen);
+        seen.leave();
+        return out;
+    }
+    php_var_dump_body(h, v, depth, is_ref, seen)
+}
+
+/// The body of [`php_var_dump_ref`], entered only once the recursion guard has
+/// admitted `v`.
+fn php_var_dump_body(
+    h: &host::PhpHost,
+    v: &Value,
+    depth: usize,
+    is_ref: bool,
+    seen: &mut host::Visiting,
+) -> String {
     let pad = "  ".repeat(depth);
     let amp = if is_ref { "&" } else { "" };
     match v {
@@ -4124,7 +4757,7 @@ fn php_var_dump_ref(h: &host::PhpHost, v: &Value, depth: usize, is_ref: bool) ->
                     _ => format!("\"{name}\""),
                 };
                 s.push_str(&format!("{}  [{label}]=>\n", "  ".repeat(depth)));
-                s.push_str(&php_var_dump_ref(h, &val, depth + 1, pref));
+                s.push_str(&php_var_dump_ref(h, &val, depth + 1, pref, seen));
             }
             s.push_str(&format!("{pad}}}\n"));
             s
@@ -4138,7 +4771,7 @@ fn php_var_dump_ref(h: &host::PhpHost, v: &Value, depth: usize, is_ref: bool) ->
                     other => format!("{}  [\"{}\"]=>\n", "  ".repeat(depth), h.to_str(&other)),
                 };
                 s.push_str(&key);
-                s.push_str(&php_var_dump_ref(h, &val, depth + 1, eref));
+                s.push_str(&php_var_dump_ref(h, &val, depth + 1, eref, seen));
             }
             s.push_str(&format!("{pad}}}\n"));
             s
@@ -4397,6 +5030,10 @@ pub(crate) fn php_round(value: f64, places: i32, mode: i64) -> f64 {
     if !value.is_finite() || value == 0.0 {
         return value;
     }
+    // `_php_math_round`'s first act: pull `places` up off `INT_MIN`, because the
+    // very next thing it does is take its absolute value and `abs(INT_MIN)` has
+    // no answer. Without this, `round(1.5, PHP_INT_MIN)` panics.
+    let places = places.max(i32::MIN + 1);
     // php_intlog10abs: floor(log10(|value|)).
     let precision_places = 14 - value.abs().log10().floor() as i32;
     let f1 = 10f64.powi(places.abs());
@@ -4419,10 +5056,22 @@ pub(crate) fn php_round(value: f64, places: i32, mode: i64) -> f64 {
         }
         round_half(t, mode)
     };
-    if places > 0 {
-        tmp_value / f1
+    // `_php_math_round`'s last step. Simple division is only used while the
+    // scale factor is still finite; past `|places| >= 23` the reference formats
+    // the mantissa and the exponent into a string and re-parses it, because
+    // `tmp_value * exponent` would be `0 * INF` — a NaN — for a saturated
+    // `$precision`.
+    if places.abs() < 23 {
+        if places > 0 {
+            tmp_value / f1
+        } else {
+            tmp_value * f1
+        }
     } else {
-        tmp_value * f1
+        format!("{:15.6}e{}", tmp_value, -i64::from(places))
+            .trim()
+            .parse::<f64>()
+            .unwrap_or(tmp_value)
     }
 }
 
@@ -4864,15 +5513,42 @@ fn php_ksort(h: &mut host::PhpHost, arr: &Value, reverse: bool, flags: i64) -> V
     Value::bool(true)
 }
 
-fn php_array_fill(h: &mut host::PhpHost, args: &[Value]) -> Value {
+/// `array_fill($start_index, $count, $value)`.
+///
+/// Ported from `PHP_FUNCTION(array_fill)` in `ext/standard/array.c`, whose four
+/// outcomes are all distinguishable and all reachable: a negative `$count` is a
+/// ValueError, a `$count` past `INT_MAX` is a different ValueError, a zero
+/// `$count` is an empty array, and a `$start_index` so high that the last key
+/// would pass `PHP_INT_MAX` is the same `Error` an ordinary `$a[] =` raises.
+/// The order matters — the range check is made BEFORE any element is written,
+/// so the failure leaves nothing behind.
+fn php_array_fill(h: &mut host::PhpHost, args: &[Value]) -> Result<Value, String> {
     let start = arg(args, 0).to_int();
-    let count = arg(args, 1).to_int().max(0);
+    let count = arg(args, 1).to_int();
     let val = arg(args, 2);
+    if count < 0 {
+        return Err(throws(
+            "ValueError",
+            "array_fill(): Argument #2 ($count) must be greater than or equal to 0",
+        ));
+    }
+    if count > i64::from(i32::MAX) {
+        return Err(throws(
+            "ValueError",
+            "array_fill(): Argument #2 ($count) is too large",
+        ));
+    }
     let out = h.new_array();
+    if count == 0 {
+        return Ok(out);
+    }
+    if start > i64::MAX - count + 1 {
+        return Err(throws_bare("Error", host::NEXT_ELEMENT_OCCUPIED));
+    }
     for i in 0..count {
         h.arr_set_key(&out, &Value::int(start + i), val.clone());
     }
-    out
+    Ok(out)
 }
 
 fn php_array_combine(h: &mut host::PhpHost, args: &[Value]) -> Result<Value, String> {
@@ -4921,7 +5597,35 @@ fn php_array_diff(h: &mut host::PhpHost, args: &[Value], intersect: bool) -> Val
 
 // ── var_export / json_encode ─────────────────────────────────────────────────
 
-fn php_var_export(h: &host::PhpHost, v: &Value, depth: usize) -> String {
+/// `var_export` of one value.
+///
+/// A circular structure is not fatal here either: the reference warns
+/// `var_export does not handle circular references` — once per repeat it meets —
+/// and emits `NULL` in that position, so the output stays syntactically valid
+/// PHP even though it no longer rebuilds the original.
+fn php_var_export(
+    h: &mut host::PhpHost,
+    v: &Value,
+    depth: usize,
+    seen: &mut host::Visiting,
+) -> String {
+    if (h.is_array(v) || h.is_object(v)) && !seen.enter(v) {
+        h.warn("var_export does not handle circular references");
+        return "NULL".to_string();
+    }
+    let out = php_var_export_body(h, v, depth, seen);
+    if h.is_array(v) || h.is_object(v) {
+        seen.leave();
+    }
+    out
+}
+
+fn php_var_export_body(
+    h: &mut host::PhpHost,
+    v: &Value,
+    depth: usize,
+    seen: &mut host::Visiting,
+) -> String {
     match v {
         Value::Undef => "NULL".to_string(),
         Value::Bool(b) => if *b { "true" } else { "false" }.to_string(),
@@ -4938,7 +5642,7 @@ fn php_var_export(h: &host::PhpHost, v: &Value, depth: usize) -> String {
             }
         }
         Value::Str(s) => format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'")),
-        Value::Obj(_) if h.is_object(v) => php_var_export_object(h, v, depth),
+        Value::Obj(_) if h.is_object(v) => php_var_export_object(h, v, depth, seen),
         Value::Obj(_) if h.is_array(v) => {
             let pad = "  ".repeat(depth);
             let inner = "  ".repeat(depth + 1);
@@ -4950,7 +5654,7 @@ fn php_var_export(h: &host::PhpHost, v: &Value, depth: usize) -> String {
                 };
                 out.push_str(&format!(
                     "{inner}{key} => {},\n",
-                    var_export_item(h, &val, depth + 1)
+                    var_export_item(h, &val, depth + 1, seen)
                 ));
             }
             out.push_str(&format!("{pad})"));
@@ -4963,9 +5667,16 @@ fn php_var_export(h: &host::PhpHost, v: &Value, depth: usize) -> String {
 /// A value in an item position (`key => value`). PHP keeps a scalar on the key's
 /// line but breaks BEFORE a nested array or object and starts its block at the
 /// item's own indent, which is why the two cannot share one renderer.
-fn var_export_item(h: &host::PhpHost, v: &Value, depth: usize) -> String {
-    let body = php_var_export(h, v, depth);
-    if h.is_array(v) || h.is_object(v) {
+fn var_export_item(
+    h: &mut host::PhpHost,
+    v: &Value,
+    depth: usize,
+    seen: &mut host::Visiting,
+) -> String {
+    let body = php_var_export(h, v, depth, seen);
+    // A cycle collapses to the scalar `NULL`, which stays on the key's line —
+    // the break is for a real nested BLOCK, not for anything array-typed.
+    if (h.is_array(v) || h.is_object(v)) && body != "NULL" {
         format!("\n{}{body}", "  ".repeat(depth))
     } else {
         body
@@ -4978,7 +5689,12 @@ fn var_export_item(h: &host::PhpHost, v: &Value, depth: usize) -> String {
 ///
 /// Object bodies indent one space deeper than array bodies — three per level
 /// rather than two — which is the engine's own inconsistency, not a typo.
-fn php_var_export_object(h: &host::PhpHost, v: &Value, depth: usize) -> String {
+fn php_var_export_object(
+    h: &mut host::PhpHost,
+    v: &Value,
+    depth: usize,
+    seen: &mut host::Visiting,
+) -> String {
     let class = h.object_class(v).unwrap_or_else(|| "stdClass".to_string());
     if let Some((case, _)) = h.enum_case_of(v) {
         return format!("\\{class}::{case}");
@@ -4995,7 +5711,7 @@ fn php_var_export_object(h: &host::PhpHost, v: &Value, depth: usize) -> String {
         out.push_str(&format!(
             "{inner}'{}' => {},\n",
             name.replace('\'', "\\'"),
-            var_export_item(h, &val, depth + 1)
+            var_export_item(h, &val, depth + 1, seen)
         ));
     }
     out.push_str(&format!("{pad}{}", if std { ")" } else { "))" }));
@@ -5009,18 +5725,32 @@ fn php_var_export_object(h: &host::PhpHost, v: &Value, depth: usize) -> String {
 /// Recursion is into ARRAYS only. A `Countable` nested inside counts as a single
 /// element and its own `count()` is never consulted — `count([new C], …)` is 1
 /// however large `C` says it is — and a plain object is likewise one element.
-fn count_recursive(h: &host::PhpHost, v: &Value) -> i64 {
-    h.array_pairs(v)
+/// A self-referential array does not make `count()` fail: the reference warns
+/// `count(): Recursion detected` and stops descending at the repeat, counting
+/// the offending element once like any other.
+fn count_recursive(h: &mut host::PhpHost, v: &Value) -> i64 {
+    count_recursive_seen(h, v, &mut host::Visiting::default())
+}
+
+fn count_recursive_seen(h: &mut host::PhpHost, v: &Value, seen: &mut host::Visiting) -> i64 {
+    if !seen.enter(v) {
+        h.warn("count(): Recursion detected");
+        return 0;
+    }
+    let total = h
+        .array_pairs(v)
         .unwrap_or_default()
         .iter()
         .map(|(_, val)| {
             if h.is_array(val) {
-                1 + count_recursive(h, val)
+                1 + count_recursive_seen(h, val, seen)
             } else {
                 1
             }
         })
-        .sum()
+        .sum();
+    seen.leave();
+    total
 }
 
 /// Whether `v` contains a NAN or INF anywhere, including nested in arrays and
@@ -5057,12 +5787,23 @@ fn has_nonfinite_float(h: &host::PhpHost, v: &Value) -> bool {
 ///
 /// `Err(code)` is a `JSON_ERROR_*` code: the encode yields `false`.
 fn json_prepare(v: &Value) -> Result<Value, i64> {
+    json_prepare_seen(v, &mut host::Visiting::default())
+}
+
+/// [`json_prepare`] with the cycle guard threaded through. The guard lives HERE
+/// rather than in the encoder because this pass is what deep-copies the
+/// structure: by the time the encoder runs it is walking an acyclic copy.
+fn json_prepare_seen(v: &Value, seen: &mut host::Visiting) -> Result<Value, i64> {
     if with_host(|h| h.is_array(v)) {
+        if !seen.enter(v) {
+            return Err(crate::stdlib::json::JSON_ERROR_RECURSION);
+        }
         let pairs = with_host(|h| h.array_pairs(v)).unwrap_or_default();
         let mut out = Vec::with_capacity(pairs.len());
         for (k, val) in pairs {
-            out.push((k, json_prepare(&val)?));
+            out.push((k, json_prepare_seen(&val, seen)?));
         }
+        seen.leave();
         return Ok(with_host(|h| {
             let arr = h.new_array();
             h.arr_set_pairs(&arr, out);
@@ -5072,8 +5813,12 @@ fn json_prepare(v: &Value) -> Result<Value, i64> {
     if !with_host(|h| h.is_object(v)) {
         return Ok(v.clone());
     }
+    if !seen.enter(v) {
+        return Err(crate::stdlib::json::JSON_ERROR_RECURSION);
+    }
     let class = with_host(|h| h.object_class(v)).unwrap_or_default();
     if with_host(|h| h.is_enum_class(&class)) {
+        seen.leave();
         return match with_host(|h| h.enum_case_of(v)) {
             Some((_, Some(backing))) => Ok(backing),
             _ => Err(crate::stdlib::json::JSON_ERROR_NON_BACKED_ENUM),
@@ -5082,15 +5827,18 @@ fn json_prepare(v: &Value) -> Result<Value, i64> {
     if with_host(|h| h.class_is_a_pub(&class, "JsonSerializable")) {
         let produced = host::call_method(&class, "jsonSerialize", Some(v.clone()), Vec::new())
             .map_err(|_| crate::stdlib::json::JSON_ERROR_NON_BACKED_ENUM)?;
-        return json_prepare(&produced);
+        let out = json_prepare_seen(&produced, seen);
+        seen.leave();
+        return out;
     }
     let mut out = Vec::new();
     for (name, val) in with_host(|h| h.object_props(v)) {
         if with_host(|h| h.prop_visibility(&class, &name)).is_some() {
             continue;
         }
-        out.push((name, json_prepare(&val)?));
+        out.push((name, json_prepare_seen(&val, seen)?));
     }
+    seen.leave();
     Ok(with_host(|h| h.new_transient_object(out)))
 }
 

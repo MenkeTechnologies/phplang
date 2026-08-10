@@ -1327,7 +1327,7 @@ pub const CORPUS: &[Entry] = &[
         "JSON_THROW_ON_ERROR",
         "Predefined constant",
         "JSON_THROW_ON_ERROR: int = 4194304",
-        "Flag asking the JSON functions to throw `JsonException` instead of returning null. DIVERGENCE: not honoured — failures still return null and set `json_last_error()`.",
+        "Flag asking the JSON functions to throw `JsonException` instead of returning `false`/null. Honoured by `json_encode`, `json_decode` and `json_validate`: the exception's `getCode()` is the `JSON_ERROR_*` constant, and `json_last_error()` is left at `JSON_ERROR_NONE` because the failure travelled on the throw instead of being recorded for a later read.",
         "",
     ),
     (
@@ -2215,7 +2215,7 @@ pub const CORPUS: &[Entry] = &[
         "str_repeat",
         "Core library — strings",
         "str_repeat(string $string, int $times): string",
-        "Concatenates the string with itself `$times` times. A count of zero yields the empty string; a negative count throws `ValueError: str_repeat(): Argument #2 ($times) must be greater than or equal to 0`.",
+        "Concatenates the string with itself `$times` times. A count of zero yields the empty string; a negative count throws `ValueError: str_repeat(): Argument #2 ($times) must be greater than or equal to 0`. When `strlen * $times + 32` overflows the address space the engine stops with the UNCATCHABLE fatal `Possible integer overflow in memory allocation (len * times + 32)`, as the reference does.",
         "echo str_repeat(\"ab\", 3);   // => ababab",
     ),
     (
@@ -2229,7 +2229,7 @@ pub const CORPUS: &[Entry] = &[
         "wordwrap",
         "Core library — strings",
         "wordwrap(string $string, int $width = 75, string $break = \"\\n\", bool $cut = false): string",
-        "Wraps the text to `$width` columns, breaking at spaces. With `$cut` true a word longer than the width is split rather than left overlong.",
+        "Wraps the text to `$width` columns, breaking at spaces. With `$cut` true a word longer than the width is split rather than left overlong; a zero `$width` with `$cut` true has no answer and raises `ValueError: wordwrap(): Argument #4 ($cut_long_words) cannot be true when argument #2 ($width) is 0`.",
         "echo wordwrap(\"a b c\", 3, \"|\", true);   // => a b|c",
     ),
     (
@@ -2243,7 +2243,7 @@ pub const CORPUS: &[Entry] = &[
         "strpos",
         "Core library — strings",
         "strpos(string $haystack, string $needle): int|false",
-        "Index of the first occurrence, reported in CHARACTERS, or `false` when absent. DIVERGENCE: PHP returns a byte offset and accepts an `$offset` argument, which is not read here.",
+        "BYTE offset of the first occurrence at or after `$offset`, or `false` when absent. A negative `$offset` counts from the end; one outside `[-strlen, strlen]` raises `ValueError: strpos(): Argument #3 ($offset) must be contained in argument #1 ($haystack)` rather than reporting no match. An empty needle returns the offset itself.",
         "var_dump(strpos(\"hello\", \"l\"), strpos(\"hello\", \"z\"));   // => int(2) bool(false)",
     ),
     (
@@ -2341,14 +2341,14 @@ pub const CORPUS: &[Entry] = &[
         "chr",
         "Core library — strings",
         "chr(int $codepoint): string",
-        "The one-character string for a byte value, reduced modulo 256 so any integer is accepted. DIVERGENCE: the result is that CODEPOINT, so `chr(233)` yields a two-byte UTF-8 `é` rather than PHP's single 0xE9 byte.",
+        "The one-character string for a byte value, reduced modulo 256 so any integer is accepted — a value outside `0..=255` raises `Deprecated: chr(): Providing a value not in-between 0 and 255 is deprecated…` first. DIVERGENCE: the result is that CODEPOINT, so `chr(233)` yields a two-byte UTF-8 `é` rather than PHP's single 0xE9 byte.",
         "echo chr(65);   // => A",
     ),
     (
         "ord",
         "Core library — strings",
         "ord(string $character): int",
-        "The value of the first BYTE of the string, so a multibyte character reports its leading byte (`ord(\"é\")` is 195). Returns 0 for the empty string.",
+        "The value of the first BYTE of the string, so a multibyte character reports its leading byte (`ord(\"é\")` is 195). The empty string returns 0 and raises `Deprecated: ord(): Providing an empty string is deprecated`.",
         "echo ord(\"A\");   // => 65",
     ),
     (
@@ -2362,7 +2362,7 @@ pub const CORPUS: &[Entry] = &[
         "hexdec",
         "Core library — strings",
         "hexdec(string $hex_string): int",
-        "The integer value of a hexadecimal string, after trimming surrounding whitespace. DIVERGENCE: an unparseable string yields `0` rather than PHP's silent skipping of invalid characters, and there is no float fallback on overflow.",
+        "The integer value of a hexadecimal string, after trimming surrounding whitespace. A leading `0x`/`0X` is dropped. Characters that are not hex digits are skipped, and skipping ANY raises `Deprecated: Invalid characters passed for attempted conversion, these have been ignored` before returning. The result is an integer when it fits `PHP_INT_MAX` and a float otherwise.",
         "echo hexdec(\"ff\");   // => 255",
     ),
     (
@@ -2426,7 +2426,7 @@ pub const CORPUS: &[Entry] = &[
         "range",
         "Core library — arrays",
         "range(mixed $start, mixed $end, int|float $step = 1): array",
-        "An inclusive sequence. Two non-numeric strings produce a character range walked by BYTE, using only the first byte of each bound — a longer bound raises `range(): Argument #N ($start|$end) must be a single byte, subsequent bytes are ignored` and continues. Anything else produces a numeric range. A step wider than the span (`range(9, 10, 2)`) throws a catchable `ValueError` whose trace names this call: `#0 <file>(<line>): range(9, 10, 2)`.",
+        "An inclusive sequence, ported from `PHP_FUNCTION(range)`. `$step` is validated FIRST and independently of the bounds, with a distinct message for each fault: `cannot be 0`, `must be greater than -9223372036854775808`, `must be a finite number, NAN|INF provided`, `must be greater than 0 for increasing ranges`, and `must be less than the range spanned by argument #1 ($start) and argument #2 ($end)`. Each bound is then classified: a one-byte NUMERIC string is ambiguous and is read as a character only when the other bound is also a string, so `range(\"1\", \"3\")` yields strings while `range(\"1.5\", \"3\")` yields floats. A character range walks BYTES using only the first byte of each bound (a longer bound warns `must be a single byte, subsequent bytes are ignored`), an empty string warns `must not be empty, casted to 0`, and a whole-valued float step keeps an int range int. A span too large for a hash table raises `The supplied range exceeds the maximum array size by N elements: …`.",
         "echo implode(\",\", range(1, 4)), \" \", implode(\"\", range(\"a\", \"c\"));   // => 1,2,3,4 abc",
     ),
     (
@@ -2566,7 +2566,7 @@ pub const CORPUS: &[Entry] = &[
         "array_fill",
         "Core library — arrays",
         "array_fill(int $start_index, int $count, mixed $value): array",
-        "An array of `$count` copies of the value, keyed from `$start_index` upward.",
+        "An array of `$count` copies of the value, keyed from `$start_index` upward. A negative `$count` raises `ValueError: array_fill(): Argument #2 ($count) must be greater than or equal to 0` and one past `INT_MAX` raises `… is too large`; a `$start_index` high enough that the last key would pass `PHP_INT_MAX` raises `Error: Cannot add element to the array as the next element is already occupied`, before any element is written.",
         "echo implode(\",\", array_fill(0, 3, \"x\"));   // => x,x,x",
     ),
     (
@@ -2876,21 +2876,21 @@ pub const CORPUS: &[Entry] = &[
         "print_r",
         "Core library — types and output",
         "print_r(mixed $value, bool $return = false): string|true",
-        "Renders a value in PHP's indented human-readable form. With `$return` truthy the text is returned instead of printed.",
+        "Renders a value in PHP's indented human-readable form. With `$return` truthy the text is returned instead of printed. A structure that contains itself prints its head and then ` *RECURSION*` in place of the repeated block.",
         "echo print_r([1, 2], true);   // => Array\\n(\\n    [0] => 1\\n    [1] => 2\\n)",
     ),
     (
         "var_dump",
         "Core library — types and output",
         "var_dump(mixed ...$values): void",
-        "Prints each value with its type and structure — `bool(true)`, `int(3)`, `float(1.5)`, `string(3) \"abc\"`, and nested `array(n) { … }`.",
+        "Prints each value with its type and structure — `bool(true)`, `int(3)`, `float(1.5)`, `string(3) \"abc\"`, and nested `array(n) { … }`. A repeated element in a self-referential structure is replaced entirely by `*RECURSION*`, type header included.",
         "var_dump(true);   // => bool(true)",
     ),
     (
         "var_export",
         "Core library — types and output",
         "var_export(mixed $value, bool $return = false): string|null",
-        "Renders a value as parsable PHP source. With `$return` truthy the text is returned; otherwise it is printed and null is returned.",
+        "Renders a value as parsable PHP source. With `$return` truthy the text is returned; otherwise it is printed and null is returned. A circular reference raises `Warning: var_export does not handle circular references` and writes `NULL` in that position, so the output stays parsable but no longer rebuilds the original.",
         "var_export(1);   // => 1",
     ),
     (
@@ -2904,7 +2904,7 @@ pub const CORPUS: &[Entry] = &[
         "json_encode",
         "Core library — types and output",
         "json_encode(mixed $value): string",
-        "Encodes a value as JSON, escaping `/` and non-ASCII characters by default and returning `false` (with `json_last_error()` set to `JSON_ERROR_INF_OR_NAN`) for a NAN or INF. `JSON_PRETTY_PRINT`, `JSON_UNESCAPED_SLASHES` and `JSON_UNESCAPED_UNICODE` are honoured. DIVERGENCE: the `$depth` argument is not read. `json_decode` lives in the `json` module, not here.",
+        "Encodes a value as JSON, escaping `/` and non-ASCII characters by default and returning `false` (with `json_last_error()` set) for a NAN or INF (`JSON_ERROR_INF_OR_NAN`) or a structure containing itself (`JSON_ERROR_RECURSION`). `JSON_PRETTY_PRINT`, `JSON_UNESCAPED_SLASHES`, `JSON_UNESCAPED_UNICODE` and `JSON_THROW_ON_ERROR` are honoured. DIVERGENCE: the `$depth` argument is not read. `json_decode` lives in the `json` module, not here.",
         "echo json_encode([1, 2, 3]);   // => [1,2,3]",
     ),
     // ══ Strings (stdlib::strings) ═══════════════════════════════════════════
@@ -3265,7 +3265,7 @@ pub const CORPUS: &[Entry] = &[
         "mb_convert_encoding",
         "Multibyte strings",
         "mb_convert_encoding(string $string, string $to_encoding): string",
-        "Maps unrepresentable characters to `?`: everything at or above U+0080 for `ASCII`, above U+00FF for `ISO-8859-1`/`Latin-1`. Any other target returns the string unchanged. DIVERGENCE: `$from_encoding` is ignored, true single-byte output is impossible in a UTF-8 runtime, and the array form is unsupported.",
+        "Maps unrepresentable characters to `?`: everything at or above U+0080 for `ASCII`, above U+00FF for `ISO-8859-1`/`Latin-1`. `UTF-8` returns the string unchanged; any OTHER target raises `ValueError: mb_convert_encoding(): Argument #2 ($to_encoding) must be a valid encoding, \"…\" given`. DIVERGENCE: `$from_encoding` is ignored, true single-byte output is impossible in a UTF-8 runtime, and the array form is unsupported.",
         "echo mb_convert_encoding(\"héllo\", \"ASCII\");   // => h?llo",
     ),
     (
@@ -3428,7 +3428,7 @@ pub const CORPUS: &[Entry] = &[
         "usort",
         "Arrays",
         "usort(array $array, callable $callback): bool",
-        "Sorts by value with a user comparator, then reindexes from 0. The sort is stable, as PHP's is. The comparator runs the VM, so an exception it throws stops the sort.",
+        "Sorts by value with a user comparator, then reindexes from 0. The sort is stable, as PHP's is, and tolerates a comparator that contradicts itself (`fn() => random_int(-1, 1)`) by answering with some permutation rather than failing. The comparator runs the VM, so an exception it throws stops the sort.",
         "$a = [3, 1, 2]; usort($a, fn($x, $y) => $x <=> $y); echo implode(\",\", $a);   // => 1,2,3",
     ),
     (
@@ -3470,7 +3470,7 @@ pub const CORPUS: &[Entry] = &[
         "array_rand",
         "Arrays",
         "array_rand(array $array, int $num = 1): mixed",
-        "One random key, or an array of `$num` distinct keys in their original order. A `$num` outside `1..count($array)` raises `array_rand(): Argument #2 ($num) must be between 1 and the number of elements in $array`. Uses the same non-reproducible xorshift64 generator as `shuffle`.",
+        "One random key, or an array of `$num` distinct keys in their original order. An EMPTY array raises `ValueError: array_rand(): Argument #1 ($array) must not be empty` — there is no `$num` that would work — while a `$num` outside `1..count($array)` on a non-empty array names argument #2 instead. Uses the same non-reproducible xorshift64 generator as `shuffle`.",
         "",
     ),
     (
@@ -3695,14 +3695,14 @@ pub const CORPUS: &[Entry] = &[
         "bindec",
         "Math",
         "bindec(string $binary_string): int|float",
-        "Parses a base-2 string, silently skipping any character that is not a binary digit. The result is an integer when it fits `PHP_INT_MAX` and a float otherwise; accumulation saturates rather than wrapping.",
+        "Parses a base-2 string, dropping a leading `0b`/`0B` and skipping any character that is not a binary digit — skipping any raises `Deprecated: Invalid characters passed for attempted conversion, these have been ignored`. The result is an integer when it fits `PHP_INT_MAX` and a float otherwise; accumulation saturates rather than wrapping.",
         "echo bindec(\"101\");   // => 5",
     ),
     (
         "octdec",
         "Math",
         "octdec(string $octal_string): int|float",
-        "Parses a base-8 string, skipping invalid digits, with the same integer-or-float result rule as `bindec`.",
+        "Parses a base-8 string, dropping a leading `0o`/`0O` and skipping invalid digits (which raises the same `Invalid characters passed for attempted conversion` deprecation as `bindec`), with the same integer-or-float result rule.",
         "echo octdec(\"10\");   // => 8",
     ),
     (
@@ -4148,7 +4148,7 @@ pub const CORPUS: &[Entry] = &[
         "serialize",
         "Types and serialization",
         "serialize(mixed $value): string",
-        "Emits PHP's serialization format for the scalar and array subset, using `serialize_precision=-1` float rules. DIVERGENCE: closures and user OBJECTS have no serializable form and fall back to `N;` (null) rather than an `O:`/`C:` record.",
+        "Emits PHP's serialization format using `serialize_precision=-1` float rules: `a:` for arrays, `O:` for objects (with the engine's NUL-mangled visibility keys), `E:` for enum cases. DIVERGENCE: a structure that contains ITSELF is written as `N;` at the repeat, where the reference emits an `r:`/`R:` back-reference — the output stays finite and valid but no longer round-trips a cycle.",
         "echo serialize([1, \"a\"]);   // => a:2:{i:0;i:1;i:1;s:1:\"a\";}",
     ),
     (
@@ -4261,7 +4261,7 @@ pub const CORPUS: &[Entry] = &[
         "json_decode",
         "JSON",
         "json_decode(string $json, ?bool $associative = null, int $depth = 512, int $flags = 0): mixed",
-        "A hand-written recursive-descent parser over the raw bytes. Objects and arrays BOTH decode to PHP arrays — `$associative` is accepted and ignored. `$depth` IS honoured (values below 1 clamp to 1 rather than raising), while `$flags` is ignored entirely. Integral numbers become ints; anything with a `.`/`e` or beyond the 64-bit range becomes a float. Any failure returns null and records the code for `json_last_error()`.",
+        "A hand-written recursive-descent parser over the raw bytes. Objects and arrays BOTH decode to PHP arrays — `$associative` is accepted and ignored. `$depth` is honoured and RANGE-CHECKED: below 1 raises `ValueError: json_decode(): Argument #3 ($depth) must be greater than 0` and past `INT_MAX` raises `… must be less than 2147483647`. `JSON_THROW_ON_ERROR` is honoured; other `$flags` are ignored. Integral numbers become ints; anything with a `.`/`e` or beyond the 64-bit range becomes a float. Any other failure returns null and records the code for `json_last_error()`. DIVERGENCE: the parser recurses on the native stack, so nesting deeper than 1024 reports `JSON_ERROR_DEPTH` whatever `$depth` asked for.",
         "echo json_decode('{\"a\":1}')[\"a\"];   // => 1",
     ),
     (
@@ -5270,7 +5270,7 @@ pub const CORPUS: &[Entry] = &[
         "str_word_count",
         "Misc",
         "str_word_count(string $string, int $format = 0, ?string $characters = null): int|array",
-        "Format 1 returns the words, format 2 a byte-offset-to-word map, and 0 — plus any unrecognized value, which does not raise — the count. A word is a run of ASCII letters plus `'` and `-`, which are ALWAYS word characters; `$characters` only ADDS bytes to that set and can never restrict it. Matching is bytewise, so multibyte text is not recognized as words.",
+        "Format 1 returns the words, format 2 a byte-offset-to-word map, and 0 the count; any other value raises `ValueError: str_word_count(): Argument #2 ($format) must be a valid format value`. A word is a run of ASCII letters plus `'` and `-`, which are ALWAYS word characters; `$characters` only ADDS bytes to that set and can never restrict it. Matching is bytewise, so multibyte text is not recognized as words.",
         "echo str_word_count(\"a b c\");   // => 3",
     ),
     (

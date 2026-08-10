@@ -97,10 +97,24 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         "gmp_pow" => {
             let e = int_arg(args, 1);
             if e < 0 {
-                out(BigInt::from(0))
-            } else {
-                out(big(args, 0).pow(e as u32))
+                return Some(Err(throws(
+                    "ValueError",
+                    "gmp_pow(): Argument #2 ($exponent) must be greater than or equal to 0",
+                )));
             }
+            // `pow` takes a `u32`; an exponent past that used to truncate, so
+            // `gmp_pow("2", 4294967296)` answered `1`. The reference has no
+            // ceiling here — it hands the exponent to `mpz_pow_ui` and dies of
+            // memory exhaustion — so stop with a fatal of the same SHAPE
+            // (uncatchable, program over) rather than return a wrong number.
+            // DIVERGENCE: the reference's text names a byte count that depends
+            // on its `memory_limit`, so it cannot be reproduced here.
+            let Ok(e32) = u32::try_from(e) else {
+                return Some(Err(crate::builtins::fatals(format!(
+                    "gmp_pow(): exponent {e} exceeds the largest computable power"
+                ))));
+            };
+            out(big(args, 0).pow(e32))
         }
         "gmp_powm" => {
             let m = big(args, 2);
@@ -143,18 +157,58 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             Sign::NoSign => 0,
             Sign::Plus => 1,
         }),
-        "gmp_sqrt" => out(big(args, 0).sqrt()),
+        // `BigInt::sqrt` asserts on a negative operand ("square root is
+        // imaginary"), so the sign test has to come FIRST in all three of these.
+        "gmp_sqrt" => {
+            let b = big(args, 0);
+            if b.sign() == Sign::Minus {
+                return Some(Err(throws(
+                    "ValueError",
+                    "gmp_sqrt(): Argument #1 ($num) must be greater than or equal to 0",
+                )));
+            }
+            out(b.sqrt())
+        }
         "gmp_root" => {
-            // Integer nth root (n>=1) via binary search; default/others -> sqrt.
-            let n = int_arg(args, 1).max(1);
-            if n == 2 {
-                out(big(args, 0).sqrt())
+            let n = int_arg(args, 1);
+            if n <= 0 {
+                return Some(Err(throws(
+                    "ValueError",
+                    "gmp_root(): Argument #2 ($nth) must be greater than 0",
+                )));
+            }
+            let b = big(args, 0);
+            // An even root of a negative number is imaginary; an ODD one is not,
+            // and the reference computes it.
+            if b.sign() == Sign::Minus && n % 2 == 0 {
+                return Some(Err(throws(
+                    "ValueError",
+                    "gmp_root(): Argument #2 ($nth) must be odd if argument #1 ($a) is negative",
+                )));
+            }
+            let Ok(n32) = u32::try_from(n) else {
+                // Truncating to `u32` used to answer `gmp_root("8", 4294967296)`
+                // with `7`. A root that large is 1 for every operand above 1.
+                return Some(Ok(out(if b.sign() == Sign::NoSign {
+                    BigInt::from(0)
+                } else {
+                    BigInt::from(1)
+                })));
+            };
+            if n32 == 2 {
+                out(b.sqrt())
             } else {
-                out(int_root(&big(args, 0), n as u32))
+                out(int_root(&b, n32))
             }
         }
         "gmp_fact" => {
-            let n = int_arg(args, 0).max(0);
+            let n = int_arg(args, 0);
+            if n < 0 {
+                return Some(Err(throws(
+                    "ValueError",
+                    "gmp_fact(): Argument #1 ($num) must be greater than or equal to 0",
+                )));
+            }
             let mut acc = BigInt::from(1);
             let mut i = BigInt::from(2);
             let target = BigInt::from(n);
@@ -186,8 +240,12 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         "gmp_prob_prime" => Value::int(prob_prime(&big(args, 0))),
         "gmp_perfect_square" => {
             let b = big(args, 0);
-            let r = b.sqrt();
-            Value::bool(b.sign() != Sign::Minus && &r * &r == b)
+            if b.sign() == Sign::Minus {
+                Value::bool(false)
+            } else {
+                let r = b.sqrt();
+                Value::bool(&r * &r == b)
+            }
         }
         _ => return None,
     };
@@ -198,6 +256,12 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
 fn int_root(x: &BigInt, n: u32) -> BigInt {
     if x.sign() == Sign::NoSign || x == &BigInt::from(1) {
         return x.clone();
+    }
+    // An odd root of a negative number is the negated root of its magnitude —
+    // `gmp_root(-8, 3)` is `-2`. The binary search below only walks upwards from
+    // zero, so it answered 0 for every negative operand.
+    if x.sign() == Sign::Minus {
+        return -int_root(&absv(x.clone()), n);
     }
     let (mut lo, mut hi) = (BigInt::from(0), x.clone());
     while lo < &hi - 1 {

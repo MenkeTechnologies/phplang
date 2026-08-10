@@ -88,14 +88,40 @@ fn pathinfo_single_component_constant() {
 
 #[test]
 fn sys_get_temp_dir_no_trailing_slash() {
-    let out = run("<?php $d = sys_get_temp_dir(); echo $d === '' ? 'empty' : (substr($d, -1) === '/' ? 'slash' : 'ok');");
-    assert_eq!(out, "ok");
+    // Pinned against an explicitly-set TMPDIR rather than the ambient one, which
+    // made the outcome depend on the machine: a TMPDIR already ending in `/`
+    // failed the test, and one that did not made it pass without exercising the
+    // stripping at all.
+    //
+    // The reference strips exactly ONE trailing separator:
+    //
+    // ```text
+    // $ TMPDIR=/tmp/   php -r 'var_dump(sys_get_temp_dir());'  => string(4) "/tmp"
+    // $ TMPDIR=/tmp/// php -r 'var_dump(sys_get_temp_dir());'  => string(6) "/tmp//"
+    // ```
+    for (tmpdir, expected) in [("/tmp", "/tmp"), ("/tmp/", "/tmp"), ("/tmp///", "/tmp//")] {
+        // SAFETY: single-threaded test process.
+        unsafe { std::env::set_var("TMPDIR", tmpdir) };
+        assert_eq!(
+            run("<?php echo sys_get_temp_dir();"),
+            expected,
+            "TMPDIR={tmpdir:?}"
+        );
+    }
+    unsafe { std::env::remove_var("TMPDIR") };
 }
 
 #[test]
 fn getcwd_returns_a_path() {
-    let out = run("<?php echo getcwd() === false ? 'false' : 'ok';");
-    assert_eq!(out, "ok");
+    // Compared against the directory the test process is actually in, not merely
+    // tested for `!== false` — the old form accepted the empty string, which is
+    // not a path.
+    let expected = std::env::current_dir()
+        .expect("cwd")
+        .to_string_lossy()
+        .into_owned();
+    let out = run("<?php $d = getcwd(); echo $d === false ? 'FALSE' : $d;");
+    assert_eq!(out, expected);
 }
 
 // ── whole-file read/write round-trip ───────────────────────────────────────
@@ -598,9 +624,13 @@ fn disk_space_is_positive_float() {
     let src = format!(
         "<?php $t = disk_total_space('{dirs}'); $f = disk_free_space('{dirs}');
          echo (is_float($t) && $t > 0) ? '1' : '0';
-         echo (is_float($f) && $f >= 0 && $f <= $t) ? '1' : '0';"
+         echo (is_float($f) && $f > 0 && $f <= $t) ? '1' : '0';
+         echo disk_free_space('/definitely/not/a/directory/xyz') === false ? '1' : '0';"
     );
-    assert_eq!(run(&src), "11");
+    // `$f >= 0` was trivially true; a filesystem with a real free-space figure
+    // reports more than zero. The third digit is the negative control: a path
+    // that does not exist must NOT answer with a number.
+    assert_eq!(run(&src), "111");
     std::fs::remove_dir_all(&dir).unwrap();
 }
 

@@ -21,7 +21,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         "strnatcasecmp" => str_natcmp(args, true),
         "soundex" => Value::str(soundex(&str_arg(args, 0))),
         "str_getcsv" => str_getcsv(args),
-        "str_word_count" => str_word_count(args),
+        "str_word_count" => return Some(str_word_count(args)),
         "metaphone" => Value::str(php_metaphone(&str_arg(args, 0), int_arg(args, 1))),
         "uniqid" => uniqid(args),
         "array_walk_recursive" => return Some(array_walk_recursive(args)),
@@ -605,7 +605,11 @@ fn array_multisort(args: &[Value]) -> Result<Value, String> {
         return Ok(Value::bool(false));
     }
     let mut order: Vec<usize> = (0..rows).collect();
-    order.sort_by(|&x, &y| {
+    // `SORT_REGULAR` compares numerically when both sides look numeric and
+    // lexically otherwise, which is not transitive across a mix of numeric and
+    // non-numeric strings. Rust's sort panics when it notices; the reference
+    // just returns some permutation.
+    stable_sort_by(&mut order, |&x, &y| {
         for (ci, col) in cols.iter().enumerate() {
             let mut ord = multisort_cmp(&data[ci][x], &data[ci][y], col.sort_type);
             if col.order == -1 {
@@ -677,10 +681,17 @@ fn is_numeric_val(h: &host::PhpHost, v: &Value) -> bool {
 /// modes) is only reached once that core entry is removed. The implementation is
 /// kept complete and correct so it activates as soon as the shadow is lifted;
 /// editing the core stub is out of scope for this module.
-fn str_word_count(args: &[Value]) -> Value {
+fn str_word_count(args: &[Value]) -> Result<Value, String> {
     let s = str_arg(args, 0);
     let bytes = s.as_bytes();
     let format = int_arg(args, 1);
+    // Only 0 (count), 1 (list of words) and 2 (offset => word) exist.
+    if !(0..=2).contains(&format) {
+        return Err(throws(
+            "ValueError",
+            "str_word_count(): Argument #2 ($format) must be a valid format value",
+        ));
+    }
     let has_cl = args.len() > 2 && !matches!(arg(args, 2), Value::Undef);
     let charlist = if has_cl {
         str_arg(args, 2)
@@ -693,10 +704,10 @@ fn str_word_count(args: &[Value]) -> Value {
 
     let n = bytes.len();
     if n == 0 {
-        return match format {
+        return Ok(match format {
             1 | 2 => make_list(vec![]),
             _ => Value::int(0),
-        };
+        });
     }
 
     let mut p = 0usize;
@@ -733,11 +744,11 @@ fn str_word_count(args: &[Value]) -> Value {
         }
         p += 1;
     }
-    match format {
+    Ok(match format {
         1 => make_list(words),
         2 => make_map(pairs),
         _ => Value::int(count),
-    }
+    })
 }
 
 /// Port of PHP's `php_charmask`: build a 256-entry membership table from a

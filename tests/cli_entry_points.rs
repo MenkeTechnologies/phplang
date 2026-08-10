@@ -57,16 +57,34 @@ fn run_stdin(src: &str) -> String {
 /// directory is a symlink, so the two differ, which is the whole point of the
 /// assertions that use it.
 fn run_file(tag: &str, src: &str, args: &[&str]) -> (String, PathBuf, PathBuf) {
-    let path = std::env::temp_dir().join(format!("phplang_entry_{tag}_{}.php", std::process::id()));
-    std::fs::write(&path, src).expect("write script");
+    run_file_via(tag, src, args, |p| p.to_path_buf())
+}
+
+/// [`run_file`] with control over the path SPELLING handed to the CLI.
+///
+/// `spell` receives the real file's path and returns the argument to pass. The
+/// two can differ — `dir/./file.php` names the same file as `dir/file.php` — and
+/// telling them apart is the only way to test `$argv[0]` (as written) against
+/// `__FILE__` (resolved) on a machine where the temp directory is not a symlink.
+///
+/// Returns `(stdout, path-as-passed, canonical-path)`.
+fn run_file_via(
+    tag: &str,
+    src: &str,
+    args: &[&str],
+    spell: impl Fn(&PathBuf) -> PathBuf,
+) -> (String, PathBuf, PathBuf) {
+    let real = std::env::temp_dir().join(format!("phplang_entry_{tag}_{}.php", std::process::id()));
+    std::fs::write(&real, src).expect("write script");
+    let path = spell(&real);
     let out = php()
         .arg(&path)
         .args(args)
         .stderr(Stdio::null())
         .output()
         .expect("spawn php FILE");
-    let resolved = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
-    let _ = std::fs::remove_file(&path);
+    let resolved = std::fs::canonicalize(&real).unwrap_or_else(|_| real.clone());
+    let _ = std::fs::remove_file(&real);
     (
         String::from_utf8_lossy(&out.stdout).into_owned(),
         path,
@@ -164,6 +182,31 @@ fn server_mirrors_argv_and_names_the_script() {
     // agree only where the two happen to be the same string.
     let file_matches = if resolved == path { "true" } else { "false" };
     assert_eq!(out, format!("same|same|{file_matches}"));
+    // The distinction above is only EXERCISED where the two paths differ, which
+    // on a machine whose temp dir is not a symlink is never — the expectation
+    // adjusts and the test stops testing anything. So pin it unconditionally
+    // with a path that is guaranteed unresolved: a `.` segment, which every
+    // platform's canonicaliser removes.
+    let (out, path, resolved) = run_file_via(
+        "server_dot",
+        "<?php echo $argv[0], \"|\", var_export($argv[0] === __FILE__, true);",
+        &[],
+        |p| {
+            let mut dotted = p.parent().expect("parent").to_path_buf();
+            dotted.push(".");
+            dotted.push(p.file_name().expect("file name"));
+            dotted
+        },
+    );
+    assert!(
+        path.to_string_lossy().contains("/./"),
+        "probe path should carry a `.` segment: {path:?}"
+    );
+    assert_ne!(
+        path, resolved,
+        "the `.` segment must survive as written and vanish when resolved"
+    );
+    assert_eq!(out, format!("{}|false", path.display()));
 }
 
 #[test]

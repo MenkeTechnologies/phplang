@@ -420,7 +420,7 @@ echo (new B)-&gt;f();   // =&gt; 9</code></pre>
         <article class="doc-entry" id="doc-language-construct-1">
           <h3><a class="doc-anchor" href="#doc-language-construct-1">#</a> <code>echo</code></h3>
           <pre><code class="lang-php">echo expr[, expr …];   //  also: &lt;?= expr ?&gt;</code></pre>
-          <p>Writes one or more values to standard output and has no return value. The short echo tag `&lt;?=` is the single-argument form. DIVERGENCE: an object argument prints `Array` — `__toString` is not consulted.</p>
+          <p>Writes one or more values to standard output and has no return value. The short echo tag `&lt;?=` is the single-argument form. An object argument is converted through `__toString`, as it is everywhere a value becomes a string.</p>
           <pre><code class="lang-php">echo "hi", "!";   // =&gt; hi!</code></pre>
         </article>
         <article class="doc-entry" id="doc-language-construct-2">
@@ -430,86 +430,98 @@ echo (new B)-&gt;f();   // =&gt; 9</code></pre>
           <pre><code class="lang-php">print "hi";   // =&gt; hi</code></pre>
         </article>
         <article class="doc-entry" id="doc-language-construct-3">
-          <h3><a class="doc-anchor" href="#doc-language-construct-3">#</a> <code>isset</code></h3>
+          <h3><a class="doc-anchor" href="#doc-language-construct-3">#</a> <code>exit</code></h3>
+          <pre><code class="lang-php">exit[(string|int $status = 0)]: never   //  also spelled `die`</code></pre>
+          <p>Ends the request where it stands. Both the parentheses and the argument are optional, which is what keeps `exit` a construct even though PHP 8.4 also registered it as a callable function (`function_exists("exit")` is true, and `$f = "exit"; $f(3);` works). An INT becomes the process exit status, taken modulo 256 — `exit(300)` leaves 44 and `exit(-1)` leaves 255. A STRING is written to output and the status is 0. A bool or float narrows to int, a float with a fraction raising `Implicit conversion from float … to int loses precision`; an explicit null is deprecated and reads as 0; anything else is a `TypeError`. The unwind is not catchable and does not run a `finally` — `try { exit(5); } finally { echo "fin"; }` prints nothing — but open output buffers are still flushed on the way out.</p>
+          <pre><code class="lang-php">echo "a"; exit(3);   // =&gt; a, exit status 3</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-language-construct-4">
+          <h3><a class="doc-anchor" href="#doc-language-construct-4">#</a> <code>die</code></h3>
+          <pre><code class="lang-php">die[(string|int $status = 0)]: never</code></pre>
+          <p>The alternative spelling of `exit`, folded onto it by the scanner: the two are one construct, so a `die()` argument PHP rejects is reported against `exit()` and a syntax error on `die` names the `exit` token. See `exit` for the semantics.</p>
+          <pre><code class="lang-php">die("bye");   // =&gt; bye, exit status 0</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-language-construct-5">
+          <h3><a class="doc-anchor" href="#doc-language-construct-5">#</a> <code>isset</code></h3>
           <pre><code class="lang-php">isset($var[, $var …]): bool</code></pre>
           <p>True when every argument is set and not null, staying quiet about undefined variables and missing keys — asking is never an error, so even an unreachable private property is simply `false` rather than a fatal. On an OBJECT PROPERTY it consults `__isset` and stops there: it never reads a value, so `isset($o-&gt;p)` is true whenever `__isset` says so even if `__get` would answer null.</p>
           <pre><code class="lang-php">$a = 1; echo isset($a) ? "y" : "n";   // =&gt; y</code></pre>
         </article>
-        <article class="doc-entry" id="doc-language-construct-4">
-          <h3><a class="doc-anchor" href="#doc-language-construct-4">#</a> <code>empty</code></h3>
+        <article class="doc-entry" id="doc-language-construct-6">
+          <h3><a class="doc-anchor" href="#doc-language-construct-6">#</a> <code>empty</code></h3>
           <pre><code class="lang-php">empty($var): bool</code></pre>
           <p>True when the argument is falsey or unset, raising no notice for an undefined name, so `empty("0")`, `empty([])`, and `empty(null)` are all true. On an OBJECT PROPERTY it sits between `isset` and `??`: it wants a value, but will not read one through `__get` unless `__isset` vouched for the property first. A class with `__get` and no `__isset` is therefore `empty()` without `__get` ever being called, while `$o-&gt;p ?? "d"` on that same class does call it.</p>
           <pre><code class="lang-php">echo empty(0) ? "y" : "n";   // =&gt; y</code></pre>
         </article>
-        <article class="doc-entry" id="doc-language-construct-5">
-          <h3><a class="doc-anchor" href="#doc-language-construct-5">#</a> <code>unset</code></h3>
+        <article class="doc-entry" id="doc-language-construct-7">
+          <h3><a class="doc-anchor" href="#doc-language-construct-7">#</a> <code>unset</code></h3>
           <pre><code class="lang-php">unset($var[, $var …]): void</code></pre>
           <p>Removes variables, array elements and object properties. Like `isset`, it is a construct rather than a call, so an index path such as `$a[$k]` is unset in place rather than being evaluated to a value first. `unset($o-&gt;p)` removes the property outright — a later read of it goes through `__get` as for any property that is not there — or calls `__unset` when the property is unreachable or absent and the class defines one. Unsetting a property that is not there is not an error; unsetting one that is out of reach, with no `__unset` to take it, throws `Error: Cannot access private property C::$p`.</p>
           <pre><code class="lang-php">$a = [1, 2]; unset($a[0]); echo count($a);   // =&gt; 1</code></pre>
         </article>
-        <article class="doc-entry" id="doc-language-construct-6">
-          <h3><a class="doc-anchor" href="#doc-language-construct-6">#</a> <code>#[Attr]</code></h3>
+        <article class="doc-entry" id="doc-language-construct-8">
+          <h3><a class="doc-anchor" href="#doc-language-construct-8">#</a> <code>#[Attr]</code></h3>
           <pre><code class="lang-php">#[Name], #[Name(args)], #[Ns\Name] …   //  before a class, function, method, property, class constant, enum case, or parameter</code></pre>
           <p>An attribute group: declarative metadata attached to the declaration that follows. It is NOT a comment — `#[` and `#` are different tokens, and lexing `#[Attr] class C {}` as a comment would delete the declaration. Arguments are scanned for bracket balance and discarded. DIVERGENCE: attributes are not reflectable (`ReflectionAttribute` does not exist) and none is evaluated; only `#[AllowDynamicProperties]` changes behaviour.</p>
           <pre><code class="lang-php">#[Attr(1)] class C { #[Attr] public $v = 7; } echo (new C)-&gt;v;   // =&gt; 7</code></pre>
         </article>
-        <article class="doc-entry" id="doc-language-construct-7">
-          <h3><a class="doc-anchor" href="#doc-language-construct-7">#</a> <code>#[AllowDynamicProperties]</code></h3>
+        <article class="doc-entry" id="doc-language-construct-9">
+          <h3><a class="doc-anchor" href="#doc-language-construct-9">#</a> <code>#[AllowDynamicProperties]</code></h3>
           <pre><code class="lang-php">#[AllowDynamicProperties] class C { … }</code></pre>
           <p>Opts a class out of the PHP 8.2 `Deprecated: Creation of dynamic property C::$p is deprecated` notice, which otherwise fires the first time a property no class in the chain declares is written. The opt-out is INHERITED by subclasses. `stdClass` is exempt without it, as is any property the class (or an ancestor) declares — including one promoted from a constructor parameter. The name is matched exactly, so a namespaced `#[Ns\AllowDynamicProperties]` is a different, inert attribute.</p>
           <pre><code class="lang-php">#[AllowDynamicProperties] class C {} $c = new C; $c-&gt;x = 1; echo $c-&gt;x;   // =&gt; 1</code></pre>
         </article>
-        <article class="doc-entry" id="doc-language-construct-8">
-          <h3><a class="doc-anchor" href="#doc-language-construct-8">#</a> <code>rust { … }</code></h3>
+        <article class="doc-entry" id="doc-language-construct-10">
+          <h3><a class="doc-anchor" href="#doc-language-construct-10">#</a> <code>rust { … }</code></h3>
           <pre><code class="lang-php">rust { pub extern "C" fn name(args) -&gt; ty { … } }</code></pre>
           <p>Inline Rust FFI. The block is lifted out before lexing and replaced with a `__rust_compile(…)` call carrying the base64-encoded body; every `pub extern "C"` function it exports becomes callable from PHP as a bareword. Unique to phplang — reference PHP has no such construct.</p>
           <pre><code class="lang-php">rust { pub extern "C" fn add(a: i64, b: i64) -&gt; i64 { a + b } }
 echo add(2, 3);   // =&gt; 5</code></pre>
         </article>
-        <article class="doc-entry" id="doc-language-construct-9">
-          <h3><a class="doc-anchor" href="#doc-language-construct-9">#</a> <code>__LINE__</code></h3>
+        <article class="doc-entry" id="doc-language-construct-11">
+          <h3><a class="doc-anchor" href="#doc-language-construct-11">#</a> <code>__LINE__</code></h3>
           <pre><code class="lang-php">__LINE__: int</code></pre>
           <p>The line the constant is WRITTEN on, resolved by the parse rather than looked up at run time. A function reporting `__LINE__` therefore reports where the constant stands inside it, not the line it was called from.</p>
           <pre><code class="lang-php">echo __LINE__;   // =&gt; 1</code></pre>
         </article>
-        <article class="doc-entry" id="doc-language-construct-10">
-          <h3><a class="doc-anchor" href="#doc-language-construct-10">#</a> <code>__FILE__</code></h3>
+        <article class="doc-entry" id="doc-language-construct-12">
+          <h3><a class="doc-anchor" href="#doc-language-construct-12">#</a> <code>__FILE__</code></h3>
           <pre><code class="lang-php">__FILE__: string</code></pre>
           <p>The running script's name, which is whatever the ENTRY POINT called it: a named file is its resolved path, `php -r` code is `Command line code`, and a script on standard input is `Standard input code`. It is the same name every diagnostic quotes, so the two can never disagree.</p>
           <pre><code class="lang-php">echo __FILE__;   // =&gt; Command line code</code></pre>
         </article>
-        <article class="doc-entry" id="doc-language-construct-11">
-          <h3><a class="doc-anchor" href="#doc-language-construct-11">#</a> <code>__DIR__</code></h3>
+        <article class="doc-entry" id="doc-language-construct-13">
+          <h3><a class="doc-anchor" href="#doc-language-construct-13">#</a> <code>__DIR__</code></h3>
           <pre><code class="lang-php">__DIR__: string</code></pre>
           <p>The directory part of `__FILE__`. Code with no file behind it — `php -r`, or a script on standard input — has no directory to report, and answers the working directory instead, as the reference does.</p>
           <pre><code class="lang-php">var_dump(__DIR__ === getcwd());   // =&gt; bool(true)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-language-construct-12">
-          <h3><a class="doc-anchor" href="#doc-language-construct-12">#</a> <code>__FUNCTION__</code></h3>
+        <article class="doc-entry" id="doc-language-construct-14">
+          <h3><a class="doc-anchor" href="#doc-language-construct-14">#</a> <code>__FUNCTION__</code></h3>
           <pre><code class="lang-php">__FUNCTION__: string</code></pre>
           <p>The enclosing function's name, or `""` at file scope. A CLOSURE has no name of its own, so PHP 8.4 builds it one out of the scope the closure was written in: `{closure:&lt;scope&gt;:&lt;line&gt;}`, where the scope is `__FILE__` at file scope, `f()` inside a function, `C::m()` inside a method — and the closure's own name when closures nest, so the two compose.</p>
           <pre><code class="lang-php">function g() { echo __FUNCTION__; } g();   // =&gt; g</code></pre>
         </article>
-        <article class="doc-entry" id="doc-language-construct-13">
-          <h3><a class="doc-anchor" href="#doc-language-construct-13">#</a> <code>__CLASS__</code></h3>
+        <article class="doc-entry" id="doc-language-construct-15">
+          <h3><a class="doc-anchor" href="#doc-language-construct-15">#</a> <code>__CLASS__</code></h3>
           <pre><code class="lang-php">__CLASS__: string</code></pre>
           <p>The class the code was WRITTEN in, or `""` outside one — so an inherited method reports the class that declared it, not the subclass the call arrived through. Two cases are answered from the running frame instead, because a parse cannot settle them: inside a TRAIT method it is the class that used the trait (one trait, many users), and inside an anonymous class it is the generated `class@anonymous` name `get_class` reports. A named function declared inside a method body belongs to no class and reports `""`.</p>
           <pre><code class="lang-php">class C { function m() { echo __CLASS__; } } class D extends C {} (new D)-&gt;m();   // =&gt; C</code></pre>
         </article>
-        <article class="doc-entry" id="doc-language-construct-14">
-          <h3><a class="doc-anchor" href="#doc-language-construct-14">#</a> <code>__METHOD__</code></h3>
+        <article class="doc-entry" id="doc-language-construct-16">
+          <h3><a class="doc-anchor" href="#doc-language-construct-16">#</a> <code>__METHOD__</code></h3>
           <pre><code class="lang-php">__METHOD__: string</code></pre>
           <p>`Class::method` for a method, and just the name for a free function — there is no `::` half to prepend outside a class. A trait's method reports the TRAIT (`T::tm`) even though `__CLASS__` in the same body reports the using class. Inside a closure it is the closure's name, the same string `__FUNCTION__` gives.</p>
           <pre><code class="lang-php">class C { function m() { echo __METHOD__; } } (new C)-&gt;m();   // =&gt; C::m</code></pre>
         </article>
-        <article class="doc-entry" id="doc-language-construct-15">
-          <h3><a class="doc-anchor" href="#doc-language-construct-15">#</a> <code>__NAMESPACE__</code></h3>
+        <article class="doc-entry" id="doc-language-construct-17">
+          <h3><a class="doc-anchor" href="#doc-language-construct-17">#</a> <code>__NAMESPACE__</code></h3>
           <pre><code class="lang-php">__NAMESPACE__: string</code></pre>
           <p>The enclosing `namespace` declaration in full — `A\B`, not the last segment a class reference folds to — and `""` with no declaration. DIVERGENCE: phplang's namespaces are flat, so while this constant is exact, the class and function names around it stay unqualified where the reference qualifies them.</p>
           <pre><code class="lang-php">namespace A\B; echo __NAMESPACE__;   // =&gt; A\B</code></pre>
         </article>
-        <article class="doc-entry" id="doc-language-construct-16">
-          <h3><a class="doc-anchor" href="#doc-language-construct-16">#</a> <code>__TRAIT__</code></h3>
+        <article class="doc-entry" id="doc-language-construct-18">
+          <h3><a class="doc-anchor" href="#doc-language-construct-18">#</a> <code>__TRAIT__</code></h3>
           <pre><code class="lang-php">__TRAIT__: string</code></pre>
           <p>The enclosing `trait` declaration's name, and `""` everywhere else — including inside a class that merely USES the trait, once the method is being read as part of that class's own body.</p>
           <pre><code class="lang-php">trait T { function t() { echo __TRAIT__; } } class C { use T; } (new C)-&gt;t();   // =&gt; T</code></pre>
@@ -1154,7 +1166,7 @@ $o = new C; unset($o-&gt;zz);   // =&gt; unset:zz</code></pre>
         <article class="doc-entry" id="doc-predefined-constant-66">
           <h3><a class="doc-anchor" href="#doc-predefined-constant-66">#</a> <code>JSON_THROW_ON_ERROR</code></h3>
           <pre><code class="lang-php">JSON_THROW_ON_ERROR: int = 4194304</code></pre>
-          <p>Flag asking the JSON functions to throw `JsonException` instead of returning null. DIVERGENCE: not honoured — failures still return null and set `json_last_error()`.</p>
+          <p>Flag asking the JSON functions to throw `JsonException` instead of returning `false`/null. Honoured by `json_encode`, `json_decode` and `json_validate`: the exception's `getCode()` is the `JSON_ERROR_*` constant, and `json_last_error()` is left at `JSON_ERROR_NONE` because the failure travelled on the throw instead of being recorded for a later read.</p>
         </article>
         <article class="doc-entry" id="doc-predefined-constant-67">
           <h3><a class="doc-anchor" href="#doc-predefined-constant-67">#</a> <code>JSON_OBJECT_AS_ARRAY</code></h3>
@@ -1896,7 +1908,7 @@ echo $q-&gt;extract();   // =&gt; hi</code></pre>
         <article class="doc-entry" id="doc-core-library-strings-11">
           <h3><a class="doc-anchor" href="#doc-core-library-strings-11">#</a> <code>str_repeat</code></h3>
           <pre><code class="lang-php">str_repeat(string $string, int $times): string</code></pre>
-          <p>Concatenates the string with itself `$times` times. A count of zero yields the empty string; a negative count throws `ValueError: str_repeat(): Argument #2 ($times) must be greater than or equal to 0`.</p>
+          <p>Concatenates the string with itself `$times` times. A count of zero yields the empty string; a negative count throws `ValueError: str_repeat(): Argument #2 ($times) must be greater than or equal to 0`. When `strlen * $times + 32` overflows the address space the engine stops with the UNCATCHABLE fatal `Possible integer overflow in memory allocation (len * times + 32)`, as the reference does.</p>
           <pre><code class="lang-php">echo str_repeat("ab", 3);   // =&gt; ababab</code></pre>
         </article>
         <article class="doc-entry" id="doc-core-library-strings-12">
@@ -1908,7 +1920,7 @@ echo $q-&gt;extract();   // =&gt; hi</code></pre>
         <article class="doc-entry" id="doc-core-library-strings-13">
           <h3><a class="doc-anchor" href="#doc-core-library-strings-13">#</a> <code>wordwrap</code></h3>
           <pre><code class="lang-php">wordwrap(string $string, int $width = 75, string $break = "\n", bool $cut = false): string</code></pre>
-          <p>Wraps the text to `$width` columns, breaking at spaces. With `$cut` true a word longer than the width is split rather than left overlong.</p>
+          <p>Wraps the text to `$width` columns, breaking at spaces. With `$cut` true a word longer than the width is split rather than left overlong; a zero `$width` with `$cut` true has no answer and raises `ValueError: wordwrap(): Argument #4 ($cut_long_words) cannot be true when argument #2 ($width) is 0`.</p>
           <pre><code class="lang-php">echo wordwrap("a b c", 3, "|", true);   // =&gt; a b|c</code></pre>
         </article>
         <article class="doc-entry" id="doc-core-library-strings-14">
@@ -1920,7 +1932,7 @@ echo $q-&gt;extract();   // =&gt; hi</code></pre>
         <article class="doc-entry" id="doc-core-library-strings-15">
           <h3><a class="doc-anchor" href="#doc-core-library-strings-15">#</a> <code>strpos</code></h3>
           <pre><code class="lang-php">strpos(string $haystack, string $needle): int|false</code></pre>
-          <p>Index of the first occurrence, reported in CHARACTERS, or `false` when absent. DIVERGENCE: PHP returns a byte offset and accepts an `$offset` argument, which is not read here.</p>
+          <p>BYTE offset of the first occurrence at or after `$offset`, or `false` when absent. A negative `$offset` counts from the end; one outside `[-strlen, strlen]` raises `ValueError: strpos(): Argument #3 ($offset) must be contained in argument #1 ($haystack)` rather than reporting no match. An empty needle returns the offset itself.</p>
           <pre><code class="lang-php">var_dump(strpos("hello", "l"), strpos("hello", "z"));   // =&gt; int(2) bool(false)</code></pre>
         </article>
         <article class="doc-entry" id="doc-core-library-strings-16">
@@ -2003,13 +2015,13 @@ echo $q-&gt;extract();   // =&gt; hi</code></pre>
         <article class="doc-entry" id="doc-core-library-strings-29">
           <h3><a class="doc-anchor" href="#doc-core-library-strings-29">#</a> <code>chr</code></h3>
           <pre><code class="lang-php">chr(int $codepoint): string</code></pre>
-          <p>The one-character string for a byte value, reduced modulo 256 so any integer is accepted. DIVERGENCE: the result is that CODEPOINT, so `chr(233)` yields a two-byte UTF-8 `é` rather than PHP's single 0xE9 byte.</p>
+          <p>The one-character string for a byte value, reduced modulo 256 so any integer is accepted — a value outside `0..=255` raises `Deprecated: chr(): Providing a value not in-between 0 and 255 is deprecated…` first. DIVERGENCE: the result is that CODEPOINT, so `chr(233)` yields a two-byte UTF-8 `é` rather than PHP's single 0xE9 byte.</p>
           <pre><code class="lang-php">echo chr(65);   // =&gt; A</code></pre>
         </article>
         <article class="doc-entry" id="doc-core-library-strings-30">
           <h3><a class="doc-anchor" href="#doc-core-library-strings-30">#</a> <code>ord</code></h3>
           <pre><code class="lang-php">ord(string $character): int</code></pre>
-          <p>The value of the first BYTE of the string, so a multibyte character reports its leading byte (`ord("é")` is 195). Returns 0 for the empty string.</p>
+          <p>The value of the first BYTE of the string, so a multibyte character reports its leading byte (`ord("é")` is 195). The empty string returns 0 and raises `Deprecated: ord(): Providing an empty string is deprecated`.</p>
           <pre><code class="lang-php">echo ord("A");   // =&gt; 65</code></pre>
         </article>
         <article class="doc-entry" id="doc-core-library-strings-31">
@@ -2021,7 +2033,7 @@ echo $q-&gt;extract();   // =&gt; hi</code></pre>
         <article class="doc-entry" id="doc-core-library-strings-32">
           <h3><a class="doc-anchor" href="#doc-core-library-strings-32">#</a> <code>hexdec</code></h3>
           <pre><code class="lang-php">hexdec(string $hex_string): int</code></pre>
-          <p>The integer value of a hexadecimal string, after trimming surrounding whitespace. DIVERGENCE: an unparseable string yields `0` rather than PHP's silent skipping of invalid characters, and there is no float fallback on overflow.</p>
+          <p>The integer value of a hexadecimal string, after trimming surrounding whitespace. A leading `0x`/`0X` is dropped. Characters that are not hex digits are skipped, and skipping ANY raises `Deprecated: Invalid characters passed for attempted conversion, these have been ignored` before returning. The result is an integer when it fits `PHP_INT_MAX` and a float otherwise.</p>
           <pre><code class="lang-php">echo hexdec("ff");   // =&gt; 255</code></pre>
         </article>
         <article class="doc-entry" id="doc-core-library-strings-33">
@@ -2078,7 +2090,7 @@ echo $q-&gt;extract();   // =&gt; hi</code></pre>
         <article class="doc-entry" id="doc-core-library-arrays-7">
           <h3><a class="doc-anchor" href="#doc-core-library-arrays-7">#</a> <code>range</code></h3>
           <pre><code class="lang-php">range(mixed $start, mixed $end, int|float $step = 1): array</code></pre>
-          <p>An inclusive sequence. Two non-numeric strings produce a character range walked by BYTE, using only the first byte of each bound — a longer bound raises `range(): Argument #N ($start|$end) must be a single byte, subsequent bytes are ignored` and continues. Anything else produces a numeric range. A step wider than the span (`range(9, 10, 2)`) throws a catchable `ValueError` whose trace names this call: `#0 &lt;file&gt;(&lt;line&gt;): range(9, 10, 2)`.</p>
+          <p>An inclusive sequence, ported from `PHP_FUNCTION(range)`. `$step` is validated FIRST and independently of the bounds, with a distinct message for each fault: `cannot be 0`, `must be greater than -9223372036854775808`, `must be a finite number, NAN|INF provided`, `must be greater than 0 for increasing ranges`, and `must be less than the range spanned by argument #1 ($start) and argument #2 ($end)`. Each bound is then classified: a one-byte NUMERIC string is ambiguous and is read as a character only when the other bound is also a string, so `range("1", "3")` yields strings while `range("1.5", "3")` yields floats. A character range walks BYTES using only the first byte of each bound (a longer bound warns `must be a single byte, subsequent bytes are ignored`), an empty string warns `must not be empty, casted to 0`, and a whole-valued float step keeps an int range int. A span too large for a hash table raises `The supplied range exceeds the maximum array size by N elements: …`.</p>
           <pre><code class="lang-php">echo implode(",", range(1, 4)), " ", implode("", range("a", "c"));   // =&gt; 1,2,3,4 abc</code></pre>
         </article>
         <article class="doc-entry" id="doc-core-library-arrays-8">
@@ -2197,7 +2209,7 @@ echo $q-&gt;extract();   // =&gt; hi</code></pre>
         <article class="doc-entry" id="doc-core-library-arrays-27">
           <h3><a class="doc-anchor" href="#doc-core-library-arrays-27">#</a> <code>array_fill</code></h3>
           <pre><code class="lang-php">array_fill(int $start_index, int $count, mixed $value): array</code></pre>
-          <p>An array of `$count` copies of the value, keyed from `$start_index` upward.</p>
+          <p>An array of `$count` copies of the value, keyed from `$start_index` upward. A negative `$count` raises `ValueError: array_fill(): Argument #2 ($count) must be greater than or equal to 0` and one past `INT_MAX` raises `… is too large`; a `$start_index` high enough that the last key would pass `PHP_INT_MAX` raises `Error: Cannot add element to the array as the next element is already occupied`, before any element is written.</p>
           <pre><code class="lang-php">echo implode(",", array_fill(0, 3, "x"));   // =&gt; x,x,x</code></pre>
         </article>
         <article class="doc-entry" id="doc-core-library-arrays-28">
@@ -2467,19 +2479,19 @@ min(array $values): mixed</code></pre>
         <article class="doc-entry" id="doc-core-library-types-and-output-21">
           <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-21">#</a> <code>print_r</code></h3>
           <pre><code class="lang-php">print_r(mixed $value, bool $return = false): string|true</code></pre>
-          <p>Renders a value in PHP's indented human-readable form. With `$return` truthy the text is returned instead of printed.</p>
+          <p>Renders a value in PHP's indented human-readable form. With `$return` truthy the text is returned instead of printed. A structure that contains itself prints its head and then ` *RECURSION*` in place of the repeated block.</p>
           <pre><code class="lang-php">echo print_r([1, 2], true);   // =&gt; Array\n(\n    [0] =&gt; 1\n    [1] =&gt; 2\n)</code></pre>
         </article>
         <article class="doc-entry" id="doc-core-library-types-and-output-22">
           <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-22">#</a> <code>var_dump</code></h3>
           <pre><code class="lang-php">var_dump(mixed ...$values): void</code></pre>
-          <p>Prints each value with its type and structure — `bool(true)`, `int(3)`, `float(1.5)`, `string(3) "abc"`, and nested `array(n) { … }`.</p>
+          <p>Prints each value with its type and structure — `bool(true)`, `int(3)`, `float(1.5)`, `string(3) "abc"`, and nested `array(n) { … }`. A repeated element in a self-referential structure is replaced entirely by `*RECURSION*`, type header included.</p>
           <pre><code class="lang-php">var_dump(true);   // =&gt; bool(true)</code></pre>
         </article>
         <article class="doc-entry" id="doc-core-library-types-and-output-23">
           <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-23">#</a> <code>var_export</code></h3>
           <pre><code class="lang-php">var_export(mixed $value, bool $return = false): string|null</code></pre>
-          <p>Renders a value as parsable PHP source. With `$return` truthy the text is returned; otherwise it is printed and null is returned.</p>
+          <p>Renders a value as parsable PHP source. With `$return` truthy the text is returned; otherwise it is printed and null is returned. A circular reference raises `Warning: var_export does not handle circular references` and writes `NULL` in that position, so the output stays parsable but no longer rebuilds the original.</p>
           <pre><code class="lang-php">var_export(1);   // =&gt; 1</code></pre>
         </article>
         <article class="doc-entry" id="doc-core-library-types-and-output-24">
@@ -2491,7 +2503,7 @@ min(array $values): mixed</code></pre>
         <article class="doc-entry" id="doc-core-library-types-and-output-25">
           <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-25">#</a> <code>json_encode</code></h3>
           <pre><code class="lang-php">json_encode(mixed $value): string</code></pre>
-          <p>Encodes a value as JSON, escaping `/` and non-ASCII characters by default and returning `false` (with `json_last_error()` set to `JSON_ERROR_INF_OR_NAN`) for a NAN or INF. `JSON_PRETTY_PRINT`, `JSON_UNESCAPED_SLASHES` and `JSON_UNESCAPED_UNICODE` are honoured. DIVERGENCE: the `$depth` argument is not read. `json_decode` lives in the `json` module, not here.</p>
+          <p>Encodes a value as JSON, escaping `/` and non-ASCII characters by default and returning `false` (with `json_last_error()` set) for a NAN or INF (`JSON_ERROR_INF_OR_NAN`) or a structure containing itself (`JSON_ERROR_RECURSION`). `JSON_PRETTY_PRINT`, `JSON_UNESCAPED_SLASHES`, `JSON_UNESCAPED_UNICODE` and `JSON_THROW_ON_ERROR` are honoured. DIVERGENCE: the `$depth` argument is not read. `json_decode` lives in the `json` module, not here.</p>
           <pre><code class="lang-php">echo json_encode([1, 2, 3]);   // =&gt; [1,2,3]</code></pre>
         </article>
       </section>
@@ -2708,7 +2720,7 @@ strtr(string $string, string $from, string $to): string</code></pre>
         <article class="doc-entry" id="doc-multibyte-strings-2">
           <h3><a class="doc-anchor" href="#doc-multibyte-strings-2">#</a> <code>mb_convert_case</code></h3>
           <pre><code class="lang-php">mb_convert_case(string $string, int $mode): string</code></pre>
-          <p>Mode 1 lowercases, mode 2 title-cases, and mode 0 — plus every UNRECOGNIZED mode — uppercases. Title-casing uppercases the first letter of each alphabetic run and lowercases the rest, so `"who's who"` becomes `"Who'S Who"`. DIVERGENCE: PHP's `MB_CASE_*_SIMPLE` modes (3-5) are not distinguished.</p>
+          <p>Mode 1 lowercases, mode 2 title-cases, and mode 0 — plus every UNRECOGNIZED mode — uppercases. Title-casing uppercases the first letter of each WORD and lowercases the rest of it; a Unicode case-ignorable character (an apostrophe, `.`, `:`) is transparent rather than a word break, so `"who's who"` becomes `"Who's Who"` while `"x,y"` becomes `"X,Y"`. DIVERGENCE: PHP's `MB_CASE_*_SIMPLE` modes (3-5) are not distinguished.</p>
           <pre><code class="lang-php">echo mb_convert_case("hello world", MB_CASE_TITLE);   // =&gt; Hello World</code></pre>
         </article>
         <article class="doc-entry" id="doc-multibyte-strings-3">
@@ -2801,7 +2813,7 @@ strtr(string $string, string $from, string $to): string</code></pre>
         <article class="doc-entry" id="doc-multibyte-strings-18">
           <h3><a class="doc-anchor" href="#doc-multibyte-strings-18">#</a> <code>mb_convert_encoding</code></h3>
           <pre><code class="lang-php">mb_convert_encoding(string $string, string $to_encoding): string</code></pre>
-          <p>Maps unrepresentable characters to `?`: everything at or above U+0080 for `ASCII`, above U+00FF for `ISO-8859-1`/`Latin-1`. Any other target returns the string unchanged. DIVERGENCE: `$from_encoding` is ignored, true single-byte output is impossible in a UTF-8 runtime, and the array form is unsupported.</p>
+          <p>Maps unrepresentable characters to `?`: everything at or above U+0080 for `ASCII`, above U+00FF for `ISO-8859-1`/`Latin-1`. `UTF-8` returns the string unchanged; any OTHER target raises `ValueError: mb_convert_encoding(): Argument #2 ($to_encoding) must be a valid encoding, "…" given`. DIVERGENCE: `$from_encoding` is ignored, true single-byte output is impossible in a UTF-8 runtime, and the array form is unsupported.</p>
           <pre><code class="lang-php">echo mb_convert_encoding("héllo", "ASCII");   // =&gt; h?llo</code></pre>
         </article>
         <article class="doc-entry" id="doc-multibyte-strings-19">
@@ -2943,7 +2955,7 @@ strtr(string $string, string $from, string $to): string</code></pre>
         <article class="doc-entry" id="doc-arrays-15">
           <h3><a class="doc-anchor" href="#doc-arrays-15">#</a> <code>usort</code></h3>
           <pre><code class="lang-php">usort(array $array, callable $callback): bool</code></pre>
-          <p>Sorts by value with a user comparator, then reindexes from 0. The sort is stable, as PHP's is. The comparator runs the VM, so an exception it throws stops the sort.</p>
+          <p>Sorts by value with a user comparator, then reindexes from 0. The sort is stable, as PHP's is, and tolerates a comparator that contradicts itself (`fn() =&gt; random_int(-1, 1)`) by answering with some permutation rather than failing. The comparator runs the VM, so an exception it throws stops the sort.</p>
           <pre><code class="lang-php">$a = [3, 1, 2]; usort($a, fn($x, $y) =&gt; $x &lt;=&gt; $y); echo implode(",", $a);   // =&gt; 1,2,3</code></pre>
         </article>
         <article class="doc-entry" id="doc-arrays-16">
@@ -2979,7 +2991,7 @@ echo implode(",", array_keys($a));   // =&gt; a,b</code></pre>
         <article class="doc-entry" id="doc-arrays-21">
           <h3><a class="doc-anchor" href="#doc-arrays-21">#</a> <code>array_rand</code></h3>
           <pre><code class="lang-php">array_rand(array $array, int $num = 1): mixed</code></pre>
-          <p>One random key, or an array of `$num` distinct keys in their original order. A `$num` outside `1..count($array)` raises `array_rand(): Argument #2 ($num) must be between 1 and the number of elements in $array`. Uses the same non-reproducible xorshift64 generator as `shuffle`.</p>
+          <p>One random key, or an array of `$num` distinct keys in their original order. An EMPTY array raises `ValueError: array_rand(): Argument #1 ($array) must not be empty` — there is no `$num` that would work — while a `$num` outside `1..count($array)` on a non-empty array names argument #2 instead. Uses the same non-reproducible xorshift64 generator as `shuffle`.</p>
         </article>
         <article class="doc-entry" id="doc-arrays-22">
           <h3><a class="doc-anchor" href="#doc-arrays-22">#</a> <code>array_walk</code></h3>
@@ -3173,13 +3185,13 @@ echo implode(",", array_keys($a));   // =&gt; a,b</code></pre>
         <article class="doc-entry" id="doc-math-22">
           <h3><a class="doc-anchor" href="#doc-math-22">#</a> <code>bindec</code></h3>
           <pre><code class="lang-php">bindec(string $binary_string): int|float</code></pre>
-          <p>Parses a base-2 string, silently skipping any character that is not a binary digit. The result is an integer when it fits `PHP_INT_MAX` and a float otherwise; accumulation saturates rather than wrapping.</p>
+          <p>Parses a base-2 string, dropping a leading `0b`/`0B` and skipping any character that is not a binary digit — skipping any raises `Deprecated: Invalid characters passed for attempted conversion, these have been ignored`. The result is an integer when it fits `PHP_INT_MAX` and a float otherwise; accumulation saturates rather than wrapping.</p>
           <pre><code class="lang-php">echo bindec("101");   // =&gt; 5</code></pre>
         </article>
         <article class="doc-entry" id="doc-math-23">
           <h3><a class="doc-anchor" href="#doc-math-23">#</a> <code>octdec</code></h3>
           <pre><code class="lang-php">octdec(string $octal_string): int|float</code></pre>
-          <p>Parses a base-8 string, skipping invalid digits, with the same integer-or-float result rule as `bindec`.</p>
+          <p>Parses a base-8 string, dropping a leading `0o`/`0O` and skipping invalid digits (which raises the same `Invalid characters passed for attempted conversion` deprecation as `bindec`), with the same integer-or-float result rule.</p>
           <pre><code class="lang-php">echo octdec("10");   // =&gt; 8</code></pre>
         </article>
         <article class="doc-entry" id="doc-math-24">
@@ -3560,7 +3572,7 @@ echo implode(",", array_keys($a));   // =&gt; a,b</code></pre>
         <article class="doc-entry" id="doc-types-and-serialization-6">
           <h3><a class="doc-anchor" href="#doc-types-and-serialization-6">#</a> <code>serialize</code></h3>
           <pre><code class="lang-php">serialize(mixed $value): string</code></pre>
-          <p>Emits PHP's serialization format for the scalar and array subset, using `serialize_precision=-1` float rules. DIVERGENCE: closures and user OBJECTS have no serializable form and fall back to `N;` (null) rather than an `O:`/`C:` record.</p>
+          <p>Emits PHP's serialization format using `serialize_precision=-1` float rules: `a:` for arrays, `O:` for objects (with the engine's NUL-mangled visibility keys), `E:` for enum cases. DIVERGENCE: a structure that contains ITSELF is written as `N;` at the repeat, where the reference emits an `r:`/`R:` back-reference — the output stays finite and valid but no longer round-trips a cycle.</p>
           <pre><code class="lang-php">echo serialize([1, "a"]);   // =&gt; a:2:{i:0;i:1;i:1;s:1:"a";}</code></pre>
         </article>
         <article class="doc-entry" id="doc-types-and-serialization-7">
@@ -3634,7 +3646,7 @@ echo implode(",", array_keys($a));   // =&gt; a,b</code></pre>
         <article class="doc-entry" id="doc-json-1">
           <h3><a class="doc-anchor" href="#doc-json-1">#</a> <code>json_decode</code></h3>
           <pre><code class="lang-php">json_decode(string $json, ?bool $associative = null, int $depth = 512, int $flags = 0): mixed</code></pre>
-          <p>A hand-written recursive-descent parser over the raw bytes. Objects and arrays BOTH decode to PHP arrays — `$associative` is accepted and ignored. `$depth` IS honoured (values below 1 clamp to 1 rather than raising), while `$flags` is ignored entirely. Integral numbers become ints; anything with a `.`/`e` or beyond the 64-bit range becomes a float. Any failure returns null and records the code for `json_last_error()`.</p>
+          <p>A hand-written recursive-descent parser over the raw bytes. Objects and arrays BOTH decode to PHP arrays — `$associative` is accepted and ignored. `$depth` is honoured and RANGE-CHECKED: below 1 raises `ValueError: json_decode(): Argument #3 ($depth) must be greater than 0` and past `INT_MAX` raises `… must be less than 2147483647`. `JSON_THROW_ON_ERROR` is honoured; other `$flags` are ignored. Integral numbers become ints; anything with a `.`/`e` or beyond the 64-bit range becomes a float. Any other failure returns null and records the code for `json_last_error()`. DIVERGENCE: the parser recurses on the native stack, so nesting deeper than 1024 reports `JSON_ERROR_DEPTH` whatever `$depth` asked for.</p>
           <pre><code class="lang-php">echo json_decode('{"a":1}')["a"];   // =&gt; 1</code></pre>
         </article>
         <article class="doc-entry" id="doc-json-2">
@@ -4507,7 +4519,7 @@ echo implode(",", $a), "|", implode(",", $b);   // =&gt; 1,2,3|a,b,c</code></pre
         <article class="doc-entry" id="doc-misc-11">
           <h3><a class="doc-anchor" href="#doc-misc-11">#</a> <code>str_word_count</code></h3>
           <pre><code class="lang-php">str_word_count(string $string, int $format = 0, ?string $characters = null): int|array</code></pre>
-          <p>Format 1 returns the words, format 2 a byte-offset-to-word map, and 0 — plus any unrecognized value, which does not raise — the count. A word is a run of ASCII letters plus `'` and `-`, which are ALWAYS word characters; `$characters` only ADDS bytes to that set and can never restrict it. Matching is bytewise, so multibyte text is not recognized as words.</p>
+          <p>Format 1 returns the words, format 2 a byte-offset-to-word map, and 0 the count; any other value raises `ValueError: str_word_count(): Argument #2 ($format) must be a valid format value`. A word is a run of ASCII letters plus `'` and `-`, which are ALWAYS word characters; `$characters` only ADDS bytes to that set and can never restrict it. Matching is bytewise, so multibyte text is not recognized as words.</p>
           <pre><code class="lang-php">echo str_word_count("a b c");   // =&gt; 3</code></pre>
         </article>
         <article class="doc-entry" id="doc-misc-12">
@@ -4858,8 +4870,8 @@ var_dump($o instanceof I, interface_exists("I"));   // =&gt; bool(true) bool(fal
         </article>
         <article class="doc-entry" id="doc-reflection-5">
           <h3><a class="doc-anchor" href="#doc-reflection-5">#</a> <code>get_class</code></h3>
-          <pre><code class="lang-php">get_class(object $object): string|false</code></pre>
-          <p>The object's class name in its original DECLARED casing, or `false` for a non-object or a missing argument.</p>
+          <pre><code class="lang-php">get_class(object $object = null): string</code></pre>
+          <p>The object's class name in its original DECLARED casing. A non-object is a `TypeError` — returning `false` was PHP 7's answer — and a boolean is named in that message by its VALUE (`true given`), not as `bool`. Called with NO argument it answers the enclosing `__CLASS__` and raises `Deprecated: Calling get_class() without arguments is deprecated`; outside a class that form is an `Error` instead.</p>
           <pre><code class="lang-php">class Foo {} echo get_class(new Foo);   // =&gt; Foo</code></pre>
         </article>
         <article class="doc-entry" id="doc-reflection-6">
@@ -4870,8 +4882,8 @@ var_dump($o instanceof I, interface_exists("I"));   // =&gt; bool(true) bool(fal
         </article>
         <article class="doc-entry" id="doc-reflection-7">
           <h3><a class="doc-anchor" href="#doc-reflection-7">#</a> <code>get_object_vars</code></h3>
-          <pre><code class="lang-php">get_object_vars(object $object): array|false</code></pre>
-          <p>Every property of the instance in insertion order. DIVERGENCE: there is no calling-scope filter, so private and protected properties are ALWAYS included regardless of where the call is made.</p>
+          <pre><code class="lang-php">get_object_vars(object $object): array</code></pre>
+          <p>The properties of the instance the CALLING SCOPE may see, in insertion order — public ones from outside the class, everything from inside a method of it. A non-object is a `TypeError`, including an array.</p>
           <pre><code class="lang-php">class C { public $a = 1; } print_r(get_object_vars(new C));   // =&gt; Array\n(\n    [a] =&gt; 1\n)</code></pre>
         </article>
         <article class="doc-entry" id="doc-reflection-8">
@@ -4882,8 +4894,8 @@ var_dump($o instanceof I, interface_exists("I"));   // =&gt; bool(true) bool(fal
         </article>
         <article class="doc-entry" id="doc-reflection-9">
           <h3><a class="doc-anchor" href="#doc-reflection-9">#</a> <code>get_class_vars</code></h3>
-          <pre><code class="lang-php">get_class_vars(string $class): array|false</code></pre>
-          <p>DIVERGENCE: a stub — an EMPTY array for any declared class, `false` for an undeclared one. Property defaults are stored as compiled chunks with no evaluator reachable from this module, so no names or values are reported.</p>
+          <pre><code class="lang-php">get_class_vars(string $class): array</code></pre>
+          <p>DIVERGENCE: a stub — an EMPTY array for any declared class, and `false` for an undeclared one where the reference raises `TypeError: get_class_vars(): Argument #1 ($class) must be a valid class name, &lt;name&gt; given`. Property defaults are stored as compiled chunks with no evaluator reachable from this module, so no names or values are reported.</p>
           <pre><code class="lang-php">class C { public $a = 1; } print_r(get_class_vars("C"));   // =&gt; Array\n(\n)</code></pre>
         </article>
         <article class="doc-entry" id="doc-reflection-10">

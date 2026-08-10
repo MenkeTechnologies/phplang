@@ -802,6 +802,81 @@ const INI_FIXED: &[&str] = &[
     "zend.script_encoding",
 ];
 
+/// The set of array/object handles currently being walked by a recursive
+/// renderer, so a structure that contains itself is DETECTED rather than
+/// followed forever.
+///
+/// This is the analogue of the reference's `GC_PROTECT_RECURSION`: the engine
+/// flags a hashtable while it is being printed and, on re-entering a flagged
+/// one, substitutes a marker. Without it every one of these walkers exhausts
+/// the native stack and the process aborts, which no PHP program can catch.
+#[derive(Default)]
+pub struct Visiting(Vec<u32>);
+
+impl Visiting {
+    /// Mark `v` as being walked. `false` means it already was — the caller must
+    /// emit its recursion marker instead of descending.
+    pub fn enter(&mut self, v: &Value) -> bool {
+        let Value::Obj(id) = v else { return true };
+        if self.0.contains(id) {
+            return false;
+        }
+        self.0.push(*id);
+        true
+    }
+
+    /// Finish walking the value the matching [`Visiting::enter`] admitted.
+    pub fn leave(&mut self) {
+        self.0.pop();
+    }
+}
+
+/// A string as a stack trace renders it: cut to 15 BYTES, then escaped.
+///
+/// Port of `smart_str_append_escaped_truncated(…, 15)` plus
+/// `smart_str_append_escaped` (`Zend/zend_smart_str.c`). Every byte below 32,
+/// the backslash itself, and every byte above 126 is escaped — the named ones
+/// (`\n`, `\r`, `\t`, `\f`, `\v`, `\e`, `\\`) by their letter, the rest as
+/// `\xHH` with UPPERCASE hex digits. A single quote is NOT escaped, even though
+/// the result is wrapped in single quotes.
+///
+/// The truncation is by byte and happens BEFORE escaping, so a 15-byte cut can
+/// land mid-character; the escaping then renders the orphaned bytes as `\xHH`,
+/// which is why the reference never emits invalid UTF-8 here.
+fn escape_trace_string(s: &str) -> String {
+    const VK_ESCAPE: u8 = 0x1b;
+    let bytes = s.as_bytes();
+    let cut = bytes.len().min(15);
+    let mut out = String::new();
+    for &c in &bytes[..cut] {
+        if c < 32 || c == b'\\' || c > 126 {
+            out.push('\\');
+            match c {
+                b'\n' => out.push('n'),
+                b'\r' => out.push('r'),
+                b'\t' => out.push('t'),
+                0x0c => out.push('f'),
+                0x0b => out.push('v'),
+                b'\\' => out.push('\\'),
+                VK_ESCAPE => out.push('e'),
+                _ => out.push_str(&format!("x{c:02X}")),
+            }
+        } else {
+            out.push(c as char);
+        }
+    }
+    if bytes.len() > 15 {
+        out.push_str("...");
+    }
+    out
+}
+
+/// The message PHP raises when `$a[] =` cannot pick a key because the array
+/// already holds an element at `PHP_INT_MAX`. Thrown as a plain `Error`, so
+/// user code can catch it; the reference does not name a function in it.
+pub const NEXT_ELEMENT_OCCUPIED: &str =
+    "Cannot add element to the array as the next element is already occupied";
+
 // DIVERGENCE — per-setting VALUE validation is not modelled. The reference
 // refuses a value a setting will not take, with a `Warning` and `false`:
 // `ini_set('date.timezone', '-1')` keeps UTC, `ini_set('memory_limit', '20')`
@@ -1526,20 +1601,25 @@ impl PhpHost {
             Value::Undef => "NULL".to_string(),
             Value::Bool(true) => "true".to_string(),
             Value::Bool(false) => "false".to_string(),
-            Value::Str(s) => {
-                if s.chars().count() > 15 {
-                    let cut: String = s.chars().take(15).collect();
-                    format!("'{cut}...'")
-                } else {
-                    format!("'{s}'")
-                }
-            }
+            Value::Str(s) => format!("'{}'", escape_trace_string(s)),
             Value::Obj(_) if self.is_array(v) => "Array".to_string(),
             Value::Obj(_) if self.is_closure(v) => "Object(Closure)".to_string(),
             Value::Obj(_) => match self.object_class(v) {
                 Some(c) => format!("Object({c})"),
                 None => "Object(stdClass)".to_string(),
             },
+            // A float keeps a fractional part in a trace even when it has none:
+            // the reference renders trace arguments with `zero_frac` set, so a
+            // whole-valued float reads `1.0` and stays distinguishable from the
+            // int `1`. `INF`/`NAN` are left alone.
+            Value::Float(f) => {
+                let s = self.to_str(v);
+                if f.is_finite() && !s.contains('.') && !s.contains('E') {
+                    format!("{s}.0")
+                } else {
+                    s
+                }
+            }
             other => self.to_str(other),
         }
     }
@@ -1895,7 +1975,7 @@ impl PhpHost {
         {
             if let ArrayKey::Int(n) = k {
                 if n >= *next_index {
-                    *next_index = n + 1;
+                    *next_index = n.saturating_add(1);
                 }
             }
             entries.insert(k, handle);
@@ -1942,7 +2022,7 @@ impl PhpHost {
         {
             if let ArrayKey::Int(n) = k {
                 if n >= *next_index {
-                    *next_index = n + 1;
+                    *next_index = n.saturating_add(1);
                 }
             }
             entries.insert(k, handle);
@@ -1950,8 +2030,19 @@ impl PhpHost {
     }
 
     /// `$name[k1]..[kM][] = &$x` — append a [`PhpObj::Ref`] handle for `slot`.
-    pub fn append_elem_to_slot(&mut self, name: &str, keys: &[Value], slot: usize) {
+    ///
+    /// Refuses with [`NEXT_ELEMENT_OCCUPIED`] on a saturated array, exactly as
+    /// the by-value append does — binding a reference is still an append.
+    pub fn append_elem_to_slot(
+        &mut self,
+        name: &str,
+        keys: &[Value],
+        slot: usize,
+    ) -> Result<(), String> {
         let arr = self.ensure_path_array(name, keys);
+        if self.append_slot_taken(&arr) {
+            return Err(NEXT_ELEMENT_OCCUPIED.to_string());
+        }
         self.objs.push(PhpObj::Ref { slot });
         let handle = Value::Obj((self.objs.len() - 1) as u32);
         if let Some(PhpObj::Array {
@@ -1960,9 +2051,10 @@ impl PhpHost {
         }) = self.as_array_mut(&arr)
         {
             let k = ArrayKey::Int(*next_index);
-            *next_index += 1;
+            *next_index = next_index.saturating_add(1);
             entries.insert(k, handle);
         }
+        Ok(())
     }
 
     /// `$obj->p = &$x` — store a [`PhpObj::Ref`] handle for `slot` in a property.
@@ -2428,19 +2520,23 @@ impl PhpHost {
     /// used in the message.
     fn class_instantiation_error(&self, class: &str) -> Option<String> {
         let def = self.classes.get(&class.to_ascii_lowercase())?;
-        if def.is_interface {
-            Some(format!(
-                "Cannot instantiate interface {}",
-                display_class(class)
-            ))
+        // Three of the kinds this engine records cannot be instantiated, and the
+        // reference names each by its OWN keyword so a caller catching the
+        // `Error` can tell them apart. A `trait` is a fourth in the reference,
+        // but this engine does not keep traits in the class table at all.
+        let kind = if def.is_interface {
+            "interface"
+        } else if def.is_enum {
+            "enum"
         } else if def.is_abstract {
-            Some(format!(
-                "Cannot instantiate abstract class {}",
-                display_class(class)
-            ))
+            "abstract class"
         } else {
-            None
-        }
+            return None;
+        };
+        Some(format!(
+            "Cannot instantiate {kind} {}",
+            display_class(class)
+        ))
     }
 
     /// Whether a user function of the given name is defined (case-insensitive).
@@ -3562,23 +3658,128 @@ impl PhpHost {
     }
 
     /// `$var[key] = val` on the named scope variable, auto-vivifying an array.
-    pub fn index_set_var(&mut self, name: &str, key: &Value, val: Value) {
+    ///
+    /// A variable already holding a STRING is not auto-vivified: the write edits
+    /// that string in place. See `Self::string_offset_set` — before it existed
+    /// every `$s[0] = "x"` silently replaced the string with a one-element array.
+    pub fn index_set_var(&mut self, name: &str, key: &Value, val: Value) -> Result<(), String> {
+        if let Value::Str(cur) = self.get_var(name) {
+            let updated = self.string_offset_set(&cur, key, &val)?;
+            if let Some(updated) = updated {
+                self.set_var(name, Value::str(updated));
+            }
+            return Ok(());
+        }
         let arr = self.ensure_array_var(name);
         self.arr_set_key(&arr, key, val);
+        Ok(())
+    }
+
+    /// `$s[offset] = $v` where `$s` is a string. Returns the new string, or
+    /// `None` when the write was refused with a warning and `$s` is unchanged.
+    ///
+    /// Ported from `zend_assign_to_string_offset`. The rules, each measured
+    /// against `php 8.5.9`:
+    ///
+    /// | form | outcome |
+    /// |---|---|
+    /// | `$s="abc"; $s[1]="Z"` | `"aZc"` |
+    /// | `$s="abc"; $s[5]="Z"` | `"abc  Z"` — the gap is padded with SPACES |
+    /// | `$s="abc"; $s[-1]="Z"` | `"abZ"` — negative counts from the end |
+    /// | `$s="abc"; $s[-10]="Z"` | Warning `Illegal string offset -10`, unchanged |
+    /// | `$s="abc"; $s[1]="XY"` | Warning `Only the first byte…`, `"aXc"` |
+    /// | `$s="abc"; $s[1]=""` | Error `Cannot assign an empty string to a string offset` |
+    /// | `$s="abc"; $s["x"]="Z"` | TypeError `Cannot access offset of type string on string` |
+    /// | `$s="abc"; $s[1.7]="Z"` | Warning `String offset cast occurred`, `"aZc"` |
+    fn string_offset_set(
+        &mut self,
+        cur: &str,
+        key: &Value,
+        val: &Value,
+    ) -> Result<Option<String>, String> {
+        // Only an int-ish offset addresses a string. A non-numeric string key is
+        // a TypeError; a float/bool/null is accepted with a cast warning.
+        let off = match key {
+            Value::Int(n) => *n,
+            Value::Str(k) => match parse_php_number_full(k) {
+                Some(Value::Int(n)) => n,
+                _ => {
+                    return Err(crate::builtins::throws_bare(
+                        "TypeError",
+                        format!(
+                            "Cannot access offset of type {} on string",
+                            self.type_name_for_error(key)
+                        ),
+                    ))
+                }
+            },
+            Value::Float(_) | Value::Bool(_) | Value::Undef => {
+                self.warn("String offset cast occurred");
+                self.to_number(key).to_int()
+            }
+            other => {
+                return Err(crate::builtins::throws_bare(
+                    "TypeError",
+                    format!(
+                        "Cannot access offset of type {} on string",
+                        self.type_name_for_error(other)
+                    ),
+                ))
+            }
+        };
+
+        let replacement = self.to_str(val);
+        if replacement.is_empty() {
+            return Err(crate::builtins::throws_bare(
+                "Error",
+                "Cannot assign an empty string to a string offset",
+            ));
+        }
+        if replacement.len() > 1 {
+            self.warn("Only the first byte will be assigned to the string offset");
+        }
+        let byte = replacement.as_bytes()[0];
+
+        let len = cur.len() as i64;
+        let idx = if off < 0 {
+            let from_end = len + off;
+            if from_end < 0 {
+                self.warn(format_args!("Illegal string offset {off}"));
+                return Ok(None);
+            }
+            from_end as usize
+        } else {
+            off as usize
+        };
+
+        let mut bytes = cur.as_bytes().to_vec();
+        if idx >= bytes.len() {
+            bytes.resize(idx + 1, b' ');
+        }
+        bytes[idx] = byte;
+        Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
     }
 
     /// `$var[] = val` append on the named scope variable, auto-vivifying.
-    pub fn append_var(&mut self, name: &str, val: Value) {
+    ///
+    /// `Err` carries [`NEXT_ELEMENT_OCCUPIED`] when the array already holds an
+    /// element at `PHP_INT_MAX` — the reference refuses the write rather than
+    /// picking some other key, and the refusal is a catchable `Error`.
+    pub fn append_var(&mut self, name: &str, val: Value) -> Result<(), String> {
         let arr = self.ensure_array_var(name);
+        if self.append_slot_taken(&arr) {
+            return Err(NEXT_ELEMENT_OCCUPIED.to_string());
+        }
         if let Some(PhpObj::Array {
             entries,
             next_index,
         }) = self.as_array_mut(&arr)
         {
             let k = ArrayKey::Int(*next_index);
-            *next_index += 1;
+            *next_index = next_index.saturating_add(1);
             entries.insert(k, val);
         }
+        Ok(())
     }
 
     /// Return the array handle held by `$name`, creating an empty array (and
@@ -3690,7 +3891,29 @@ impl PhpHost {
         new
     }
 
+    /// Whether an append to `arr` has nowhere left to go — the next integer key
+    /// is already taken, which only happens once `next_index` has saturated at
+    /// `PHP_INT_MAX` because some element was written under that exact key.
+    ///
+    /// The reference detects this in `_zend_hash_index_add_or_update_i`: an
+    /// append is an ADD at `nNextFreeElement`, and an ADD onto an existing key
+    /// fails rather than overwriting. `false` for a non-array, which leaves the
+    /// caller's own type handling in charge.
+    pub fn append_slot_taken(&self, arr: &Value) -> bool {
+        matches!(
+            self.as_array(arr),
+            Some(PhpObj::Array { entries, next_index })
+                if entries.contains_key(&ArrayKey::Int(*next_index))
+        )
+    }
+
     /// Append `v` under the next integer key of the array `arr` (a handle).
+    ///
+    /// Saturating: once `next_index` reaches `PHP_INT_MAX` this overwrites that
+    /// key rather than overflowing. Callers reachable from `$a[] =` must consult
+    /// [`PhpHost::append_slot_taken`] first and raise [`NEXT_ELEMENT_OCCUPIED`];
+    /// the many stdlib callers that build a FRESH array cannot reach the
+    /// saturated state and so do not check.
     pub fn arr_push_auto(&mut self, arr: &Value, v: Value) {
         if let Some(PhpObj::Array {
             entries,
@@ -3698,7 +3921,7 @@ impl PhpHost {
         }) = self.as_array_mut(arr)
         {
             let k = ArrayKey::Int(*next_index);
-            *next_index += 1;
+            *next_index = next_index.saturating_add(1);
             entries.insert(k, v);
         }
     }
@@ -3719,7 +3942,7 @@ impl PhpHost {
         {
             if let ArrayKey::Int(n) = k {
                 if n >= *next_index {
-                    *next_index = n + 1;
+                    *next_index = n.saturating_add(1);
                 }
             }
             entries.insert(k, v);
@@ -3761,7 +3984,7 @@ impl PhpHost {
             *next_index = 0;
             for v in vals {
                 let k = ArrayKey::Int(*next_index);
-                *next_index += 1;
+                *next_index = next_index.saturating_add(1);
                 entries.insert(k, v);
             }
         }
@@ -3785,7 +4008,7 @@ impl PhpHost {
             for (k, v) in normed {
                 if let ArrayKey::Int(n) = k {
                     if n >= *next_index {
-                        *next_index = n + 1;
+                        *next_index = n.saturating_add(1);
                     }
                 }
                 entries.insert(k, v);
@@ -3815,7 +4038,7 @@ impl PhpHost {
                     // Integer keys are renumbered sequentially; string keys stay.
                     ArrayKey::Int(_) => {
                         let nk = ArrayKey::Int(*next_index);
-                        *next_index += 1;
+                        *next_index = next_index.saturating_add(1);
                         entries.insert(nk, v);
                     }
                     ArrayKey::Str(_) => {
@@ -3867,12 +4090,18 @@ impl PhpHost {
 
     /// Append each value to `$var` (`array_push`), auto-vivifying an array;
     /// returns the new element count.
-    pub fn arr_push_var(&mut self, name: &str, vals: Vec<Value>) -> Value {
+    /// `Err` carries [`NEXT_ELEMENT_OCCUPIED`] once the array's next integer key
+    /// is taken — `array_push` refuses the write for the same reason `$a[] =`
+    /// does, and the refusal is a catchable `Error`.
+    pub fn arr_push_var(&mut self, name: &str, vals: Vec<Value>) -> Result<Value, String> {
         let arr = self.ensure_array_var(name);
         for v in vals {
+            if self.append_slot_taken(&arr) {
+                return Err(NEXT_ELEMENT_OCCUPIED.to_string());
+            }
             self.arr_push_auto(&arr, v);
         }
-        Value::int(self.array_len(&arr))
+        Ok(Value::int(self.array_len(&arr)))
     }
 
     /// Prepend `vals` to `$var` (`array_unshift`) as a fresh `0`-based run,
@@ -4038,6 +4267,16 @@ impl PhpHost {
         }
     }
 
+    /// Step an int by `delta`, widening to float on overflow the way PHP does.
+    /// `$x = PHP_INT_MAX; $x++;` leaves a float, not a wrapped negative — the
+    /// engine has no integer overflow, so the type changes instead.
+    fn int_step_impl(n: i64, delta: i64) -> Value {
+        match n.checked_add(delta) {
+            Some(v) => Value::int(v),
+            None => Value::float(n as f64 + delta as f64),
+        }
+    }
+
     /// `++`/`--` applied to one value, with the diagnostics PHP raises for the
     /// operand types the operators do not actually change.
     ///
@@ -4070,11 +4309,14 @@ impl PhpHost {
                 ));
                 old.clone()
             }
-            Value::Int(n) => Value::int(n + delta),
+            // Past the int range the operators WIDEN rather than wrap: PHP has
+            // no integer overflow, so `PHP_INT_MAX + 1` is a float and stepping
+            // an int off either end produces one.
+            Value::Int(n) => Self::int_step_impl(*n, delta),
             Value::Float(f) => Value::float(f + delta as f64),
             Value::Str(s) if is_numeric_string(s) => match parse_php_number(s) {
                 Value::Float(f) => Value::float(f + delta as f64),
-                Value::Int(n) => Value::int(n + delta),
+                Value::Int(n) => Self::int_step_impl(n, delta),
                 other => other,
             },
             Value::Str(s) if s.is_empty() => {
@@ -5005,6 +5247,20 @@ fn call_library_throwing(name: &str, args: Vec<Value>) -> Result<Value, String> 
                 set_pending_throw(exc);
                 return Ok(Value::Undef);
             }
+            // An engine-level fatal, not a Throwable: displayed with the same
+            // trace a throw would carry but never routed through `catch`, and
+            // the program stops.
+            if let Some(message) = crate::builtins::untag_fatal(&e) {
+                return Err(fatal_from_internal(name, &args, message));
+            }
+            if let Some((class, code, message)) = crate::builtins::untag_throw_code(&e) {
+                return throw_from_internal_args(
+                    name,
+                    &args,
+                    class,
+                    vec![Value::str(message.to_string()), Value::int(code)],
+                );
+            }
             match crate::builtins::untag_throw(&e) {
                 Some((class, message)) => throw_from_internal(name, &args, class, message),
                 None => Err(e),
@@ -5470,6 +5726,34 @@ fn invoke_closure(
     )
 }
 
+/// The `Error` PHP raises for a value used as a callable that is not one.
+///
+/// Three distinct messages, and the reference distinguishes them: an array is
+/// judged on its LENGTH (a callable array is exactly `[target, method]`), an
+/// object that is not invokable names its class, and every scalar names its
+/// type. All are catchable `Error`s — they used to surface as the scaffold-level
+/// `php: value is not callable`, which no `try` block could see.
+fn not_callable(v: &Value) -> String {
+    let msg = with_host(|h| {
+        if h.is_array(v) {
+            "Array callback must have exactly two elements".to_string()
+        } else if h.is_object(v) {
+            let class = h.object_class(v).unwrap_or_else(|| "stdClass".to_string());
+            format!("Object of type {class} is not callable")
+        } else {
+            // NOT `type_name_for_error`: that spells a bool as the literal
+            // `true`/`false` (which is what an argument TypeError wants). This
+            // message names the TYPE, so a bool is `bool`.
+            let t = match v {
+                Value::Bool(_) => "bool".to_string(),
+                other => h.type_name_for_error(other),
+            };
+            format!("Value of type {t} is not callable")
+        }
+    });
+    crate::builtins::throws_bare("Error", msg)
+}
+
 /// Invoke a callable *value*: a closure handle runs its captured-plus-bound body
 /// in a fresh scope; a string is dispatched by name through `call_function`. Used
 /// by `$f(...)` calls and callback builtins (`array_map`).
@@ -5479,7 +5763,7 @@ pub fn call_value(callee: Value, args: Vec<Value>) -> Result<Value, String> {
     }
     match callee {
         Value::Str(s) => call_function(&s, args),
-        _ => Err("value is not callable".to_string()),
+        other => Err(not_callable(&other)),
     }
 }
 
@@ -5494,7 +5778,7 @@ pub fn call_value_named(
     }
     match callee {
         Value::Str(s) => call_function_named(&s, args, named),
-        _ => Err("value is not callable".to_string()),
+        other => Err(not_callable(&other)),
     }
 }
 
@@ -5641,6 +5925,46 @@ pub fn throw_from_internal(
     class: &str,
     message: &str,
 ) -> Result<Value, String> {
+    throw_from_internal_args(func, args, class, vec![Value::str(message.to_string())])
+}
+
+/// Report an engine-level fatal raised inside a library function, with the trace
+/// frame for the call the way the reference prints it. Returns the error string
+/// the VM stops on; nothing is thrown, so no `catch` can see it — contrast
+/// `throw_from_internal`, which builds a real Throwable.
+pub fn fatal_from_internal(func: &str, args: &[Value], message: &str) -> String {
+    with_host(|h| {
+        let line = h.cur_frame_line();
+        h.scopes.push(Scope {
+            name: Some(func.to_string()),
+            line,
+            ..Scope::default()
+        });
+        let argsarr = h.new_array();
+        for a in args {
+            h.arr_push_auto(&argsarr, a.clone());
+        }
+        h.set_var("@args", argsarr);
+        let trace = h.backtrace();
+        h.scopes.pop();
+        let body = format!(
+            "{message} in {} on line {line}\nStack trace:\n{trace}",
+            h.script_name()
+        );
+        h.fatal("Fatal error", &body);
+        h.ob_flush_all();
+        format!("Fatal error:  {body}")
+    })
+}
+
+/// [`throw_from_internal`] with the exception's full constructor argument list,
+/// for the throws whose `getCode()` or `getPrevious()` is part of the contract.
+pub fn throw_from_internal_args(
+    func: &str,
+    args: &[Value],
+    class: &str,
+    ctor_args: Vec<Value>,
+) -> Result<Value, String> {
     let sensitive = sensitive_params(func);
     with_host(|h| {
         let line = h.cur_frame_line();
@@ -5671,7 +5995,7 @@ pub fn throw_from_internal(
     });
     // `new_object` runs PHP (the exception constructor), so it must not be called
     // inside the borrow above.
-    let exc = new_object(class, vec![Value::str(message.to_string())]);
+    let exc = new_object(class, ctor_args);
     with_host(|h| {
         h.scopes.pop();
     });
@@ -5684,11 +6008,16 @@ pub fn throw_from_internal(
 /// on fresh VMs, so no host borrow is held across them.
 pub fn new_object(class: &str, args: Vec<Value>) -> Result<Value, String> {
     let cl = class.to_ascii_lowercase();
+    // Both refusals are catchable `Error`s in the reference; a bare `Err` here
+    // stopped the program with a scaffold message no `try` block could see.
     if let Some(e) = with_host(|h| h.class_instantiation_error(class)) {
-        return Err(e);
+        return Err(crate::builtins::throws_bare("Error", e));
     }
     let Some(defaults) = with_host(|h| h.class_prop_default_chunks(&cl)) else {
-        return Err(format!("class \"{class}\" not found"));
+        return Err(crate::builtins::throws_bare(
+            "Error",
+            format!("Class \"{class}\" not found"),
+        ));
     };
     // Evaluate each property default (a constant expression chunk).
     let mut props: IndexMap<String, Value> = IndexMap::new();
@@ -5724,11 +6053,16 @@ pub fn new_object_named(
     named: Vec<(String, Value)>,
 ) -> Result<Value, String> {
     let cl = class.to_ascii_lowercase();
+    // Both refusals are catchable `Error`s in the reference; a bare `Err` here
+    // stopped the program with a scaffold message no `try` block could see.
     if let Some(e) = with_host(|h| h.class_instantiation_error(class)) {
-        return Err(e);
+        return Err(crate::builtins::throws_bare("Error", e));
     }
     let Some(defaults) = with_host(|h| h.class_prop_default_chunks(&cl)) else {
-        return Err(format!("class \"{class}\" not found"));
+        return Err(crate::builtins::throws_bare(
+            "Error",
+            format!("Class \"{class}\" not found"),
+        ));
     };
     let mut props: IndexMap<String, Value> = IndexMap::new();
     for (name, chunk) in defaults {
@@ -5979,7 +6313,7 @@ pub fn call_method_named(
 /// throws must not leave the next write unguarded.
 fn in_clone_hook<T>(obj: &Value, body: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
     let Value::Obj(id) = obj else { return body() };
-    let prev = with_host(|h| std::mem::replace(&mut h.cloning, Some(*id)));
+    let prev = with_host(|h| h.cloning.replace(*id));
     let r = body();
     with_host(|h| h.cloning = prev);
     r
@@ -6114,12 +6448,18 @@ pub fn enum_from(class: &str, needle: Value, is_try: bool) -> Result<Value, Stri
         }
     }
     if is_try {
-        Ok(Value::Undef)
-    } else {
-        Err(format!(
-            "\"{needle_s}\" is not a valid backing value for enum {class}"
-        ))
+        return Ok(Value::Undef);
     }
+    // A catchable ValueError, not a scaffold fatal. The needle is rendered the
+    // way the reference renders it: an int bare, a string quoted.
+    let shown = match with_host(|h| h.to_number(&needle)) {
+        _ if matches!(needle, Value::Int(_)) => needle_s.clone(),
+        _ => format!("\"{needle_s}\""),
+    };
+    Err(crate::builtins::throws_bare(
+        "ValueError",
+        format!("{shown} is not a valid backing value for enum {class}"),
+    ))
 }
 
 /// `Class::$prop` read. On first access the (constant) initializer runs once and

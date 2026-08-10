@@ -156,12 +156,17 @@ fn http_build_query(args: &[Value]) -> Value {
         let raw = args.get(3).map(|v| h.to_number(v).to_int()).unwrap_or(1) == 2;
 
         let mut parts: Vec<String> = Vec::new();
+        // The guard is seeded with the TOP-LEVEL array and shared across the
+        // elements, so an element that points back at the whole structure is
+        // recognised as a repeat.
+        let mut seen = crate::host::Visiting::default();
+        seen.enter(&data);
         for (k, v) in pairs {
             let key = match &k {
                 Value::Int(n) => format!("{prefix}{n}"),
                 other => h.to_str(other),
             };
-            build_query_pair(h, &key, &v, raw, &mut parts);
+            build_query_pair_seen(h, &key, &v, raw, &mut parts, &mut seen);
         }
         Value::str(parts.join(&sep))
     })
@@ -169,12 +174,26 @@ fn http_build_query(args: &[Value]) -> Value {
 
 /// Emit one leaf (`key=value`) or recurse into a nested array building
 /// `key[sub]` segments. `null` leaves are dropped entirely.
-fn build_query_pair(h: &mut PhpHost, key: &str, val: &Value, raw: bool, out: &mut Vec<String>) {
+/// [`build_query_pair`] with the cycle guard. A self-referential array is not an
+/// error here: the reference SKIPS the repeat and emits the rest, so
+/// `$a=[1]; $a[]=&$a; http_build_query($a)` is `"0=1"`.
+fn build_query_pair_seen(
+    h: &mut PhpHost,
+    key: &str,
+    val: &Value,
+    raw: bool,
+    out: &mut Vec<String>,
+    seen: &mut crate::host::Visiting,
+) {
     if let Some(pairs) = h.array_pairs(val) {
+        if !seen.enter(val) {
+            return;
+        }
         for (k, v) in pairs {
             let sub = format!("{key}[{}]", h.to_str(&k));
-            build_query_pair(h, &sub, &v, raw, out);
+            build_query_pair_seen(h, &sub, &v, raw, out, seen);
         }
+        seen.leave();
         return;
     }
     let value = match val {

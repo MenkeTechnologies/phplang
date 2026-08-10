@@ -8,6 +8,7 @@
 //! division, the base-conversion functions (`decbin`/`bindec`/…/`base_convert`)
 //! and the pseudo-random generators (`rand`/`mt_rand`/`random_int` + seeding).
 
+use crate::host::with_host;
 use crate::stdlib::common::*;
 use fusevm::Value;
 use std::cell::Cell;
@@ -95,15 +96,50 @@ fn digit_val(c: char) -> Option<u32> {
 /// are not valid digits for the base — PHP's `bindec`/`octdec`/`base_convert`
 /// behavior. Accumulates in `u128` to tolerate values past `u64`.
 fn parse_base(s: &str, from: u32) -> u128 {
+    parse_base_reporting(s, from).0
+}
+
+/// [`parse_base`] plus whether any character was SKIPPED.
+///
+/// `bindec`/`octdec`/`hexdec` ignore characters that are not digits of their
+/// base, and PHP has deprecated relying on that since 7.4: it emits
+/// `Deprecated: Invalid characters passed for attempted conversion, these have
+/// been ignored` and then converts what is left. The skip was already
+/// implemented here; only the diagnostic was missing.
+fn parse_base_reporting(s: &str, from: u32) -> (u128, bool) {
+    // `_php_math_basetozval` trims whitespace and then drops a base-matching
+    // literal prefix — `0x`/`0X` for 16, `0o`/`0O` for 8, `0b`/`0B` for 2 — so
+    // `bindec("0b101")` is 5 with NO diagnostic. Without this the `b` would be
+    // counted as an invalid character and wrongly deprecated.
+    let t = s.trim();
+    let body = match from {
+        16 => t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")),
+        8 => t.strip_prefix("0o").or_else(|| t.strip_prefix("0O")),
+        2 => t.strip_prefix("0b").or_else(|| t.strip_prefix("0B")),
+        _ => None,
+    }
+    .unwrap_or(t);
     let mut acc: u128 = 0;
-    for c in s.chars() {
-        if let Some(d) = digit_val(c) {
-            if d < from {
+    let mut skipped = false;
+    for c in body.chars() {
+        match digit_val(c) {
+            Some(d) if d < from => {
                 acc = acc.saturating_mul(from as u128).saturating_add(d as u128);
             }
+            _ => skipped = true,
         }
     }
-    acc
+    (acc, skipped)
+}
+
+/// The shared body of `bindec`/`octdec`/`hexdec`: convert, and deprecate any
+/// character the base could not use.
+fn base_to_dec(h: &mut crate::host::PhpHost, s: &str, from: u32) -> Value {
+    let (n, skipped) = parse_base_reporting(s, from);
+    if skipped {
+        h.deprecated("Invalid characters passed for attempted conversion, these have been ignored");
+    }
+    int_or_float(n)
 }
 
 /// Render `n` in base `to` (2..=36) using lowercase digits.
@@ -172,8 +208,17 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         // ── base conversion ─────────────────────────────────────────────────
         "decbin" => Ok(Value::str(format!("{:b}", int_arg(args, 0)))),
         "decoct" => Ok(Value::str(format!("{:o}", int_arg(args, 0)))),
-        "bindec" => Ok(int_or_float(parse_base(&str_arg(args, 0), 2))),
-        "octdec" => Ok(int_or_float(parse_base(&str_arg(args, 0), 8))),
+        // The subject is read BEFORE the borrow: `str_arg` takes its own, and a
+        // nested `with_host` is a `RefCell` panic.
+        "bindec" | "octdec" | "hexdec" => {
+            let subject = str_arg(args, 0);
+            let base = match name {
+                "bindec" => 2,
+                "octdec" => 8,
+                _ => 16,
+            };
+            Ok(with_host(|h| base_to_dec(h, &subject, base)))
+        }
         "base_convert" => {
             let num = str_arg(args, 0);
             let from = int_arg(args, 1);

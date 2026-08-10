@@ -840,7 +840,7 @@ impl Compiler {
             b.emit(Op::LoadConst(nidx), 0); // name = @arr
             self.emit_get_var(b, &k_t); // key = @k
             self.emit_get_var(b, val_var); // val = $v
-            b.emit(Op::CallBuiltin(ops::INDEX_SET, 3), 0);
+            b.emit(Op::CallBuiltin(ops::INDEX_SET, 3), self.cur_line);
             b.emit(Op::Pop, 0);
         }
 
@@ -2964,7 +2964,7 @@ impl Compiler {
             b.emit(Op::LoadConst(nidx), 0);
             self.compile_expr(b, keys[0])?;
             self.compile_rhs(b, rhs)?;
-            b.emit(Op::CallBuiltin(ops::INDEX_SET, 3), 0);
+            b.emit(Op::CallBuiltin(ops::INDEX_SET, 3), self.cur_line);
         } else {
             self.compile_index_assign(b, name, &keys, op, rhs)?;
         }

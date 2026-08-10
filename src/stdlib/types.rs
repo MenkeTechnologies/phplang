@@ -159,6 +159,37 @@ pub fn debug_type(h: &crate::host::PhpHost, v: &Value) -> String {
 /// and (recursively) arrays, objects and `enum` cases. A closure or a resource
 /// has no serializable form and falls back to `N;` (null).
 fn php_serialize(h: &crate::host::PhpHost, v: &Value) -> String {
+    php_serialize_seen(h, v, &mut crate::host::Visiting::default())
+}
+
+/// [`php_serialize`] with the cycle guard threaded through.
+///
+/// DIVERGENCE: the reference encodes a repeat as a BACK-REFERENCE — `r:<n>;` for
+/// an object, `R:<n>;` for a reference — where `<n>` is the position the value
+/// first occupied in the serialization. phplang has no such position table, so a
+/// cycle is written as `N;` instead. The output therefore no longer round-trips
+/// a self-referential structure, but it is finite and syntactically valid; before
+/// this guard the walk exhausted the native stack and aborted the process.
+fn php_serialize_seen(
+    h: &crate::host::PhpHost,
+    v: &Value,
+    seen: &mut crate::host::Visiting,
+) -> String {
+    if (h.is_array(v) || h.is_object(v)) && !seen.enter(v) {
+        return "N;".to_string();
+    }
+    let out = php_serialize_body(h, v, seen);
+    if h.is_array(v) || h.is_object(v) {
+        seen.leave();
+    }
+    out
+}
+
+fn php_serialize_body(
+    h: &crate::host::PhpHost,
+    v: &Value,
+    seen: &mut crate::host::Visiting,
+) -> String {
     match v {
         Value::Undef => "N;".to_string(),
         Value::Bool(b) => format!("b:{};", *b as i32),
@@ -170,13 +201,13 @@ fn php_serialize(h: &crate::host::PhpHost, v: &Value) -> String {
             let pairs = h.array_pairs(v).unwrap_or_default();
             let mut out = format!("a:{}:{{", pairs.len());
             for (k, val) in pairs {
-                out.push_str(&php_serialize(h, &k));
-                out.push_str(&php_serialize(h, &val));
+                out.push_str(&php_serialize_seen(h, &k, seen));
+                out.push_str(&php_serialize_seen(h, &val, seen));
             }
             out.push('}');
             out
         }
-        Value::Obj(_) if h.is_object(v) => php_serialize_object(h, v),
+        Value::Obj(_) if h.is_object(v) => php_serialize_object(h, v, seen),
         _ => "N;".to_string(),
     }
 }
@@ -190,7 +221,11 @@ fn php_serialize(h: &crate::host::PhpHost, v: &Value) -> String {
 ///
 /// An `enum` case is not an object here at all: it serializes as
 /// `E:<len>:"Class:CASE";`, carrying only enough to look the singleton back up.
-fn php_serialize_object(h: &crate::host::PhpHost, v: &Value) -> String {
+fn php_serialize_object(
+    h: &crate::host::PhpHost,
+    v: &Value,
+    seen: &mut crate::host::Visiting,
+) -> String {
     let class = h.object_class(v).unwrap_or_else(|| "stdClass".to_string());
     if let Some((case, _)) = h.enum_case_of(v) {
         let tag = format!("{class}:{case}");
@@ -205,7 +240,7 @@ fn php_serialize_object(h: &crate::host::PhpHost, v: &Value) -> String {
             _ => name,
         };
         out.push_str(&format!("s:{}:\"{key}\";", key.len()));
-        out.push_str(&php_serialize(h, &val));
+        out.push_str(&php_serialize_seen(h, &val, seen));
     }
     out.push('}');
     out

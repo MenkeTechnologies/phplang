@@ -68,6 +68,15 @@ fn dir_is_the_working_directory_when_the_script_has_no_file() {
     // `php -r 'var_dump(__DIR__ === getcwd());'` prints `bool(true)`: with no file
     // to take a directory from, the reference answers the working directory.
     assert_eq!(run("<?php var_dump(__DIR__ === getcwd());"), "bool(true)\n");
+    // …and both are that directory. Comparing the engine's `__DIR__` with the
+    // engine's own `getcwd()` is a self-comparison: it holds for any two
+    // consistently wrong answers, including two empty strings. Anchoring to the
+    // directory the TEST PROCESS is in makes the claim falsifiable.
+    let cwd = std::env::current_dir()
+        .expect("cwd")
+        .to_string_lossy()
+        .into_owned();
+    assert_eq!(run("<?php echo __DIR__;"), cwd);
 }
 
 // ── functions ────────────────────────────────────────────────────────────────

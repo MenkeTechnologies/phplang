@@ -50,7 +50,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         "mb_split" => mb_split(args),
         "mb_convert_kana" => Value::str(mb_convert_kana(args)),
         "mb_strwidth" => Value::int(mb_strwidth(&str_arg(args, 0)) as i64),
-        "mb_convert_encoding" => Value::str(mb_convert_encoding(args)),
+        "mb_convert_encoding" => return Some(mb_convert_encoding(args)),
         "mb_detect_encoding" => mb_detect_encoding(args),
         "mb_check_encoding" => Value::bool(mb_check_encoding(args)),
         "mb_internal_encoding" => mb_internal_encoding(args),
@@ -312,7 +312,10 @@ fn mb_str_pad(args: &[Value]) -> Result<Value, String> {
     let total = target as usize - s.len();
     let make = |n: usize| -> Vec<char> { pad.iter().cloned().cycle().take(n).collect() };
 
-    let mut out: Vec<char> = Vec::with_capacity(target as usize);
+    // NOT `with_capacity(target)`: `$length` is unbounded and reserving
+    // `target * size_of::<char>()` bytes up front panicked with "capacity
+    // overflow" before any padding was built.
+    let mut out: Vec<char> = Vec::new();
     match pad_type {
         0 => {
             // STR_PAD_LEFT
@@ -420,7 +423,10 @@ fn mb_strcut(args: &[Value]) -> String {
             if l < 0 {
                 (blen + l).max(0) as usize
             } else {
-                (start as i64 + l).min(blen) as usize
+                // `$length` is unbounded, so the addition must saturate: a
+                // `PHP_INT_MAX` length overflowed before the `.min` could clamp
+                // it. The reference simply cuts at the end of the string.
+                (start as i64).saturating_add(l).min(blen) as usize
             }
         }
         _ => blen as usize,
@@ -574,10 +580,22 @@ fn mb_strwidth(s: &str) -> usize {
 /// the UTF-8 <-> ASCII / ISO-8859-1 / Latin-1 basics at the character level (see
 /// the module note on the single-byte-output limitation). Characters that cannot
 /// be represented in the target encoding become `?`.
-fn mb_convert_encoding(args: &[Value]) -> String {
+fn mb_convert_encoding(args: &[Value]) -> Result<Value, String> {
     let s = str_arg(args, 0);
-    let to = normalize_encoding(&str_arg(args, 1));
-    match to.as_str() {
+    let raw_to = str_arg(args, 1);
+    let to = normalize_encoding(&raw_to);
+    // An unrecognised target used to be silently treated as UTF-8, so a typo
+    // returned the input unchanged instead of being reported.
+    if !SUPPORTED_ENCODINGS.contains(&to.as_str()) {
+        return Err(throws(
+            "ValueError",
+            format!(
+                "mb_convert_encoding(): Argument #2 ($to_encoding) must be a valid \
+                 encoding, \"{raw_to}\" given"
+            ),
+        ));
+    }
+    Ok(Value::str(match to.as_str() {
         "ASCII" => s
             .chars()
             .map(|c| if (c as u32) < 0x80 { c } else { '?' })
@@ -586,10 +604,15 @@ fn mb_convert_encoding(args: &[Value]) -> String {
             .chars()
             .map(|c| if (c as u32) <= 0xFF { c } else { '?' })
             .collect(),
-        // UTF-8 (and any unrecognized target): the Rust string is already UTF-8.
+        // UTF-8: the Rust string is already UTF-8.
         _ => s,
-    }
+    }))
 }
+
+/// The encodings `mb_convert_encoding` accepts as a target. phplang stores every
+/// string as UTF-8, so the list is the set it can meaningfully produce plus the
+/// spellings `normalize_encoding` folds into them.
+const SUPPORTED_ENCODINGS: &[&str] = &["UTF-8", "ASCII", "ISO-8859-1"];
 
 /// `mb_detect_encoding($string, $encodings = null, $strict = false)`. phplang
 /// strings are always valid UTF-8, so detection reduces to: pure-ASCII input is

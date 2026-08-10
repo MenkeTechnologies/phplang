@@ -334,6 +334,21 @@ fn array_rand_single_is_valid_key() {
         run("<?php $a=['a','b','c']; $k=array_rand($a); echo ($k>=0 && $k<3)?'ok':'bad';"),
         "ok"
     );
+    // A range check alone cannot tell a real pick from a hardwired 0, so also
+    // require that the pick MOVES over many draws and that it is the array's own
+    // key type — an int index, not the value.
+    assert_eq!(
+        run(
+            "<?php $a=['a','b','c']; $s=[]; for($i=0;$i<60;$i++){ $s[array_rand($a)]=1; } \
+             echo count($s) > 1 ? 'varies' : 'constant';"
+        ),
+        "varies"
+    );
+    assert_eq!(
+        run("<?php $a=['x'=>1,'y'=>2]; $k=array_rand($a); \
+             echo is_string($k) ? 'string' : 'other', '|', array_key_exists($k,$a)?'in':'out';"),
+        "string|in"
+    );
 }
 
 #[test]

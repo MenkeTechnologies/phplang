@@ -145,3 +145,46 @@ fn strings_example_runs_and_prints_expected() {
          11\n"
     );
 }
+
+/// Every file in `examples/` must have a test above.
+///
+/// The eight tests in this file name their example as a string literal, so a
+/// newly added `examples/*.php` is simply never run — nothing enumerates the
+/// directory. This gate closes that, and carries its own lower bound so an
+/// empty or unreadable `examples/` fails rather than passing for free.
+#[test]
+fn every_example_file_has_a_test_in_this_file() {
+    let dir = format!("{}/examples", env!("CARGO_MANIFEST_DIR"));
+    let mut found: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("read_dir {dir}: {e}"))
+        .map(|e| {
+            e.expect("dir entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .filter(|n| n.ends_with(".php"))
+        .collect();
+    found.sort();
+    assert!(
+        found.len() >= 8,
+        "examples/ holds only {} .php file(s) ({found:?}) — this gate iterates \
+         them, so an empty directory would pass while checking nothing",
+        found.len()
+    );
+    let this_file = include_str!("examples.rs");
+    let untested: Vec<&String> = found
+        .iter()
+        .filter(|n| !this_file.contains(&format!("run_example(\"{n}\")")))
+        .collect();
+    assert!(
+        untested.is_empty(),
+        "example(s) with no test in tests/examples.rs: {untested:?} — add one \
+         asserting the file's exact output"
+    );
+    // And every name this file claims to run must still exist.
+    for name in &found {
+        let path = format!("{dir}/{name}");
+        assert!(std::path::Path::new(&path).is_file(), "missing {path}");
+    }
+}

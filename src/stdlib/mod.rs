@@ -83,6 +83,62 @@ pub(crate) mod common {
     /// for a library function to raise.
     pub use crate::builtins::throws;
 
+    /// Stable merge sort that never validates its comparator.
+    ///
+    /// `slice::sort_by` panics with "user-provided comparison function does not
+    /// correctly implement a total order" when it detects an inconsistent
+    /// ordering. A PHP comparison callback is arbitrary user code and is very
+    /// often inconsistent — `usort($a, fn() => random_int(-1, 1))` is a classic
+    /// — and the reference answers with SOME permutation rather than failing.
+    /// A panic there is uncatchable, so the user-callback sorts route through
+    /// this instead.
+    ///
+    /// Merge sort is also the right shape for the contract: PHP 8.0 made every
+    /// sort stable, so equal elements must keep their original order.
+    pub fn stable_sort_by<T: Clone>(
+        v: &mut Vec<T>,
+        mut cmp: impl FnMut(&T, &T) -> std::cmp::Ordering,
+    ) {
+        let n = v.len();
+        if n < 2 {
+            return;
+        }
+        let mut src = std::mem::take(v);
+        let mut dst: Vec<T> = Vec::with_capacity(n);
+        let mut width = 1;
+        while width < n {
+            let mut i = 0;
+            while i < n {
+                let mid = (i + width).min(n);
+                let end = (i + 2 * width).min(n);
+                let (mut l, mut r) = (i, mid);
+                while l < mid || r < end {
+                    let take_left = if l >= mid {
+                        false
+                    } else if r >= end {
+                        true
+                    } else {
+                        // `!= Greater` keeps a tie in its original order, which
+                        // is what makes the sort stable.
+                        cmp(&src[l], &src[r]) != std::cmp::Ordering::Greater
+                    };
+                    if take_left {
+                        dst.push(src[l].clone());
+                        l += 1;
+                    } else {
+                        dst.push(src[r].clone());
+                        r += 1;
+                    }
+                }
+                i = end;
+            }
+            std::mem::swap(&mut src, &mut dst);
+            dst.clear();
+            width *= 2;
+        }
+        *v = src;
+    }
+
     /// The `i`-th argument, or `Undef` (PHP: a missing argument reads as null).
     pub fn arg(args: &[Value], i: usize) -> Value {
         args.get(i).cloned().unwrap_or(Value::Undef)

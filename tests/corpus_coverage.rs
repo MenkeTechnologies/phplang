@@ -276,13 +276,35 @@ fn documented() -> BTreeSet<String> {
 fn every_registered_function_is_documented() {
     let documented = documented();
     let mut missing: Vec<String> = Vec::new();
+    let mut lifted = 0usize;
     for (label, src, opener) in tables() {
-        for name in arm_names(src, opener) {
+        let names = arm_names(src, opener);
+        // LOWER BOUND, per table. `arm_names` reads the registration tables as
+        // TEXT, so a change to how an arm is written stops lifting names — and a
+        // gate that compares an empty set against the corpus passes while
+        // checking nothing. Requiring each table to yield at least one name is
+        // what makes this test fail instead of quietly disarming.
+        assert!(
+            !names.is_empty(),
+            "table {label:?} yielded no registration names — `arm_names` no \
+             longer recognises its arms, so this gate is checking nothing"
+        );
+        lifted += names.len();
+        for name in names {
             if !documented.contains(&name) {
                 missing.push(format!("{name}  ({label})"));
             }
         }
     }
+    // Whole-corpus floor. Measured at 514 registered names across 28 tables when
+    // this guard was added; the floor sits below that so ordinary churn does not
+    // trip it, but a parser regression that halves the harvest does.
+    assert!(
+        lifted > 400,
+        "only {lifted} registered names were lifted from {} tables (expected >400) \
+         — the arm parser has regressed",
+        tables().len()
+    );
     assert!(
         missing.is_empty(),
         "{} registered function(s) have no entry in src/corpus.rs — a new builtin \
@@ -298,6 +320,23 @@ fn every_registered_function_is_documented() {
 #[test]
 fn every_documented_function_is_registered() {
     let implemented = implemented();
+    // Both sides need a floor: an empty `implemented` would make every entry
+    // stray (loud), but an empty *library-chapter* selection makes the filter
+    // chain yield nothing and the gate pass silently.
+    assert!(
+        implemented.len() > 400,
+        "only {} implemented names were collected (expected >400)",
+        implemented.len()
+    );
+    let checked = CORPUS
+        .iter()
+        .filter(|(_, chapter, ..)| !NON_LIBRARY_CHAPTERS.contains(chapter))
+        .count();
+    assert!(
+        checked > 400,
+        "only {checked} corpus entries fell outside NON_LIBRARY_CHAPTERS \
+         (expected >400) — a chapter was renamed, or the exclusion list grew"
+    );
     let stray: Vec<String> = CORPUS
         .iter()
         .filter(|(_, chapter, ..)| !NON_LIBRARY_CHAPTERS.contains(chapter))
@@ -317,10 +356,21 @@ fn every_documented_function_is_registered() {
 /// seeds, so the constants chapter cannot document a name a program cannot read.
 #[test]
 fn every_documented_constant_is_seeded() {
-    let missing: Vec<&str> = CORPUS
+    let named: Vec<&str> = CORPUS
         .iter()
         .filter(|(_, chapter, ..)| *chapter == "Predefined constant")
         .map(|(name, ..)| *name)
+        .collect();
+    // The chapter string is matched literally, so renaming it would empty this
+    // selection and the emptiness check below would then pass for free.
+    assert!(
+        named.len() > 100,
+        "only {} entries carry chapter \"Predefined constant\" (expected >100) \
+         — was the chapter renamed?",
+        named.len()
+    );
+    let missing: Vec<&str> = named
+        .into_iter()
         .filter(|name| !phplang::host::with_host(|h| h.const_defined(name)))
         .collect();
     assert!(
@@ -333,10 +383,19 @@ fn every_documented_constant_is_seeded() {
 #[test]
 fn every_documented_prelude_class_is_declared() {
     let prelude = include_str!("../src/lib.rs");
-    let missing: Vec<&str> = CORPUS
+    let named: Vec<&str> = CORPUS
         .iter()
         .filter(|(_, chapter, ..)| *chapter == "Prelude class")
         .map(|(name, ..)| *name)
+        .collect();
+    assert!(
+        named.len() > 15,
+        "only {} entries carry chapter \"Prelude class\" (expected >15) \
+         — was the chapter renamed?",
+        named.len()
+    );
+    let missing: Vec<&str> = named
+        .into_iter()
         .filter(|name| {
             !prelude.contains(&format!("class {name} "))
                 && !prelude.contains(&format!("class {name} {{"))
@@ -352,6 +411,13 @@ fn every_documented_prelude_class_is_declared() {
 /// empty one would emit a blank `<pre>`. Names and chapters are equally required.
 #[test]
 fn every_entry_is_well_formed() {
+    // `for … in CORPUS` over an empty CORPUS asserts nothing at all.
+    assert!(
+        CORPUS.len() > 500,
+        "CORPUS holds only {} entries (expected >500) — this gate iterates it, \
+         so an empty or truncated corpus would pass vacuously",
+        CORPUS.len()
+    );
     for (name, chapter, sig, doc, _example) in CORPUS {
         assert!(!name.is_empty(), "entry with an empty name in {chapter}");
         assert!(!chapter.is_empty(), "entry {name} has no chapter");
@@ -364,6 +430,12 @@ fn every_entry_is_well_formed() {
 /// chapters, but the same name twice in one chapter is a copy-paste slip.
 #[test]
 fn no_duplicate_entries_within_a_chapter() {
+    assert!(
+        CORPUS.len() > 500,
+        "CORPUS holds only {} entries (expected >500) — see \
+         `every_entry_is_well_formed` for why the floor is here",
+        CORPUS.len()
+    );
     let mut seen: BTreeSet<(&str, &str)> = BTreeSet::new();
     for (name, chapter, ..) in CORPUS {
         assert!(

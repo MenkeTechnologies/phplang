@@ -113,6 +113,7 @@ class DivisionByZeroError extends ArithmeticError {}
 class TypeError extends Error {}
 class ArgumentCountError extends TypeError {}
 class ValueError extends Error {}
+class JsonException extends Exception {}
 class UnhandledMatchError extends Error {}
 "#;
 

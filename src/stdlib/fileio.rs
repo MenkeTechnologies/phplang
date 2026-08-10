@@ -705,8 +705,10 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         "sys_get_temp_dir" => {
             let p = std::env::temp_dir();
             let s = p.to_string_lossy();
-            // PHP returns the temp dir without a trailing separator.
-            Value::str(s.trim_end_matches('/').to_string())
+            // PHP strips exactly ONE trailing separator, not the whole run:
+            // `TMPDIR=/tmp///` answers `/tmp//`. `trim_end_matches` removed them
+            // all, which disagreed for any TMPDIR ending in two or more.
+            Value::str(s.strip_suffix('/').unwrap_or(&s).to_string())
         }
         // Create a unique file in `dir` (falling back to the system temp dir when
         // `dir` is not a usable directory, as PHP does) and return its path, or

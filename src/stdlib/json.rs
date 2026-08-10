@@ -32,6 +32,9 @@ const JSON_ERROR_DEPTH: i64 = 1;
 const JSON_ERROR_CTRL_CHAR: i64 = 3;
 const JSON_ERROR_SYNTAX: i64 = 4;
 const JSON_ERROR_UTF16: i64 = 10;
+/// `JSON_ERROR_RECURSION` — `json_encode` found a structure that contains
+/// itself. JSON has no way to spell a cycle, so the encode fails outright.
+pub const JSON_ERROR_RECURSION: i64 = 6;
 /// `JSON_ERROR_INF_OR_NAN` — `json_encode` refuses non-finite floats.
 pub const JSON_ERROR_INF_OR_NAN: i64 = 7;
 /// `JSON_ERROR_NON_BACKED_ENUM` — a pure `enum` case has no value to encode.
@@ -44,6 +47,28 @@ thread_local! {
 
 pub fn set_last_error(code: i64) {
     LAST_ERROR.with(|c| c.set(code));
+}
+
+/// `JSON_THROW_ON_ERROR`. With it set, a failing `json_*` call throws
+/// `JsonException` instead of returning `false`/`null`, and — importantly —
+/// leaves `json_last_error()` at `JSON_ERROR_NONE`, because the failure was
+/// reported by the throw rather than recorded for a later read.
+pub const JSON_THROW_ON_ERROR: i64 = 4194304;
+
+/// Turn a `JSON_ERROR_*` code into whichever failure `$flags` asked for: a
+/// tagged `JsonException` carrying the code, or `None` after recording the code
+/// for `json_last_error()`.
+pub fn fail(code: i64, flags: i64) -> Option<String> {
+    if flags & JSON_THROW_ON_ERROR != 0 {
+        set_last_error(JSON_ERROR_NONE);
+        return Some(crate::builtins::throws_code(
+            "JsonException",
+            code,
+            error_msg(code),
+        ));
+    }
+    set_last_error(code);
+    None
 }
 
 fn get_last_error() -> i64 {
@@ -59,6 +84,7 @@ fn error_msg(code: i64) -> &'static str {
         JSON_ERROR_CTRL_CHAR => "Control character error, possibly incorrectly encoded",
         JSON_ERROR_SYNTAX => "Syntax error",
         5 => "Malformed UTF-8 characters, possibly incorrectly encoded",
+        JSON_ERROR_RECURSION => "Recursion detected",
         JSON_ERROR_UTF16 => "Single unpaired UTF-16 surrogate in unicode escape",
         JSON_ERROR_INF_OR_NAN => "Inf and NaN cannot be JSON encoded",
         JSON_ERROR_NON_BACKED_ENUM => "Non-backed enums have no default serialization",
@@ -100,11 +126,43 @@ fn decode_depth(args: &[Value], idx: usize, func: &str, pos: usize) -> Result<us
                     format!("{func}(): Argument #{pos} ($depth) must be greater than 0"),
                 ));
             }
-            Ok(d as usize)
+            // The reference stores the depth in an `int`, so anything PAST `INT_MAX`
+            // is rejected up front — the message says "less than" but the check
+            // admits `INT_MAX` itself. Without this ceiling the parser simply
+            // recursed until the native stack was gone.
+            if d > i64::from(i32::MAX) {
+                return Err(throws(
+                    "ValueError",
+                    format!(
+                        "{func}(): Argument #{pos} ($depth) must be less than {}",
+                        i32::MAX
+                    ),
+                ));
+            }
+            Ok((d as usize).min(NATIVE_DEPTH_CEILING))
         }
         _ => Ok(512),
     }
 }
+
+/// The deepest nesting this parser will descend, whatever `$depth` asks for.
+///
+/// The decoder is recursive descent on the NATIVE stack, so an unbounded
+/// `$depth` is an unbounded stack walk: `json_decode(str_repeat("[", 10000),
+/// true, PHP_INT_MAX)` aborted the process outright.
+///
+/// The ceiling is sized against the SMALLEST stack phplang runs on, not the
+/// largest. Measured by bisection: on the 8 MiB main thread 5000 levels survive
+/// and 10000 do not; on a 2 MiB worker thread (what `cargo test` gives a test
+/// function, and what an embedder that spawns a thread gets by default) 1536
+/// survive and 2048 do not. 1024 sits inside the smaller of those and is still
+/// double the 512 the reference defaults to, which is what real documents are
+/// written against.
+///
+/// DIVERGENCE: a document nested deeper than this reports `JSON_ERROR_DEPTH`
+/// where the reference, given a large enough `$depth`, would keep going. Only
+/// programs that explicitly raise `$depth` past 1024 can observe it.
+const NATIVE_DEPTH_CEILING: usize = 1024;
 
 /// `json_decode($json, $associative = null, $depth = 512, $flags = 0)`.
 ///
@@ -115,18 +173,20 @@ fn json_decode(args: &[Value]) -> Result<Value, String> {
     let json = crate::host::with_host(|h| h.to_str(&args.first().cloned().unwrap_or(Value::Undef)));
     // 3rd argument is depth; default 512 (see `decode_depth`).
     let depth = decode_depth(args, 2, "json_decode", 3)?;
+    let flags = args.get(3).map(|v| v.to_int()).unwrap_or(0);
 
     set_last_error(JSON_ERROR_NONE);
-    Ok(crate::host::with_host(|h| {
+    let parsed = crate::host::with_host(|h| {
         let mut p = Parser::new(json.as_bytes(), depth, h);
-        match p.parse_document() {
-            Ok(v) => v,
-            Err(code) => {
-                set_last_error(code);
-                Value::Undef
-            }
-        }
-    }))
+        p.parse_document()
+    });
+    match parsed {
+        Ok(v) => Ok(v),
+        Err(code) => match fail(code, flags) {
+            Some(e) => Err(e),
+            None => Ok(Value::Undef),
+        },
+    }
 }
 
 /// `json_validate($json, $depth = 512, $flags = 0)` (PHP 8.3). Returns `true`

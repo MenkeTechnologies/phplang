@@ -262,3 +262,45 @@ fn settype_to_array_wraps_a_scalar() {
     let src = r#"<?php $a = 1; settype($a, "array"); var_dump($a);"#;
     assert_eq!(run(src), "array(1) {\n  [0]=>\n  int(1)\n}\n");
 }
+
+/// An UNCAUGHT visibility violation is a failed run, not merely a printed
+/// block: `eval_capture` reports it as `Err`, and the message is the reference's
+/// own text.
+///
+/// This is the assertion the `err` helper at the top of the file was written for
+/// and never had — it sat unused, which is also why `cargo clippy --all-targets
+/// -- -D warnings` had a `dead_code` finding here.
+///
+/// ```text
+/// $ php -r 'class C { private $p = 1; } $o = new C; echo $o->p;'
+/// PHP Fatal error:  Uncaught Error: Cannot access private property C::$p in Command line code:1
+/// ```
+#[test]
+fn an_uncaught_visibility_violation_fails_the_run() {
+    let cases: &[(&str, &str)] = &[
+        (
+            "class C { private $p = 1; } $o = new C; echo $o->p;",
+            "Cannot access private property C::$p",
+        ),
+        (
+            "class C { protected $p = 1; } $o = new C; echo $o->p;",
+            "Cannot access protected property C::$p",
+        ),
+        (
+            "class C { private function m() {} } $o = new C; $o->m();",
+            "Call to private method C::m() from global scope",
+        ),
+    ];
+    for (src, msg) in cases {
+        let e = err(&format!("<?php {src}"));
+        assert!(e.contains(msg), "{src}\n  expected {msg:?} in {e:?}");
+    }
+    // The same access from INSIDE the class is not a violation and returns Ok.
+    assert_eq!(
+        run(
+            "<?php class C { private $p = 7; function get() { return $this->p; } } \
+             $o = new C; echo $o->get();"
+        ),
+        "7"
+    );
+}

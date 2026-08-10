@@ -29,9 +29,23 @@ fn superglobal_visible_inside_function_scope() {
 
 #[test]
 fn env_superglobal_reflects_process_env() {
-    // $_ENV is seeded from the real environment; PATH is essentially always set.
-    let src = r#"<?php echo isset($_ENV["PATH"]) || count($_ENV) >= 0 ? "ok" : "no";"#;
-    assert_eq!(run(src), "ok");
+    // $_ENV is seeded from the real environment. The assertion names a variable
+    // THIS PROCESS sets, so the test is falsifiable: an engine that leaves $_ENV
+    // empty fails it.
+    //
+    // The previous form was `isset($_ENV["PATH"]) || count($_ENV) >= 0`, whose
+    // right-hand side is a tautology — `count()` is never negative — so it
+    // reported "ok" for an entirely empty $_ENV, which is exactly the failure it
+    // existed to catch.
+    let key = "PHPLANG_ENV_PROBE";
+    let value = "seeded-from-the-process";
+    // SAFETY: single-threaded test process; the variable is unique to this test.
+    unsafe { std::env::set_var(key, value) };
+    let src = format!(
+        r#"<?php echo $_ENV["{key}"] ?? "MISSING"; echo "|", count($_ENV) > 0 ? "nonempty" : "empty";"#
+    );
+    assert_eq!(run(&src), format!("{value}|nonempty"));
+    unsafe { std::env::remove_var(key) };
 }
 
 #[test]

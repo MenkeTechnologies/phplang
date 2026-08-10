@@ -76,13 +76,24 @@ fn as_handle(v: &Value) -> Option<u32> {
 /// `array_merge_recursive`, which — unlike `array_merge` — must own its nested
 /// arrays to merge into them without mutating the inputs.
 fn deep_copy(h: &mut host::PhpHost, v: &Value) -> Value {
+    deep_copy_seen(h, v, &mut host::Visiting::default())
+}
+
+/// [`deep_copy`] with a cycle guard: a self-referential array is copied one
+/// level and the repeat becomes `null`, instead of recursing until the native
+/// stack is gone.
+fn deep_copy_seen(h: &mut host::PhpHost, v: &Value, seen: &mut host::Visiting) -> Value {
     if h.is_array(v) {
+        if !seen.enter(v) {
+            return Value::Undef;
+        }
         let pairs = h.array_pairs(v).unwrap_or_default();
         let out = h.new_array();
         for (k, val) in pairs {
-            let cv = deep_copy(h, &val);
+            let cv = deep_copy_seen(h, &val, seen);
             h.arr_set_key(&out, &k, cv);
         }
+        seen.leave();
         out
     } else {
         v.clone()
@@ -356,7 +367,12 @@ fn merge_recursive_into(h: &mut host::PhpHost, acc: &Value, src: &Value) {
                         h.arr_set_key(acc, &k, cv);
                     }
                     Some(ev) if h.is_array(&ev) && h.is_array(&v) => {
-                        merge_recursive_into(h, &ev, &v);
+                        // Guard the mutual walk the same way: `$a[] = &$a` makes
+                        // `ev` and `v` the same handle, and the merge would
+                        // otherwise descend into itself forever.
+                        if ev != v {
+                            merge_recursive_into(h, &ev, &v);
+                        }
                     }
                     Some(ev) => {
                         // Not both arrays: flatten the existing value and the new
@@ -457,7 +473,9 @@ fn php_usort(args: &[Value], kind: SortKind) -> Result<Value, String> {
     let cb = arg(args, 1);
     let mut pairs = host::with_host(|h| h.array_pairs(&arr)).unwrap_or_default();
     let mut err: Option<String> = None;
-    pairs.sort_by(|(ka, va), (kb, vb)| {
+    // `stable_sort_by`, not `Vec::sort_by`: the comparator is arbitrary user
+    // code, and Rust's sort PANICS when it catches one contradicting itself.
+    stable_sort_by(&mut pairs, |(ka, va), (kb, vb)| {
         if err.is_some() {
             return Ordering::Equal;
         }
@@ -641,7 +659,15 @@ fn php_array_rand(h: &mut host::PhpHost, args: &[Value]) -> Result<Value, String
     } else {
         1
     };
-    if len == 0 || num < 1 || num as usize > len {
+    // An EMPTY array is reported against argument #1, not #2: there is no
+    // `$num` that would work, so the reference names the array instead.
+    if len == 0 {
+        return Err(throws(
+            "ValueError",
+            "array_rand(): Argument #1 ($array) must not be empty",
+        ));
+    }
+    if num < 1 || num as usize > len {
         return Err(throws(
             "ValueError",
             "array_rand(): Argument #2 ($num) must be between 1 and the number of elements in \

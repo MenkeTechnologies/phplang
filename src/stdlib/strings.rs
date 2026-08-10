@@ -30,9 +30,9 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         "strpbrk" => strpbrk(args),
         "strspn" => strspn(args, true),
         "strcspn" => strspn(args, false),
-        "stripos" => strpos_ci(args),
-        "strrpos" => strrpos(args, false),
-        "strripos" => strrpos(args, true),
+        "stripos" => return Some(strpos_ci(args)),
+        "strrpos" => return Some(strrpos(args, false)),
+        "strripos" => return Some(strrpos(args, true)),
         "strncasecmp" => return Some(strncasecmp(args)),
         "str_ireplace" => str_ireplace(args),
         "nl2br" => Value::str(nl2br(&str_arg(args, 0))),
@@ -161,8 +161,12 @@ fn strrchr(args: &[Value]) -> Value {
 fn strpbrk(args: &[Value]) -> Value {
     let s = str_arg(args, 0);
     let set = str_arg(args, 1);
+    // The search is over BYTES, so a match can land inside a multi-byte
+    // character — `strpbrk("é", "©")` matches the shared trailing 0xA9. Slicing
+    // the `&str` at that index panics, so cut the byte vector instead and let
+    // the lossy conversion produce what the reference's byte string shows.
     match s.bytes().position(|b| set.as_bytes().contains(&b)) {
-        Some(i) => Value::str(s[i..].to_string()),
+        Some(i) => Value::str(String::from_utf8_lossy(&s.as_bytes()[i..]).into_owned()),
         None => Value::bool(false),
     }
 }
@@ -198,36 +202,55 @@ fn strspn(args: &[Value], want: bool) -> Value {
     Value::int(n as i64)
 }
 
+/// The `$offset` shared by `strpos`/`stripos`/`strrpos`/`strripos`, validated.
+///
+/// An offset outside `[-strlen, strlen]` is a ValueError naming the calling
+/// function — the reference distinguishes "looked and did not find" (false) from
+/// "you cannot look there" (a throw), and clamping silently answered `false` for
+/// both.
+fn checked_offset(func: &str, hay_len: usize, raw: i64) -> Result<i64, String> {
+    let len = hay_len as i64;
+    let start = if raw < 0 { len + raw } else { raw };
+    if start < 0 || start > len {
+        return Err(throws(
+            "ValueError",
+            format!("{func}(): Argument #3 ($offset) must be contained in argument #1 ($haystack)"),
+        ));
+    }
+    Ok(start)
+}
+
 /// `stripos($haystack, $needle, $offset = 0)`: case-insensitive `strpos`.
-fn strpos_ci(args: &[Value]) -> Value {
+fn strpos_ci(args: &[Value]) -> Result<Value, String> {
     let hay = str_arg(args, 0);
     let needle = str_arg(args, 1);
-    let len = hay.len() as i64;
-    let mut off = int_arg(args, 2);
-    if off < 0 {
-        off = (len + off).max(0);
-    }
-    let off = off.clamp(0, len) as usize;
+    let off = checked_offset("stripos", hay.len(), int_arg(args, 2))? as usize;
     // Byte-oriented search: slice the byte view so a multibyte offset can't panic.
-    match ci_find_bytes(&hay.as_bytes()[off..], needle.as_bytes()) {
-        Some(i) => Value::int((off + i) as i64),
-        None => Value::bool(false),
-    }
+    Ok(
+        match ci_find_bytes(&hay.as_bytes()[off..], needle.as_bytes()) {
+            Some(i) => Value::int((off + i) as i64),
+            None => Value::bool(false),
+        },
+    )
 }
 
 /// `strrpos`/`strripos($haystack, $needle, $offset = 0)`: last occurrence. `ci`
 /// selects the case-insensitive `strripos`. Positive offset limits the search to
 /// start at that byte; negative offset stops the search that many bytes from the
 /// end. Returns `false` when not found.
-fn strrpos(args: &[Value], ci: bool) -> Value {
+fn strrpos(args: &[Value], ci: bool) -> Result<Value, String> {
     let hay = str_arg(args, 0);
     let needle = str_arg(args, 1);
     let len = hay.len();
+    let func = if ci { "strripos" } else { "strrpos" };
+    // Validated BEFORE the empty-needle shortcut: `strrpos("abc", "", 10)` is an
+    // offset error, not `strlen($haystack)`.
+    let off = int_arg(args, 2);
+    checked_offset(func, len, off)?;
     // PHP 8: an empty needle yields strlen($haystack), not false.
     if needle.is_empty() {
-        return Value::int(len as i64);
+        return Ok(Value::int(len as i64));
     }
-    let off = int_arg(args, 2);
     // Determine the inclusive window [lo, hi] where a match may START.
     let (lo, hi) = if off >= 0 {
         (off as usize, len.saturating_sub(needle.len()))
@@ -238,7 +261,7 @@ fn strrpos(args: &[Value], ci: bool) -> Value {
         (0, hi.min(len.saturating_sub(needle.len())))
     };
     if lo > len {
-        return Value::bool(false);
+        return Ok(Value::bool(false));
     }
     let eq = |i: usize| {
         let w = &hay.as_bytes()[i..i + needle.len()];
@@ -248,10 +271,12 @@ fn strrpos(args: &[Value], ci: bool) -> Value {
             w == needle.as_bytes()
         }
     };
-    match (lo..=hi).rev().find(|&i| i + needle.len() <= len && eq(i)) {
-        Some(i) => Value::int(i as i64),
-        None => Value::bool(false),
-    }
+    Ok(
+        match (lo..=hi).rev().find(|&i| i + needle.len() <= len && eq(i)) {
+            Some(i) => Value::int(i as i64),
+            None => Value::bool(false),
+        },
+    )
 }
 
 // ── comparison ───────────────────────────────────────────────────────────────
@@ -584,16 +609,23 @@ fn levenshtein(args: &[Value]) -> Value {
     let bb = b.as_bytes();
     let (n, m) = (ab.len(), bb.len());
     // Single-row DP; row[j] is the distance to bb[..j].
-    let mut row: Vec<i64> = (0..=m as i64).map(|j| j * cins).collect();
+    //
+    // Every combination is WRAPPING. The three costs come straight from the
+    // caller with no range check — the reference has none either, and answers
+    // `levenshtein("a", "bb", PHP_INT_MAX)` with a wrapped `PHP_INT_MIN` rather
+    // than refusing. Plain `+`/`*` panic on that in a debug build.
+    let mut row: Vec<i64> = (0..=m as i64).map(|j| j.wrapping_mul(cins)).collect();
     for i in 1..=n {
         let mut prev = row[0];
-        row[0] = i as i64 * cdel;
+        row[0] = (i as i64).wrapping_mul(cdel);
         for j in 1..=m {
             let cur = row[j];
             row[j] = if ab[i - 1] == bb[j - 1] {
                 prev
             } else {
-                (prev + crep).min(row[j] + cdel).min(row[j - 1] + cins)
+                prev.wrapping_add(crep)
+                    .min(row[j].wrapping_add(cdel))
+                    .min(row[j - 1].wrapping_add(cins))
             };
             prev = cur;
         }
@@ -612,13 +644,15 @@ fn vformat(args: &[Value], echo: bool) -> Result<Value, String> {
     for (_, v) in pairs {
         call_args.push(v);
     }
+    // NOT `call_library("sprintf", ...)`: the array form reports a short argument
+    // list as a ValueError about the array, where `sprintf` reports an
+    // ArgumentCountError about loose parameters. Only the engine knows which.
+    let out = with_host(|h| crate::builtins::php_sprintf(h, &call_args, true))?;
     if echo {
-        let s = crate::builtins::call_library("sprintf", &call_args)?;
-        let out = with_host(|h| h.to_str(&s));
         with_host(|h| h.write_out(&out));
         Ok(Value::int(out.len() as i64))
     } else {
-        crate::builtins::call_library("sprintf", &call_args)
+        Ok(Value::str(out))
     }
 }
 
