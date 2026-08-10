@@ -981,10 +981,11 @@ fn gen_refs(seed: u64) -> Vec<String> {
     let r = &mut Rng::seed(seed);
     let x = r.below(50);
     let y = r.below(50);
-    // Note: `$b = &$a[0]` (reference to an array element) is a documented
-    // limitation — the reference model is scope-level variable-to-variable
-    // only — so it is deliberately not generated here.
-    match r.below(5) {
+    // `$b = &$a[0]` (a reference to an array ELEMENT rather than to a whole
+    // variable) was suppressed here as an unsupported form. It is supported —
+    // the note outlived the limitation it described, and while it stood no case
+    // could reach the form to show that. Generated below.
+    match r.below(8) {
         0 => vec![format!("$a = {x}; $b = &$a; $b = {y}; echo $a, \"|\", $b;")],
         1 => vec![format!("$a = {x}; $b = &$a; $a += {y}; echo $b;")],
         2 => vec![format!(
@@ -994,8 +995,24 @@ fn gen_refs(seed: u64) -> Vec<String> {
         3 => vec![format!(
             "function inc(&$n) {{ $n++; }} $c = {x}; inc($c); inc($c); echo $c;"
         )],
-        _ => vec![format!(
+        4 => vec![format!(
             "function swap(&$p, &$q) {{ $t = $p; $p = $q; $q = $t; }} $a = {x}; $b = {y}; swap($a, $b); echo $a, \"|\", $b;"
+        )],
+        // A reference to an array element by INDEX: the write must land in the
+        // array, not in a detached copy of the element.
+        5 => vec![format!(
+            "$a = [{x}, {y}]; $b = &$a[0]; $b = {}; echo implode(',', $a);",
+            r.below(50)
+        )],
+        // The same by STRING KEY.
+        6 => vec![format!(
+            "$a = ['k' => {x}, 'j' => {y}]; $b = &$a['k']; $b = {}; echo json_encode($a);",
+            r.below(50)
+        )],
+        // A NESTED element, where the chain has to be walked before the bind.
+        _ => vec![format!(
+            "$a = [[{x}], [{y}]]; $b = &$a[0][0]; $b = {}; echo json_encode($a);",
+            r.below(50)
         )],
     }
 }
@@ -1075,8 +1092,31 @@ fn gen_typejug2(seed: u64) -> Vec<String> {
         "null",
         "\"10\"",
     ];
+    // COMPOSITE subjects. Every printer below draws its subject from `vals`,
+    // which holds scalars only, so each one rendered a single-line result and
+    // the multi-line rules — where `var_export` breaks the line BEFORE a nested
+    // `array (`, where `print_r`/`var_dump` indent a child block, how an object
+    // body differs from an array body — were unreachable no matter how many
+    // cases ran. These are drawn from a separate pool so the scalar branches
+    // keep testing exactly what they tested before.
+    let comps = [
+        "[1, [2, 3]]",
+        "[[1, 2], [3, 4]]",
+        "['a' => 1, 'b' => [2, 3]]",
+        "[1, ['k' => ['z' => 2]]]",
+        "[]",
+        "[[]]",
+        "[1.0, [2.5]]",
+        "[true, [false, null]]",
+        "['it\\'s', ['a\\\\b']]",
+        "(object)['x' => 1]",
+        "(object)['x' => [1, 2]]",
+        "['k' => (object)['n' => [5]]]",
+        "[1, [2, [3, [4]]]]",
+    ];
     let v = *r.pick(&vals);
-    match r.below(9) {
+    let c = *r.pick(&comps);
+    match r.below(15) {
         0 => vec![format!("var_dump((int){v});")],
         1 => vec![format!("var_dump((float){v});")],
         2 => vec![format!("var_dump((bool){v});")],
@@ -1085,7 +1125,16 @@ fn gen_typejug2(seed: u64) -> Vec<String> {
         5 => vec![format!("echo intval({v});")],
         6 => vec![format!("echo var_export({v}, true);")],
         7 => vec![format!("echo json_encode({v});")],
-        _ => vec![format!("var_dump({v} == {});", r.pick(&vals))],
+        8 => vec![format!("var_dump({v} == {});", r.pick(&vals))],
+        // The nesting-sensitive printers, on a subject that actually nests.
+        9 => vec![format!("echo var_export({c}, true);")],
+        // The `$return = false` spelling, which writes straight to stdout
+        // rather than through a returned string.
+        10 => vec![format!("var_export({c});")],
+        11 => vec![format!("var_dump({c});")],
+        12 => vec![format!("echo json_encode({c});")],
+        13 => vec![format!("echo print_r({c}, true);")],
+        _ => vec![format!("echo serialize({c});")],
     }
 }
 
@@ -1825,7 +1874,7 @@ fn gen_destructure(seed: u64) -> Vec<String> {
     let b = ii(r);
     let c = ii(r);
     let w = ww(r);
-    match r.below(8) {
+    match r.below(13) {
         // The two spellings of the same pattern, which must agree with each
         // other as well as with the reference.
         0 => vec![format!(
@@ -1868,9 +1917,46 @@ fn gen_destructure(seed: u64) -> Vec<String> {
         )],
         // Destructuring a non-array element, and strings mixed in, so the
         // element-is-not-a-list path is exercised too.
-        _ => vec![format!(
+        7 => vec![format!(
             "$a = [[{a},{b}], '{w}', {c}]; \
              foreach ($a as [$x,$y]) {{ var_dump($x, $y); }} echo \"|\\n\";"
+        )],
+        // ── BY-REFERENCE TARGETS ────────────────────────────────────────────
+        // Every arm above binds by VALUE, so the source array is never written
+        // through the pattern and a target list that silently dropped its `&`
+        // would still have scored. `&` in a target list is what makes the
+        // assignment flow backwards into the subject.
+        8 => vec![format!(
+            "$a = [{a},{b}]; [&$x,$y] = $a; $x = {c}; \
+             echo implode(',', $a), '|', $y, \"|\\n\";"
+        )],
+        // The `list()` spelling of the same thing, which must agree with the
+        // bracket spelling as well as with the reference.
+        9 => vec![format!(
+            "$a = [{a},{b}]; list(&$x,$y) = $a; $x = {c}; \
+             echo implode(',', $a), '|', $y, \"|\\n\";"
+        )],
+        // A reference target inside `foreach`, where the write lands on the
+        // ROW of the outer array rather than on a standalone variable.
+        10 => vec![format!(
+            "$a = [[{a},{b}],[{b},{c}]]; \
+             foreach ($a as [&$x,$y]) {{ $x = {c}; }} unset($x); \
+             echo json_encode($a), \"|\\n\";"
+        )],
+        // Holes AND references together: a hole still consumes its index, so a
+        // `&` after one must land on the correct later element.
+        11 => vec![format!(
+            "$a = [{a},{b},{c}]; [&$x,,&$z] = $a; $x = {b}; $z = {a}; \
+             echo implode(',', $a), \"|\\n\";"
+        )],
+        // A reference under the KEYED form, and one NESTED a level down.
+        _ => vec![format!(
+            "$a = [['k'=>{a},'j'=>{b}]]; \
+             foreach ($a as ['k'=>&$u]) {{ $u = {c}; }} unset($u); \
+             echo json_encode($a), '|'; \
+             $n = [[{a},[{b}]]]; \
+             foreach ($n as [$p,[&$q]]) {{ $q = {c}; }} unset($q); \
+             echo json_encode($n), \"|\\n\";"
         )],
     }
 }
@@ -1898,7 +1984,7 @@ fn gen_nsconst(seed: u64) -> Vec<String> {
     let v = ii(r);
     let v2 = ii(r);
     let w = ww(r);
-    match r.below(6) {
+    match r.below(12) {
         // Defined under a qualified name, read back both with and without the
         // global-namespace prefix.
         0 => vec![format!(
@@ -1929,9 +2015,43 @@ fn gen_nsconst(seed: u64) -> Vec<String> {
         )],
         // Qualified constants in expression position, so the parse is exercised
         // somewhere other than a bare statement head.
-        _ => vec![format!(
+        5 => vec![format!(
             "define('N\\X', {v}); define('N\\Y', {v2}); \
              var_dump(N\\X + N\\Y, [N\\X, \\N\\Y], N\\X <=> N\\Y);"
+        )],
+        // ── `const` AS A STATEMENT ──────────────────────────────────────────
+        // Every arm above reaches the constant table through `define()`, which
+        // is a function call. The `const` spelling is a declaration parsed at
+        // statement level and was therefore never emitted here at all — the
+        // only `const` anywhere in this file sits inside a class body, where a
+        // different production handles it.
+        6 => vec![format!("const K_{w} = {v}; echo K_{w};")],
+        // The comma list, which declares several names from ONE `const`.
+        7 => vec![format!(
+            "const A_{w} = {v}, B_{w} = {v2}; echo A_{w}, '|', B_{w};"
+        )],
+        // A constant expression that READS an earlier constant, plus an array
+        // constant subscripted at the point of use.
+        8 => vec![format!(
+            "const C_{w} = {v}; const D_{w} = C_{w} * 2; const E_{w} = [{v}, {v2}]; \
+             var_dump(D_{w}, E_{w}[1], C_{w} . 'x');"
+        )],
+        // `const` takes effect WHERE IT STANDS — it is not hoisted, so the
+        // `defined()` before it must answer false and the one after it true.
+        9 => vec![format!(
+            "var_dump(defined('F_{w}')); const F_{w} = {v}; \
+             var_dump(defined('F_{w}'), F_{w}, constant('F_{w}'));"
+        )],
+        // Redefinition: a WARNING, and the FIRST value survives — not the last,
+        // and not a fatal.
+        10 => vec![format!(
+            "const G_{w} = {v}; const G_{w} = {v2}; echo G_{w};"
+        )],
+        // The two spellings meeting: `define()` first, then `const` of the same
+        // name, and the reverse order.
+        _ => vec![format!(
+            "define('H_{w}', {v}); const H_{w} = {v2}; echo H_{w}, '|'; \
+             const I_{w} = {v}; var_dump(define('I_{w}', {v2})); echo I_{w};"
         )],
     }
 }
