@@ -476,7 +476,7 @@ fn php_usort(args: &[Value], kind: SortKind) -> Result<Value, String> {
     if let Some(e) = err {
         return Err(e);
     }
-    if host::has_pending_throw() {
+    if host::unwinding() {
         return Ok(Value::Undef);
     }
     host::with_host(|h| match kind {
@@ -697,7 +697,7 @@ fn php_array_walk(args: &[Value]) -> Result<Value, String> {
             call_args.push(extra.clone());
         }
         host::call_value(cb.clone(), call_args)?;
-        if host::has_pending_throw() {
+        if host::unwinding() {
             return Ok(Value::Undef);
         }
         host::with_host(|h| {

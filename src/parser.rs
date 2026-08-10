@@ -2369,6 +2369,22 @@ impl Parser {
                 self.expect_punct("(")?;
                 self.array_literal(")")
             }
+            // `exit` / `die` — the one construct whose parentheses AND argument
+            // are both optional, so `exit;` is a complete expression. Without
+            // this arm it falls through to the bareword path and reads as an
+            // undefined constant, and `exit(1)` as an undefined function.
+            // `die` folds onto `exit`, which is why PHP's own diagnostics for a
+            // bad `die()` argument all quote `exit()`.
+            Some(Tok::Ident(kw))
+                if kw.eq_ignore_ascii_case("exit") || kw.eq_ignore_ascii_case("die") =>
+            {
+                let args = if self.eat_punct("(") {
+                    self.arg_list()?
+                } else {
+                    Vec::new()
+                };
+                Ok(Expr::Call("exit".to_string(), args))
+            }
             // `throw e` as a PHP 8 expression, so `$x ?? throw …` and
             // `cond ? throw … : …` work; a `throw e;` statement reaches here too.
             Some(Tok::Ident(kw)) if kw.eq_ignore_ascii_case("throw") => {

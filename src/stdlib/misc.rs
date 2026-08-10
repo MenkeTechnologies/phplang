@@ -370,7 +370,7 @@ fn array_walk_recursive(args: &[Value]) -> Result<Value, String> {
     let extra = arg(args, 2);
     let has_extra = args.len() > 2;
     walk_recursive(&arr, &cb, has_extra.then(|| extra.clone()))?;
-    if host::has_pending_throw() {
+    if host::unwinding() {
         return Ok(Value::Undef);
     }
     Ok(Value::bool(true))
@@ -393,7 +393,7 @@ fn walk_recursive(array: &Value, cb: &Value, extra: Option<Value>) -> Result<(),
             call_args.push(e.clone());
         }
         host::call_value(cb.clone(), call_args)?;
-        if host::has_pending_throw() {
+        if host::unwinding() {
             return Ok(());
         }
     }
@@ -412,7 +412,7 @@ fn array_find(args: &[Value], want_key: bool) -> Result<Value, String> {
     let pairs = host::with_host(|h| h.array_pairs(&arr)).unwrap_or_default();
     for (k, v) in pairs {
         let r = host::call_value(cb.clone(), vec![v.clone(), k.clone()])?;
-        if host::has_pending_throw() {
+        if host::unwinding() {
             return Ok(Value::Undef);
         }
         if host::with_host(|h| h.is_truthy(&r)) {
@@ -442,7 +442,7 @@ fn array_predicate(args: &[Value], kind: Predicate) -> Result<Value, String> {
     let pairs = host::with_host(|h| h.array_pairs(&arr)).unwrap_or_default();
     for (k, v) in pairs {
         let r = host::call_value(cb.clone(), vec![v, k])?;
-        if host::has_pending_throw() {
+        if host::unwinding() {
             return Ok(Value::Undef);
         }
         let truthy = host::with_host(|h| h.is_truthy(&r));
@@ -497,7 +497,7 @@ fn array_ucompare(args: &[Value], intersect: bool, by_key: bool) -> Result<Value
                     all = false;
                     break;
                 }
-                if host::has_pending_throw() {
+                if host::unwinding() {
                     return Ok(Value::Undef);
                 }
             }
@@ -510,13 +510,13 @@ fn array_ucompare(args: &[Value], intersect: bool, by_key: bool) -> Result<Value
                     absent = false;
                     break;
                 }
-                if host::has_pending_throw() {
+                if host::unwinding() {
                     return Ok(Value::Undef);
                 }
             }
             absent
         };
-        if host::has_pending_throw() {
+        if host::unwinding() {
             return Ok(Value::Undef);
         }
         if keep {
@@ -530,7 +530,7 @@ fn array_ucompare(args: &[Value], intersect: bool, by_key: bool) -> Result<Value
 fn ucompare_member(cb: &Value, probe: &Value, pool: &[Value]) -> Result<bool, String> {
     for item in pool {
         let r = host::call_value(cb.clone(), vec![probe.clone(), item.clone()])?;
-        if host::has_pending_throw() {
+        if host::unwinding() {
             return Ok(false);
         }
         if host::with_host(|h| h.to_number(&r).to_int()) == 0 {

@@ -62,18 +62,49 @@ fn assert_options_returns_zero() {
 
 #[test]
 fn trigger_error_returns_true_and_continues() {
-    // Emits to stderr, never halts: the following echo must run.
+    // The diagnostic is DISPLAYED — on stdout, interleaved with the program's
+    // own output, exactly like an engine-raised one — and the call answers true
+    // without halting, so the following echo runs.
+    //
+    // php -r "$r = trigger_error('boom'); echo var_export($r, true), '|', 'still here';"
     assert_eq!(
         run("<?php $r = trigger_error('boom'); echo var_export($r, true), '|', 'still here';"),
-        "true|still here"
+        "\nNotice: boom in Command line code on line 1\ntrue|still here"
     );
 }
 
 #[test]
 fn trigger_error_with_level_does_not_halt() {
+    // php -r "trigger_error('warn', E_USER_WARNING); echo 'continued';"
     assert_eq!(
         run("<?php trigger_error('warn', E_USER_WARNING); echo 'continued';"),
-        "continued"
+        "\nWarning: warn in Command line code on line 1\ncontinued"
+    );
+}
+
+#[test]
+fn trigger_error_obeys_error_reporting_and_suppression() {
+    // Being a real diagnostic means both gates reach it. Neither was reachable
+    // while it printed its own line straight to stderr.
+    //
+    // php -r "error_reporting(0); trigger_error('m'); echo 'z';"      → "z"
+    // php -r "@trigger_error('m'); echo 'q';"                          → "q"
+    assert_eq!(
+        run("<?php error_reporting(0); trigger_error('m'); echo 'z';"),
+        "z"
+    );
+    assert_eq!(run("<?php @trigger_error('m'); echo 'q';"), "q");
+}
+
+#[test]
+fn trigger_error_rejects_a_level_that_is_not_one_of_the_four() {
+    // An ENGINE level such as E_WARNING is not a fallback — it is a ValueError.
+    //
+    // php -r "try { trigger_error('m', E_WARNING); } catch (ValueError \$e) { echo \$e->getMessage(); }"
+    assert_eq!(
+        run("<?php try { trigger_error('m', E_WARNING); } catch (ValueError $e) { echo $e->getMessage(); }"),
+        "trigger_error(): Argument #2 ($error_level) must be one of E_USER_ERROR, \
+         E_USER_WARNING, E_USER_NOTICE, or E_USER_DEPRECATED"
     );
 }
 

@@ -165,7 +165,7 @@ fn b_yield_from(vm: &mut VM, _: u8) -> Value {
 /// sentinel for an injected/uncaught throw already recorded as pending — in the
 /// latter case halt the chunk so the pending exception unwinds the body.
 fn yield_err(vm: &mut VM, e: String) -> Value {
-    if host::has_pending_throw() {
+    if host::unwinding() {
         vm.ip = vm.chunk.ops.len();
         Value::Undef
     } else {
@@ -689,7 +689,7 @@ fn b_unset_path(vm: &mut VM, argc: u8) -> Value {
 /// by a nested call bubbles up through the caller's VM too. Returns `true` when
 /// it halted (the caller should return immediately).
 fn bubble_throw(vm: &mut VM) -> bool {
-    if host::has_pending_throw() {
+    if host::unwinding() {
         vm.ip = vm.chunk.ops.len();
         true
     } else {
@@ -2639,6 +2639,9 @@ const STRING_PARAM_BUILTINS: &[&str] = &[
     "bin2hex",
     "chunk_split",
     "crc32",
+    // `exit`'s `$status` is `string|int`, so a Stringable object satisfies it by
+    // converting — `exit($obj)` prints what `__toString` returns.
+    "exit",
     "explode",
     "hex2bin",
     "html_entity_decode",
@@ -2791,6 +2794,53 @@ pub fn call_library(name: &str, args: &[Value]) -> Result<Value, String> {
     // call that writes none cannot be read as having written the last one's.
     with_host(|h| h.byref_out_clear());
     let v = match lname.as_str() {
+        // `exit` / `die` — end the request. PHP 8.4 turned both into real
+        // functions (`function_exists("exit")` answers true), and the scanner
+        // folds `die` onto `exit`, so both spellings arrive here under the one
+        // name and every diagnostic quotes `exit()`.
+        //
+        // `$status` is declared `string|int`: an int becomes the process status,
+        // a STRING is printed and the status is 0, a bool and a float narrow to
+        // int (a float with a fraction raising the same lost-precision
+        // deprecation any other int-only position raises), an explicit null is
+        // deprecated and reads as 0, and anything else is a `TypeError`.
+        //
+        // Nothing is torn down here. Recording the status and unwinding is what
+        // the reference does too — an open `ob_start` buffer still flushes on
+        // the way out, and only then does the CLI wrapper take the status as the
+        // process exit code.
+        "exit" | "die" => {
+            let status = match args.first() {
+                None => 0,
+                Some(Value::Undef) => {
+                    with_host(|h| {
+                        h.deprecated(
+                            "exit(): Passing null to parameter #1 ($status) of type string|int \
+                             is deprecated",
+                        )
+                    });
+                    0
+                }
+                Some(Value::Str(s)) => {
+                    with_host(|h| h.write_out(s));
+                    0
+                }
+                Some(v @ (Value::Int(_) | Value::Bool(_) | Value::Float(_))) => int_operand(v, v),
+                Some(other) => {
+                    let t = with_host(|h| crate::stdlib::types::debug_type(h, other));
+                    return Err(throws(
+                        "TypeError",
+                        format!(
+                            "exit(): Argument #1 ($status) must be of type string|int, {t} given"
+                        ),
+                    ));
+                }
+            };
+            // Only the low byte reaches the shell, and that is the reference's
+            // arithmetic too: `exit(300)` leaves 44 and `exit(256)` leaves 0.
+            host::set_pending_exit((status & 0xFF) as i32);
+            Value::Undef
+        }
         "strlen" => Value::int(with_host(|h| h.to_str(&arg(args, 0)).len() as i64)),
         // `count` accepts an array or a `Countable`, and NOTHING else: PHP 8
         // rejects a scalar with a TypeError rather than answering 1.
@@ -4354,7 +4404,7 @@ fn php_array_map(args: &[Value]) -> Result<Value, String> {
             };
             // A callback that threw stops the walk; the pending exception unwinds
             // through the `array_map(...)` call site.
-            if host::has_pending_throw() {
+            if host::unwinding() {
                 return Ok(Value::Undef);
             }
             mapped.push((k, out));
@@ -4389,7 +4439,7 @@ fn php_array_map(args: &[Value]) -> Result<Value, String> {
             .collect();
         if callable {
             let out = host::call_value(cb.clone(), row)?;
-            if host::has_pending_throw() {
+            if host::unwinding() {
                 return Ok(Value::Undef);
             }
             result.push(out);
@@ -4422,7 +4472,7 @@ fn php_array_filter(args: &[Value]) -> Result<Value, String> {
     for (k, v) in pairs {
         let keep = if callable {
             let r = host::call_value(cb.clone(), vec![v.clone()])?;
-            if host::has_pending_throw() {
+            if host::unwinding() {
                 return Ok(Value::Undef);
             }
             with_host(|h| h.is_truthy(&r))
@@ -4453,7 +4503,7 @@ fn php_array_reduce(args: &[Value]) -> Result<Value, String> {
     let mut acc = init;
     for (_, v) in pairs {
         acc = host::call_value(cb.clone(), vec![acc, v])?;
-        if host::has_pending_throw() {
+        if host::unwinding() {
             return Ok(Value::Undef);
         }
     }

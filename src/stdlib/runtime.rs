@@ -2,9 +2,13 @@
 //! see `src/stdlib/mod.rs`.
 //!
 //! phplang has no full error subsystem, so these are deliberately graceful and
-//! program-non-breaking: assertions do not throw, `trigger_error` writes to
-//! stderr but never halts, and the error/exception-handler registration
-//! functions are documented no-ops that store nothing.
+//! program-non-breaking: assertions do not throw, and the error/exception-handler
+//! registration functions are documented no-ops that store nothing.
+//!
+//! `trigger_error` is the exception — it is a real diagnostic, routed through the
+//! same [`crate::host::PhpHost::diagnose`] every engine-raised one takes, so it
+//! obeys `error_reporting`, `@` suppression and the `display_errors`/`log_errors`
+//! stream split rather than printing its own line to stderr.
 
 use crate::host::with_host;
 use crate::stdlib::common::*;
@@ -26,8 +30,15 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         "assert_options" => Value::int(0),
 
         // trigger_error($message, $level = E_USER_NOTICE): bool
-        // Emits "<Level>: <message>" on stderr and continues; never halts the
-        // program (phplang has no fatal user-error path).
+        //
+        // Raises a real diagnostic in the engine's own shape, so it reads
+        // `Notice: m in <file> on line N` on both streams, is silenced by
+        // `error_reporting(0)` and by `@`, and answers `true`.
+        //
+        // `$level` accepts the four E_USER_* levels and NOTHING else — an engine
+        // level such as `E_WARNING` is a `ValueError`, not a fallback. And
+        // E_USER_ERROR is doubly special: PHP 8.4 deprecated passing it, and it
+        // still ends the request with a fatal after saying so.
         "trigger_error" | "user_error" => {
             let msg = str_arg(args, 0);
             let level = if args.len() > 1 {
@@ -35,7 +46,20 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             } else {
                 1024 // E_USER_NOTICE
             };
-            eprintln!("{}: {}", level_label(level), msg);
+            if !matches!(level, 256 | 512 | 1024 | 16384) {
+                return Some(Err(crate::builtins::throws(
+                    "ValueError",
+                    "trigger_error(): Argument #2 ($error_level) must be one of E_USER_ERROR, \
+                     E_USER_WARNING, E_USER_NOTICE, or E_USER_DEPRECATED",
+                )));
+            }
+            if level == 256 {
+                return Some(user_error_fatal(&msg, args));
+            }
+            with_host(|h| {
+                let line = h.cur_frame_line();
+                h.diagnose(level_label(level), level, line, &msg);
+            });
             Value::bool(true)
         }
 
@@ -107,6 +131,41 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
 
 /// Map a PHP error-level constant to its human label used in trigger_error
 /// output. Unknown levels fall back to the E_USER_NOTICE label.
+/// `trigger_error($msg, E_USER_ERROR)` — the one level that ends the request.
+///
+/// PHP 8.4 deprecated the level itself, so the deprecation is raised FIRST and
+/// is visible even though the fatal follows it. The fatal then renders like an
+/// uncaught throw's block minus the `thrown in` line, with the `trigger_error`
+/// call as frame `#0`, and the process exits 255.
+fn user_error_fatal(msg: &str, args: &[Value]) -> Result<Value, String> {
+    with_host(|h| {
+        let line = h.cur_frame_line();
+        h.diagnose(
+            "Deprecated",
+            crate::errlevel::E_DEPRECATED,
+            line,
+            "Passing E_USER_ERROR to trigger_error() is deprecated since 8.4, throw an \
+             exception or call exit with a string message instead",
+        );
+        // The frame the trace names is the library call itself, pushed the way
+        // `throw_from_internal` pushes it so `backtrace` renders the arguments.
+        let argsarr = h.new_array();
+        for a in args {
+            h.arr_push_auto(&argsarr, a.clone());
+        }
+        h.push_internal_frame("trigger_error", line, argsarr);
+        let body = format!(
+            "{msg} in {} on line {line}\nStack trace:\n{}",
+            h.script_name(),
+            h.backtrace()
+        );
+        h.pop_internal_frame();
+        h.fatal("Fatal error", &body);
+    });
+    crate::host::set_pending_exit(255);
+    Ok(Value::Undef)
+}
+
 fn level_label(level: i64) -> &'static str {
     match level {
         256 => "Fatal error",  // E_USER_ERROR

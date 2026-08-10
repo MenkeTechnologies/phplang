@@ -162,7 +162,12 @@ const KNOWN_BUILTINS: &[&str] = &[
     "is_null",
     // NOTE: `isset`/`empty`/`unset`/`list`/`echo`/`print`/`eval` are PHP language
     // constructs, not functions — real PHP `function_exists` returns false for
-    // them, so they are deliberately absent here.
+    // them, so they are deliberately absent here. `exit`/`die` are the exception
+    // that proves the rule: PHP 8.4 made them real functions, and 8.5 answers
+    // `true` for both (verified against `php -r 'var_dump(function_exists("exit"),
+    // function_exists("die"));'` on 8.5.9).
+    "exit",
+    "die",
     "is_numeric",
     "is_callable",
     "is_scalar",

@@ -514,6 +514,12 @@ pub struct PhpHost {
     /// caught. Kept apart from `signal` so it survives function-frame unwinding
     /// and bubbles through nested VMs on its own.
     pending_throw: Option<Value>,
+    /// The status an `exit`/`die` asked the process to end with, once one has
+    /// run. Like [`PhpHost::pending_throw`] it unwinds every frame, but it is
+    /// NOT catchable and does NOT run a `finally` — PHP ends the request where
+    /// the `exit` stands. Kept in its own field precisely so `catch (Throwable)`
+    /// cannot see it.
+    pending_exit: Option<i32>,
     /// Level of the most recent `break`/`continue` signal — see
     /// [`last_break_level`].
     last_break_level: u32,
@@ -702,6 +708,9 @@ fn default_ini() -> FxHashMap<String, String> {
         ("display_errors", "1"),
         ("display_startup_errors", "1"),
         ("log_errors", "1"),
+        // Empty, not absent: with no php.ini the reference reports `string(0) ""`
+        // for `error_log`, which is what sends the `log_errors` copy to stderr.
+        ("error_log", ""),
         ("html_errors", "0"),
         ("docref_ext", ""),
         ("error_append_string", ""),
@@ -821,6 +830,7 @@ impl PhpHost {
             error: None,
             signal: None,
             pending_throw: None,
+            pending_exit: None,
             last_break_level: 1,
             try_defs: Vec::new(),
             constants: predefined_constants(),
@@ -1395,15 +1405,36 @@ impl PhpHost {
     /// leaves the level alone) and the `error_reporting` mask (a global the script
     /// or `-d` sets). A diagnostic whose `E_*` bit is clear is not merely hidden —
     /// it is never written, so it cannot land in an output buffer either.
+    /// Once past those two gates a diagnostic is written TWICE, to two streams
+    /// under two separate ini flags — `display_errors` puts the copy the program
+    /// sees on stdout, `log_errors` puts a `PHP `-prefixed copy on stderr. Both
+    /// default on, so the ordinary run emits both; `-d log_errors=0` leaves only
+    /// the stdout copy and `-d display_errors=0` only the stderr one.
     pub fn diagnose(&mut self, severity: &str, level: i64, line: u32, msg: impl std::fmt::Display) {
         if self.suppress > 0 || self.error_reporting & level == 0 {
             return;
         }
-        let text = format!(
-            "\n{severity}: {msg} in {} on line {line}\n",
-            self.script_name
-        );
-        self.write_out(&text);
+        let body = format!("{msg} in {} on line {line}", self.script_name);
+        if self.ini_flag("display_errors") {
+            self.write_out(&format!("\n{severity}: {body}\n"));
+        }
+        if self.ini_flag("log_errors") {
+            eprintln!("PHP {severity}:  {body}");
+        }
+    }
+
+    /// Whether an ini setting reads as ON. PHP's ini booleans are stored `"1"` /
+    /// `"0"` but a php.ini may spell them `On`/`Off`/`true`/`false`/`yes`/`no`,
+    /// and an unset name is off.
+    fn ini_flag(&self, name: &str) -> bool {
+        match self.ini.get(name).map(|s| s.trim()) {
+            None | Some("") | Some("0") => false,
+            Some(s) => {
+                !(s.eq_ignore_ascii_case("off")
+                    || s.eq_ignore_ascii_case("false")
+                    || s.eq_ignore_ascii_case("no"))
+            }
+        }
     }
 
     /// The current `error_reporting` mask.
@@ -1564,6 +1595,24 @@ impl PhpHost {
         out
     }
 
+    /// Push a call frame for a LIBRARY function so [`PhpHost::backtrace`] names
+    /// it, with `args` as the array the trace renders. The counterpart to
+    /// [`PhpHost::pop_internal_frame`]; `throw_from_internal` does the same thing
+    /// inline for an exception, and this is the form a diagnostic can use, where
+    /// no exception object is built.
+    pub fn push_internal_frame(&mut self, func: &str, line: u32, args: Value) {
+        self.scopes.push(Scope {
+            name: Some(func.to_string()),
+            line,
+            ..Scope::default()
+        });
+        self.set_var("@args", args);
+    }
+
+    pub fn pop_internal_frame(&mut self) {
+        self.scopes.pop();
+    }
+
     /// Read a variable out of a specific frame — the backtrace needs each frame's
     /// own hidden `@args`, not the innermost one's.
     fn get_var_in(&self, idx: usize, name: &str) -> Value {
@@ -1578,9 +1627,18 @@ impl PhpHost {
     /// the output stream (so it lands inside an open `ob_start` buffer and
     /// interleaves with the program's own output exactly as the reference does),
     /// and `log_errors` puts a `PHP `-prefixed copy on stderr.
+    /// Both copies are gated the way [`PhpHost::diagnose`]'s are, and by the same
+    /// two flags — a fatal is not exempt: `-d display_errors=0` leaves an
+    /// uncaught exception visible on stderr alone, and `-d log_errors=0` on
+    /// stdout alone. `fatal_reported` is set either way, since the run failed
+    /// whether or not anyone was told.
     pub fn fatal(&mut self, severity: &str, body: &str) {
-        self.write_out(&format!("\n{severity}: {body}\n"));
-        eprintln!("PHP {severity}:  {body}");
+        if self.ini_flag("display_errors") {
+            self.write_out(&format!("\n{severity}: {body}\n"));
+        }
+        if self.ini_flag("log_errors") {
+            eprintln!("PHP {severity}:  {body}");
+        }
         self.fatal_reported = true;
     }
 
@@ -4808,7 +4866,7 @@ fn run_chunk_on(chunk: Chunk) -> Result<Value, String> {
         // is the real signal, so report the stop as a clean halt: every caller
         // (`run_body`, `run_main`, the call dispatcher) already checks for a
         // pending throw on this path, and only that path routes it to `catch`.
-        VMResult::Error(_) if has_pending_throw() => Ok(Value::Undef),
+        VMResult::Error(_) if unwinding() => Ok(Value::Undef),
         VMResult::Error(e) => Err(e),
     }
 }
@@ -6177,15 +6235,35 @@ pub fn set_pending_throw(v: Value) {
     with_host(|h| h.pending_throw = Some(v));
 }
 
-/// Whether an exception is in flight (checked by call dispatchers after every
-/// nested call so a throw halts the caller too).
-pub fn has_pending_throw() -> bool {
-    with_host(|h| h.pending_throw.is_some())
+/// Record the status an `exit`/`die` ended the request with; every frame then
+/// unwinds exactly as a throw does.
+pub fn set_pending_exit(status: i32) {
+    with_host(|h| h.pending_exit = Some(status));
+}
+
+/// The status `exit`/`die` ended the run with, if one ran. Read by the CLI
+/// wrapper after the program returns, which is where the process status comes
+/// from — `exit(3)` must leave the shell a 3, not a 0.
+pub fn pending_exit() -> Option<i32> {
+    with_host(|h| h.pending_exit)
+}
+
+/// Whether the run is unwinding: an exception is in flight, or an `exit`/`die`
+/// has ended the request. Both stop every enclosing frame, so every call
+/// dispatcher tests this rather than the throw alone — a dispatcher that only
+/// looked for the throw would run the statement after an `exit` in a callee.
+pub fn unwinding() -> bool {
+    with_host(|h| h.pending_throw.is_some() || h.pending_exit.is_some())
 }
 
 /// The control status of running one `try`/`catch`/`finally` sub-body.
 enum TryStatus {
     Normal,
+    /// An `exit`/`die` ran inside the body. Unlike every other status this one
+    /// is terminal: no `catch` may claim it and no `finally` runs after it,
+    /// which is what the reference does — `try { exit(5); } finally { echo
+    /// "fin"; }` prints nothing and exits 5.
+    Exit,
     Return(Value),
     Throw(Value),
     Break,
@@ -6203,6 +6281,12 @@ fn run_body(chunk: Chunk) -> TryStatus {
     match run_chunk_on(chunk) {
         Err(e) => TryStatus::Fatal(e),
         Ok(_) => with_host(|h| {
+            // The exit status is left in place rather than taken: it is not a
+            // signal the orchestrator relays, it is the status the process ends
+            // with, and the CLI wrapper reads it after the whole run.
+            if h.pending_exit.is_some() {
+                return TryStatus::Exit;
+            }
             if let Some(exc) = h.pending_throw.take() {
                 return TryStatus::Throw(exc);
             }
@@ -6243,6 +6327,13 @@ pub fn run_try_orchestrator(id: i64) -> Result<i64, String> {
     let mut status = run_body(def.try_chunk);
     with_host(|h| h.suppress_restore(suppress_depth));
 
+    // An `exit` in the body ends the request there: no `catch` is consulted and
+    // no `finally` runs. Reported as the same status code a throw uses, so the
+    // parent chunk halts — but with nothing stashed for a `catch` to find.
+    if matches!(status, TryStatus::Exit) {
+        return Ok(2);
+    }
+
     // A thrown exception: try each catch clause in order; the first whose union
     // of class names matches the thrown object's class wins.
     if let TryStatus::Throw(exc) = &status {
@@ -6271,6 +6362,10 @@ pub fn run_try_orchestrator(id: i64) -> Result<i64, String> {
 
     Ok(match status {
         TryStatus::Normal => 0,
+        // An `exit` in a `catch` or `finally` body — same terminal handling as
+        // one in the `try` body above, reached here because those two run after
+        // the early return.
+        TryStatus::Exit => 2,
         TryStatus::Return(v) => {
             with_host(|h| h.signal = Some(Signal::Return(v)));
             1

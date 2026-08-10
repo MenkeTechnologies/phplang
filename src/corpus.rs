@@ -420,6 +420,20 @@ pub const CORPUS: &[Entry] = &[
         "print \"hi\";   // => hi",
     ),
     (
+        "exit",
+        "Language construct",
+        "exit[(string|int $status = 0)]: never   //  also spelled `die`",
+        "Ends the request where it stands. Both the parentheses and the argument are optional, which is what keeps `exit` a construct even though PHP 8.4 also registered it as a callable function (`function_exists(\"exit\")` is true, and `$f = \"exit\"; $f(3);` works). An INT becomes the process exit status, taken modulo 256 — `exit(300)` leaves 44 and `exit(-1)` leaves 255. A STRING is written to output and the status is 0. A bool or float narrows to int, a float with a fraction raising `Implicit conversion from float … to int loses precision`; an explicit null is deprecated and reads as 0; anything else is a `TypeError`. The unwind is not catchable and does not run a `finally` — `try { exit(5); } finally { echo \"fin\"; }` prints nothing — but open output buffers are still flushed on the way out.",
+        "echo \"a\"; exit(3);   // => a, exit status 3",
+    ),
+    (
+        "die",
+        "Language construct",
+        "die[(string|int $status = 0)]: never",
+        "The alternative spelling of `exit`, folded onto it by the scanner: the two are one construct, so a `die()` argument PHP rejects is reported against `exit()` and a syntax error on `die` names the `exit` token. See `exit` for the semantics.",
+        "die(\"bye\");   // => bye, exit status 0",
+    ),
+    (
         "isset",
         "Language construct",
         "isset($var[, $var …]): bool",

@@ -1581,7 +1581,7 @@ fn replace_all_cb(
         *count += 1;
         let matches = make_map(caps_trimmed(&caps, &names, fmt));
         let ret = crate::host::call_value(cb.clone(), vec![matches])?;
-        if crate::host::has_pending_throw() {
+        if crate::host::unwinding() {
             return Ok(String::new());
         }
         out.extend_from_slice(with_host(|h| h.to_str(&ret)).as_bytes());

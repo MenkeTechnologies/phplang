@@ -14,6 +14,16 @@ use std::process::ExitCode;
 /// What the PHP CLI exits with after a fatal or parse error.
 const FATAL_EXIT: u8 = 255;
 
+/// The status a completed run leaves the shell: whatever an `exit`/`die` asked
+/// for, else 0. A program that never calls `exit` has no status of its own, so
+/// the successful run is a plain 0.
+fn ran(_: phplang::Value) -> ExitCode {
+    match phplang::host::pending_exit() {
+        Some(status) => ExitCode::from(status as u8),
+        None => ExitCode::SUCCESS,
+    }
+}
+
 fn main() -> ExitCode {
     let mut cli = phplang::cli::parse();
 
@@ -51,7 +61,7 @@ fn main() -> ExitCode {
         args.extend(cli.file.take());
         args.append(&mut cli.argv);
         return match phplang::eval_cli(&src, &args) {
-            Ok(_) => ExitCode::SUCCESS,
+            Ok(v) => ran(v),
             Err(e) => fail(&e),
         };
     }
@@ -73,7 +83,7 @@ fn main() -> ExitCode {
             return finish(tiers(&file));
         }
         return match phplang::eval_file_cli(&file, &cli.argv) {
-            Ok(_) => ExitCode::SUCCESS,
+            Ok(v) => ran(v),
             Err(e) => fail(&e),
         };
     }
@@ -88,7 +98,7 @@ fn main() -> ExitCode {
     // what every diagnostic and `__FILE__` in it quote.
     let src = std::io::read_to_string(std::io::stdin()).unwrap_or_default();
     match phplang::eval_stdin_cli(&src, &cli.argv) {
-        Ok(_) => ExitCode::SUCCESS,
+        Ok(v) => ran(v),
         Err(e) => fail(&e),
     }
 }
