@@ -1,7 +1,14 @@
 //! End-to-end tests for the `filter` stdlib category: `filter_var` validation
 //! and sanitization filters plus `filter_var_array`. Expected values were
-//! cross-checked against PHP 8.5 `php -r`; the assertions here run headless
-//! without `php`.
+//! cross-checked against PHP 8.5 `php -r` — for the RETURNED VALUE. Two of them
+//! omit a diagnostic the reference also emits, verified against `php 8.5.9`:
+//!
+//!   * both `FILTER_SANITIZE_STRING` assertions. The reference precedes the
+//!     sanitized value with `Deprecated: Constant FILTER_SANITIZE_STRING is
+//!     deprecated since 8.1, use htmlspecialchars() instead`; this engine does
+//!     not carry per-constant deprecations, so it emits the value alone.
+//!
+//! The assertions here run headless without `php`.
 
 use phplang::eval_capture;
 

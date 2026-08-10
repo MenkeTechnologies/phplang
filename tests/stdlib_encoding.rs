@@ -1,6 +1,22 @@
-//! High-value tests for the `encoding` stdlib category. Every expected value is
-//! cross-checked against reference `php` 8.5 but hard-coded here so the suite
+//! High-value tests for the `encoding` stdlib category. Expected values are
+//! cross-checked against reference `php` 8.5 and hard-coded here so the suite
 //! passes in headless CI without a `php` on PATH.
+//!
+//! SIX of them pin the RETURN VALUE only, because this engine does not raise the
+//! diagnostic the reference raises alongside it. Each was re-verified against
+//! `php 8.5.9`; they are listed so the omission is a recorded gap rather than an
+//! implied match:
+//!
+//!   * `hex2bin("abc")`  — reference adds `Warning: hex2bin(): Hexadecimal input
+//!     string must have an even length`.
+//!   * `hex2bin("xy")`   — `Warning: hex2bin(): Input string must be
+//!     hexadecimal string`.
+//!   * `convert_uudecode("")` and `convert_uudecode("M")` — `Warning:
+//!     convert_uudecode(): Argument #1 ($data) is not a valid uuencoded string`.
+//!   * `utf8_encode` and `utf8_decode` — `Deprecated: Function utf8_encode() is
+//!     deprecated since 8.2, …`.
+//!
+//! The values themselves (`false`, and the round-tripped ASCII) are exact.
 
 use phplang::eval_capture;
 

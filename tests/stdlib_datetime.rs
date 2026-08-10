@@ -1,6 +1,18 @@
 //! Datetime standard-library tests: PHP source in, captured `echo` output out.
 //! Every assertion pins an explicit timestamp so results are deterministic and
 //! independent of the wall clock / host timezone.
+//!
+//! SEVEN assertions pin this engine rather than the reference. They are listed
+//! because a reader is entitled to assume the rest were captured from `php`, and
+//! these were re-verified against `php 8.5.9`:
+//!
+//!   * five OVERFLOW cases — `mktime`/`gmmktime` with a 12-digit field, and
+//!     `strtotime("+999999999999 days"/"months")`, plus `strtotime("   ")` —
+//!     answer `false` here where the reference returns a (wrapped) timestamp.
+//!   * two `date_default_timezone_set("Not/AZone")` cases: this engine accepts
+//!     and stores any name, while the reference emits `Notice: …Timezone ID
+//!     'Not/AZone' is invalid`, returns false, and keeps UTC. Already documented
+//!     as a LIMITATION in `src/stdlib/datetime.rs`.
 
 use phplang::eval_capture;
 

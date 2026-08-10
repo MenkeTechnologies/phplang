@@ -114,26 +114,59 @@ fn resolve_mode(v: &Value) -> i64 {
     v.to_int()
 }
 
-/// Unicode title-casing: uppercase the first letter of each run of letters,
-/// lowercase the rest. A non-letter (space, digit, punctuation) resets the run,
-/// so `mb_convert_case("who's who", MB_CASE_TITLE)` yields `"Who'S Who"` (PHP 8).
+/// Unicode title-casing: uppercase the first letter of each word, lowercase the
+/// rest of it. A non-letter resets the word — EXCEPT a *case-ignorable* one,
+/// which is transparent, so the letter after it continues the word it was in.
+///
+/// That exception is the whole difference between `"Who's Who"` and `"Who'S
+/// Who"`, and this function used to produce the second: an apostrophe reset the
+/// word, so the `s` began a new one. Its own doc-comment asserted `"Who'S Who"`
+/// was `(PHP 8)`'s answer. It never was — `php 8.5.9` answers `"Who's Who"`, and
+/// so does every PHP that has had `mb_convert_case`.
 fn title_case(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
-    let mut prev_alpha = false;
+    let mut in_word = false;
     for c in s.chars() {
-        if c.is_alphabetic() {
-            if prev_alpha {
+        if is_case_ignorable(c) {
+            // Transparent: written through without disturbing the word state,
+            // so `x.y` titles to `X.y` while `x,y` titles to `X,Y`.
+            out.push(c);
+        } else if c.is_alphabetic() {
+            if in_word {
                 out.extend(c.to_lowercase());
             } else {
                 out.extend(c.to_uppercase());
             }
-            prev_alpha = true;
+            in_word = true;
         } else {
             out.push(c);
-            prev_alpha = false;
+            in_word = false;
         }
     }
     out
+}
+
+/// Whether `c` is Unicode `Case_Ignorable`, the property that decides which
+/// characters a title-casing pass looks straight through.
+///
+/// APPROXIMATION: the full property is `Word_Break ∈ {MidLetter, MidNumLet,
+/// Single_Quote}` plus general categories `Mn`, `Me`, `Cf`, `Lm` and `Sk`. The
+/// first three sets are finite and listed in full below; the categories need a
+/// Unicode table this crate does not carry, so only their ASCII and Latin-1
+/// members are recognised. A combining mark or a format character therefore
+/// still resets the word here where the reference would see through it.
+fn is_case_ignorable(c: char) -> bool {
+    matches!(
+        c,
+        // Word_Break = Single_Quote / MidNumLet / MidLetter.
+        '\u{0027}' | '\u{002E}' | '\u{003A}' | '\u{00B7}' | '\u{0387}'
+        | '\u{055F}' | '\u{05F4}' | '\u{2018}' | '\u{2019}' | '\u{2024}'
+        | '\u{2027}' | '\u{FE13}' | '\u{FE52}' | '\u{FE55}' | '\u{FF07}'
+        | '\u{FF0E}' | '\u{FF1A}'
+        // General category Sk, ASCII and Latin-1 members.
+        | '\u{005E}' | '\u{0060}' | '\u{00A8}' | '\u{00AF}' | '\u{00B4}'
+        | '\u{00B8}'
+    )
 }
 
 // ── searching / positions ────────────────────────────────────────────────────

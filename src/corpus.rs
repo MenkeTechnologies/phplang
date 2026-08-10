@@ -3153,7 +3153,7 @@ pub const CORPUS: &[Entry] = &[
         "mb_convert_case",
         "Multibyte strings",
         "mb_convert_case(string $string, int $mode): string",
-        "Mode 1 lowercases, mode 2 title-cases, and mode 0 — plus every UNRECOGNIZED mode — uppercases. Title-casing uppercases the first letter of each alphabetic run and lowercases the rest, so `\"who's who\"` becomes `\"Who'S Who\"`. DIVERGENCE: PHP's `MB_CASE_*_SIMPLE` modes (3-5) are not distinguished.",
+        "Mode 1 lowercases, mode 2 title-cases, and mode 0 — plus every UNRECOGNIZED mode — uppercases. Title-casing uppercases the first letter of each WORD and lowercases the rest of it; a Unicode case-ignorable character (an apostrophe, `.`, `:`) is transparent rather than a word break, so `\"who's who\"` becomes `\"Who's Who\"` while `\"x,y\"` becomes `\"X,Y\"`. DIVERGENCE: PHP's `MB_CASE_*_SIMPLE` modes (3-5) are not distinguished.",
         "echo mb_convert_case(\"hello world\", MB_CASE_TITLE);   // => Hello World",
     ),
     (

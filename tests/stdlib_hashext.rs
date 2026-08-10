@@ -3,6 +3,15 @@
 //! `echo` output out. Expected values cross-checked against reference PHP 8 /
 //! RFC test vectors. File tests use unique temp paths under the system temp dir
 //! and clean up after themselves; no network access.
+//!
+//! The two `random_bytes` length assertions are the exception, and they are NOT
+//! reference-derived — they cannot be. They use `mb_strlen` rather than `strlen`
+//! because this engine's strings are UTF-8 `String`s (see `wrap` in
+//! `src/stdlib/hashext.rs`): a raw byte >= 0x80 becomes a multi-byte codepoint,
+//! so `strlen(random_bytes(16))` counts 25 here and 16 in the reference, while
+//! `mb_strlen` counts the 16 codepoints. Running the same assertion under `php`
+//! would give a DIFFERENT answer on every run, since `mb_strlen` over random
+//! bytes depends on the bytes. They pin this engine's string model, deliberately.
 
 use phplang::eval_capture;
 use std::path::{Path, PathBuf};

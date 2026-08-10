@@ -4,7 +4,14 @@
 //! `is_subclass_of`, and the always-false `interface_exists`/`trait_exists`/
 //! `enum_exists`. Expected results match PHP 8, except where documented in
 //! `src/stdlib/reflection.rs` (no interfaces/traits/enums; method names are
-//! reported lowercased).
+//! reported lowercased) and in these three, re-verified against `php 8.5.9`:
+//!
+//!   * `get_class(5)` and `get_object_vars(5)` answer `false` here; the
+//!     reference throws `TypeError: …(): Argument #1 ($object) must be of type
+//!     object, int given`. Returning `false` was PHP 7's behaviour.
+//!   * `class_parents("Ghost")` answers `false` without the reference's
+//!     `Warning: class_parents(): Class Ghost does not exist and could not be
+//!     loaded`.
 
 use phplang::eval_capture;
 

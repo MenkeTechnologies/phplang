@@ -2,7 +2,12 @@
 //! arbitrary-precision decimal arithmetic where every operand and result is a
 //! string and the trailing `$scale` argument truncates (never rounds) to an
 //! exact number of fractional digits. Expected values were captured from the
-//! reference `php` 8 bcmath extension.
+//! reference `php` 8 bcmath extension, with ONE exception, verified against
+//! `php 8.5.9` and pinned here as a divergence rather than left implied:
+//!
+//!   * `bcadd("abc", "2", 2)` answers `"2.00"` here; the reference throws
+//!     `ValueError: bcadd(): Argument #1 ($num1) is not well-formed`. A
+//!     malformed operand reads as zero rather than being rejected.
 
 use phplang::eval_capture;
 

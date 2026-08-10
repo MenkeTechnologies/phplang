@@ -1,5 +1,13 @@
 //! End-to-end tests for the `hash` stdlib category: PHP source in, captured
-//! `echo` output out. Expected values cross-checked against reference PHP 8.
+//! `echo` output out. Expected values cross-checked against reference PHP 8,
+//! with two deliberate exceptions, both verified against `php 8.5.9`:
+//!
+//!   * `hash_algos()` pins THIS engine's six algorithms, not the reference's
+//!     sixty-odd. It is a coverage statement about `src/stdlib/hash.rs`, and it
+//!     is the one assertion in this file that would fail against the reference
+//!     by design.
+//!   * `ord(md5("", true))` omits the `Deprecated: ord(): Providing a string
+//!     that is not one byte long is deprecated` the reference prints first.
 
 use phplang::eval_capture;
 

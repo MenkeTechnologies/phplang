@@ -1,7 +1,16 @@
 //! End-to-end tests for the `json` stdlib category: `json_decode`,
 //! `json_last_error`, `json_last_error_msg`. Expected values were cross-checked
-//! against PHP 8; the assertions here run headless without `php`. Note phplang
-//! has no `stdClass`, so JSON objects decode to PHP arrays (associative always).
+//! against PHP 8; the assertions here run headless without `php`. JSON objects
+//! decode to PHP arrays (associative always) rather than to `stdClass`.
+//!
+//! TWO assertions pin behaviour the reference does not share, both re-verified
+//! against `php 8.5.9`:
+//!
+//!   * `json_decode("[[1]]", true, -5)` sets error 1 here; the reference throws
+//!     `ValueError: json_decode(): Argument #3 ($depth) must be greater than 0`.
+//!     A non-positive `$depth` is rejected there, not merely exceeded.
+//!   * `json_validate("[1]", 1)` is true here and false in the reference: depth
+//!     1 admits only a scalar document, so even a one-element array exceeds it.
 
 use phplang::eval_capture;
 

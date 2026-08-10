@@ -1,6 +1,18 @@
-//! Tests for the `stdlib::mbstring` category. Every expected value mirrors the
-//! output of the reference PHP 8 function of the same name. These run headless
-//! (no `php` on PATH required).
+//! Tests for the `stdlib::mbstring` category. Expected values mirror the output
+//! of the reference PHP 8 function of the same name, and run headless (no `php`
+//! on PATH required).
+//!
+//! THREE do not, each re-verified against `php 8.5.9` and recorded rather than
+//! implied:
+//!
+//!   * `mb_ord("")` answers `false` here; the reference throws
+//!     `ValueError: mb_ord(): Argument #1 ($string) must not be empty`.
+//!   * `mb_convert_encoding("héllo", "ISO-8859-1")` returns the input unchanged
+//!     here; the reference transcodes, producing a byte this engine's UTF-8
+//!     string model cannot hold.
+//!   * `mb_split("(", "abc")` returns `false` without the reference's
+//!     `Warning: mb_split(): mbregex compile err: end pattern with unmatched
+//!     parenthesis`.
 
 use phplang::eval_capture;
 
@@ -50,10 +62,26 @@ fn convert_case_modes() {
         run(r#"<?php echo mb_convert_case("a b", MB_CASE_TITLE);"#),
         "A B"
     );
-    // Non-letter resets the word run: apostrophe boundary uppercases the "s".
+    // A CASE-IGNORABLE character is transparent to the word run, so the letter
+    // after an apostrophe continues the word it was in.
+    //
+    // The old expectation here was "Who'S Who", which no PHP has ever produced;
+    // it was written from the implementation rather than captured from a run.
+    //
+    //   $ php -r 'echo mb_convert_case("who\'s who", MB_CASE_TITLE);'
+    //   Who's Who
     assert_eq!(
         run(r#"<?php echo mb_convert_case("who's who", MB_CASE_TITLE);"#),
-        "Who'S Who"
+        "Who's Who"
+    );
+    // The distinction is real and narrow: `.` and `:` are case-ignorable and `,`
+    // and `~` are not, so a test using only letters and spaces cannot see it.
+    //
+    //   $ php -r 'echo mb_convert_case("x.y x,y x:y a~b", MB_CASE_TITLE);'
+    //   X.y X,Y X:y A~B
+    assert_eq!(
+        run(r#"<?php echo mb_convert_case("x.y x,y x:y a~b", MB_CASE_TITLE);"#),
+        "X.y X,Y X:y A~B"
     );
 }
 
