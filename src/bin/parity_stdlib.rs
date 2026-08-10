@@ -80,6 +80,7 @@ fn main() {
 
     let mut pass = 0;
     let mut fail = 0;
+    let mut skip = 0;
     for case in CASES {
         let mut prog = String::new();
         let mut missing = false;
@@ -94,42 +95,55 @@ fn main() {
             }
         }
         if missing {
+            skip += 1;
             continue;
         }
         prog.push_str(case.driver);
 
-        let a = run(&php, &["-d", "error_reporting=0"], &prog);
-        let b = run(&ours.to_string_lossy(), &[], &prog);
-        if a.0 == b.0 && (a.1 == 0) == (b.1 == 0) {
+        // BOTH sides get the same flags — the reference used to be muted with
+        // `-d error_reporting=0` while phplang got none, which asks the two
+        // engines different questions. phplang honours `-d error_reporting` too.
+        const FLAGS: &[&str] = &["-d", "error_reporting=0"];
+        let a = run(&php, FLAGS, &prog);
+        let b = run(&ours.to_string_lossy(), FLAGS, &prog);
+        if a == b {
             println!("  \u{2713} PASS  {} ({} bytes)", case.label, a.0.len());
             pass += 1;
         } else {
             println!("  \u{2717} FAIL  {}", case.label);
-            println!(
-                "        php  (exit {}): {:?}",
-                a.1,
-                String::from_utf8_lossy(&a.0)
-            );
-            println!(
-                "        ours (exit {}): {:?}",
-                b.1,
-                String::from_utf8_lossy(&b.0)
-            );
+            report_side("php ", &a);
+            report_side("ours", &b);
             fail += 1;
         }
     }
 
-    println!("\nparity-stdlib: {pass} byte-identical, {fail} divergent");
-    if fail > 0 {
+    println!("\nparity-stdlib: {pass} byte-identical, {fail} divergent, {skip} skipped");
+    // A skip is not a pass, and neither is an empty corpus: either means the run
+    // verified nothing, which must not read as success.
+    if fail > 0 || skip > 0 || pass == 0 {
         std::process::exit(1);
     }
 }
 
-fn run(bin: &str, extra: &[&str], code: &str) -> (Vec<u8>, i32) {
+/// Print one side of a failed comparison — all three observables.
+fn report_side(who: &str, r: &Run) {
+    println!(
+        "        {who} (exit {}): out={:?} err={:?}",
+        r.1,
+        String::from_utf8_lossy(&r.0),
+        String::from_utf8_lossy(&r.2)
+    );
+}
+
+/// One captured run: stdout, exit code, stderr. All three are compared — PHP
+/// writes every diagnostic to both streams, so reading only stdout sees half.
+type Run = (Vec<u8>, i32, Vec<u8>);
+
+fn run(bin: &str, extra: &[&str], code: &str) -> Run {
     let out = Command::new(bin).args(extra).args(["-r", code]).output();
     match out {
-        Ok(o) => (o.stdout, o.status.code().unwrap_or(-1)),
-        Err(_) => (Vec::new(), -1),
+        Ok(o) => (o.stdout, o.status.code().unwrap_or(-1), o.stderr),
+        Err(_) => (Vec::new(), -1, Vec::new()),
     }
 }
 

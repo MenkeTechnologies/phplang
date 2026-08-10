@@ -99,9 +99,16 @@ fn main() {
 
     let mut pass = 0;
     let mut fail = 0;
+    let mut skip = 0;
     for case in CASES {
         // Compose: the extracted Drupal function sources + the driver.
+        //
+        // A dependency the checkout does not carry skips the whole CASE. It used
+        // to `continue` the DEPENDENCY loop instead, which left the driver
+        // composed against a program missing the very function it calls — a
+        // case that then "ran" and compared two undefined-function failures.
         let mut prog = String::new();
+        let mut missing = false;
         for dep in case.deps {
             match extract_fn(&corpus, dep) {
                 Some(body) => {
@@ -113,50 +120,70 @@ fn main() {
                         "  SKIP  {} — function `{dep}` not found in checkout",
                         case.label
                     );
-                    continue;
+                    missing = true;
+                    break;
                 }
             }
         }
+        if missing {
+            skip += 1;
+            continue;
+        }
         prog.push_str(case.driver);
 
-        // The reference PHP gets `-d error_reporting=0` to mute notices on
-        // stderr; phplang has no such flag (and writes nothing extra), so it runs
-        // with `-r` alone. stdout is what we compare, byte for byte.
-        let a = run(&php, &["-d", "error_reporting=0"], &prog);
-        let b = run(&ours.to_string_lossy(), &[], &prog);
-        if a.0 == b.0 && (a.1 == 0) == (b.1 == 0) {
+        // BOTH sides get the same flags. They used to differ — the reference was
+        // muted with `-d error_reporting=0` and phplang given nothing — so the
+        // one engine was answering a different question from the other, and a
+        // divergence that consisted of a diagnostic could only ever be read as a
+        // failure of the muted side. phplang honours `-d error_reporting` too.
+        const FLAGS: &[&str] = &["-d", "error_reporting=0"];
+        let a = run(&php, FLAGS, &prog);
+        let b = run(&ours.to_string_lossy(), FLAGS, &prog);
+        if a == b {
             println!("  \u{2713} PASS  {} ({} bytes)", case.label, a.0.len());
             pass += 1;
         } else {
             println!("  \u{2717} FAIL  {}", case.label);
-            println!(
-                "        php  (exit {}): {:?}",
-                a.1,
-                String::from_utf8_lossy(&a.0)
-            );
-            println!(
-                "        ours (exit {}): {:?}",
-                b.1,
-                String::from_utf8_lossy(&b.0)
-            );
+            report_side("php ", &a);
+            report_side("ours", &b);
             fail += 1;
         }
     }
 
-    println!("\nparity-drupal: {pass} byte-identical, {fail} divergent");
-    if fail > 0 {
+    println!("\nparity-drupal: {pass} byte-identical, {fail} divergent, {skip} skipped");
+    // A skip is not a pass. A run that skipped everything has verified nothing,
+    // and exiting 0 on it is how a harness reports clean while measuring nothing.
+    if fail > 0 || skip > 0 || pass == 0 {
         std::process::exit(1);
     }
 }
 
-/// Run raw PHP (no `<?php` tag) through an interpreter via `-r`, returning
-/// (stdout bytes, exit code). phplang's `-r` prepends the open tag; reference PHP
-/// `-r` runs raw code — so both receive the same source.
-fn run(bin: &str, extra: &[&str], code: &str) -> (Vec<u8>, i32) {
+/// Print one side of a failed comparison — all three observables, since any of
+/// the three can be the thing that differs.
+fn report_side(who: &str, r: &Run) {
+    println!(
+        "        {who} (exit {}): out={:?} err={:?}",
+        r.1,
+        String::from_utf8_lossy(&r.0),
+        String::from_utf8_lossy(&r.2)
+    );
+}
+
+/// One captured run: stdout, exit code, stderr. All three are compared.
+type Run = (Vec<u8>, i32, Vec<u8>);
+
+/// Run raw PHP (no `<?php` tag) through an interpreter via `-r`. phplang's `-r`
+/// prepends the open tag; reference PHP `-r` runs raw code — so both receive the
+/// same source.
+///
+/// stderr is captured rather than dropped: PHP writes every diagnostic twice,
+/// the `display_errors` copy on stdout and the `log_errors` copy here, so a
+/// comparison that reads only stdout sees half of what the engine emitted.
+fn run(bin: &str, extra: &[&str], code: &str) -> Run {
     let out = Command::new(bin).args(extra).args(["-r", code]).output();
     match out {
-        Ok(o) => (o.stdout, o.status.code().unwrap_or(-1)),
-        Err(_) => (Vec::new(), -1),
+        Ok(o) => (o.stdout, o.status.code().unwrap_or(-1), o.stderr),
+        Err(_) => (Vec::new(), -1, Vec::new()),
     }
 }
 

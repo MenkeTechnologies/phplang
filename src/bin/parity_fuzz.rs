@@ -1,9 +1,13 @@
 //! Differential parity fuzzer: reference `php -r <s>` vs phplang `php -r <s>`.
 //!
 //! Generates thousands of grammar-driven, deterministic-output PHP snippets, runs
-//! each through both interpreters, and reports every case where stdout diverges
-//! or one errors while the other does not. Each case is produced from a per-index
-//! seed so any divergence replays exactly: `parity-fuzz --once --seed <N>`.
+//! each through both interpreters, and reports every case where STDOUT, STDERR or
+//! the exit code differs. Each case is produced from a per-index seed so any
+//! divergence replays exactly: `parity-fuzz --once --seed <N>`.
+//!
+//! All three observables are compared, and each was added because leaving it out
+//! was a blind spot rather than a considered exclusion — see [`differs`], whose
+//! doc records what each relaxation used to hide.
 //!
 //! Ported from the rubylang harness (same RunOut / render / differs /
 //! run_with_timeout infra, seed→deterministic Mode dispatch, parallel workers,
@@ -23,9 +27,10 @@
 //! invariant, and the `Barren` verdict exists because it does not hold: an arm
 //! can echo a value that is legitimately empty (`str_repeat($s, 0)`,
 //! `strpbrk()` returning false, an `array_filter` that keeps nothing, `!!0`,
-//! `$x = ""; $x ?? "d"`). Measured over a 62k run, 248 cases in SEVEN of the 54
-//! modes — unary, coalesce, str2, strfns, stredge, arr3, closures — with no mode
-//! above 6.0% of its own cases. All incidental; none is a mode whose programs
+//! `$x = ""; $x ?? "d"`). Measured over a 62k run against the modes then present,
+//! 248 cases in SEVEN of them — unary, coalesce, str2, strfns, stredge, arr3,
+//! closures — with no mode above 6.0% of its own cases. All incidental; none is
+//! a mode whose programs
 //! structurally lack an output construct. Wrapping those arms' values in a
 //! delimiter, the way `sprintf_rich` already does, would take the count to zero
 //! without weakening what they compare.
@@ -141,6 +146,13 @@ fn oracle_id() -> String {
 /// Captured process result — raw bytes, since output need not be valid UTF-8.
 struct RunOut {
     stdout: Vec<u8>,
+    /// The second stream, captured rather than discarded. PHP writes every
+    /// diagnostic TWICE — the `display_errors` copy on stdout and a `PHP `-
+    /// prefixed `log_errors` copy here — so a harness that drops this one is
+    /// structurally incapable of reporting a stderr-only divergence, however
+    /// many cases it runs. It dropped it for every mode this file had, and a
+    /// missing stderr copy for every `Warning` sat under those runs undetected.
+    stderr: Vec<u8>,
     exit: i32,
     timed_out: bool,
     infra_fail: bool,
@@ -153,43 +165,47 @@ fn render(bytes: &[u8]) -> String {
         .to_string()
 }
 
-/// The divergence predicate: stdout must match exactly, and the two runs must
-/// agree on success-vs-failure. Exact exit CODES are NOT compared — reference PHP
-/// exits 255 on a fatal error while phplang exits 1, which is not a parity gap.
+/// The divergence predicate: BOTH streams must match exactly, and so must the
+/// exit code.
+///
+/// Every relaxation here is a whole axis the harness cannot see, so each one has
+/// to earn its place, and neither of the two this predicate used to make does:
+///
+/// * stderr was discarded outright. It carries the `log_errors` copy of every
+///   diagnostic, which is half of what PHP emits.
+/// * the exit code was compared only as zero-vs-nonzero, on the stated grounds
+///   that "reference PHP exits 255 on a fatal error while phplang exits 1". That
+///   is not true and is not what the code does — `src/main.rs` has exited 255 on
+///   a fatal since it was written (`FATAL_EXIT`), and `exit(3)` must now leave a
+///   3. Under the loose form `exit(3)` and `exit(9)` were indistinguishable.
 fn differs(a: &RunOut, b: &RunOut) -> bool {
-    if a.stdout != b.stdout {
-        return true;
-    }
-    (a.exit == 0) != (b.exit == 0)
+    a.stdout != b.stdout || a.stderr != b.stderr || a.exit != b.exit
 }
 
 /// Spawn `cmd` and wait up to `timeout`, killing it if it overruns.
 fn run_with_timeout(mut cmd: Command, timeout: Duration) -> RunOut {
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        .stderr(Stdio::piped());
     let mut child = match cmd.spawn() {
         Ok(c) => c,
-        Err(_) => {
-            return RunOut {
-                stdout: Vec::new(),
-                exit: -999,
-                timed_out: false,
-                infra_fail: true,
-            }
-        }
+        Err(_) => return infra(-999),
     };
+    // Each stream is drained on its own thread, started before the wait: two
+    // piped streams read one-after-the-other after exit would deadlock the
+    // moment either filled its pipe buffer, and a diagnostic-heavy program
+    // fills stderr as readily as stdout.
+    let out_pipe = child.stdout.take();
+    let err_pipe = child.stderr.take();
+    let out_thread = std::thread::spawn(move || drain(out_pipe));
+    let err_thread = std::thread::spawn(move || drain(err_pipe));
     let start = Instant::now();
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                use std::io::Read;
-                let mut buf = Vec::new();
-                if let Some(mut out) = child.stdout.take() {
-                    let _ = out.read_to_end(&mut buf);
-                }
                 return RunOut {
-                    stdout: buf,
+                    stdout: out_thread.join().unwrap_or_default(),
+                    stderr: err_thread.join().unwrap_or_default(),
                     exit: status.code().unwrap_or(-1),
                     timed_out: false,
                     infra_fail: false,
@@ -199,8 +215,11 @@ fn run_with_timeout(mut cmd: Command, timeout: Duration) -> RunOut {
                 if start.elapsed() >= timeout {
                     let _ = child.kill();
                     let _ = child.wait();
+                    let _ = out_thread.join();
+                    let _ = err_thread.join();
                     return RunOut {
                         stdout: Vec::new(),
+                        stderr: Vec::new(),
                         exit: -1,
                         timed_out: true,
                         infra_fail: false,
@@ -209,14 +228,32 @@ fn run_with_timeout(mut cmd: Command, timeout: Duration) -> RunOut {
                 std::thread::sleep(Duration::from_millis(2));
             }
             Err(_) => {
-                return RunOut {
-                    stdout: Vec::new(),
-                    exit: -998,
-                    timed_out: false,
-                    infra_fail: true,
-                }
+                let _ = out_thread.join();
+                let _ = err_thread.join();
+                return infra(-998);
             }
         }
+    }
+}
+
+/// Read one child pipe to EOF.
+fn drain(pipe: Option<impl std::io::Read>) -> Vec<u8> {
+    let mut buf = Vec::new();
+    if let Some(mut p) = pipe {
+        let _ = p.read_to_end(&mut buf);
+    }
+    buf
+}
+
+/// A run that never happened — the harness could not spawn or read the child.
+/// Distinct from a run that produced nothing, which is a real comparison.
+fn infra(exit: i32) -> RunOut {
+    RunOut {
+        stdout: Vec::new(),
+        stderr: Vec::new(),
+        exit,
+        timed_out: false,
+        infra_fail: true,
     }
 }
 
@@ -602,6 +639,68 @@ fn gen_declaresyntax(seed: u64) -> Vec<String> {
         6 => vec!["declare(strict_types=$x); echo \"ok\";".to_string()],
         // An unrecognised directive warns and carries on.
         _ => vec!["declare(encoding='UTF-8'); echo \"ok\";".to_string()],
+    }
+}
+
+/// `exit` / `die` — the construct the generator was blind to.
+///
+/// A grep for either word over the generators returned ZERO hits before this
+/// mode existed, and the construct was not implemented at all: `exit(3)` was a
+/// `Call to undefined function exit()` and `exit;` an `Undefined constant`. Every
+/// previous clean run therefore scored the way PHP scripts end themselves not at
+/// all — and could not have scored the status even if it had generated one,
+/// because the harness compared exit codes only as zero-vs-nonzero, where
+/// `exit(3)` and `exit(9)` are the same answer.
+///
+/// Each program opens with a delimiter so the case cannot be barren, and the
+/// statement AFTER the `exit` is one that must not run — a construct that
+/// returned instead of unwinding would print it and be caught here on stdout
+/// alone, before the status is even consulted.
+fn gen_exitdie(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let word = *r.pick(&["exit", "die"]);
+    // Every arm of the `string|int` parameter: absent, the two silent int forms,
+    // the wrapping ones, both bools, an integral and a fractional float, the
+    // deprecated null, two strings (one of which LOOKS like a status and is not),
+    // and the array that is a TypeError.
+    let arg = *r.pick(&[
+        "",
+        "()",
+        "(0)",
+        "(3)",
+        "(255)",
+        "(256)",
+        "(300)",
+        "(-1)",
+        "(true)",
+        "(false)",
+        "(2.0)",
+        "(2.9)",
+        "(null)",
+        "(\"bye\")",
+        "(\"7\")",
+        "([1])",
+    ]);
+    match r.below(4) {
+        0 => vec![format!("echo \"[\"; {word}{arg}; echo \"]\";")],
+        1 => vec![format!(
+            "function f() {{ echo \"in\"; {word}{arg}; echo \"after\"; }} \
+             echo \"[\"; f(); echo \"]\";"
+        )],
+        // Through a `try`: no `catch` may claim the unwind and no `finally` may
+        // run after it — except for the `([1])` argument, which is an ordinary
+        // TypeError and therefore IS catchable, so the arm scores both answers.
+        2 => vec![format!(
+            "echo \"[\"; try {{ {word}{arg}; }} catch (Throwable $e) {{ echo \"C\"; }} \
+             finally {{ echo \"F\"; }} echo \"]\";"
+        )],
+        // Out of a library callback, with an output buffer open that must still
+        // be flushed on the way out.
+        _ => vec![format!(
+            "ob_start(); echo \"[\"; \
+             array_map(function ($x) {{ if ($x == 2) {{ {word}{arg}; }} echo $x; }}, [1, 2, 3]); \
+             echo \"]\";"
+        )],
     }
 }
 
@@ -2642,6 +2741,10 @@ const MODES: &[Mode] = &[
         name: "declaresyntax",
         gen: gen_declaresyntax,
     },
+    Mode {
+        name: "exitdie",
+        gen: gen_exitdie,
+    },
 ];
 
 fn build_program(stmts: &[String]) -> String {
@@ -2808,9 +2911,14 @@ struct Divergence {
     mode: &'static str,
     program: String,
     oracle_out: String,
-    oracle_ok: bool,
+    /// The `log_errors` copy of whatever diagnostics the reference raised. Kept
+    /// beside stdout rather than folded into it, because which STREAM a line
+    /// landed on is itself the thing under test.
+    oracle_err: String,
+    oracle_exit: i32,
     ours_out: String,
-    ours_ok: bool,
+    ours_err: String,
+    ours_exit: i32,
     signature: String,
 }
 
@@ -2896,8 +3004,18 @@ fn main() {
         println!("seed  : {}", args.base_seed);
         println!("mode  : {}", mode.name);
         println!("prog  : {prog}");
-        println!("oracle: exit={} {:?}", o.exit, render(&o.stdout));
-        println!("ours  : exit={} {:?}", r.exit, render(&r.stdout));
+        println!(
+            "oracle: exit={} out={:?} err={:?}",
+            o.exit,
+            render(&o.stdout),
+            render(&o.stderr)
+        );
+        println!(
+            "ours  : exit={} out={:?} err={:?}",
+            r.exit,
+            render(&r.stdout),
+            render(&r.stderr)
+        );
         println!("differ: {}", differs(&o, &r));
         return;
     }
@@ -2989,9 +3107,11 @@ fn main() {
                     mode: mode.name,
                     program: min_prog,
                     oracle_out: render(&o.stdout),
-                    oracle_ok: o.exit == 0,
+                    oracle_err: render(&o.stderr),
+                    oracle_exit: o.exit,
                     ours_out: render(&r.stdout),
-                    ours_ok: r.exit == 0,
+                    ours_err: render(&r.stderr),
+                    ours_exit: r.exit,
                     signature: sig,
                 });
             }
@@ -3154,14 +3274,12 @@ fn main() {
             println!("\n[seed {}] mode={}", d.seed, d.mode);
             println!("  prog  : {}", d.program.replace('\n', " ⏎ "));
             println!(
-                "  oracle: {}{:?}",
-                if d.oracle_ok { "" } else { "(err) " },
-                d.oracle_out
+                "  oracle: exit={} out={:?} err={:?}",
+                d.oracle_exit, d.oracle_out, d.oracle_err
             );
             println!(
-                "  ours  : {}{:?}",
-                if d.ours_ok { "" } else { "(err) " },
-                d.ours_out
+                "  ours  : exit={} out={:?} err={:?}",
+                d.ours_exit, d.ours_out, d.ours_err
             );
         }
         println!("\n--- gap classes (by frequency) ---");
@@ -3170,8 +3288,13 @@ fn main() {
         for (sig, n, ex) in sorted {
             println!("  {n:>4}x  {sig}");
             println!(
-                "          e.g. oracle={:?} ours={:?}",
-                ex.oracle_out, ex.ours_out
+                "          e.g. oracle={:?}/{:?}/{} ours={:?}/{:?}/{}",
+                ex.oracle_out,
+                ex.oracle_err,
+                ex.oracle_exit,
+                ex.ours_out,
+                ex.ours_err,
+                ex.ours_exit
             );
         }
 
@@ -3198,12 +3321,12 @@ fn main() {
             ));
             report.push_str(&format!("  prog  : {}\n", d.program.replace('\n', " ; ")));
             report.push_str(&format!(
-                "  oracle: exit_ok={} {:?}\n",
-                d.oracle_ok, d.oracle_out
+                "  oracle: exit={} out={:?} err={:?}\n",
+                d.oracle_exit, d.oracle_out, d.oracle_err
             ));
             report.push_str(&format!(
-                "  ours  : exit_ok={} {:?}\n\n",
-                d.ours_ok, d.ours_out
+                "  ours  : exit={} out={:?} err={:?}\n\n",
+                d.ours_exit, d.ours_out, d.ours_err
             ));
         }
         use std::io::Write;
