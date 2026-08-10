@@ -23,9 +23,9 @@
 //! invariant, and the `Barren` verdict exists because it does not hold: an arm
 //! can echo a value that is legitimately empty (`str_repeat($s, 0)`,
 //! `strpbrk()` returning false, an `array_filter` that keeps nothing, `!!0`,
-//! `$x = ""; $x ?? "d"`). Measured over a 62k run, 327 cases in SEVEN of the 54
-//! modes — unary, coalesce, strfns, str2, arr3, stredge, closures — with no mode
-//! above 8.3% of its own cases. All incidental; none is a mode whose programs
+//! `$x = ""; $x ?? "d"`). Measured over a 62k run, 248 cases in SEVEN of the 54
+//! modes — unary, coalesce, str2, strfns, stredge, arr3, closures — with no mode
+//! above 6.0% of its own cases. All incidental; none is a mode whose programs
 //! structurally lack an output construct. Wrapping those arms' values in a
 //! delimiter, the way `sprintf_rich` already does, would take the count to zero
 //! without weakening what they compare.
