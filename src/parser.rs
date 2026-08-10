@@ -114,6 +114,31 @@ fn is_incdec_target(e: &Expr) -> bool {
     )
 }
 
+/// Whether `e` may stand to the left of a `::` as a run-time class reference.
+///
+/// PHP's grammar allows only a *dereferenceable* expression there — a variable,
+/// an element, a member, a call result, a `new`. A bare number is a syntax
+/// error at the `::` itself (`1::K`), not a run-time "class name must be an
+/// object or a string", so the two must be told apart here rather than later.
+fn is_dyn_class_operand(e: &Expr) -> bool {
+    matches!(
+        e,
+        Expr::Var(_)
+            | Expr::Index(..)
+            | Expr::PropGet(..)
+            | Expr::NullsafePropGet(..)
+            | Expr::StaticProp(..)
+            | Expr::StaticGet(..)
+            | Expr::Call(..)
+            | Expr::CallValue(..)
+            | Expr::MethodCall(..)
+            | Expr::NullsafeMethodCall(..)
+            | Expr::StaticCall(..)
+            | Expr::New(..)
+            | Expr::NewAnon { .. }
+    )
+}
+
 /// Map a `(type)` cast keyword to the conversion function it desugars to.
 /// `(array)` and `(object)` have no PHP-callable equivalent, so they lower to
 /// the internal `__cast_array`/`__cast_object` builtins. `(unset)` was removed
@@ -418,7 +443,7 @@ impl Parser {
             _ if self.at_kw("class")
                 || self.at_kw("interface")
                 || self.at_kw("trait")
-                || ((self.at_kw("abstract") || self.at_kw("final"))
+                || ((self.at_kw("abstract") || self.at_kw("final") || self.at_kw("readonly"))
                     && matches!(self.toks.get(self.pos + 1).map(|s| &s.tok),
                         Some(Tok::Ident(s)) if s.eq_ignore_ascii_case("class"))) =>
             {
@@ -891,6 +916,7 @@ impl Parser {
                 // Skip a leading modifier/type-hint chain up to `...` or `$var`. A
                 // visibility/readonly keyword marks a promoted constructor property.
                 let mut promoted = false;
+                let mut readonly = false;
                 let mut by_ref = false;
                 loop {
                     if self.eat_punct("&") {
@@ -904,11 +930,13 @@ impl Parser {
                         break;
                     }
                     if let Some(Tok::Ident(kw)) = self.peek() {
-                        if matches!(
-                            kw.to_ascii_lowercase().as_str(),
-                            "public" | "private" | "protected" | "readonly"
-                        ) {
-                            promoted = true;
+                        match kw.to_ascii_lowercase().as_str() {
+                            "readonly" => {
+                                promoted = true;
+                                readonly = true;
+                            }
+                            "public" | "private" | "protected" => promoted = true,
+                            _ => {}
                         }
                         self.pos += 1;
                         continue;
@@ -929,6 +957,7 @@ impl Parser {
                     default,
                     variadic,
                     promoted,
+                    readonly,
                     by_ref,
                 });
                 // PHP 8.0+ allows a trailing comma in parameter lists too.
@@ -995,6 +1024,7 @@ impl Parser {
             default: None,
             variadic: true,
             promoted: false,
+            readonly: false,
             by_ref: false,
         };
         let body = Expr::Call(
@@ -1018,8 +1048,10 @@ impl Parser {
         // A leading `abstract` marks the class un-instantiable; `final` is accepted
         // and ignored.
         let is_abstract = self.at_kw("abstract");
+        // `readonly class C` (PHP 8.2) makes every declared property readonly.
+        let is_readonly_class = self.at_kw("readonly");
         if !self.at_kw("class") && !is_interface && !is_trait && !is_enum {
-            self.pos += 1; // abstract / final
+            self.pos += 1; // abstract / final / readonly
         }
         self.pos += 1; // class / interface / trait / enum
         let name = match self.next() {
@@ -1031,7 +1063,14 @@ impl Parser {
         if is_enum && self.eat_punct(":") {
             enum_backing = Some(self.expect_type_name()?);
         }
-        let decl = self.class_rest(name, is_interface, is_enum, is_abstract, enum_backing)?;
+        let decl = self.class_rest(
+            name,
+            is_interface,
+            is_enum,
+            is_abstract,
+            is_readonly_class,
+            enum_backing,
+        )?;
         Ok(StmtKind::Class(ClassDecl { attributes, ..decl }))
     }
 
@@ -1048,6 +1087,9 @@ impl Parser {
         is_interface: bool,
         is_enum: bool,
         is_abstract: bool,
+        // `readonly class` — every property the body declares is readonly,
+        // promoted constructor parameters included.
+        is_readonly_class: bool,
         enum_backing: Option<String>,
     ) -> Result<ClassDecl, String> {
         let mut parent = None;
@@ -1122,9 +1164,10 @@ impl Parser {
                 }
                 continue;
             }
-            // Member modifiers: `static` and the visibility keyword are captured;
-            // `abstract`/`final`/`readonly`/`var` are accepted and ignored.
+            // Member modifiers: `static`, the visibility keyword and `readonly`
+            // are captured; `abstract`/`final`/`var` are accepted and ignored.
             let mut is_static = false;
+            let mut readonly = is_readonly_class;
             let mut visibility = Visibility::Public;
             loop {
                 if self.eat_kw("static") {
@@ -1135,11 +1178,9 @@ impl Parser {
                     visibility = Visibility::Protected;
                 } else if self.eat_kw("private") {
                     visibility = Visibility::Private;
-                } else if self.at_kw("abstract")
-                    || self.at_kw("final")
-                    || self.at_kw("readonly")
-                    || self.at_kw("var")
-                {
+                } else if self.eat_kw("readonly") {
+                    readonly = true;
+                } else if self.at_kw("abstract") || self.at_kw("final") || self.at_kw("var") {
                     self.pos += 1;
                 } else {
                     break;
@@ -1201,6 +1242,7 @@ impl Parser {
                         default,
                         is_static,
                         visibility,
+                        readonly,
                     });
                     if !self.eat_punct(",") {
                         break;
@@ -1227,6 +1269,7 @@ impl Parser {
             trait_insteadof,
             trait_aliases,
             is_interface,
+            is_readonly: is_readonly_class,
             is_abstract,
             is_enum,
             enum_backing,
@@ -1545,7 +1588,15 @@ impl Parser {
         if self.eat_punct("--") {
             return self.incdec_prefix(false);
         }
-        let e = self.power()?;
+        // `clone $o` binds tighter than every operator, `**` included, so its
+        // operand is a postfix expression: `clone $a->b` clones the property.
+        // It is NOT a `return` — `clone $a instanceof C` tests the clone, so
+        // the `instanceof` below still has to see it.
+        let e = if self.eat_kw("clone") {
+            Expr::Clone(Box::new(self.postfix()?))
+        } else {
+            self.power()?
+        };
         // `$x instanceof ClassName` (bareword class, optionally `\`-qualified).
         if self.eat_kw("instanceof") {
             let cls = self.expect_type_name()?;
@@ -1626,11 +1677,14 @@ impl Parser {
                     e = Expr::NullsafePropGet(Box::new(e), member);
                 }
             } else if self.eat_punct("::") {
-                // Static / scope-resolution access: the left must be a class name
-                // — a bareword, which surfaces here as `Expr::ConstFetch` (or a
-                // legacy `Expr::Str`).
+                // Static / scope-resolution access. The left is either a class
+                // name known now — a bareword, which surfaces here as
+                // `Expr::ConstFetch` (or a string literal, which PHP resolves
+                // the same way) — or a dereferenceable expression whose value
+                // names the class at run time (`$cls::K`, `$obj::m()`).
                 let class = match e {
-                    Expr::ConstFetch(name) | Expr::Str(name) => name,
+                    Expr::ConstFetch(name) | Expr::Str(name) => ClassRef::Name(name),
+                    other if is_dyn_class_operand(&other) => ClassRef::Expr(Box::new(other)),
                     _ => {
                         return Err(format!(
                             "expected a class name before '::' (line {})",
@@ -1646,7 +1700,19 @@ impl Parser {
                 } else {
                     let member = self.member_name()?;
                     if self.eat_punct("(") {
-                        if let Some(fcc) = self.try_fcc(Expr::Str(format!("{class}::{member}")))? {
+                        // The first-class-callable form needs the callable as a
+                        // *value*: `"C::m"` when the class is known, and the
+                        // `[class, method]` array form when it is not — which is
+                        // what `call_user_func_array` accepts for both a
+                        // class-name string and an object.
+                        let callable = match &class {
+                            ClassRef::Name(c) => Expr::Str(format!("{c}::{member}")),
+                            ClassRef::Expr(ce) => Expr::Array(vec![
+                                (None, (**ce).clone()),
+                                (None, Expr::Str(member.clone())),
+                            ]),
+                        };
+                        if let Some(fcc) = self.try_fcc(callable)? {
                             e = fcc;
                         } else {
                             e = Expr::StaticCall(class, member, self.arg_list()?);
@@ -1740,8 +1806,14 @@ impl Parser {
                     } else {
                         Vec::new()
                     };
-                    let decl =
-                        self.class_rest("class@anonymous".to_string(), false, false, false, None)?;
+                    let decl = self.class_rest(
+                        "class@anonymous".to_string(),
+                        false,
+                        false,
+                        false,
+                        false,
+                        None,
+                    )?;
                     return Ok(Expr::NewAnon {
                         decl: Box::new(decl),
                         args,

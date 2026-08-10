@@ -543,3 +543,276 @@ fn an_anonymous_class_shows_only_the_head_of_its_name_in_a_message() {
          P@anonymous|Call to undefined method P@anonymous::nope()"
     );
 }
+
+// ── `$expr::` — the class named by a value rather than a bareword ───────────
+
+#[test]
+fn a_value_may_name_the_class_left_of_a_double_colon() {
+    // A string names the class (case-insensitively, as every class lookup is),
+    // and an object contributes its own — for constants, static methods and
+    // static properties alike.
+    let src = r#"<?php
+        class C {
+            const K = 7;
+            public static $sp = 5;
+            public static function m() { return "w"; }
+        }
+        $s = "c";
+        $o = new C();
+        $a = ["k" => "C"];
+        echo $s::K, $s::m(), $s::$sp, "|", $o::K, $o::m(), $o::$sp, "|", $a["k"]::K;
+        $s::$sp = 8;
+        $s::$sp++;
+        echo "|", C::$sp;"#;
+    assert_eq!(run(src), "7w5|7w5|7|9");
+}
+
+#[test]
+fn class_on_a_value_answers_only_for_an_object() {
+    // `::class` is NOT "resolve the class then name it": the class-name string
+    // every other `::` accepts is refused here, and the message names the value
+    // the way the reference does — `true`/`false`, not `bool`.
+    let src = r#"<?php
+        class MyThing {}
+        function why($v) {
+            try { return $v::class; } catch (Throwable $e) { return $e->getMessage(); }
+        }
+        echo (new MyThing())::class, "\n";
+        foreach (["C", 5, 1.5, true, false, null, []] as $v) { echo why($v), "\n"; }"#;
+    assert_eq!(
+        run(src),
+        "MyThing\n\
+         Cannot use \"::class\" on string\n\
+         Cannot use \"::class\" on int\n\
+         Cannot use \"::class\" on float\n\
+         Cannot use \"::class\" on true\n\
+         Cannot use \"::class\" on false\n\
+         Cannot use \"::class\" on null\n\
+         Cannot use \"::class\" on array\n"
+    );
+}
+
+#[test]
+fn a_double_colon_on_a_value_that_names_no_class_is_a_catchable_error() {
+    // Three distinct failures, and PHP tells them apart: a value that could
+    // never be a class, a string naming a class that does not exist, and a
+    // class that exists without the member.
+    let src = r#"<?php
+        class C { const A = 1; }
+        function why($src) {
+            try { return $src(); } catch (Throwable $e) { return get_class($e) . ": " . $e->getMessage(); }
+        }
+        echo why(function() { $v = 5; return $v::A; }), "\n";
+        echo why(function() { $v = "NoSuch"; return $v::A; }), "\n";
+        echo why(function() { $v = "C"; return $v::NOPE; }), "\n";
+        echo why(function() { $v = "C"; return $v::$nope; }), "\n";
+        echo why(function() { $v = "NoSuch"; return $v::m(); }), "\n";
+        echo why(function() { return NoSuch::m(); }), "\n";"#;
+    assert_eq!(
+        run(src),
+        "Error: Class name must be a valid object or a string\n\
+         Error: Class \"NoSuch\" not found\n\
+         Error: Undefined constant C::NOPE\n\
+         Error: Access to undeclared static property C::$nope\n\
+         Error: Class \"NoSuch\" not found\n\
+         Error: Class \"NoSuch\" not found\n"
+    );
+}
+
+#[test]
+fn a_dynamic_class_reference_is_a_variable_an_arrow_fn_must_capture() {
+    // `$cls::K` reads `$cls`, so an arrow function that says it has to close
+    // over it — a walk that skips the class position silently produces null.
+    let src = r#"<?php
+        class C { const K = 7; public static function m($x) { return $x * 2; } }
+        $cls = "C";
+        $f = fn() => $cls::K;
+        $g = fn($n) => $cls::m($n);
+        echo $f(), "|", $g(21), "|", ($cls::m(...))(3);"#;
+    assert_eq!(run(src), "7|42|6");
+}
+
+// ── clone ───────────────────────────────────────────────────────────────────
+
+#[test]
+fn clone_copies_arrays_by_value_and_leaves_objects_shared() {
+    // PHP's clone is shallow in exactly one direction: an array property is a
+    // value and travels as a copy, an object property is a handle and stays
+    // shared with the original.
+    let src = r#"<?php
+        class Inner { public $v = 1; }
+        class Outer {
+            public $n = 29;
+            public $arr = [1, 2];
+            public $in;
+            public function __construct() { $this->in = new Inner(); }
+        }
+        $a = new Outer();
+        $b = clone $a;
+        $b->n = 30;
+        $b->arr[] = 3;
+        $b->in->v = 99;
+        echo $a->n, "|", count($a->arr), "|", $a->in->v, "|";
+        var_dump($a->in === $b->in, $a === $b);"#;
+    assert_eq!(run(src), "29|2|99|bool(true)\nbool(false)\n");
+}
+
+#[test]
+fn clone_runs_the_clone_hook_on_the_copy_only() {
+    // `__clone` runs with `$this` bound to the NEW object, so a hook that
+    // rewrites a property must leave the original untouched. `clone` also binds
+    // tighter than any operator, so it takes the postfix expression beside it.
+    let src = r#"<?php
+        class W { public $x = 1; public function __clone() { $this->x = 100; } }
+        class Holder { public $o; public function __construct() { $this->o = new W(); } }
+        $h = new Holder();
+        $c = clone $h->o;
+        echo $h->o->x, "|", $c->x, "|", (clone new W())->x, "|";
+        var_dump(clone $h->o instanceof W);"#;
+    assert_eq!(run(src), "1|100|100|bool(true)\n");
+}
+
+#[test]
+fn cloning_something_that_is_not_a_clonable_object_is_an_error() {
+    // A scalar or array never was an object; a live generator IS one but holds
+    // a suspended stack, and PHP refuses it by name rather than by type.
+    let src = r#"<?php
+        function gen() { yield 1; }
+        function why($v) {
+            try { $c = clone $v; return "ok"; }
+            catch (Throwable $e) { return get_class($e) . ": " . $e->getMessage(); }
+        }
+        foreach ([5, "s", null, []] as $v) { echo why($v), "\n"; }
+        echo why(gen()), "\n";"#;
+    assert_eq!(
+        run(src),
+        "TypeError: clone(): Argument #1 ($object) must be of type object, int given\n\
+         TypeError: clone(): Argument #1 ($object) must be of type object, string given\n\
+         TypeError: clone(): Argument #1 ($object) must be of type object, null given\n\
+         TypeError: clone(): Argument #1 ($object) must be of type object, array given\n\
+         Error: Trying to clone an uncloneable object of class Generator\n"
+    );
+}
+
+// ── readonly ────────────────────────────────────────────────────────────────
+
+#[test]
+fn a_readonly_property_takes_exactly_one_write() {
+    // Every later write is refused however it is spelled, and the class named
+    // is the one that DECLARED the property, not the one written through.
+    let src = r#"<?php
+        class C {
+            public readonly int $id;
+            public function __construct(int $i) { $this->id = $i; }
+            public function bump() { $this->id++; }
+            public function reinit() { $this->id = 99; }
+        }
+        class E extends C { public function set() { $this->id = 5; } }
+        $c = new C(9);
+        $e = new E(1);
+        function why(callable $f) {
+            try { $f(); return "ok"; } catch (Throwable $e) { return $e->getMessage(); }
+        }
+        echo why(function() use ($c) { $c->id = 10; }), "\n";
+        echo why(function() use ($c) { $c->id += 1; }), "\n";
+        echo why(fn() => $c->bump()), "\n";
+        echo why(fn() => $c->reinit()), "\n";
+        echo why(fn() => $e->set()), "\n";
+        echo $c->id, $e->id, "\n";"#;
+    assert_eq!(
+        run(src),
+        "Cannot modify readonly property C::$id\n\
+         Cannot modify readonly property C::$id\n\
+         Cannot modify readonly property C::$id\n\
+         Cannot modify readonly property C::$id\n\
+         Cannot modify readonly property C::$id\n\
+         91\n"
+    );
+}
+
+#[test]
+fn an_uninitialized_readonly_property_may_only_be_written_from_its_own_line() {
+    // The one write must come from the declaring class or a subclass — PHP 8.4
+    // gave the rule `protected(set)` shape, and the refusal names the scope the
+    // write came from.
+    let src = r#"<?php
+        class C { public readonly int $v; }
+        class Sub extends C { public function set() { $this->v = 3; } }
+        class Other { public function set(C $c) { $c->v = 4; } }
+        function why(callable $f) {
+            try { $f(); return "ok"; } catch (Throwable $e) { return $e->getMessage(); }
+        }
+        $s = new Sub();
+        echo why(fn() => $s->set()), "|", $s->v, "\n";
+        echo why(fn() => (new Other)->set(new C())), "\n";
+        echo why(function() { $c = new C(); $c->v = 5; }), "\n";"#;
+    assert_eq!(
+        run(src),
+        "ok|3\n\
+         Cannot modify protected(set) readonly property C::$v from scope Other\n\
+         Cannot modify protected(set) readonly property C::$v from global scope\n"
+    );
+}
+
+#[test]
+fn a_readonly_property_refuses_unset_and_modification_through_it() {
+    // Writing THROUGH the property is refused with its own wording: PHP will
+    // not hand out a modifiable reference into a readonly property at all.
+    let src = r#"<?php
+        class C {
+            public readonly array $tags;
+            public function __construct() { $this->tags = ["a"]; }
+        }
+        $c = new C();
+        function why(callable $f) {
+            try { $f(); return "ok"; } catch (Throwable $e) { return $e->getMessage(); }
+        }
+        echo why(function() use ($c) { $c->tags[] = "x"; }), "\n";
+        echo why(function() use ($c) { unset($c->tags); }), "\n";
+        echo count($c->tags), "\n";"#;
+    assert_eq!(
+        run(src),
+        "Cannot indirectly modify readonly property C::$tags\n\
+         Cannot unset readonly property C::$tags\n\
+         1\n"
+    );
+}
+
+#[test]
+fn readonly_reaches_promoted_parameters_readonly_classes_and_traits() {
+    // Three spellings of the same declaration, all of which have to register
+    // the property as readonly or the enforcement silently does not apply.
+    let src = r#"<?php
+        class P { public function __construct(public readonly int $a) {} }
+        readonly class R { public function __construct(public int $b) {} }
+        trait T { public readonly string $t; }
+        class U { use T; public function __construct() { $this->t = "z"; } }
+        function why(callable $f) {
+            try { $f(); return "ok"; } catch (Throwable $e) { return $e->getMessage(); }
+        }
+        echo why(function() { (new P(1))->a = 2; }), "\n";
+        echo why(function() { (new R(1))->b = 2; }), "\n";
+        echo why(function() { (new U())->t = "q"; }), "\n";"#;
+    assert_eq!(
+        run(src),
+        "Cannot modify readonly property P::$a\n\
+         Cannot modify readonly property R::$b\n\
+         Cannot modify readonly property U::$t\n"
+    );
+}
+
+#[test]
+fn the_clone_hook_is_the_one_place_a_readonly_property_reopens() {
+    // PHP 8.3 lets `__clone` give the copy a fresh identity; the reopening ends
+    // with the hook, so the copy is locked again on the way out.
+    let src = r#"<?php
+        class R {
+            public function __construct(public readonly int $id) {}
+            public function __clone(): void { $this->id = $this->id + 1; }
+        }
+        $r = new R(1);
+        $r2 = clone $r;
+        echo $r->id, $r2->id, "|";
+        try { $r2->id = 50; } catch (Throwable $e) { echo $e->getMessage(); }"#;
+    assert_eq!(run(src), "12|Cannot modify readonly property R::$id");
+}

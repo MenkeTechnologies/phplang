@@ -202,10 +202,17 @@ pub const CORPUS: &[Entry] = &[
         "list($a, $b) = [1, 2]; echo $a . $b;   // => 12",
     ),
     (
+        "clone",
+        "Keyword",
+        "clone $object",
+        "Duplicates an object: a new instance of the same class carrying a copy of the properties, then `__clone()` on the copy if the class defines one. The copy is shallow the way PHP means it — an array property is a value and travels as a copy, an object property is a handle and stays shared with the original. Binds tighter than every operator, so `clone $a->b` clones the property and `clone $a instanceof C` tests the clone. A non-object is `TypeError: clone(): Argument #1 ($object) must be of type object, int given`; a live generator holds a suspended stack and is refused with `Error: Trying to clone an uncloneable object of class Generator`.",
+        "class C { public $n = 1; } $a = new C; $b = clone $a; $b->n = 2; echo $a->n, $b->n;   // => 12",
+    ),
+    (
         "class",
         "Keyword",
-        "[abstract|final] class Name [extends Parent] [implements I, …] { members }",
-        "Declares a class: constants, properties, static properties, and methods. `abstract` marks the class un-instantiable; `final` is parsed and ignored.",
+        "[abstract|final|readonly] class Name [extends Parent] [implements I, …] { members }",
+        "Declares a class: constants, properties, static properties, and methods. `abstract` marks the class un-instantiable; `readonly` makes every property it declares readonly; `final` is parsed and ignored.",
         "class C { public $x = 1; } $o = new C; echo $o->x;   // => 1",
     ),
     (
@@ -288,9 +295,9 @@ pub const CORPUS: &[Entry] = &[
     (
         "readonly",
         "Keyword",
-        "readonly $prop;   function __construct(public readonly $x)",
-        "Accepted on a property declaration and on a promoted constructor parameter. DIVERGENCE: it is parsed and discarded — a readonly property can be reassigned freely.",
-        "class C { public readonly $x; function __construct() { $this->x = 1; $this->x = 2; } }\necho (new C)->x;   // => 2   (PHP 8: Error)",
+        "readonly $prop;   function __construct(public readonly $x)   readonly class C",
+        "Marks a property writable exactly once. Accepted on a property declaration, on a promoted constructor parameter, and on the class itself (`readonly class`, which applies it to every property the class declares, promoted parameters included); a trait's readonly property stays readonly in the class that uses it. The one write must come from the declaring class or a subclass, so an outside write to a still-uninitialized property is `Error: Cannot modify protected(set) readonly property C::$x from global scope` and every later write anywhere is `Error: Cannot modify readonly property C::$x`. Writing THROUGH the property (`$o->arr[] = 1`) is `Error: Cannot indirectly modify readonly property C::$arr` and `unset()` on an initialized one is `Error: Cannot unset readonly property C::$x`. `__clone` is the single reopening: it may rewrite the copy's readonly properties, which lock again when it returns.",
+        "class C { public readonly $x; function __construct() { $this->x = 1; } }\n$c = new C; try { $c->x = 2; } catch (Error $e) { echo $e->getMessage(); }\n// => Cannot modify readonly property C::$x",
     ),
     (
         "abstract",
@@ -640,9 +647,9 @@ pub const CORPUS: &[Entry] = &[
     (
         "::",
         "Operator",
-        "Class::CONST   Class::$staticProp   Class::method(args)   Class::class",
-        "Scope resolution: class constants, static properties, static and parent method calls, and the `::class` name literal. The left side must be a bareword class name — `self`, `parent`, and `static` included.",
-        "class A { const K = 1; static $s = 2; } echo A::K, A::$s, A::class;   // => 12A",
+        "Class::CONST   Class::$staticProp   Class::method(args)   Class::class   $cls::CONST",
+        "Scope resolution: class constants, static properties, static and parent method calls, and the `::class` name literal. The left side is either a bareword class name — `self`, `parent`, and `static` included — or a dereferenceable expression whose value names the class at run time: a string is the class name, an object contributes its own. A value that is neither is `Error: Class name must be a valid object or a string`, and a string naming nothing is `Error: Class \"X\" not found`. `::class` is stricter than the rest: it answers for an object only, and refuses even a class-name string with `TypeError: Cannot use \"::class\" on string`.",
+        "class A { const K = 1; static $s = 2; } $c = \"A\"; echo A::K, $c::$s, (new A)::class;   // => 12A",
     ),
     (
         "[]",

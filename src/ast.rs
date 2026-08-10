@@ -66,6 +66,43 @@ pub enum InterpPart {
     Expr(Box<Expr>),
 }
 
+/// What stands to the left of a `::`.
+///
+/// PHP accepts both a name known at compile time and a value computed at run
+/// time (`$cls::CONST`, `$obj::m()`, `$arr['k']::class`), and the two resolve
+/// very differently: a name may be the relative `self`/`parent`/`static`, while
+/// a value must turn out to be an object or a class-name string or the access
+/// is an `Error`.
+#[derive(Debug, Clone)]
+pub enum ClassRef {
+    /// A bareword class name, or one of `self` / `parent` / `static`. Also the
+    /// string-literal form `"C"::K`, which PHP resolves the same way.
+    Name(String),
+    /// `$expr::` — the class is whatever the expression yields at run time.
+    Expr(Box<Expr>),
+}
+
+impl ClassRef {
+    /// The compile-time name, when there is one. `None` for the dynamic form,
+    /// which nothing may resolve, forward or diagnose before it runs.
+    pub fn name(&self) -> Option<&str> {
+        match self {
+            ClassRef::Name(n) => Some(n),
+            ClassRef::Expr(_) => None,
+        }
+    }
+
+    /// The operand expression, when the class is computed. Every walk over an
+    /// expression tree has to descend through this — a `$cls::K` reads `$cls`
+    /// like any other use of it.
+    pub fn operand(&self) -> Option<&Expr> {
+        match self {
+            ClassRef::Name(_) => None,
+            ClassRef::Expr(e) => Some(e),
+        }
+    }
+}
+
 /// An expression.
 #[derive(Debug, Clone)]
 pub enum Expr {
@@ -159,13 +196,18 @@ pub enum Expr {
     /// argument list; the compiler binds it to the parameter of that name.
     NamedArg(String, Box<Expr>),
     /// `Class::CONST` / `Class::class` — class constant read (also `self::`/`parent::`).
-    StaticGet(String, String),
+    StaticGet(ClassRef, String),
     /// `Class::$prop` — static property access (`self::$n`, `C::$x`). A read, an
     /// assignment target, and an `++`/`--` target; storage is shared per declaring
     /// class, so all instances and scopes observe the same value.
-    StaticProp(String, String),
+    StaticProp(ClassRef, String),
     /// `Class::method(args)` — static / scope-resolution method call.
-    StaticCall(String, String, Vec<Expr>),
+    StaticCall(ClassRef, String, Vec<Expr>),
+    /// `clone $o` — a new instance of the same class carrying a copy of the
+    /// properties, then `__clone()` if the class defines one. The copy is
+    /// shallow in PHP's sense: a nested array is a value and is copied, a
+    /// nested object is a handle and stays shared.
+    Clone(Box<Expr>),
     /// Ternary `cond ? then : els`.
     Ternary(Box<Expr>, Box<Expr>, Box<Expr>),
     /// Short ternary / elvis `a ?: b` — `a` if truthy, else `b` (evaluates `a`
@@ -367,6 +409,9 @@ pub struct Param {
     pub default: Option<Expr>,
     pub variadic: bool,
     pub promoted: bool,
+    /// `readonly` on a promoted constructor parameter, which declares the
+    /// property readonly exactly as a `readonly` member declaration would.
+    pub readonly: bool,
     /// `&$x` — a by-reference parameter; the caller's variable is updated to the
     /// parameter's final value when the call returns.
     pub by_ref: bool,
@@ -389,6 +434,11 @@ pub struct PropDecl {
     pub default: Option<Expr>,
     pub is_static: bool,
     pub visibility: Visibility,
+    /// `readonly` — writable exactly once, from inside the declaring class or a
+    /// subclass, and never again. See [`PhpHost::readonly_write_error`].
+    ///
+    /// [`PhpHost::readonly_write_error`]: crate::host::PhpHost::readonly_write_error
+    pub readonly: bool,
 }
 
 /// A parsed class declaration. Single inheritance only; interfaces/traits are
@@ -410,6 +460,9 @@ pub struct ClassDecl {
     pub trait_aliases: Vec<TraitAlias>,
     /// Whether this is an `interface` (vs a `class`/`trait`).
     pub is_interface: bool,
+    /// `readonly class` (PHP 8.2) — every property the class declares is
+    /// readonly, promoted constructor parameters included.
+    pub is_readonly: bool,
     /// Whether the class is declared `abstract` (cannot be instantiated directly).
     pub is_abstract: bool,
     /// Whether this is an `enum` (PHP 8.1). An enum compiles like a class whose

@@ -12,7 +12,7 @@ use crate::ast::*;
 use crate::host::{self, ops, CatchClause, ClassDef, FuncDef, TryDef};
 use crate::lexer::CompileDiag;
 use fusevm::{Chunk, ChunkBuilder, Op, Value};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 /// Why a declaration the compiler could read cannot be LINKED, and in which of
 /// the reference's two shapes it says so.
@@ -874,6 +874,7 @@ impl Compiler {
         let mut static_prop_defaults: Vec<(String, Chunk)> = Vec::new();
         let mut methods: FxHashMap<String, FuncDef> = FxHashMap::default();
         let mut prop_vis: FxHashMap<String, Visibility> = FxHashMap::default();
+        let mut readonly_props: FxHashSet<String> = FxHashSet::default();
         let mut method_vis: FxHashMap<String, Visibility> = FxHashMap::default();
         let mut order: Vec<String> = Vec::new();
         match self.seed_from_traits(
@@ -883,6 +884,7 @@ impl Compiler {
             &mut static_prop_defaults,
             &mut methods,
             &mut prop_vis,
+            &mut readonly_props,
             &mut method_vis,
             &mut order,
         ) {
@@ -926,6 +928,11 @@ impl Compiler {
         for prop in &decl.props {
             let name = &prop.name;
             prop_vis.insert(name.clone(), prop.visibility);
+            // A static property cannot be readonly (PHP rejects the pair at
+            // compile time), so only instance declarations register one.
+            if prop.readonly && !prop.is_static {
+                readonly_props.insert(name.clone());
+            }
             let mut pb = ChunkBuilder::new();
             match &prop.default {
                 Some(e) => self.compile_expr(&mut pb, e)?,
@@ -962,6 +969,9 @@ impl Compiler {
                     // it, and none is enforced on properties reached this way, so
                     // the declaration is recorded as public.
                     prop_vis.insert(p.name.clone(), Visibility::Public);
+                    if p.readonly || decl.is_readonly {
+                        readonly_props.insert(p.name.clone());
+                    }
                     let assign = Expr::Assign(
                         Box::new(Expr::PropGet(
                             Box::new(Expr::Var("this".to_string())),
@@ -1016,6 +1026,7 @@ impl Compiler {
                 static_prop_defaults,
                 methods,
                 prop_vis,
+                readonly_props,
                 method_vis,
                 is_enum: decl.is_enum,
                 is_abstract: decl.is_abstract,
@@ -1053,6 +1064,7 @@ impl Compiler {
         static_prop_defaults: &mut Vec<(String, Chunk)>,
         methods: &mut FxHashMap<String, FuncDef>,
         prop_vis: &mut FxHashMap<String, Visibility>,
+        readonly_props: &mut FxHashSet<String>,
         method_vis: &mut FxHashMap<String, Visibility>,
         order: &mut Vec<String>,
     ) -> Result<(), LinkError> {
@@ -1096,6 +1108,9 @@ impl Compiler {
             for (n, v) in &tdef.prop_vis {
                 prop_vis.insert(n.clone(), *v);
             }
+            // A property a trait declares readonly stays readonly in the class
+            // that uses it — the trait is where it was declared.
+            readonly_props.extend(tdef.readonly_props.iter().cloned());
         }
 
         // `A::m insteadof B` drops B's `m` from consideration; A's is not
@@ -1288,12 +1303,26 @@ impl Compiler {
         Ok(())
     }
 
+    /// Push the class a `::` names. The dynamic form is knowable only at run
+    /// time, so the expression is compiled and `DYN_CLASS` turns its value into
+    /// a class name at the point of use.
+    fn emit_class_ref(&mut self, b: &mut ChunkBuilder, class: &ClassRef) -> Result<(), String> {
+        match class {
+            ClassRef::Name(n) => self.emit_class_name(b, n),
+            ClassRef::Expr(e) => {
+                self.compile_expr(b, e)?;
+                b.emit(Op::CallBuiltin(ops::DYN_CLASS, 1), self.cur_line);
+                Ok(())
+            }
+        }
+    }
+
     /// Emit the forwarding marker for a `self::` / `parent::` / `static::` call,
     /// which keeps the caller's late-static-binding class rather than replacing
     /// it with the class the call names. Naming a class explicitly does not
     /// forward, so nothing is emitted for it.
-    fn emit_lsb_forward(&mut self, b: &mut ChunkBuilder, class: &str) {
-        let lower = class.to_ascii_lowercase();
+    fn emit_lsb_forward(&mut self, b: &mut ChunkBuilder, class: &ClassRef) {
+        let lower = class.name().unwrap_or_default().to_ascii_lowercase();
         if matches!(lower.as_str(), "self" | "parent" | "static") {
             b.emit(Op::CallBuiltin(ops::LSB_FORWARD, 0), 0);
             b.emit(Op::Pop, 0);
@@ -1811,23 +1840,32 @@ impl Compiler {
                 // string, not a class constant — and `static::class` the one the
                 // running call was made on.
                 if name.eq_ignore_ascii_case("class") {
-                    self.emit_class_name(b, class)?;
+                    match class {
+                        // `$expr::class` is stricter than every other `::`: it
+                        // answers for an object and rejects a string, so it
+                        // cannot share `DYN_CLASS`.
+                        ClassRef::Expr(e) => {
+                            self.compile_expr(b, e)?;
+                            b.emit(Op::CallBuiltin(ops::DYN_CLASS_CONST, 1), self.cur_line);
+                        }
+                        ClassRef::Name(_) => self.emit_class_ref(b, class)?,
+                    }
                 } else {
-                    self.emit_class_name(b, class)?;
+                    self.emit_class_ref(b, class)?;
                     let nidx = b.add_constant(Value::str(name.clone()));
                     b.emit(Op::LoadConst(nidx), 0);
                     b.emit(Op::CallBuiltin(ops::SCONST, 2), 0);
                 }
             }
             Expr::StaticProp(class, name) => {
-                self.emit_class_name(b, class)?;
+                self.emit_class_ref(b, class)?;
                 let nidx = b.add_constant(Value::str(name.clone()));
                 b.emit(Op::LoadConst(nidx), 0);
                 b.emit(Op::CallBuiltin(ops::SPROP_GET, 2), 0);
             }
             Expr::StaticCall(class, name, args) if has_named(args) => {
                 self.emit_lsb_forward(b, class);
-                self.emit_class_name(b, class)?;
+                self.emit_class_ref(b, class)?;
                 let nidx = b.add_constant(Value::str(name.clone()));
                 b.emit(Op::LoadConst(nidx), 0);
                 self.compile_arg_pairs(b, args)?;
@@ -1838,7 +1876,7 @@ impl Compiler {
             }
             Expr::StaticCall(class, name, args) => {
                 self.emit_lsb_forward(b, class);
-                self.emit_class_name(b, class)?;
+                self.emit_class_ref(b, class)?;
                 let nidx = b.add_constant(Value::str(name.clone()));
                 b.emit(Op::LoadConst(nidx), 0);
                 for a in args {
@@ -1947,6 +1985,10 @@ impl Compiler {
                 b.patch_jump(jend, end);
             }
             Expr::Match { subj, arms } => self.compile_match(b, subj, arms)?,
+            Expr::Clone(inner) => {
+                self.compile_expr(b, inner)?;
+                b.emit(Op::CallBuiltin(ops::CLONE, 1), self.cur_line);
+            }
             Expr::Throw(inner) => {
                 // Evaluate the exception object, record it as pending, and unwind
                 // the current chunk. As an expression it produces no value, but
@@ -2551,7 +2593,7 @@ impl Compiler {
             }
             Expr::StaticProp(class, name) => {
                 // `Class::$p = rhs` and its compound form `Class::$p op= rhs`.
-                self.emit_class_name(b, class)?;
+                self.emit_class_ref(b, class)?;
                 let nidx = b.add_constant(Value::str(name.clone()));
                 b.emit(Op::LoadConst(nidx), 0);
                 match op {
@@ -2856,7 +2898,7 @@ impl Compiler {
             }
             Expr::StaticProp(class, name) => {
                 // `Class::$p++` — read-modify-write a static property.
-                self.emit_class_name(b, class)?;
+                self.emit_class_ref(b, class)?;
                 let nidx = b.add_constant(Value::str(name.clone()));
                 b.emit(Op::LoadConst(nidx), 0);
                 b.emit(Op::LoadInt(code), 0);
@@ -3129,7 +3171,15 @@ fn collect_free_vars(e: &Expr, out: &mut Vec<String>) {
         }
         // Only the CONSTRUCTOR arguments of an anonymous class are in the
         // enclosing scope; its body is a class body, which never reads one.
-        Expr::New(_, args) | Expr::StaticCall(_, _, args) | Expr::NewAnon { args, .. } => {
+        Expr::New(_, args) | Expr::NewAnon { args, .. } => {
+            for a in args {
+                collect_free_vars(a, out);
+            }
+        }
+        Expr::StaticCall(class, _, args) => {
+            if let ClassRef::Expr(c) = class {
+                collect_free_vars(c, out);
+            }
             for a in args {
                 collect_free_vars(a, out);
             }
@@ -3142,8 +3192,14 @@ fn collect_free_vars(e: &Expr, out: &mut Vec<String>) {
             }
         }
         Expr::NamedArg(_, v) => collect_free_vars(v, out),
-        Expr::StaticGet(_, _) | Expr::StaticProp(_, _) => {}
-        Expr::Throw(inner) => collect_free_vars(inner, out),
+        // A bareword class holds no variable, but `$cls::K` does — and an arrow
+        // fn that says it must capture `$cls` along with everything else.
+        Expr::StaticGet(class, _) | Expr::StaticProp(class, _) => {
+            if let ClassRef::Expr(c) = class {
+                collect_free_vars(c, out);
+            }
+        }
+        Expr::Throw(inner) | Expr::Clone(inner) => collect_free_vars(inner, out),
         Expr::ConstFetch(_) => {}
         Expr::Unset(targets) => {
             for t in targets {
@@ -3240,6 +3296,7 @@ fn expr_has_yield(e: &Expr) -> bool {
         | Expr::PropGet(a, _)
         | Expr::NullsafePropGet(a, _)
         | Expr::Throw(a)
+        | Expr::Clone(a)
         | Expr::InstanceOf(a, _)
         | Expr::NamedArg(_, a) => expr_has_yield(a),
         Expr::Binary(_, a, b)
@@ -3249,10 +3306,15 @@ fn expr_has_yield(e: &Expr) -> bool {
         Expr::Assign(a, _, b) => expr_has_yield(a) || expr_has_yield(b),
         Expr::Ternary(a, c, d) => expr_has_yield(a) || expr_has_yield(c) || expr_has_yield(d),
         Expr::IncDec { target, .. } => expr_has_yield(target),
-        Expr::Call(_, args)
-        | Expr::New(_, args)
-        | Expr::StaticCall(_, _, args)
-        | Expr::NewAnon { args, .. } => args.iter().any(expr_has_yield),
+        Expr::Call(_, args) | Expr::New(_, args) | Expr::NewAnon { args, .. } => {
+            args.iter().any(expr_has_yield)
+        }
+        Expr::StaticCall(class, _, args) => {
+            class.operand().is_some_and(expr_has_yield) || args.iter().any(expr_has_yield)
+        }
+        Expr::StaticGet(class, _) | Expr::StaticProp(class, _) => {
+            class.operand().is_some_and(expr_has_yield)
+        }
         Expr::CallValue(c, args) => expr_has_yield(c) || args.iter().any(expr_has_yield),
         Expr::MethodCall(r, _, args) | Expr::NullsafeMethodCall(r, _, args) => {
             expr_has_yield(r) || args.iter().any(expr_has_yield)

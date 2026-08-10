@@ -114,6 +114,19 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
     Some(Ok(v))
 }
 
+/// How an error message names a *value* (PHP's `zend_zval_value_name`), which
+/// is not how [`debug_type`] names its type: a bool is reported as the literal
+/// `true` / `false` it is, not as `bool`.
+///
+/// `Cannot use "::class" on true` is the wording this exists for.
+pub fn value_name(h: &crate::host::PhpHost, v: &Value) -> String {
+    match v {
+        Value::Bool(true) => "true".to_string(),
+        Value::Bool(false) => "false".to_string(),
+        _ => debug_type(h, v),
+    }
+}
+
 /// `get_debug_type` name for a value.
 pub fn debug_type(h: &crate::host::PhpHost, v: &Value) -> String {
     match v {

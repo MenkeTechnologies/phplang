@@ -221,6 +221,22 @@ pub mod ops {
     /// declaration is printed, and only then does the fatal land. Emitting it
     /// where the declaration stood reproduces that ordering exactly.
     pub const DECL_FATAL: u16 = 107;
+
+    /// `[value] -> class-name`. The left of a `::` when it is an expression
+    /// rather than a bareword (`$cls::K`, `$obj::m()`): an object resolves to
+    /// its class, a string is already a class name, and anything else is an
+    /// `Error` — PHP does not coerce here.
+    pub const DYN_CLASS: u16 = 108;
+
+    /// `[value] -> class-name`. `$expr::class`, which is NOT `DYN_CLASS`
+    /// followed by a read: PHP answers only for an object and rejects even the
+    /// class-name string that `DYN_CLASS` would happily accept.
+    pub const DYN_CLASS_CONST: u16 = 109;
+
+    /// `[object] -> object`. `clone $o`: a new instance of the same class with
+    /// the properties copied (arrays by value, handles shared), then `__clone`
+    /// if the class defines one.
+    pub const CLONE: u16 = 110;
 }
 
 /// Sub-ops for the by-reference array mutators lowered through `ops::ARR_MUT`
@@ -295,6 +311,11 @@ pub struct ClassDef {
     /// static), by property name. Consulted (walking the parent chain) to enforce
     /// `private`/`protected` on external access.
     pub prop_vis: FxHashMap<String, Visibility>,
+    /// Properties THIS class declares `readonly` (a promoted constructor
+    /// parameter counts as a declaration). Looked up along the parent chain, so
+    /// the class named in `Cannot modify readonly property C::$p` is the one
+    /// that declared it, not the one the write went through.
+    pub readonly_props: FxHashSet<String>,
     /// Declared visibility of methods declared in THIS class, by lowercased name.
     pub method_vis: FxHashMap<String, Visibility>,
     /// Whether this class is an `enum` (PHP 8.1).
@@ -520,6 +541,17 @@ pub struct PhpHost {
     /// that reached the regex compiler. Sticky — only another such call rewrites
     /// it, so `preg_last_error()` itself and `preg_quote()` leave it alone.
     preg_error: i64,
+    /// The object whose `__clone()` is currently running, if any. A `readonly`
+    /// property is writable exactly once, and PHP 8.3 reopens that one write
+    /// inside `__clone` so a copy can be given a fresh identity — the only
+    /// place a second write to an initialized readonly property is legal.
+    cloning: Option<u32>,
+    /// Per object, the readonly properties that have already taken their one
+    /// write. Kept beside the objects rather than in them because "written" is
+    /// not a property of the stored value — a readonly property holding null
+    /// may be initialized or may never have been assigned, and only these two
+    /// states tell the two refusal messages apart.
+    readonly_init: FxHashMap<u32, FxHashSet<String>>,
     /// Magic property accesses currently on the stack, as
     /// `(object handle, property, magic method)`. PHP does not re-enter a magic
     /// method for a property already being handled by it, which is what lets
@@ -760,6 +792,8 @@ impl PhpHost {
             error_reporting: errlevel::E_ALL,
             ini: default_ini(),
             preg_error: 0,
+            cloning: None,
+            readonly_init: FxHashMap::default(),
             magic_in_progress: Vec::new(),
             transient_objs: FxHashSet::default(),
         };
@@ -1849,6 +1883,47 @@ impl PhpHost {
         Value::Obj((self.objs.len() - 1) as u32)
     }
 
+    /// Duplicate the object `v` refers to, giving a NEW handle over the same
+    /// state — the storage half of `clone $o`, without the `__clone` hook.
+    ///
+    /// Each property goes through [`PhpHost::copy_on_assign`], which is exactly
+    /// PHP's rule for what a clone shares: an array property is a value and is
+    /// copied, an object property is a handle and stays shared with the
+    /// original. A closure is duplicated whole (its captures were already
+    /// copied when it was built).
+    ///
+    /// `None` for anything that is not a clonable object — an array, a
+    /// generator, or a scalar — so the caller can raise the right error, which
+    /// differs between the three.
+    pub fn clone_obj(&mut self, v: &Value) -> Option<Value> {
+        let Value::Obj(id) = v else { return None };
+        match self.objs.get(*id as usize)? {
+            PhpObj::Object { class, props } => {
+                let class = class.clone();
+                let pairs: Vec<(String, Value)> =
+                    props.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                let props: IndexMap<String, Value> = pairs
+                    .into_iter()
+                    .map(|(k, v)| (k, self.copy_on_assign(v)))
+                    .collect();
+                self.objs.push(PhpObj::Object { class, props });
+                let copy = (self.objs.len() - 1) as u32;
+                // The copy inherits which readonly properties are already
+                // written: it carries their values, so they are initialized.
+                if let Some(init) = self.readonly_init.get(id).cloned() {
+                    self.readonly_init.insert(copy, init);
+                }
+                Some(Value::Obj(copy))
+            }
+            dup @ PhpObj::Closure { .. } => {
+                let dup = dup.clone();
+                self.objs.push(dup);
+                Some(Value::Obj((self.objs.len() - 1) as u32))
+            }
+            _ => None,
+        }
+    }
+
     // ── closures ───────────────────────────────────────────────────────────
 
     /// Build a closure object from a compiler-registered function definition
@@ -2486,6 +2561,133 @@ impl PhpHost {
     fn current_class_ctx(&self) -> Option<String> {
         let name = self.scopes.last()?.name.as_ref()?;
         name.rsplit_once("::").map(|(cls, _)| cls.to_string())
+    }
+
+    /// The class (lowercased) that declared `name` `readonly`, walking up from
+    /// `class`. `None` when the property is not readonly anywhere in the chain,
+    /// which is the overwhelmingly common case and the only one that costs
+    /// nothing on the write path.
+    fn readonly_owner(&self, class: &str, name: &str) -> Option<String> {
+        let mut cur = Some(class.to_ascii_lowercase());
+        while let Some(c) = cur {
+            let def = self.classes.get(&c)?;
+            if def.readonly_props.contains(name) {
+                return Some(c);
+            }
+            cur = def.parent.as_ref().map(|p| p.to_ascii_lowercase());
+        }
+        None
+    }
+
+    /// Why a write to `$recv->name` is refused, or `None` when it is allowed.
+    ///
+    /// A readonly property takes exactly one write, and PHP 8.4 gave the rule
+    /// its `protected(set)` shape: the initializing write must come from the
+    /// declaring class or a subclass, and every later write is refused from
+    /// everywhere. `__clone` is the one documented reopening — a copy is
+    /// allowed to be given a fresh identity — so a write there always passes.
+    ///
+    /// The two refusals have different messages, and which one applies turns on
+    /// whether the property was ever initialized, not on its current value: a
+    /// readonly property explicitly set to null is initialized.
+    pub fn readonly_write_error(&self, recv: &Value, name: &str) -> Option<String> {
+        let Some(PhpObj::Object { class, .. }) = self.as_array(recv) else {
+            return None;
+        };
+        let owner = self.readonly_owner(class, name)?;
+        if let (Value::Obj(id), Some(c)) = (recv, self.cloning) {
+            if *id == c {
+                return None;
+            }
+        }
+        let display = self.class_display_name(&owner);
+        if self.readonly_is_init(recv, name) {
+            return Some(format!(
+                "Cannot modify readonly property {display}::${name}"
+            ));
+        }
+        let scope = self.current_class_ctx();
+        if scope
+            .as_deref()
+            .is_some_and(|s| self.class_is_a(&s.to_ascii_lowercase(), &owner))
+        {
+            return None;
+        }
+        let from = match &scope {
+            Some(s) => format!("scope {}", self.class_display_name(&s.to_ascii_lowercase())),
+            None => "global scope".to_string(),
+        };
+        Some(format!(
+            "Cannot modify protected(set) readonly property {display}::${name} from {from}"
+        ))
+    }
+
+    /// Why `unset($recv->name)` is refused, or `None`. PHP allows unsetting a
+    /// readonly property that was never initialized (it is still uninitialized
+    /// afterwards) and refuses it once it holds a value.
+    pub fn readonly_unset_error(&self, recv: &Value, name: &str) -> Option<String> {
+        let Some(PhpObj::Object { class, .. }) = self.as_array(recv) else {
+            return None;
+        };
+        let owner = self.readonly_owner(class, name)?;
+        self.readonly_is_init(recv, name).then(|| {
+            let display = self.class_display_name(&owner);
+            format!("Cannot unset readonly property {display}::${name}")
+        })
+    }
+
+    /// Why `$recv->name[…] = …` (or any other write *through* the property) is
+    /// refused, or `None`. PHP will not hand out a modifiable reference to a
+    /// readonly property at all, initialized or not, and says so in its own
+    /// wording rather than the plain "cannot modify".
+    pub fn readonly_indirect_error(&self, recv: &Value, name: &str) -> Option<String> {
+        let Some(PhpObj::Object { class, .. }) = self.as_array(recv) else {
+            return None;
+        };
+        if let (Value::Obj(id), Some(c)) = (recv, self.cloning) {
+            if *id == c {
+                return None;
+            }
+        }
+        let owner = self.readonly_owner(class, name)?;
+        // The initializing write inside the declaring scope goes through the
+        // ordinary path; only a write to an already-set property is "indirect"
+        // in the sense the message means.
+        if !self.readonly_is_init(recv, name) {
+            return None;
+        }
+        let display = self.class_display_name(&owner);
+        Some(format!(
+            "Cannot indirectly modify readonly property {display}::${name}"
+        ))
+    }
+
+    /// Whether this object's readonly property `name` has taken its one write.
+    ///
+    /// Tracked explicitly rather than inferred from the stored value, because
+    /// null is a perfectly good value for an initialized readonly property and
+    /// is indistinguishable from "never written" in the property table.
+    fn readonly_is_init(&self, recv: &Value, name: &str) -> bool {
+        let Value::Obj(id) = recv else { return false };
+        self.readonly_init
+            .get(id)
+            .is_some_and(|set| set.contains(name))
+    }
+
+    /// Record that `$recv->name` has taken its one readonly write. Called after
+    /// the write, by the same opcode handlers that asked permission for it.
+    pub fn readonly_note_init(&mut self, recv: &Value, name: &str) {
+        let Value::Obj(id) = recv else { return };
+        let Some(PhpObj::Object { class, .. }) = self.as_array(recv) else {
+            return;
+        };
+        if self.readonly_owner(class, name).is_none() {
+            return;
+        }
+        self.readonly_init
+            .entry(*id)
+            .or_default()
+            .insert(name.to_string());
     }
 
     /// Resolve the declared visibility of property `name` on `class`, walking the
@@ -5179,6 +5381,57 @@ pub fn call_method_named(
     )
 }
 
+/// Run `body` with `obj` marked as the object being cloned, so the readonly
+/// check knows to allow the one write PHP reopens inside `__clone`. Restores
+/// the previous marker even when the hook throws, because a `__clone` that
+/// throws must not leave the next write unguarded.
+fn in_clone_hook<T>(obj: &Value, body: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    let Value::Obj(id) = obj else { return body() };
+    let prev = with_host(|h| std::mem::replace(&mut h.cloning, Some(*id)));
+    let r = body();
+    with_host(|h| h.cloning = prev);
+    r
+}
+
+/// `clone $o` — duplicate the object, then run `__clone()` on the copy.
+///
+/// The hook runs on the NEW object with no arguments, and it may write
+/// properties the outside world can no longer touch (a `readonly` one included,
+/// which PHP allows precisely here so a clone can carry a fresh identity).
+pub fn clone_object(v: Value) -> Result<Value, String> {
+    let Some(copy) = with_host(|h| h.clone_obj(&v)) else {
+        // Not clonable. A live generator holds a suspended stack that cannot be
+        // duplicated and says so by name; everything else never was an object.
+        if with_host(|h| h.gen_id(&v).is_some()) {
+            return Err(crate::builtins::throws_bare(
+                "Error",
+                "Trying to clone an uncloneable object of class Generator",
+            ));
+        }
+        let t = with_host(|h| crate::stdlib::types::debug_type(h, &v));
+        return Err(crate::builtins::throws_bare(
+            "TypeError",
+            format!("clone(): Argument #1 ($object) must be of type object, {t} given"),
+        ));
+    };
+    if let Some(class) = with_host(|h| h.object_class(&copy)) {
+        if with_host(|h| {
+            h.resolve_method(&class.to_ascii_lowercase(), "__clone")
+                .is_some()
+        }) {
+            in_clone_hook(&copy, || {
+                call_method(
+                    &class.to_ascii_lowercase(),
+                    "__clone",
+                    Some(copy.clone()),
+                    Vec::new(),
+                )
+            })?;
+        }
+    }
+    Ok(copy)
+}
+
 /// `Class::CONST` — evaluate the (inherited) constant initializer. On an `enum`, a
 /// name that is not a real constant is resolved as an enum case singleton.
 pub fn class_const(class: &str, name: &str) -> Result<Value, String> {
@@ -5188,7 +5441,25 @@ pub fn class_const(class: &str, name: &str) -> Result<Value, String> {
     if let Some(r) = enum_case(class, name) {
         return r;
     }
-    Err(format!("undefined constant {class}::{name}"))
+    // Both of these are catchable `Error`s in PHP, and which one it is depends
+    // on whether the class exists at all — a distinction `$cls::K` makes very
+    // visible, since the name only shows up at run time.
+    let (declared, display) = with_host(|h| {
+        (
+            h.class_exists(class),
+            h.class_display_name(&class.to_ascii_lowercase()),
+        )
+    });
+    if !declared {
+        return Err(crate::builtins::throws_bare(
+            "Error",
+            format!("Class \"{}\" not found", display_class(class)),
+        ));
+    }
+    Err(crate::builtins::throws_bare(
+        "Error",
+        format!("Undefined constant {display}::{name}"),
+    ))
 }
 
 /// Resolve `Enum::Case` to its singleton instance (built once, then cached so
@@ -5261,8 +5532,9 @@ pub fn enum_from(class: &str, needle: Value, is_try: bool) -> Result<Value, Stri
 /// is stored in the per-class static cell; subsequent reads return the cell.
 pub fn static_prop_get(class: &str, name: &str) -> Result<Value, String> {
     let Some((key, chunk)) = with_host(|h| h.resolve_static_key(class, name)) else {
-        return Err(format!(
-            "access to undeclared static property {class}::${name}"
+        return Err(crate::builtins::throws_bare(
+            "Error",
+            format!("Access to undeclared static property {class}::${name}"),
         ));
     };
     if let Some(v) = with_host(|h| h.get_static_stored(&key)) {
@@ -5276,8 +5548,9 @@ pub fn static_prop_get(class: &str, name: &str) -> Result<Value, String> {
 /// `Class::$prop = val` — write the per-class static cell, initializing lazily.
 pub fn static_prop_set(class: &str, name: &str, val: Value) -> Result<Value, String> {
     let Some((key, _)) = with_host(|h| h.resolve_static_key(class, name)) else {
-        return Err(format!(
-            "access to undeclared static property {class}::${name}"
+        return Err(crate::builtins::throws_bare(
+            "Error",
+            format!("Access to undeclared static property {class}::${name}"),
         ));
     };
     with_host(|h| h.set_static_stored(&key, val.clone()));

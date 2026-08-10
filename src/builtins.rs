@@ -66,6 +66,9 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::PROP_ISSET, b_prop_isset);
     vm.register_builtin(ops::INDEX_ISSET, b_index_isset);
     vm.register_builtin(ops::DECL_FATAL, b_decl_fatal);
+    vm.register_builtin(ops::DYN_CLASS, b_dyn_class);
+    vm.register_builtin(ops::DYN_CLASS_CONST, b_dyn_class_const);
+    vm.register_builtin(ops::CLONE, b_clone);
     vm.register_builtin(ops::PROP_GET_EMPTY, b_prop_get_empty);
     vm.register_builtin(ops::PROP_INCDEC, b_prop_incdec);
     vm.register_builtin(ops::SUPPRESS_PUSH, b_suppress_push);
@@ -339,7 +342,7 @@ fn b_sprop_get(vm: &mut VM, _: u8) -> Value {
     let class = pop_name(vm);
     match host::static_prop_get(&class, &name) {
         Ok(v) => v,
-        Err(e) => fail(vm, e),
+        Err(e) => fail_or_throw(vm, e),
     }
 }
 
@@ -350,7 +353,7 @@ fn b_sprop_set(vm: &mut VM, _: u8) -> Value {
     let class = pop_name(vm);
     match host::static_prop_set(&class, &name, val) {
         Ok(v) => v,
-        Err(e) => fail(vm, e),
+        Err(e) => fail_or_throw(vm, e),
     }
 }
 
@@ -364,7 +367,7 @@ fn b_sprop_incdec(vm: &mut VM, _: u8) -> Value {
     let prefix = code & 2 != 0;
     let old = match host::static_prop_get(&class, &name) {
         Ok(v) => v,
-        Err(e) => return fail(vm, e),
+        Err(e) => return fail_or_throw(vm, e),
     };
     mark_warn_site(vm);
     if incdec_refused(vm, &old, inc) {
@@ -372,7 +375,7 @@ fn b_sprop_incdec(vm: &mut VM, _: u8) -> Value {
     }
     let newv = with_host(|h| h.incdec_value(&old, inc));
     if let Err(e) = host::static_prop_set(&class, &name, newv.clone()) {
-        return fail(vm, e);
+        return fail_or_throw(vm, e);
     }
     if prefix {
         newv
@@ -528,6 +531,55 @@ fn b_instanceof(vm: &mut VM, _: u8) -> Value {
         Some(class) => h.is_a_class(&class, &target),
         None => false,
     }))
+}
+
+/// `$expr::` — resolve the value standing left of a `::` to a class name.
+///
+/// PHP accepts exactly two things here and coerces neither: an object, whose
+/// class is used, and a string, which already IS the class name (the lookups
+/// downstream are case-insensitive, so it is passed through as written).
+/// Everything else — int, float, bool, null, array — is an `Error`, raised
+/// before the member is even looked at.
+fn b_dyn_class(vm: &mut VM, _: u8) -> Value {
+    let v = vm.pop();
+    if let Value::Str(s) = &v {
+        return Value::str(s.to_string());
+    }
+    match with_host(|h| h.object_class(&v)) {
+        Some(class) => Value::str(class),
+        None => throw_php(vm, "Error", "Class name must be a valid object or a string"),
+    }
+}
+
+/// `$expr::class` — the class name of an OBJECT.
+///
+/// Deliberately not `b_dyn_class` plus a read: PHP refuses the class-name
+/// string that every other `::` accepts, because `::class` is documented to
+/// report the class of a value rather than to echo one back.
+fn b_dyn_class_const(vm: &mut VM, _: u8) -> Value {
+    let v = vm.pop();
+    match with_host(|h| h.object_class(&v).filter(|_| !h.is_array(&v))) {
+        Some(class) => Value::str(class),
+        None => {
+            let what = with_host(|h| crate::stdlib::types::value_name(h, &v));
+            throw_php(
+                vm,
+                "TypeError",
+                &format!("Cannot use \"::class\" on {what}"),
+            )
+        }
+    }
+}
+
+/// `clone $o` — see [`host::clone_object`]. The `__clone` hook runs PHP code,
+/// so a throw from inside it has to unwind this chunk like any other call.
+fn b_clone(vm: &mut VM, _: u8) -> Value {
+    let v = vm.pop();
+    mark_frame_line(vm);
+    match host::clone_object(v) {
+        Ok(copy) => bubbled(vm, copy),
+        Err(e) => fail_or_throw(vm, e),
+    }
 }
 
 /// Normalize a `foreach` subject to an iterable array (objects are iterated).
@@ -934,6 +986,22 @@ fn incdec_refused(vm: &mut VM, old: &Value, inc: bool) -> bool {
     true
 }
 
+/// Halt the chunk on an error a host helper returned: as the PHP exception it
+/// is tagged as (see [`throws_bare`]), or as a plain scaffold failure when it
+/// carries no tag.
+///
+/// A host helper cannot raise the exception itself — it has no VM to unwind —
+/// so it tags the message and the opcode handler that called it converts here.
+fn fail_or_throw(vm: &mut VM, e: String) -> Value {
+    match untag_bare_throw(&e) {
+        Some((class, message)) => {
+            let (class, message) = (class.to_string(), message.to_string());
+            throw_php(vm, &class, &message)
+        }
+        None => fail(vm, e),
+    }
+}
+
 /// Raise a catchable PHP exception from inside a builtin: construct `class` with
 /// `message` and record it as the pending throw, then unwind this chunk exactly
 /// as the `throw` builtin does, so an enclosing `try`/`catch` can handle it.
@@ -989,8 +1057,20 @@ fn static_method_plan(
     method: &str,
     this: &Option<Value>,
 ) -> Result<bool, Value> {
-    if class.eq_ignore_ascii_case("Closure") || !with_host(|h| h.class_exists(class)) {
+    // `Closure::bind`/`fromCallable` are synthesized — there is no `Closure`
+    // class to find — so they are let through before the existence check.
+    if class.eq_ignore_ascii_case("Closure") {
         return Ok(false);
+    }
+    // A call on a class that was never declared never reaches a method table:
+    // the class is what is missing, and PHP says so instead of naming a method
+    // that could not have existed either way.
+    if !with_host(|h| h.class_exists(class)) {
+        return Err(throw_php(
+            vm,
+            "Error",
+            &format!("Class \"{}\" not found", host::display_class(class)),
+        ));
     }
     if with_host(|h| h.is_enum_class(class))
         && matches!(
@@ -1641,7 +1721,10 @@ fn b_prop_set(vm: &mut VM, _: u8) -> Value {
     let name = pop_name(vm);
     let recv = vm.pop();
     match prop_plan!(vm, recv, name, "__set") {
-        PropAccess::Direct => {
+        PropAccess::Direct | PropAccess::Absent => {
+            if readonly_refused(vm, &recv, &name) {
+                return Value::Undef;
+            }
             mark_warn_site(vm);
             with_host(|h| h.prop_set_checked(&recv, &name, val.clone()));
             val
@@ -1656,10 +1739,24 @@ fn b_prop_set(vm: &mut VM, _: u8) -> Value {
             bubbled(vm, val)
         }
         PropAccess::Denied(msg) => throw_php(vm, "Error", &msg),
-        PropAccess::Absent => {
-            mark_warn_site(vm);
-            with_host(|h| h.prop_set_checked(&recv, &name, val.clone()));
-            val
+    }
+}
+
+/// Screen a source-level write to `$recv->name` against the readonly rule.
+///
+/// `true` means the chunk has been halted with the `Error` PHP raises and the
+/// caller must not write. `false` means the write may go ahead — and, for the
+/// one write a readonly property is allowed, that it has now been taken, which
+/// is why this must be called by the writer and not by a read path.
+fn readonly_refused(vm: &mut VM, recv: &Value, name: &str) -> bool {
+    match with_host(|h| h.readonly_write_error(recv, name)) {
+        Some(msg) => {
+            throw_php(vm, "Error", &msg);
+            true
+        }
+        None => {
+            with_host(|h| h.readonly_note_init(recv, name));
+            false
         }
     }
 }
@@ -1701,11 +1798,17 @@ fn b_prop_set_rw(vm: &mut VM, _: u8) -> Value {
         // Without `__get` that touch already announced it, and announcing it a
         // second time would print the deprecation twice.
         _ if has_get => {
+            if readonly_refused(vm, &recv, &name) {
+                return Value::Undef;
+            }
             mark_warn_site(vm);
             with_host(|h| h.prop_set_checked(&recv, &name, val.clone()));
             val
         }
         _ => {
+            if readonly_refused(vm, &recv, &name) {
+                return Value::Undef;
+            }
             with_host(|h| h.prop_set(&recv, &name, val.clone()));
             val
         }
@@ -1741,6 +1844,9 @@ fn b_prop_unset(vm: &mut VM, _: u8) -> Value {
     let recv = vm.pop();
     match prop_plan!(vm, recv, name, "__unset") {
         PropAccess::Direct => {
+            if let Some(msg) = with_host(|h| h.readonly_unset_error(&recv, &name)) {
+                return throw_php(vm, "Error", &msg);
+            }
             with_host(|h| h.prop_remove(&recv, &name));
             Value::Undef
         }
@@ -1781,6 +1887,12 @@ fn b_prop_ensure_array(vm: &mut VM, _: u8) -> Value {
     // A property out of reach still errors before anything is vivified; the
     // other outcomes all end in a write, which is what this op is for.
     if let PropAccess::Denied(msg) = prop_plan!(vm, recv, name, "__get") {
+        return throw_php(vm, "Error", &msg);
+    }
+    // `$o->tags[] = x` never writes the property itself, so it is not the
+    // readonly WRITE rule that stops it — PHP refuses to hand out a modifiable
+    // reference into a readonly property at all, with its own wording.
+    if let Some(msg) = with_host(|h| h.readonly_indirect_error(&recv, &name)) {
         return throw_php(vm, "Error", &msg);
     }
     mark_warn_site(vm);
@@ -1839,6 +1951,9 @@ fn b_prop_incdec(vm: &mut VM, _: u8) -> Value {
                     vec![Value::str(name.clone()), newv.clone()],
                 );
             } else {
+                if readonly_refused(vm, &recv, &name) {
+                    return Value::Undef;
+                }
                 mark_warn_site(vm);
                 with_host(|h| h.prop_set_checked(&recv, &name, newv.clone()));
             }
@@ -1853,6 +1968,9 @@ fn b_prop_incdec(vm: &mut VM, _: u8) -> Value {
                 h.prop_get_warn(&recv, &name)
             });
             if incdec_refused(vm, &old, inc) {
+                return Value::Undef;
+            }
+            if readonly_refused(vm, &recv, &name) {
                 return Value::Undef;
             }
             with_host(|h| {
@@ -1946,7 +2064,7 @@ fn b_sconst(vm: &mut VM, _: u8) -> Value {
     let class = pop_name(vm);
     match host::class_const(&class, &name) {
         Ok(v) => v,
-        Err(e) => fail(vm, e),
+        Err(e) => fail_or_throw(vm, e),
     }
 }
 
