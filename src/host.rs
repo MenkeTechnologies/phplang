@@ -1628,11 +1628,23 @@ impl PhpHost {
     /// interleaves with the program's own output exactly as the reference does),
     /// and `log_errors` puts a `PHP `-prefixed copy on stderr.
     /// Both copies are gated the way [`PhpHost::diagnose`]'s are, and by the same
-    /// two flags — a fatal is not exempt: `-d display_errors=0` leaves an
-    /// uncaught exception visible on stderr alone, and `-d log_errors=0` on
-    /// stdout alone. `fatal_reported` is set either way, since the run failed
-    /// whether or not anyone was told.
+    /// three gates — a fatal is not exempt from any of them. `error_reporting`
+    /// masks it by its own level (`E_ERROR` for a fatal, `E_PARSE` for a syntax
+    /// error), so `php -d error_reporting=0` runs an uncaught exception to
+    /// completion in silence; `-d display_errors=0` leaves it on stderr alone
+    /// and `-d log_errors=0` on stdout alone. `fatal_reported` is set through
+    /// every one of them, because the run failed whether or not anyone was told
+    /// and the process still has to exit 255.
     pub fn fatal(&mut self, severity: &str, body: &str) {
+        let level = if severity == "Parse error" {
+            errlevel::E_PARSE
+        } else {
+            errlevel::E_ERROR
+        };
+        if self.error_reporting & level == 0 {
+            self.fatal_reported = true;
+            return;
+        }
         if self.ini_flag("display_errors") {
             self.write_out(&format!("\n{severity}: {body}\n"));
         }

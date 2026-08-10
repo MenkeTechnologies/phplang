@@ -109,6 +109,26 @@ fn a_fatal_is_not_exempt_from_either_flag() {
     assert_eq!(code, 255);
 }
 
+#[test]
+fn error_reporting_masks_a_fatal_by_its_own_level() {
+    // A fatal carries E_ERROR and a syntax error carries E_PARSE, so clearing
+    // the mask silences BOTH copies of either — while the process still exits
+    // 255, because the run failed whether or not anyone was told.
+    //
+    // php -d error_reporting=0 -r 'throw new Exception("x");'   → no output, 255
+    // php -d error_reporting=0 -r 'echo 1+;'                    → no output, 255
+    for src in [FATAL_SRC, "echo 1+;", "undefined_fn();"] {
+        let (out, err, code) = run(&["-d", "error_reporting=0"], src);
+        assert_eq!(out, "", "stdout for {src:?}");
+        assert_eq!(err, "", "stderr for {src:?}");
+        assert_eq!(code, 255, "status for {src:?}");
+    }
+    // The runtime spelling reaches it too, not only the startup one.
+    let (out, _, code) = run(&[], r#"error_reporting(0); throw new Exception("y");"#);
+    assert_eq!(out, "");
+    assert_eq!(code, 255);
+}
+
 // ── trigger_error rides the same path ────────────────────────────────────────
 
 #[test]
