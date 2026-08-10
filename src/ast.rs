@@ -387,6 +387,16 @@ pub enum StmtKind {
     /// per-declaration slot whose value survives across calls; the optional
     /// initializer runs only on the first entry.
     StaticLocal(Vec<(String, Option<Expr>)>),
+    /// `const NAME = expr, NAME2 = expr2;` at statement level — the declaration
+    /// spelling of a global constant, as opposed to the `define()` call.
+    ///
+    /// It is NOT hoisted: the constant comes into being where the statement
+    /// stands, so a `defined()` earlier in the same script answers false. That
+    /// makes this a runtime statement rather than a load-time declaration, and
+    /// it is why the entries keep their source order.
+    ///
+    /// Distinct from [`ClassDecl::consts`], which is the class-body `const`.
+    ConstDecl(Vec<(String, Expr)>),
 }
 
 /// One `catch (T1 | T2 [$var]) { body }` clause. `types` is the union of caught

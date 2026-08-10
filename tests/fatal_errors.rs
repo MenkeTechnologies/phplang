@@ -406,3 +406,30 @@ fn a_library_argument_error_is_catchable_and_carries_its_own_site() {
         "DivisionByZeroError|Division by zero"
     );
 }
+
+#[test]
+fn a_const_declaration_outside_top_level_is_rejected_at_the_const() {
+    // `const` is a TOP-LEVEL statement in PHP's grammar. Inside a function body
+    // or any other block the reference reports the `const` token itself as
+    // unexpected, with no `expecting …` clause, so these are exact:
+    //   php -r 'if(true){ const A=1; }'      → unexpected token "const"
+    //   php -r 'function f(){ const A=1; }'  → unexpected token "const"
+    let want = r#"syntax error, unexpected token "const" in Command line code on line 1"#;
+    assert_eq!(parse_error("<?php if (true) { const A = 1; }"), want);
+    assert_eq!(parse_error("<?php function f() { const A = 1; }"), want);
+    assert_eq!(parse_error("<?php while (false) { const A = 1; }"), want);
+    assert_eq!(
+        parse_error("<?php foreach ([1] as $x) { const A = 1; }"),
+        want
+    );
+    assert_eq!(
+        parse_error("<?php try { const A = 1; } catch (Exception $e) {}"),
+        want
+    );
+    // The restriction is on PLACEMENT, not on the keyword: the same declaration
+    // parses at file scope, and `namespace Name { }` does not leave top level.
+    // (A class body's `const` is a different production entirely.)
+    assert!(phplang::parser::parse("<?php const A = 1;").is_ok());
+    assert!(phplang::parser::parse("<?php namespace N { const A = 1; }").is_ok());
+    assert!(phplang::parser::parse("<?php class K { const A = 1; }").is_ok());
+}

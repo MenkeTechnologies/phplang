@@ -69,6 +69,7 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::DYN_CLASS, b_dyn_class);
     vm.register_builtin(ops::DYN_CLASS_CONST, b_dyn_class_const);
     vm.register_builtin(ops::CLONE, b_clone);
+    vm.register_builtin(ops::CONST_DECL, b_const_decl);
     vm.register_builtin(ops::PROP_GET_EMPTY, b_prop_get_empty);
     vm.register_builtin(ops::PROP_INCDEC, b_prop_incdec);
     vm.register_builtin(ops::SUPPRESS_PUSH, b_suppress_push);
@@ -1400,6 +1401,23 @@ fn b_list_elem_get(vm: &mut VM, _: u8) -> Value {
     };
     mark_warn_site(vm);
     with_host(|h| h.warn(format_args!("Cannot use {ty} as array")));
+    Value::Undef
+}
+
+/// `const NAME = expr;` — see `ops::CONST_DECL`. The declaration writes the same
+/// table `define()` writes, and a redefinition warns there rather than here, so
+/// the two spellings cannot drift apart.
+fn b_const_decl(vm: &mut VM, _: u8) -> Value {
+    let value = vm.pop();
+    let name = pop_name(vm);
+    // A redefinition warns, and the warning carries a line — which has to be
+    // taken from the op before the write, since nothing else sets it on this
+    // path and it would otherwise report line 0.
+    let line = cur_op_line(vm);
+    with_host(|h| {
+        h.set_warn_line(line);
+        h.const_define(&name, value)
+    });
     Value::Undef
 }
 

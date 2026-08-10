@@ -165,6 +165,7 @@ pub fn parse(src: &str) -> Result<Vec<Stmt>, String> {
         toks,
         pos: 0,
         pending_attrs: Vec::new(),
+        top_level: true,
     };
     let mut stmts = Vec::new();
     while !p.at_end() {
@@ -189,6 +190,9 @@ fn resolve_interp_parts(parts: Vec<StrPart>) -> Result<Vec<InterpPart>, String> 
                     toks,
                     pos: 0,
                     pending_attrs: Vec::new(),
+                    // An interpolation is a bare expression, never a statement,
+                    // so no declaration can appear in it and the value is moot.
+                    top_level: false,
                 };
                 let e = inner.expression()?;
                 if !inner.at_punct(";") {
@@ -207,6 +211,15 @@ struct Parser {
     /// for the declaration that follows to claim them. Cleared by whoever takes
     /// them, so a `#[Attr] class A {} class B {}` cannot leak onto `B`.
     pending_attrs: Vec<String>,
+    /// Whether the statement about to be parsed sits at TOP level — file scope,
+    /// or directly inside a `namespace Name { }` body, which upstream's grammar
+    /// treats the same way. False anywhere inside a function body, an `if`, a
+    /// loop, or any other brace-delimited block.
+    ///
+    /// Only the `const` declaration reads this: it is a top-level statement
+    /// upstream, so `if (x) { const A = 1; }` is a syntax error there and must
+    /// be one here.
+    top_level: bool,
 }
 
 impl Parser {
@@ -407,6 +420,22 @@ impl Parser {
             }
             _ if self.at_kw("namespace") => self.namespace_stmt()?,
             _ if self.at_kw("use") => self.use_import_stmt()?,
+            // `const NAME = expr, ...;` — the declaration spelling of a global
+            // constant. Three productions in this file read a `const` token and
+            // they do not overlap: `use const` is consumed inside
+            // `use_import_stmt` (which eats `use` first), the class-body form is
+            // read by `class_body`, and this one is only ever reached with
+            // `const` at the head of a statement.
+            _ if self.at_kw("const") => {
+                // Top-level only, as upstream. Inside a function body or any
+                // other block the reference reports the `const` token itself as
+                // unexpected, so the error is raised here rather than by
+                // falling through to the expression parser.
+                if !self.top_level {
+                    return Err(self.syntax_error());
+                }
+                self.const_stmt()?
+            }
             _ if self.at_kw("if") => self.if_stmt()?,
             _ if self.at_kw("while") => self.while_stmt()?,
             _ if self.at_kw("do") => self.do_while_stmt()?,
@@ -498,12 +527,27 @@ impl Parser {
 
     /// A `{ ... }` block.
     fn block(&mut self) -> Result<Vec<Stmt>, String> {
+        self.braced_body(false)
+    }
+
+    /// A `namespace Name { ... }` body. It is the ONE brace-delimited block that
+    /// does not leave top level: a `const` declaration is as legal directly
+    /// inside it as it is at file scope.
+    fn namespace_block(&mut self) -> Result<Vec<Stmt>, String> {
+        self.braced_body(true)
+    }
+
+    fn braced_body(&mut self, top_level: bool) -> Result<Vec<Stmt>, String> {
+        let outer = self.top_level;
+        self.top_level = top_level;
         self.expect_punct("{")?;
         let mut body = Vec::new();
         while !self.at_punct("}") && !self.at_end() {
             body.push(self.statement()?);
         }
-        self.expect_punct("}")?;
+        let closed = self.expect_punct("}");
+        self.top_level = outer;
+        closed?;
         Ok(body)
     }
 
@@ -749,7 +793,7 @@ impl Parser {
             let _ = self.expect_type_name()?;
         }
         if self.at_punct("{") {
-            Ok(StmtKind::Block(self.block()?))
+            Ok(StmtKind::Block(self.namespace_block()?))
         } else {
             self.expect_punct(";")?;
             Ok(StmtKind::Block(Vec::new()))
@@ -774,6 +818,26 @@ impl Parser {
         }
         self.expect_punct(";")?;
         Ok(StmtKind::Block(Vec::new()))
+    }
+
+    /// `const NAME = expr[, NAME2 = expr2]*;` — a global constant declaration.
+    ///
+    /// The name is a BARE identifier, never a `$variable` and never qualified:
+    /// `const Foo\X = 1` is a syntax error upstream, because the declaration
+    /// takes its namespace from the enclosing `namespace`, not from the name.
+    fn const_stmt(&mut self) -> Result<StmtKind, String> {
+        self.pos += 1; // const
+        let mut decls = Vec::new();
+        loop {
+            let name = self.member_name()?;
+            self.expect_punct("=")?;
+            decls.push((name, self.expression()?));
+            if !self.eat_punct(",") {
+                break;
+            }
+        }
+        self.expect_punct(";")?;
+        Ok(StmtKind::ConstDecl(decls))
     }
 
     /// `try { body } catch (T1 | T2 [$e]) { ... } ... [finally { ... }]` — at

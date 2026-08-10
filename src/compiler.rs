@@ -324,6 +324,18 @@ impl Compiler {
                     b.emit(Op::Pop, line);
                 }
             }
+            StmtKind::ConstDecl(decls) => {
+                // In source order, and each value evaluated where it stands: a
+                // later entry may READ an earlier one (`const A = 1, B = A + 1;`),
+                // which only works if the earlier write has already happened.
+                for (name, value) in decls {
+                    let nidx = b.add_constant(Value::str(name.clone()));
+                    b.emit(Op::LoadConst(nidx), line);
+                    self.compile_expr(b, value)?;
+                    b.emit(Op::CallBuiltin(ops::CONST_DECL, 2), line);
+                    b.emit(Op::Pop, line);
+                }
+            }
             StmtKind::Return(e) => {
                 // Inside a `function &f()`, a `return` naming an lvalue publishes
                 // that storage cell (and still leaves its value, which is what a

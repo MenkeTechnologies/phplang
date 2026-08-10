@@ -258,7 +258,9 @@ end-to-end (see `tests/basic.rs`):
   elements, and the library functions whose parameters PHP declares as `string`.
 - Integer literals in every base (`0xFF` hex, `0755`/`0o17` octal, `0b101` binary,
   `1_000` separators); predefined constants (`PHP_INT_MAX`, `PHP_EOL`, `M_PI`, the
-  `SORT_*`/`FILTER_*`/`JSON_*`/… flag families) plus `define`/`defined`/`constant`;
+  `SORT_*`/`FILTER_*`/`JSON_*`/… flag families) plus `define`/`defined`/`constant`
+  and the `const NAME = expr, …;` declaration (top-level, as PHP's grammar has
+  it — a redefinition through either spelling warns and keeps the first value);
   and superglobals (`$_SERVER`, `$_ENV`, `$_GET`/`$_POST`/…, `$GLOBALS`, `$argv`/
   `$argc`) auto-global across every scope.
 - The `DateTime`/`DateTimeImmutable`/`DateInterval` classes and the SPL data

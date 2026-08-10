@@ -237,6 +237,14 @@ pub mod ops {
     /// the properties copied (arrays by value, handles shared), then `__clone`
     /// if the class defines one.
     pub const CLONE: u16 = 110;
+
+    /// `[name, value] -> Undef`. The `const NAME = expr;` declaration.
+    ///
+    /// An op rather than a compile-time table write because the declaration
+    /// takes effect WHERE IT STANDS: a `defined()` earlier in the script must
+    /// answer false, and a redefinition must warn at the point of the second
+    /// declaration. Both need the statement to run in source order.
+    pub const CONST_DECL: u16 = 111;
 }
 
 /// Sub-ops for the by-reference array mutators lowered through `ops::ARR_MUT`
@@ -902,10 +910,18 @@ impl PhpHost {
         self.constants.contains_key(name)
     }
 
-    /// `define(name, value)` — defines a constant, returning `true` unless it was
-    /// already defined (PHP does not redefine and returns `false`).
+    /// Defines a constant, returning `true` unless it was already defined — PHP
+    /// does not redefine, and the FIRST value is the one that survives.
+    ///
+    /// A redefinition is not silent: it warns. Both spellings that reach here
+    /// (`define()` and the `const` declaration) warn identically, which is why
+    /// the warning lives at this single write point rather than at either call
+    /// site.
     pub fn const_define(&mut self, name: &str, value: Value) -> bool {
         if self.constants.contains_key(name) {
+            self.warn(format!(
+                "Constant {name} already defined, this will be an error in PHP 9"
+            ));
             return false;
         }
         self.constants.insert(name.to_string(), value);
