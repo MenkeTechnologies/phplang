@@ -365,13 +365,31 @@ fn gen_strfns(seed: u64) -> Vec<String> {
 fn gen_arrays(seed: u64) -> Vec<String> {
     let r = &mut Rng::seed(seed);
     let arr = format!("[{}, {}, {}]", ii(r), ii(r), ii(r));
-    match r.below(6) {
+    match r.below(8) {
         0 => vec![format!("echo count({arr});")],
         1 => vec![format!("echo array_sum({arr});")],
         2 => vec![format!("echo implode(\",\", {arr});")],
         3 => vec![format!("echo implode(\",\", array_reverse({arr}));")],
         4 => vec![format!("echo in_array({}, {arr}) ? \"y\" : \"n\";", ii(r))],
-        _ => vec![format!("echo array_product({arr});")],
+        5 => vec![format!("echo array_product({arr});")],
+        // `count` with a MODE, on a subject that NESTS. `arr` above is three
+        // scalars, so COUNT_RECURSIVE and COUNT_NORMAL agree on it no matter
+        // how many cases run and the mode argument could be ignored entirely
+        // without any case noticing.
+        6 => vec![format!(
+            "$n = [{}, [{}, {}], [[{}]]]; \
+             echo count($n), '|', count($n, COUNT_RECURSIVE), '|', count($n, COUNT_NORMAL);",
+            ii(r),
+            ii(r),
+            ii(r),
+            ii(r)
+        )],
+        // An out-of-range mode, which is a ValueError rather than a fallback.
+        _ => vec![format!(
+            "try {{ echo count({arr}, {}); }} catch (Throwable $e) {{ \
+             echo get_class($e), '|', $e->getMessage(); }}",
+            r.pick(&["0", "1", "2", "99", "-1"])
+        )],
     }
 }
 
