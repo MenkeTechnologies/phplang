@@ -23,7 +23,10 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
     let v = match name {
         "time" => Value::int(Utc::now().timestamp()),
         "mktime" | "gmmktime" => php_mktime(args),
-        "date" | "gmdate" => php_date(args),
+        "date" => php_date(args, false),
+        // `T` is the ONE format character the two spellings disagree on: with the
+        // default timezone at UTC, `date('T')` is `UTC` and `gmdate('T')` is `GMT`.
+        "gmdate" => php_date(args, true),
         "checkdate" => php_checkdate(args),
         "microtime" => php_microtime(args),
         "strtotime" => php_strtotime(args),
@@ -82,18 +85,23 @@ fn now_ts() -> i64 {
 }
 
 /// `date`/`gmdate`: format a timestamp (default: now) with a PHP format string.
-fn php_date(args: &[Value]) -> Value {
+fn php_date(args: &[Value], gm: bool) -> Value {
     let fmt = str_arg(args, 0);
     let ts = if args.len() >= 2 {
         int_arg(args, 1)
     } else {
         now_ts()
     };
-    Value::str(format_php(&fmt, from_ts(ts)))
+    Value::str(format_php(&fmt, from_ts(ts), gm))
 }
 
 /// Render `dt` per PHP `date()` format characters. `\` escapes the next char.
-fn format_php(fmt: &str, dt: DateTime<Utc>) -> String {
+///
+/// Everything is UTC here (see the module header), which fixes every one of the
+/// timezone characters to a constant: offset `+0000`, DST off, and the zone
+/// named `UTC` — or `GMT` for `T` under `gmdate`, which is the only place the
+/// two spellings differ.
+fn format_php(fmt: &str, dt: DateTime<Utc>, gm: bool) -> String {
     let mut out = String::with_capacity(fmt.len() * 2);
     let mut chars = fmt.chars();
     let dow_sun = dt.weekday().num_days_from_sunday() as usize; // 0=Sun..6=Sat
@@ -160,10 +168,47 @@ fn format_php(fmt: &str, dt: DateTime<Utc>) -> String {
                 dt.minute(),
                 dt.second()
             )),
+            // ── timezone, all constant in a UTC-only engine ──────────────────
+            // The zone identifier and its abbreviation. `T` is the one place
+            // `date` and `gmdate` disagree: with the default timezone at UTC the
+            // first says `UTC` and the second says `GMT`.
+            'e' => out.push_str("UTC"),
+            'T' => out.push_str(if gm { "GMT" } else { "UTC" }),
+            'I' => out.push('0'),
+            'Z' => out.push('0'),
+            'O' => out.push_str("+0000"),
+            'P' => out.push_str("+00:00"),
+            // `p` is `P` with `Z` for a zero offset (PHP 8.0).
+            'p' => out.push('Z'),
+            // ── expanded years (PHP 8.2) ─────────────────────────────────────
+            // `X` always carries a sign; `x` carries one only outside 0000-9999.
+            // Both pad to at least four digits, so year -500 is `-0500` under
+            // either and year 12345 is `+12345`.
+            'X' => out.push_str(&expanded_year(dt.year(), true)),
+            'x' => out.push_str(&expanded_year(dt.year(), false)),
+            // Swatch Internet Time: the day divided into 1000 beats, counted
+            // from midnight in UTC+1, so it is a pure function of the timestamp.
+            'B' => {
+                let secs = (dt.timestamp() + 3600).rem_euclid(86_400);
+                out.push_str(&format!("{:03}", secs * 1000 / 86_400));
+            }
             other => out.push(other),
         }
     }
     out
+}
+
+/// PHP's `X`/`x` expanded year: at least four digits, signed always for `X` and
+/// only outside the four-digit range for `x`.
+fn expanded_year(year: i32, always_sign: bool) -> String {
+    let sign = if year < 0 {
+        "-"
+    } else if always_sign || year > 9999 {
+        "+"
+    } else {
+        ""
+    };
+    format!("{sign}{:04}", year.abs())
 }
 
 /// English ordinal suffix for a day-of-month (`1`→"st", `11`→"th", `22`→"nd").

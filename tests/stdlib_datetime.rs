@@ -290,3 +290,74 @@ fn getdate_components() {
     );
     assert_eq!(run(r#"<?php $g = getdate(0); echo $g[0];"#), "0");
 }
+
+// ── the timezone and expanded-year format characters ─────────────────────────
+//
+// Ten of `date()`'s format characters used to fall through to the "unknown
+// character, emit it verbatim" arm, so `date("T")` answered `"T"`. Nothing
+// caught it: every existing assertion in this file names a character that WAS
+// implemented, and an unimplemented one is silently its own name rather than an
+// error. Each expectation below is the verbatim output of the same call under
+// the reference `php` 8.5.9.
+
+#[test]
+fn timezone_format_characters_are_the_utc_constants() {
+    // php -r 'echo date("e|T|I|Z|O|P|p", 1234567890);'
+    assert_eq!(
+        run(r#"<?php echo date("e|T|I|Z|O|P|p", 1234567890);"#),
+        "UTC|UTC|0|0|+0000|+00:00|Z"
+    );
+}
+
+#[test]
+fn gmdate_names_the_zone_gmt_where_date_names_it_utc() {
+    // The single format character on which the two spellings disagree.
+    //
+    // php -r 'echo gmdate("T"), "|", date("T");'   →  GMT|UTC
+    assert_eq!(
+        run(r#"<?php echo gmdate("T", 0), "|", date("T", 0);"#),
+        "GMT|UTC"
+    );
+    // `e` agrees: both name the identifier, not the abbreviation.
+    assert_eq!(
+        run(r#"<?php echo gmdate("e", 0), "|", date("e", 0);"#),
+        "UTC|UTC"
+    );
+}
+
+#[test]
+fn expanded_year_signs_differ_between_x_and_lowercase_x() {
+    // `X` always carries a sign; `x` carries one only outside 0000-9999. Both
+    // pad to four digits. A test using only a modern year would pass with the
+    // two implemented identically, so the out-of-range years are the point.
+    //
+    // php -r 'echo date("X|x", mktime(0,0,0,1,1,2009));'      →  +2009|2009
+    // php -r 'echo date("X|x", mktime(0,0,0,1,1,-500));'      →  -0500|-0500
+    // php -r 'echo date("X|x", mktime(0,0,0,1,1,12345));'     →  +12345|+12345
+    assert_eq!(
+        run(r#"<?php echo date("X|x", mktime(0,0,0,1,1,2009));"#),
+        "+2009|2009"
+    );
+    assert_eq!(
+        run(r#"<?php echo date("X|x", mktime(0,0,0,1,1,-500));"#),
+        "-0500|-0500"
+    );
+    assert_eq!(
+        run(r#"<?php echo date("X|x", mktime(0,0,0,1,1,12345));"#),
+        "+12345|+12345"
+    );
+}
+
+#[test]
+fn swatch_internet_time_counts_beats_from_midnight_in_utc_plus_one() {
+    // 1000 beats a day, offset one hour ahead of UTC, so it wraps within the
+    // day rather than tracking it — 86399 and 0 give the same beat.
+    //
+    // php -r 'echo date("B",0), "|", date("B",43200), "|", date("B",1234567890), "|", date("B",1700000000);'
+    assert_eq!(
+        run(
+            r#"<?php echo date("B",0), "|", date("B",43200), "|", date("B",1234567890), "|", date("B",1700000000);"#
+        ),
+        "041|541|021|967"
+    );
+}
