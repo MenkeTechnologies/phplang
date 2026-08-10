@@ -22,6 +22,7 @@
 //! does not reset it; only `json_decode` writes it.
 
 use crate::host::PhpHost;
+use crate::stdlib::common::throws;
 use fusevm::Value;
 use std::cell::Cell;
 
@@ -69,8 +70,8 @@ fn error_msg(code: i64) -> &'static str {
 /// names this module does not implement so the stdlib chain can continue.
 pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
     let v = match name {
-        "json_decode" => json_decode(args),
-        "json_validate" => json_validate(args),
+        "json_decode" => return Some(json_decode(args)),
+        "json_validate" => return Some(json_validate(args)),
         "json_last_error" => Value::int(get_last_error()),
         "json_last_error_msg" => Value::str(error_msg(get_last_error()).to_string()),
         _ => return None,
@@ -78,20 +79,30 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
     Some(Ok(v))
 }
 
-/// Resolve the `$depth` argument at `idx` (default 512). PHP requires depth > 0
-/// (a ValueError otherwise); phplang has no stdlib exceptions, so a non-positive
-/// depth is clamped to 1 — the smallest max that admits a single container level.
-fn decode_depth(args: &[Value], idx: usize) -> usize {
+/// Resolve the `$depth` argument at `idx` (default 512), rejecting a
+/// non-positive one the way the reference does.
+///
+/// `$depth` counts the document's NESTING LEVELS, not its containers, so it is
+/// always one more than the number of `[`/`{` that may be open at once: `"[1]"`
+/// needs 2 and only a scalar document fits in 1. Clamping a bad depth to 1
+/// (which is what this used to do) therefore admitted exactly the documents PHP
+/// rejects at that depth.
+///
+/// `func`/`pos` name the caller in the message — `$depth` is argument #3 of
+/// `json_decode` but argument #2 of `json_validate`.
+fn decode_depth(args: &[Value], idx: usize, func: &str, pos: usize) -> Result<usize, String> {
     match args.get(idx) {
-        Some(v) => {
+        Some(v) if !matches!(v, Value::Undef) => {
             let d = crate::host::with_host(|h| h.to_number(v).to_int());
             if d < 1 {
-                1
-            } else {
-                d as usize
+                return Err(throws(
+                    "ValueError",
+                    format!("{func}(): Argument #{pos} ($depth) must be greater than 0"),
+                ));
             }
+            Ok(d as usize)
         }
-        None => 512,
+        _ => Ok(512),
     }
 }
 
@@ -100,13 +111,13 @@ fn decode_depth(args: &[Value], idx: usize) -> usize {
 /// LIMITATION: `$associative` is accepted but ignored — phplang has no
 /// `stdClass`, so JSON objects always decode to PHP arrays (as if
 /// `$associative = true`). `$flags` beyond depth handling are ignored.
-fn json_decode(args: &[Value]) -> Value {
+fn json_decode(args: &[Value]) -> Result<Value, String> {
     let json = crate::host::with_host(|h| h.to_str(&args.first().cloned().unwrap_or(Value::Undef)));
     // 3rd argument is depth; default 512 (see `decode_depth`).
-    let depth = decode_depth(args, 2);
+    let depth = decode_depth(args, 2, "json_decode", 3)?;
 
     set_last_error(JSON_ERROR_NONE);
-    crate::host::with_host(|h| {
+    Ok(crate::host::with_host(|h| {
         let mut p = Parser::new(json.as_bytes(), depth, h);
         match p.parse_document() {
             Ok(v) => v,
@@ -115,7 +126,7 @@ fn json_decode(args: &[Value]) -> Value {
                 Value::Undef
             }
         }
-    })
+    }))
 }
 
 /// `json_validate($json, $depth = 512, $flags = 0)` (PHP 8.3). Returns `true`
@@ -129,9 +140,9 @@ fn json_decode(args: &[Value]) -> Value {
 /// PHP validates without materializing the value; phplang runs the same parser
 /// in a non-building mode (`Parser::new_validate`) so no PHP array is allocated,
 /// matching that property while sharing the decoder's exact grammar.
-fn json_validate(args: &[Value]) -> Value {
+fn json_validate(args: &[Value]) -> Result<Value, String> {
     let json = crate::host::with_host(|h| h.to_str(&args.first().cloned().unwrap_or(Value::Undef)));
-    let depth = decode_depth(args, 1);
+    let depth = decode_depth(args, 1, "json_validate", 2)?;
 
     set_last_error(JSON_ERROR_NONE);
     let ok = crate::host::with_host(|h| {
@@ -144,7 +155,7 @@ fn json_validate(args: &[Value]) -> Value {
             }
         }
     });
-    Value::bool(ok)
+    Ok(Value::bool(ok))
 }
 
 // ── recursive-descent parser ────────────────────────────────────────────────
@@ -248,7 +259,12 @@ impl<'a, 'h> Parser<'a, 'h> {
 
     fn enter(&mut self) -> Result<(), i64> {
         // Matches ext/json PHP_JSON_DEPTH_INC: check before descending.
-        if self.depth >= self.max_depth {
+        //
+        // `max_depth` is PHP's `$depth`, which counts NESTING LEVELS — the
+        // scalar at the bottom is a level of its own. Opening a container costs
+        // the level it sits at plus the one its contents need, so the guard is
+        // `depth + 1`, not `depth`: at `$depth = 1` no container fits at all.
+        if self.depth + 1 >= self.max_depth {
             return Err(JSON_ERROR_DEPTH);
         }
         self.depth += 1;

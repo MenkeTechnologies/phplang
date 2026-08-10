@@ -111,6 +111,7 @@ class InvalidArgumentException extends LogicException {}
 class ArithmeticError extends Error {}
 class DivisionByZeroError extends ArithmeticError {}
 class TypeError extends Error {}
+class ArgumentCountError extends TypeError {}
 class ValueError extends Error {}
 class UnhandledMatchError extends Error {}
 "#;

@@ -3,14 +3,11 @@
 //! against PHP 8; the assertions here run headless without `php`. JSON objects
 //! decode to PHP arrays (associative always) rather than to `stdClass`.
 //!
-//! TWO assertions pin behaviour the reference does not share, both re-verified
-//! against `php 8.5.9`:
-//!
-//!   * `json_decode("[[1]]", true, -5)` sets error 1 here; the reference throws
-//!     `ValueError: json_decode(): Argument #3 ($depth) must be greater than 0`.
-//!     A non-positive `$depth` is rejected there, not merely exceeded.
-//!   * `json_validate("[1]", 1)` is true here and false in the reference: depth
-//!     1 admits only a scalar document, so even a one-element array exceeds it.
+//! Two `$depth` divergences used to be recorded here — a non-positive depth
+//! clamped to 1 instead of being rejected, and `json_validate("[1]", 1)`
+//! answering true. Both are closed: `$depth` counts nesting levels rather than
+//! containers, so it is one more than the number of brackets that may be open at
+//! once, and a non-positive one is a `ValueError`.
 
 use phplang::eval_capture;
 
@@ -153,36 +150,83 @@ fn decode_errors_set_last_error() {
     );
 }
 
+/// `$depth` counts NESTING LEVELS, not containers, so it is always one more than
+/// the number of brackets that may be open at once: at `$depth = 1` no container
+/// fits at all and only a scalar document decodes. An off-by-one here is
+/// invisible to any test that only checks a deeply-nested document against a
+/// large depth, which is why the boundary is walked one level at a time.
+///
+/// Re-verified against php 8.5.9.
 #[test]
 fn decode_depth_limit() {
-    // depth=1 allows a single container level.
+    // A scalar document is the only thing that fits in depth 1.
+    assert_eq!(
+        run(r#"<?php var_dump(json_decode("1", true, 1)); echo json_last_error();"#),
+        "int(1)\n0"
+    );
     assert_eq!(
         run(
             r#"<?php var_dump(json_decode("[1]", true, 1) === null ? 0 : 1); echo json_last_error();"#
         ),
-        "int(1)\n0"
+        "int(0)\n1"
     );
-    // A nested container at depth=1 exceeds the limit -> JSON_ERROR_DEPTH (1).
+    // One container needs 2, two need 3 — checked from both sides of each edge.
     assert_eq!(
-        run(r#"<?php json_decode("[[1]]", true, 1); echo json_last_error();"#),
+        run(r#"<?php var_dump(json_decode("[1]", true, 2)); echo json_last_error();"#),
+        "array(1) {\n  [0]=>\n  int(1)\n}\n0"
+    );
+    assert_eq!(
+        run(r#"<?php json_decode("[[1]]", true, 2); echo json_last_error();"#),
         "1"
+    );
+    assert_eq!(
+        run(r#"<?php json_decode("[[1]]", true, 3); echo json_last_error();"#),
+        "0"
+    );
+    assert_eq!(
+        run(r#"<?php json_decode("[[[1]]]", true, 3); echo json_last_error();"#),
+        "1"
+    );
+    // An object costs a level the same way an array does.
+    assert_eq!(
+        run(r#"<?php json_decode('{"a":1}', true, 1); echo json_last_error();"#),
+        "1"
+    );
+    assert_eq!(
+        run(r#"<?php json_decode('{"a":1}', true, 2); echo json_last_error();"#),
+        "0"
     );
 }
 
+/// A non-positive `$depth` is REJECTED, not clamped. Clamping to 1 (which this
+/// used to do) is the failure mode worth pinning: it produces a plausible answer
+/// — some documents decode, others report `JSON_ERROR_DEPTH` — so nothing about
+/// the result looks wrong unless the argument is checked directly.
+///
+/// The message names argument #3 for `json_decode` and #2 for `json_validate`;
+/// the two cannot share a literal. Re-verified against php 8.5.9.
 #[test]
-fn decode_nonpositive_depth_clamps_to_one() {
-    // PHP raises a ValueError for depth <= 0; phplang clamps to 1 (the doc
-    // contract). A single container level still decodes.
+fn nonpositive_depth_is_a_value_error() {
+    for depth in ["0", "-5"] {
+        assert_eq!(
+            run(&format!(
+                r#"<?php try {{ json_decode("[1]", true, {depth}); }} catch (Throwable $e) {{ echo get_class($e), ': ', $e->getMessage(); }}"#
+            )),
+            "ValueError: json_decode(): Argument #3 ($depth) must be greater than 0",
+            "json_decode depth {depth}"
+        );
+        assert_eq!(
+            run(&format!(
+                r#"<?php try {{ json_validate("[1]", {depth}); }} catch (Throwable $e) {{ echo get_class($e), ': ', $e->getMessage(); }}"#
+            )),
+            "ValueError: json_validate(): Argument #2 ($depth) must be greater than 0",
+            "json_validate depth {depth}"
+        );
+    }
+    // Depth 1 is the smallest ACCEPTED value and is not an error.
     assert_eq!(
-        run(
-            r#"<?php var_dump(json_decode("[1]", true, 0) === null ? 0 : 1); echo json_last_error();"#
-        ),
-        "int(1)\n0"
-    );
-    // A negative depth clamps to 1 too, so a nested container exceeds it.
-    assert_eq!(
-        run(r#"<?php json_decode("[[1]]", true, -5); echo json_last_error();"#),
-        "1"
+        run(r#"<?php var_dump(json_validate("1", 1));"#),
+        "bool(true)\n"
     );
 }
 
@@ -245,8 +289,18 @@ fn validate_does_not_build_but_honors_depth() {
         run(r#"<?php var_dump(json_validate("[[1]]", 1)); echo json_last_error();"#),
         "bool(false)\n1"
     );
+    // Depth 1 admits a scalar document and nothing else — one container already
+    // exceeds it, which is the edge an off-by-one gets wrong.
     assert_eq!(
         run(r#"<?php var_dump(json_validate("[1]", 1));"#),
+        "bool(false)\n"
+    );
+    assert_eq!(
+        run(r#"<?php var_dump(json_validate("1", 1));"#),
+        "bool(true)\n"
+    );
+    assert_eq!(
+        run(r#"<?php var_dump(json_validate("[1]", 2));"#),
         "bool(true)\n"
     );
     // A prior error state does not leak into a subsequent valid check.

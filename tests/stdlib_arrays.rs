@@ -531,3 +531,69 @@ fn count_rejects_a_mode_that_is_neither_normal_nor_recursive() {
         "ValueError|count(): Argument #2 ($mode) must be either COUNT_NORMAL or COUNT_RECURSIVE"
     );
 }
+
+// ── max/min arity and empty input ────────────────────────────────────────────
+
+/// `max`/`min` over an EMPTY array have no answer, and the reference says so
+/// rather than returning null. Calling them with no arguments at all is a
+/// different error — an `ArgumentCountError`, since the parameter is variadic
+/// with a minimum of one — and the two must not be collapsed.
+///
+/// Re-verified against php 8.5.9.
+#[test]
+fn max_min_reject_empty_input_and_no_arguments() {
+    for f in ["max", "min"] {
+        assert_eq!(
+            run(&format!(
+                "<?php try {{ {f}([]); }} catch (Throwable $e) {{ echo get_class($e), ': ', $e->getMessage(); }}"
+            )),
+            format!("ValueError: {f}(): Argument #1 ($value) must contain at least one element"),
+            "{f}([])"
+        );
+        assert_eq!(
+            run(&format!(
+                "<?php try {{ {f}(); }} catch (Throwable $e) {{ echo get_class($e), ': ', $e->getMessage(); }}"
+            )),
+            format!("ArgumentCountError: {f}() expects at least 1 argument, 0 given"),
+            "{f}()"
+        );
+        // A one-element array is fine, and so is a single non-array value.
+        assert_eq!(run(&format!("<?php echo {f}([7]);")), "7");
+        assert_eq!(run(&format!("<?php echo {f}(7, 7);")), "7");
+    }
+    // ArgumentCountError extends TypeError, so the narrow arm catches it.
+    assert_eq!(
+        run("<?php try { max(); } catch (TypeError $e) { echo 'te'; }"),
+        "te"
+    );
+}
+
+/// An all-integer fold that overflows WIDENS to float rather than wrapping. The
+/// wrapped answer is a plausible-looking negative integer with no diagnostic, so
+/// only a value check at the boundary catches it.
+///
+/// Re-verified against php 8.5.9.
+#[test]
+fn array_sum_and_product_widen_on_overflow() {
+    assert_eq!(
+        run("<?php var_dump(array_sum([PHP_INT_MAX, 1]));"),
+        "float(9.223372036854776E+18)\n"
+    );
+    assert_eq!(
+        run("<?php var_dump(array_product([PHP_INT_MAX, 2]));"),
+        "float(1.8446744073709552E+19)\n"
+    );
+    // Overflow in the middle of a fold must not resume from the wrapped partial:
+    // the whole fold is redone in floating point.
+    assert_eq!(
+        run("<?php var_dump(array_sum([PHP_INT_MAX, 1, -1]));"),
+        "float(9.223372036854776E+18)\n"
+    );
+    // Below the boundary the result stays an int.
+    assert_eq!(
+        run("<?php var_dump(array_sum([PHP_INT_MAX - 1, 1]));"),
+        "int(9223372036854775807)\n"
+    );
+    assert_eq!(run("<?php var_dump(array_sum([]));"), "int(0)\n");
+    assert_eq!(run("<?php var_dump(array_product([]));"), "int(1)\n");
+}

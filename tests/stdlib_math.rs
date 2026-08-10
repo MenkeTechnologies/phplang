@@ -276,3 +276,62 @@ fn a_zero_or_nan_exponent_and_a_non_zero_base_stay_silent() {
     assert_eq!(run(r#"<?php error_reporting(0); echo 0 ** -1;"#), "INF");
     assert_eq!(run(r#"<?php echo @(0 ** -1);"#), "INF");
 }
+
+// ── round() tie-break modes ──────────────────────────────────────────────────
+
+/// The `$mode` argument was accepted and IGNORED, so every mode behaved as
+/// `PHP_ROUND_HALF_UP` and three of the four constants were decorative. Only a
+/// value exactly halfway between two integers can tell them apart, so a test
+/// using ordinary values passes with the argument dropped entirely.
+///
+/// All 20 pairs re-verified against php 8.5.9.
+#[test]
+fn round_honours_every_half_mode() {
+    // (value, HALF_UP, HALF_DOWN, HALF_EVEN, HALF_ODD)
+    let cases = [
+        (0.5, "1", "0", "0", "1"),
+        (1.5, "2", "1", "2", "1"),
+        (2.5, "3", "2", "2", "3"),
+        (3.5, "4", "3", "4", "3"),
+        (-0.5, "-1", "-0", "-0", "-1"),
+        (-1.5, "-2", "-1", "-2", "-1"),
+        (-2.5, "-3", "-2", "-2", "-3"),
+    ];
+    for (v, up, down, even, odd) in cases {
+        for (mode, want) in [
+            ("PHP_ROUND_HALF_UP", up),
+            ("PHP_ROUND_HALF_DOWN", down),
+            ("PHP_ROUND_HALF_EVEN", even),
+            ("PHP_ROUND_HALF_ODD", odd),
+        ] {
+            assert_eq!(
+                run(&format!("<?php echo round({v}, 0, {mode});")),
+                want,
+                "round({v}, 0, {mode})"
+            );
+        }
+    }
+    // The default mode is HALF_UP, and a value that is not a tie is unaffected
+    // by any of them.
+    assert_eq!(run("<?php echo round(2.5);"), "3");
+    for mode in [
+        "PHP_ROUND_HALF_UP",
+        "PHP_ROUND_HALF_DOWN",
+        "PHP_ROUND_HALF_EVEN",
+        "PHP_ROUND_HALF_ODD",
+    ] {
+        assert_eq!(run(&format!("<?php echo round(2.4, 0, {mode});")), "2");
+        assert_eq!(run(&format!("<?php echo round(2.6, 0, {mode});")), "3");
+    }
+    // The mode also reaches the PRE-ROUNDING step, which is the part a fix that
+    // only patched the final rounding would miss.
+    assert_eq!(run("<?php echo round(1.005, 2, PHP_ROUND_HALF_DOWN);"), "1");
+    assert_eq!(
+        run("<?php echo round(1.005, 2, PHP_ROUND_HALF_UP);"),
+        "1.01"
+    );
+    assert_eq!(
+        run("<?php echo round(5.045, 2, PHP_ROUND_HALF_EVEN);"),
+        "5.04"
+    );
+}

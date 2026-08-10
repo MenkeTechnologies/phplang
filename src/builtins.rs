@@ -2930,7 +2930,8 @@ pub fn call_library(name: &str, args: &[Value]) -> Result<Value, String> {
         "round" => with_host(|h| {
             let x = h.to_number(&arg(args, 0)).to_float();
             let p = args.get(1).map(|v| v.to_int()).unwrap_or(0);
-            Value::float(php_round(x, p as i32))
+            let mode = args.get(2).map(|v| v.to_int()).unwrap_or(1);
+            Value::float(php_round(x, p as i32, mode))
         }),
         "intval" => with_host(|h| {
             let v = arg(args, 0);
@@ -2952,8 +2953,8 @@ pub fn call_library(name: &str, args: &[Value]) -> Result<Value, String> {
         }
         // `(string)$x` desugars to `strval($x)`, so this is the explicit cast too.
         "strval" => Value::str(host::to_str_ext(&arg(args, 0))),
-        "max" => with_host(|h| fold_cmp(h, args, true)),
-        "min" => with_host(|h| fold_cmp(h, args, false)),
+        "max" => with_host(|h| fold_cmp(h, args, true))?,
+        "min" => with_host(|h| fold_cmp(h, args, false))?,
         "gettype" => with_host(|h| Value::str(h.type_name(&arg(args, 0)).to_string())),
         // `settype($var, $type)` converts IN PLACE through its by-reference first
         // parameter (published for the call site to write back) and returns true.
@@ -2970,7 +2971,7 @@ pub fn call_library(name: &str, args: &[Value]) -> Result<Value, String> {
             _ => false,
         }),
         "implode" | "join" => php_implode(args),
-        "explode" => with_host(|h| php_explode(h, args)),
+        "explode" => with_host(|h| php_explode(h, args))?,
         "in_array" => with_host(|h| php_in_array(h, args)),
         "array_keys" => with_host(|h| h.array_keys(&arg(args, 0))),
         "array_values" => with_host(|h| php_array_values(h, &arg(args, 0))),
@@ -3000,8 +3001,8 @@ pub fn call_library(name: &str, args: &[Value]) -> Result<Value, String> {
         }),
 
         // ── strings ──────────────────────────────────────────────────────
-        "str_split" => with_host(|h| php_str_split(h, args)),
-        "str_pad" => with_host(|h| Value::str(php_str_pad(h, args))),
+        "str_split" => with_host(|h| php_str_split(h, args))?,
+        "str_pad" => with_host(|h| php_str_pad(h, args)).map(Value::str)?,
         "str_contains" => {
             with_host(|h| Value::bool(h.to_str(&arg(args, 0)).contains(&h.to_str(&arg(args, 1)))))
         }
@@ -3203,9 +3204,19 @@ fn ucfirst(s: &str) -> String {
     }
 }
 
-fn fold_cmp(h: &host::PhpHost, args: &[Value], want_max: bool) -> Value {
+fn fold_cmp(h: &host::PhpHost, args: &[Value], want_max: bool) -> Result<Value, String> {
+    let who = if want_max { "max" } else { "min" };
+    // Called with nothing at all, these are an arity error rather than a value
+    // error — the parameter is variadic with a minimum of one.
+    if args.is_empty() {
+        return Err(throws(
+            "ArgumentCountError",
+            format!("{who}() expects at least 1 argument, 0 given"),
+        ));
+    }
     // max/min accept either a single array or a variadic list.
-    let items: Vec<Value> = if args.len() == 1 && h.is_array(&args[0]) {
+    let single_array = args.len() == 1 && h.is_array(&args[0]);
+    let items: Vec<Value> = if single_array {
         h.array_pairs(&args[0])
             .unwrap_or_default()
             .into_iter()
@@ -3214,6 +3225,15 @@ fn fold_cmp(h: &host::PhpHost, args: &[Value], want_max: bool) -> Value {
     } else {
         args.to_vec()
     };
+    // An EMPTY array has no answer, and the reference says so rather than
+    // returning null — the one-argument form is the only way to reach this,
+    // since the variadic form always carries at least one value.
+    if single_array && items.is_empty() {
+        return Err(throws(
+            "ValueError",
+            format!("{who}(): Argument #1 ($value) must contain at least one element"),
+        ));
+    }
     let mut best: Option<Value> = None;
     for v in items {
         best = Some(match best {
@@ -3228,7 +3248,7 @@ fn fold_cmp(h: &host::PhpHost, args: &[Value], want_max: bool) -> Value {
             }
         });
     }
-    best.unwrap_or(Value::Undef)
+    Ok(best.unwrap_or(Value::Undef))
 }
 
 fn php_substr(s: &str, args: &[Value]) -> String {
@@ -3513,13 +3533,17 @@ fn php_trim(h: &host::PhpHost, args: &[Value], start: bool, end: bool) -> Value 
 /// A positive limit caps the number of parts, the last one keeping the whole
 /// remainder; a negative limit drops that many parts off the end; `0` behaves
 /// as `1`.
-fn php_explode(h: &mut host::PhpHost, args: &[Value]) -> Value {
+fn php_explode(h: &mut host::PhpHost, args: &[Value]) -> Result<Value, String> {
     let sep = h.to_str(&arg(args, 0));
     let subject = h.to_str(&arg(args, 1));
     let arr = h.new_array();
+    // An empty separator is an error, not "split into one piece". PHP 7 returned
+    // `false` with a warning; PHP 8 throws.
     if sep.is_empty() {
-        h.arr_push_auto(&arr, Value::str(subject));
-        return arr;
+        return Err(throws(
+            "ValueError",
+            "explode(): Argument #1 ($separator) must not be empty",
+        ));
     }
     let limit = match args.get(2) {
         Some(v) if !matches!(v, Value::Undef) => v.to_int(),
@@ -3543,7 +3567,7 @@ fn php_explode(h: &mut host::PhpHost, args: &[Value]) -> Value {
     for part in parts {
         h.arr_push_auto(&arr, Value::str(part));
     }
-    arr
+    Ok(arr)
 }
 
 fn php_in_array(h: &host::PhpHost, args: &[Value]) -> Value {
@@ -4178,39 +4202,56 @@ fn php_substr_compare(h: &host::PhpHost, args: &[Value]) -> Value {
     Value::int(sign(a.cmp(b)))
 }
 
-fn php_str_split(h: &mut host::PhpHost, args: &[Value]) -> Value {
+fn php_str_split(h: &mut host::PhpHost, args: &[Value]) -> Result<Value, String> {
     let s = h.to_str(&arg(args, 0));
-    let len = args.get(1).map(|v| v.to_int()).unwrap_or(1).max(1) as usize;
+    let raw_len = args.get(1).map(|v| v.to_int()).unwrap_or(1);
+    if raw_len < 1 {
+        return Err(throws(
+            "ValueError",
+            "str_split(): Argument #2 ($length) must be greater than 0",
+        ));
+    }
+    let len = raw_len as usize;
     let chars: Vec<char> = s.chars().collect();
     let arr = h.new_array();
-    if chars.is_empty() {
-        // PHP returns [""] for an empty subject.
-        h.arr_push_auto(&arr, Value::str(String::new()));
-        return arr;
-    }
+    // PHP 8.2 changed this: an empty subject is an EMPTY array, where PHP 8.1
+    // and earlier answered `[""]`. Chunking an empty slice already yields no
+    // chunks, so the case needs no arm of its own — it needed one only to
+    // produce the old answer.
     for chunk in chars.chunks(len) {
         h.arr_push_auto(&arr, Value::str(chunk.iter().collect::<String>()));
     }
-    arr
+    Ok(arr)
 }
 
-fn php_str_pad(h: &host::PhpHost, args: &[Value]) -> String {
+fn php_str_pad(h: &host::PhpHost, args: &[Value]) -> Result<String, String> {
     let s = h.to_str(&arg(args, 0));
     let target = arg(args, 1).to_int();
-    let pad = args
-        .get(2)
-        .map(|v| h.to_str(v))
-        .filter(|p| !p.is_empty())
-        .unwrap_or_else(|| " ".to_string());
+    // An explicitly EMPTY pad string is rejected; an omitted one defaults to a
+    // space. Silently substituting the default for `""` turns an error into a
+    // plausible-looking result.
+    let pad = match args.get(2) {
+        Some(v) if !matches!(v, Value::Undef) => {
+            let p = h.to_str(v);
+            if p.is_empty() {
+                return Err(throws(
+                    "ValueError",
+                    "str_pad(): Argument #3 ($pad_string) must not be empty",
+                ));
+            }
+            p
+        }
+        _ => " ".to_string(),
+    };
     // STR_PAD_RIGHT=1 (default), STR_PAD_LEFT=0, STR_PAD_BOTH=2.
     let ty = args.get(3).map(|v| v.to_int()).unwrap_or(1);
     let cur = s.chars().count() as i64;
     if target <= cur {
-        return s;
+        return Ok(s);
     }
     let need = (target - cur) as usize;
     let make = |n: usize| -> String { pad.chars().cycle().take(n).collect::<String>() };
-    match ty {
+    Ok(match ty {
         0 => format!("{}{}", make(need), s),
         2 => {
             let left = need / 2;
@@ -4218,7 +4259,7 @@ fn php_str_pad(h: &host::PhpHost, args: &[Value]) -> String {
             format!("{}{}{}", make(left), s, make(right))
         }
         _ => format!("{}{}", s, make(need)),
-    }
+    })
 }
 
 /// `ucwords($string, $separators = " \t\r\n\f\v")` — uppercase the first byte and
@@ -4276,7 +4317,7 @@ fn php_number_format(h: &host::PhpHost, args: &[Value]) -> String {
     let neg = num < 0.0;
     // PHP rounds the value with _php_math_round (half away from zero, with
     // pre-rounding) before formatting, so 1.005 becomes "1.01".
-    let rounded = php_round(num, dec as i32).abs();
+    let rounded = php_round(num, dec as i32, 1).abs();
     let formatted = format!("{:.*}", dec, rounded);
     let (int_part, frac_part) = match formatted.split_once('.') {
         Some((i, f)) => (i.to_string(), f.to_string()),
@@ -4305,12 +4346,54 @@ fn php_number_format(h: &host::PhpHost, args: &[Value]) -> String {
 
 // ── math helpers ─────────────────────────────────────────────────────────────
 
-/// Port of PHP's `_php_math_round` (default mode: round half away from zero).
+/// Port of PHP's `php_round_helper`: the tie-break the `$mode` argument
+/// selects. Only a value exactly halfway between two integers is affected — every
+/// other value rounds to nearest regardless of mode, which is why the mode can be
+/// applied as a correction to `f64::round` rather than replacing it.
+///
+/// `f64::round` is already half-away-from-zero, so `PHP_ROUND_HALF_UP` (and any
+/// unrecognised mode, as in the reference) needs no correction.
+fn round_half(value: f64, mode: i64) -> f64 {
+    let away = value.round();
+    if (value - value.trunc()).abs() != 0.5 {
+        return away;
+    }
+    let toward = value.trunc();
+    match mode {
+        PHP_ROUND_HALF_DOWN => toward,
+        PHP_ROUND_HALF_EVEN => {
+            if away % 2.0 == 0.0 {
+                away
+            } else {
+                toward
+            }
+        }
+        PHP_ROUND_HALF_ODD => {
+            if away % 2.0 == 0.0 {
+                toward
+            } else {
+                away
+            }
+        }
+        _ => away,
+    }
+}
+
+const PHP_ROUND_HALF_DOWN: i64 = 2;
+const PHP_ROUND_HALF_EVEN: i64 = 3;
+const PHP_ROUND_HALF_ODD: i64 = 4;
+
+/// Port of PHP's `_php_math_round`. `mode` is one of the `PHP_ROUND_HALF_*`
+/// constants and reaches every tie-break this function takes, including the ones
+/// inside the pre-rounding step — applying it only to the final rounding would
+/// give the right answer for `round(2.5, 0, …)` and the wrong one whenever
+/// pre-rounding engages.
+///
 /// The pre-rounding step compensates for binary floating-point representation
 /// error so decimal half-way values print the way PHP prints them — e.g.
 /// `round(1.005, 2)` is `1.01`, not the `1.0` a naive `(x*100).round()/100`
 /// yields because the nearest f64 to 1.005 is slightly below it.
-pub(crate) fn php_round(value: f64, places: i32) -> f64 {
+pub(crate) fn php_round(value: f64, places: i32, mode: i64) -> f64 {
     if !value.is_finite() || value == 0.0 {
         return value;
     }
@@ -4324,17 +4407,17 @@ pub(crate) fn php_round(value: f64, places: i32) -> f64 {
         } else {
             value / f2
         };
-        t = t.round();
+        t = round_half(t, mode);
         let up = places - precision_places;
         let f3 = 10f64.powi(up.abs());
         t = if up >= 0 { t * f3 } else { t / f3 };
-        t.round()
+        round_half(t, mode)
     } else {
         let t = if places >= 0 { value * f1 } else { value / f1 };
         if t.abs() >= 1e15 {
             return value;
         }
-        t.round()
+        round_half(t, mode)
     };
     if places > 0 {
         tmp_value / f1
@@ -4589,28 +4672,44 @@ fn php_array_fold(h: &host::PhpHost, arr: &Value, product: bool) -> Value {
         .iter()
         .all(|(_, v)| matches!(h.to_number(v), Value::Int(_)));
     if all_int {
+        // An integer fold that overflows WIDENS to float rather than wrapping —
+        // the same rule `+` and `*` follow — so `array_sum([PHP_INT_MAX, 1])` is
+        // 9.2233720368547758E+18 and not a negative int. `wrapping_*` silently
+        // produced the wrong VALUE here, with no diagnostic to notice.
         let mut acc: i64 = if product { 1 } else { 0 };
         for (_, v) in &pairs {
             let n = h.to_number(v).to_int();
-            acc = if product {
-                acc.wrapping_mul(n)
+            let stepped = if product {
+                acc.checked_mul(n)
             } else {
-                acc.wrapping_add(n)
+                acc.checked_add(n)
             };
+            match stepped {
+                Some(next) => acc = next,
+                // Redo the whole fold in floating point from the start: resuming
+                // from `acc` would keep the already-rounded partial sum.
+                None => return fold_as_float(h, &pairs, product),
+            }
         }
         Value::int(acc)
     } else {
-        let mut acc: f64 = if product { 1.0 } else { 0.0 };
-        for (_, v) in &pairs {
-            let n = h.to_number(v).to_float();
-            if product {
-                acc *= n;
-            } else {
-                acc += n;
-            }
-        }
-        Value::float(acc)
+        fold_as_float(h, &pairs, product)
     }
+}
+
+/// The floating-point half of [`php_array_fold`], also used when an all-integer
+/// fold overflows partway through.
+fn fold_as_float(h: &host::PhpHost, pairs: &[(Value, Value)], product: bool) -> Value {
+    let mut acc: f64 = if product { 1.0 } else { 0.0 };
+    for (_, v) in pairs {
+        let n = h.to_number(v).to_float();
+        if product {
+            acc *= n;
+        } else {
+            acc += n;
+        }
+    }
+    Value::float(acc)
 }
 
 fn php_array_flip(h: &mut host::PhpHost, arr: &Value) -> Value {

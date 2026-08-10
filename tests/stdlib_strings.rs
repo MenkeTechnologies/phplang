@@ -322,3 +322,65 @@ fn double_quoted_escapes_cover_hex_octal_and_unicode() {
     // \v and \f are real escapes; an unknown one keeps its backslash.
     assert_eq!(run(r#"<?php echo bin2hex("\v\f\q");"#), "0b0c5c71");
 }
+
+// ── argument guards that used to be silent fallbacks ─────────────────────────
+
+/// Three functions accepted an argument the reference rejects and quietly did
+/// something plausible instead: `str_pad` substituted the default space for an
+/// empty pad, `str_split` clamped a non-positive length to 1, and `explode`
+/// treated an empty separator as "one piece". Each produced a believable value,
+/// so nothing downstream could notice.
+///
+/// Re-verified against php 8.5.9.
+#[test]
+fn empty_or_nonpositive_arguments_are_value_errors() {
+    let cases = [
+        (
+            r#"str_pad("hello", 8, "")"#,
+            "str_pad(): Argument #3 ($pad_string) must not be empty",
+        ),
+        (
+            r#"str_split("abc", 0)"#,
+            "str_split(): Argument #2 ($length) must be greater than 0",
+        ),
+        (
+            r#"str_split("abc", -1)"#,
+            "str_split(): Argument #2 ($length) must be greater than 0",
+        ),
+        (
+            r#"explode("", "abc")"#,
+            "explode(): Argument #1 ($separator) must not be empty",
+        ),
+    ];
+    for (call, msg) in cases {
+        assert_eq!(
+            run(&format!(
+                r#"<?php try {{ {call}; }} catch (Throwable $e) {{ echo get_class($e), ': ', $e->getMessage(); }}"#
+            )),
+            format!("ValueError: {msg}"),
+            "{call}"
+        );
+    }
+    // An OMITTED pad string still defaults to a space — only an explicitly empty
+    // one is rejected, so the guard must not fire on the default path.
+    assert_eq!(run(r#"<?php echo '[', str_pad("hi", 5), ']';"#), "[hi   ]");
+    assert_eq!(run(r#"<?php echo str_pad("hi", 5, "-");"#), "hi---");
+    assert_eq!(
+        run(r#"<?php echo implode("|", str_split("abcde", 2));"#),
+        "ab|cd|e"
+    );
+    assert_eq!(
+        run(r#"<?php echo implode("|", explode(",", "a,b"));"#),
+        "a|b"
+    );
+}
+
+/// PHP 8.2 changed `str_split("")` from `[""]` to an empty array. The old answer
+/// differs from the new one only in a case most tests never exercise.
+#[test]
+fn str_split_of_the_empty_string_is_an_empty_array() {
+    assert_eq!(run(r#"<?php var_dump(str_split(""));"#), "array(0) {\n}\n");
+    assert_eq!(run(r#"<?php var_dump(count(str_split("")));"#), "int(0)\n");
+    // A non-empty subject is unaffected.
+    assert_eq!(run(r#"<?php var_dump(count(str_split("a")));"#), "int(1)\n");
+}
