@@ -2,11 +2,9 @@
 //! of the reference PHP 8 function of the same name, and run headless (no `php`
 //! on PATH required).
 //!
-//! THREE do not, each re-verified against `php 8.5.9` and recorded rather than
+//! TWO do not, each re-verified against `php 8.5.9` and recorded rather than
 //! implied:
 //!
-//!   * `mb_ord("")` answers `false` here; the reference throws
-//!     `ValueError: mb_ord(): Argument #1 ($string) must not be empty`.
 //!   * `mb_convert_encoding("héllo", "ISO-8859-1")` returns the input unchanged
 //!     here; the reference transcodes, producing a byte this engine's UTF-8
 //!     string model cannot hold.
@@ -128,7 +126,14 @@ fn ord_and_chr() {
     assert_eq!(run(r#"<?php echo mb_ord("A");"#), "65");
     assert_eq!(run(r#"<?php echo mb_ord("é");"#), "233");
     assert_eq!(run(r#"<?php echo mb_ord("€");"#), "8364");
-    assert_eq!(run(r#"<?php var_dump(mb_ord(""));"#), "bool(false)\n");
+    // PHP 8 rejects the empty string rather than answering `false` (PHP 7's
+    // sentinel). Re-verified against php 8.5.9.
+    assert_eq!(
+        run(
+            r#"<?php try { mb_ord(""); } catch (Throwable $e) { echo get_class($e), ': ', $e->getMessage(); }"#
+        ),
+        "ValueError: mb_ord(): Argument #1 ($string) must not be empty"
+    );
     assert_eq!(run(r#"<?php echo mb_chr(65);"#), "A");
     assert_eq!(run(r#"<?php echo mb_chr(233);"#), "é");
     assert_eq!(run(r#"<?php echo mb_chr(8364);"#), "€");

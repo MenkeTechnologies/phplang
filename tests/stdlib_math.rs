@@ -129,18 +129,26 @@ fn base_convert_out_of_range_errors() {
 }
 
 // Regression (fix 4): the out-of-range message ends with "(inclusive)" to match
-// PHP 8 exactly, for both the $from_base and $to_base arguments.
+// PHP 8 exactly, for both the $from_base and $to_base arguments — and it is a
+// CATCHABLE `ValueError`, not a host-level abort, so a `try` block sees it.
+// Re-verified against php 8.5.9.
 #[test]
 fn base_convert_out_of_range_message() {
-    let e = eval_capture("<?php echo base_convert('1', 1, 10);").unwrap_err();
     assert_eq!(
-        e,
-        "base_convert(): Argument #2 ($from_base) must be between 2 and 36 (inclusive)"
+        run("<?php try { base_convert('1', 1, 10); } \
+             catch (Throwable $e) { echo get_class($e), ': ', $e->getMessage(); }"),
+        "ValueError: base_convert(): Argument #2 ($from_base) must be between 2 and 36 (inclusive)"
     );
-    let e = eval_capture("<?php echo base_convert('1', 10, 37);").unwrap_err();
     assert_eq!(
-        e,
-        "base_convert(): Argument #3 ($to_base) must be between 2 and 36 (inclusive)"
+        run("<?php try { base_convert('1', 10, 37); } \
+             catch (Throwable $e) { echo get_class($e), ': ', $e->getMessage(); }"),
+        "ValueError: base_convert(): Argument #3 ($to_base) must be between 2 and 36 (inclusive)"
+    );
+    // The catch has to run and the program continue — an abort would print
+    // neither the message nor what follows it.
+    assert_eq!(
+        run("<?php try { base_convert('1', 1, 10); } catch (ValueError $e) {} echo 'after';"),
+        "after"
     );
 }
 
@@ -207,13 +215,28 @@ fn inverted_bounds_error() {
 // on inverted bounds (and rand does NOT error — covered above).
 #[test]
 fn inverted_bounds_error_messages() {
+    // Both are catchable `ValueError`s, and the two messages are NOT the same
+    // sentence with the function name swapped — `mt_rand` blames `$max` and
+    // `random_int` blames `$min`. Re-verified against php 8.5.9.
     assert_eq!(
-        eval_capture("<?php echo mt_rand(10, 1);").unwrap_err(),
-        "mt_rand(): Argument #2 ($max) must be greater than or equal to argument #1 ($min)"
+        run(
+            "<?php try { mt_rand(10, 1); } \
+             catch (Throwable $e) { echo get_class($e), ': ', $e->getMessage(); }"
+        ),
+        "ValueError: mt_rand(): Argument #2 ($max) must be greater than or equal to argument #1 ($min)"
     );
     assert_eq!(
-        eval_capture("<?php echo random_int(10, 1);").unwrap_err(),
-        "random_int(): Argument #1 ($min) must be less than or equal to argument #2 ($max)"
+        run(
+            "<?php try { random_int(10, 1); } \
+             catch (Throwable $e) { echo get_class($e), ': ', $e->getMessage(); }"
+        ),
+        "ValueError: random_int(): Argument #1 ($min) must be less than or equal to argument #2 ($max)"
+    );
+    // `rand()` SWAPS inverted bounds instead of raising, so the guard must not
+    // have been hoisted into the shared bounds helper.
+    assert_eq!(
+        run("<?php $v = rand(10, 1); echo ($v >= 1 && $v <= 10) ? 'in' : 'out';"),
+        "in"
     );
 }
 

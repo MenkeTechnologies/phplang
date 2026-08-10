@@ -179,16 +179,16 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             let from = int_arg(args, 1);
             let to = int_arg(args, 2);
             if !(2..=36).contains(&from) {
-                return Some(Err(
-                    "base_convert(): Argument #2 ($from_base) must be between 2 and 36 (inclusive)"
-                        .to_string(),
-                ));
+                return Some(Err(throws(
+                    "ValueError",
+                    "base_convert(): Argument #2 ($from_base) must be between 2 and 36 (inclusive)",
+                )));
             }
             if !(2..=36).contains(&to) {
-                return Some(Err(
-                    "base_convert(): Argument #3 ($to_base) must be between 2 and 36 (inclusive)"
-                        .to_string(),
-                ));
+                return Some(Err(throws(
+                    "ValueError",
+                    "base_convert(): Argument #3 ($to_base) must be between 2 and 36 (inclusive)",
+                )));
             }
             let v = parse_base(&num, from as u32);
             Ok(Value::str(to_base(v, to as u32)))
@@ -216,10 +216,10 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         "mt_rand" => {
             let (min, max) = rand_bounds(args);
             if min > max {
-                return Some(Err(
-                    "mt_rand(): Argument #2 ($max) must be greater than or equal to argument #1 ($min)"
-                        .to_string(),
-                ));
+                return Some(Err(throws(
+                        "ValueError",
+                        "mt_rand(): Argument #2 ($max) must be greater than or equal to argument #1 ($min)",
+                    )));
             }
             return Some(Ok(to_range(next_u64(), min, max)));
         }
@@ -227,10 +227,10 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             let min = int_arg(args, 0);
             let max = int_arg(args, 1);
             if min > max {
-                return Some(Err(
-                    "random_int(): Argument #1 ($min) must be less than or equal to argument #2 ($max)"
-                        .to_string(),
-                ));
+                return Some(Err(throws(
+                        "ValueError",
+                        "random_int(): Argument #1 ($min) must be less than or equal to argument #2 ($max)",
+                    )));
             }
             return Some(Ok(to_range(os_entropy(), min, max)));
         }

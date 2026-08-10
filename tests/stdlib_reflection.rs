@@ -4,14 +4,15 @@
 //! `is_subclass_of`, and the always-false `interface_exists`/`trait_exists`/
 //! `enum_exists`. Expected results match PHP 8, except where documented in
 //! `src/stdlib/reflection.rs` (no interfaces/traits/enums; method names are
-//! reported lowercased) and in these three, re-verified against `php 8.5.9`:
+//! reported lowercased) and in this one, re-verified against `php 8.5.9`:
 //!
-//!   * `get_class(5)` and `get_object_vars(5)` answer `false` here; the
-//!     reference throws `TypeError: …(): Argument #1 ($object) must be of type
-//!     object, int given`. Returning `false` was PHP 7's behaviour.
 //!   * `class_parents("Ghost")` answers `false` without the reference's
 //!     `Warning: class_parents(): Class Ghost does not exist and could not be
 //!     loaded`.
+//!
+//! `get_class(5)` and `get_object_vars(5)` used to be listed here as answering
+//! `false`; both now throw the reference's `TypeError` and are pinned by
+//! message, argument position and the type name the message uses.
 
 use phplang::eval_capture;
 
@@ -98,10 +99,71 @@ fn get_class_returns_original_casing() {
 }
 
 #[test]
-fn get_class_non_object_is_false() {
+fn get_class_non_object_is_a_type_error() {
+    // PHP 7 answered `false`; PHP 8 rejects every non-object. Re-verified
+    // against php 8.5.9.
     assert_eq!(
-        run(r#"<?php echo get_class(5) === false ? "y" : "n";"#),
-        "y"
+        run(
+            r#"<?php try { get_class(5); } catch (Throwable $e) { echo get_class($e), ': ', $e->getMessage(); }"#
+        ),
+        "TypeError: get_class(): Argument #1 ($object) must be of type object, int given"
+    );
+    // A boolean is named by its VALUE in the message, not as `bool` — the one
+    // place PHP's diagnostic naming and `get_debug_type()` disagree.
+    for (expr, shown) in [
+        ("true", "true"),
+        ("false", "false"),
+        ("null", "null"),
+        ("1.5", "float"),
+        ("\"s\"", "string"),
+        ("[1]", "array"),
+    ] {
+        assert_eq!(
+            run(&format!(
+                r#"<?php try {{ get_class({expr}); }} catch (Throwable $e) {{ echo $e->getMessage(); }}"#
+            )),
+            format!("get_class(): Argument #1 ($object) must be of type object, {shown} given"),
+            "get_class({expr})"
+        );
+    }
+    // The success path still answers the class name.
+    assert_eq!(run(r#"<?php class Zed {} echo get_class(new Zed);"#), "Zed");
+}
+
+/// `get_class()` with NO argument is a different operation from `get_class(null)`
+/// and the two must not share a code path: the first answers the enclosing
+/// `__CLASS__` (deprecated since PHP 8.3), the second is an ordinary non-object
+/// rejection. An implementation that reads a missing argument as `null` answers
+/// `null given` to a call that named no argument at all.
+///
+/// Re-verified against php 8.5.9.
+#[test]
+fn get_class_without_arguments_is_the_enclosing_class() {
+    assert_eq!(
+        run(r#"<?php class C { function f() { return get_class(); } } echo (new C)->f();"#),
+        "\nDeprecated: Calling get_class() without arguments is deprecated \
+         in Command line code on line 1\nC"
+    );
+    // Outside a class it is an `Error`, not the `TypeError` the null form gets.
+    assert_eq!(
+        run(
+            r#"<?php try { get_class(); } catch (Throwable $e) { echo get_class($e), ': ', $e->getMessage(); }"#
+        ),
+        "Error: get_class() without arguments must be called from within a class"
+    );
+    // A trait method reports the USING class, and an inherited method the
+    // DECLARING one — the two cases `__CLASS__` exists to disambiguate.
+    assert_eq!(
+        run(
+            r#"<?php trait T { function f() { return @get_class(); } } class U { use T; } echo (new U)->f();"#
+        ),
+        "U"
+    );
+    assert_eq!(
+        run(
+            r#"<?php class P { function f() { return @get_class(); } } class Q extends P {} echo (new Q)->f();"#
+        ),
+        "P"
     );
 }
 
@@ -142,10 +204,27 @@ fn get_object_vars_assoc() {
 }
 
 #[test]
-fn get_object_vars_non_object_false() {
+fn get_object_vars_non_object_is_a_type_error() {
+    // Same PHP 7 -> 8 change as `get_class`. Re-verified against php 8.5.9.
     assert_eq!(
-        run(r#"<?php echo get_object_vars(5) === false ? "y" : "n";"#),
-        "y"
+        run(
+            r#"<?php try { get_object_vars(5); } catch (Throwable $e) { echo get_class($e), ': ', $e->getMessage(); }"#
+        ),
+        "TypeError: get_object_vars(): Argument #1 ($object) must be of type object, int given"
+    );
+    assert_eq!(
+        run(
+            r#"<?php try { get_object_vars(true); } catch (Throwable $e) { echo $e->getMessage(); }"#
+        ),
+        "get_object_vars(): Argument #1 ($object) must be of type object, true given"
+    );
+    // An ARRAY is rejected too, which is the case a `!is_object` guard that
+    // treated arrays as objects would get wrong.
+    assert_eq!(
+        run(
+            r#"<?php try { get_object_vars([1,2]); } catch (Throwable $e) { echo $e->getMessage(); }"#
+        ),
+        "get_object_vars(): Argument #1 ($object) must be of type object, array given"
     );
 }
 

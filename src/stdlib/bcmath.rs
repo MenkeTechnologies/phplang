@@ -24,15 +24,20 @@
 //! `bcpowmod`. Division and square root are computed at `bigdecimal`'s default
 //! 100-significant-digit context and then truncated to the requested scale.
 //!
-//! ## Divergence from PHP 8 (documented, intentional)
-//! PHP 8 raises a `ValueError` for a malformed numeric string (e.g. `"abc"`) and
-//! for a fractional `bcpow`/`bcpowmod` exponent. Faithful bytecode-level error
-//! objects are not wired through this dispatch layer, so instead this module is
-//! **lenient**: an unparseable operand is read as `0`, and a fractional exponent
-//! is truncated to its integer part. Genuine runtime faults that PHP models as
-//! thrown errors — division/modulo by zero, square root of a negative number,
-//! and a negative `bcpowmod` exponent — are surfaced as `Err` so the caller
-//! aborts rather than producing a bogus value.
+//! ## Operand validation
+//! Every operand is checked against PHP's bcmath grammar before it is used — see
+//! [`bc_normalize`] — and a spelling outside it raises the reference's
+//! `ValueError: <fn>(): Argument #N ($name) is not well-formed`. `bcpow` and
+//! `bcpowmod` additionally reject an operand they use as an integer when it
+//! carries a fractional part.
+//!
+//! The checks run in the reference's order, which is observable when more than
+//! one argument is bad: all the well-formed checks first (left to right), then
+//! the fractional-part checks on `$num` and `$exponent`, then
+//! `$exponent >= 0`, then the fractional-part check on `$modulus`, and only
+//! then the division/modulo-by-zero faults. `bcpowmod("1", "-1", "2.5")` is
+//! therefore an `$exponent` error and `bcpowmod("1", "1", "2.5")` a `$modulus`
+//! one. Verified against php 8.5.9.
 
 use crate::stdlib::common::*;
 use bigdecimal::{BigDecimal, RoundingMode, Zero};
@@ -53,16 +58,68 @@ fn current_scale() -> i64 {
     BC_SCALE.with(|c| c.get())
 }
 
-/// Parse a bcmath operand string into an exact decimal. Leniently reads an
-/// unparseable / empty string as `0` (PHP 8 would raise `ValueError`; see the
-/// module divergence note). A leading `+` is accepted.
-fn parse_bd(s: &str) -> BigDecimal {
-    let t = s.trim();
-    if let Ok(b) = BigDecimal::from_str(t) {
-        return b;
+/// PHP's bcmath operand grammar: an optional single sign, then any number of
+/// ASCII digits, then optionally a `.` and any number of ASCII digits. Nothing
+/// else is accepted — no surrounding whitespace, no exponent (`"1e3"`), no digit
+/// separators (`"1_000"`), no hex, and no non-ASCII digits. A string with no
+/// digits at all is still well-formed and reads as zero, so `""`, `"."`, `"+"`
+/// and `"-."` are all accepted.
+///
+/// Returns the operand rewritten into a spelling `BigDecimal::from_str` parses:
+/// `"5."` and `".5"` satisfy bcmath but not `BigDecimal`, so the missing side of
+/// the point is filled with a `0`. `None` means "not well-formed".
+///
+/// Verified against php 8.5.9 over 33 operand spellings.
+fn bc_normalize(s: &str) -> Option<String> {
+    let (sign, rest) = match s.as_bytes().first() {
+        Some(b'-') => ("-", &s[1..]),
+        Some(b'+') => ("", &s[1..]),
+        _ => ("", s),
+    };
+    // Only the FIRST `.` splits, so a second one stays in `frac` and is rejected
+    // by the digit check below — which is what makes `"1.2.3"` malformed.
+    let (int, frac) = rest.split_once('.').unwrap_or((rest, ""));
+    if !int.bytes().all(|b| b.is_ascii_digit()) || !frac.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
     }
-    let stripped = t.strip_prefix('+').unwrap_or(t);
-    BigDecimal::from_str(stripped).unwrap_or_else(|_| BigDecimal::zero())
+    let int = if int.is_empty() { "0" } else { int };
+    let frac = if frac.is_empty() { "0" } else { frac };
+    Some(format!("{sign}{int}.{frac}"))
+}
+
+/// Read the operand at `idx` as an exact decimal, raising the reference's
+/// `ValueError` when it is outside the grammar. `pos`/`name` are the argument
+/// number and parameter name the message quotes.
+fn bc_operand(
+    args: &[Value],
+    idx: usize,
+    func: &str,
+    pos: usize,
+    name: &str,
+) -> Result<BigDecimal, String> {
+    let raw = str_arg(args, idx);
+    let norm = bc_normalize(&raw).ok_or_else(|| {
+        throws(
+            "ValueError",
+            format!("{func}(): Argument #{pos} (${name}) is not well-formed"),
+        )
+    })?;
+    // `bc_normalize` only returns spellings `BigDecimal` accepts, so the parse
+    // cannot fail; the fallback keeps the function total rather than panicking.
+    Ok(BigDecimal::from_str(&norm).unwrap_or_else(|_| BigDecimal::zero()))
+}
+
+/// Reject an operand that `bcpow`/`bcpowmod` use as an integer but which carries
+/// a fractional part, and hand back the integer otherwise. PHP does not truncate
+/// here — `bcpow("2", "1.5")` is an error, not `4`.
+fn bc_integral(bd: &BigDecimal, func: &str, pos: usize, name: &str) -> Result<BigInt, String> {
+    if bd.with_scale_round(0, RoundingMode::Down) != *bd {
+        return Err(throws(
+            "ValueError",
+            format!("{func}(): Argument #{pos} (${name}) cannot have a fractional part"),
+        ));
+    }
+    Ok(bd_to_bigint(bd))
 }
 
 /// The scale for a call: the explicit argument at `idx` if present (clamped to
@@ -147,29 +204,36 @@ fn bd_pow(base: &BigDecimal, exp: i64) -> BigDecimal {
 }
 
 /// Dispatch a `bcmath`-category PHP function by lowercased name.
+///
+/// The arms run inside a `Result`-returning closure so operand validation can
+/// use `?`: a malformed operand has to abandon the arm at the point it is
+/// detected, because the reference reports the FIRST bad argument and computing
+/// with the others first would report the wrong one. A name this module does not
+/// handle escapes through `unhandled` rather than through the closure.
 pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
-    let out: Result<Value, String> = match name {
+    let mut unhandled = false;
+    let out: Result<Value, String> = (|| match name {
         "bcadd" => {
-            let a = parse_bd(&str_arg(args, 0));
-            let b = parse_bd(&str_arg(args, 1));
+            let a = bc_operand(args, 0, "bcadd", 1, "num1")?;
+            let b = bc_operand(args, 1, "bcadd", 2, "num2")?;
             let s = scale_arg(args, 2);
             Ok(Value::str(format_scaled(&(a + b), s)))
         }
         "bcsub" => {
-            let a = parse_bd(&str_arg(args, 0));
-            let b = parse_bd(&str_arg(args, 1));
+            let a = bc_operand(args, 0, "bcsub", 1, "num1")?;
+            let b = bc_operand(args, 1, "bcsub", 2, "num2")?;
             let s = scale_arg(args, 2);
             Ok(Value::str(format_scaled(&(a - b), s)))
         }
         "bcmul" => {
-            let a = parse_bd(&str_arg(args, 0));
-            let b = parse_bd(&str_arg(args, 1));
+            let a = bc_operand(args, 0, "bcmul", 1, "num1")?;
+            let b = bc_operand(args, 1, "bcmul", 2, "num2")?;
             let s = scale_arg(args, 2);
             Ok(Value::str(format_scaled(&(a * b), s)))
         }
         "bcdiv" => {
-            let a = parse_bd(&str_arg(args, 0));
-            let b = parse_bd(&str_arg(args, 1));
+            let a = bc_operand(args, 0, "bcdiv", 1, "num1")?;
+            let b = bc_operand(args, 1, "bcdiv", 2, "num2")?;
             let s = scale_arg(args, 2);
             if b.is_zero() {
                 Err(throws("DivisionByZeroError", "Division by zero"))
@@ -178,8 +242,8 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             }
         }
         "bcmod" => {
-            let a = parse_bd(&str_arg(args, 0));
-            let b = parse_bd(&str_arg(args, 1));
+            let a = bc_operand(args, 0, "bcmod", 1, "num1")?;
+            let b = bc_operand(args, 1, "bcmod", 2, "num2")?;
             let s = scale_arg(args, 2);
             if b.is_zero() {
                 Err(throws("DivisionByZeroError", "Modulo by zero"))
@@ -192,8 +256,13 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             }
         }
         "bcpow" => {
-            let base = parse_bd(&str_arg(args, 0));
-            let exp = bd_to_bigint(&parse_bd(&str_arg(args, 1)));
+            let base = bc_operand(args, 0, "bcpow", 1, "num")?;
+            let exp = bc_integral(
+                &bc_operand(args, 1, "bcpow", 2, "exponent")?,
+                "bcpow",
+                2,
+                "exponent",
+            )?;
             let s = scale_arg(args, 2);
             let exp_i64 = i64::try_from(&exp).unwrap_or(if exp.sign() == num_bigint::Sign::Minus {
                 i64::MIN
@@ -209,7 +278,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             }
         }
         "bcsqrt" => {
-            let n = parse_bd(&str_arg(args, 0));
+            let n = bc_operand(args, 0, "bcsqrt", 1, "num")?;
             let s = scale_arg(args, 1);
             match n.sqrt() {
                 Some(r) => Ok(Value::str(format_scaled(&r, s))),
@@ -220,8 +289,8 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             }
         }
         "bccomp" => {
-            let a = parse_bd(&str_arg(args, 0));
-            let b = parse_bd(&str_arg(args, 1));
+            let a = bc_operand(args, 0, "bccomp", 1, "num1")?;
+            let b = bc_operand(args, 1, "bccomp", 2, "num2")?;
             let s = scale_arg(args, 2);
             // Compare after truncating both operands to the requested scale.
             let at = a.with_scale_round(s, RoundingMode::Down);
@@ -245,23 +314,38 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             }
         }
         "bcpowmod" => {
-            let base = bd_to_bigint(&parse_bd(&str_arg(args, 0)));
-            let exp = bd_to_bigint(&parse_bd(&str_arg(args, 1)));
-            let modulus = bd_to_bigint(&parse_bd(&str_arg(args, 2)));
+            // The three well-formed checks come first, then the fractional-part
+            // checks on `$num` and `$exponent`, then `$exponent >= 0`, and only
+            // then the one on `$modulus` — so a call that is bad in two ways
+            // reports whichever the reference reports. See the module header.
+            let base_bd = bc_operand(args, 0, "bcpowmod", 1, "num")?;
+            let exp_bd = bc_operand(args, 1, "bcpowmod", 2, "exponent")?;
+            let mod_bd = bc_operand(args, 2, "bcpowmod", 3, "modulus")?;
+            let base = bc_integral(&base_bd, "bcpowmod", 1, "num")?;
+            let exp = bc_integral(&exp_bd, "bcpowmod", 2, "exponent")?;
             let s = scale_arg(args, 3);
-            if modulus.is_zero() {
-                Err(throws("DivisionByZeroError", "Modulo by zero"))
-            } else if exp.sign() == num_bigint::Sign::Minus {
-                Err(throws(
+            if exp.sign() == num_bigint::Sign::Minus {
+                return Err(throws(
                     "ValueError",
                     "bcpowmod(): Argument #2 ($exponent) must be greater than or equal to 0",
-                ))
+                ));
+            }
+            let modulus = bc_integral(&mod_bd, "bcpowmod", 3, "modulus")?;
+            if modulus.is_zero() {
+                Err(throws("DivisionByZeroError", "Modulo by zero"))
             } else {
                 let r = base.modpow(&exp, &modulus);
                 Ok(Value::str(format_scaled(&BigDecimal::from(r), s)))
             }
         }
-        _ => return None,
-    };
-    Some(out)
+        _ => {
+            unhandled = true;
+            Ok(Value::Undef)
+        }
+    })();
+    if unhandled {
+        None
+    } else {
+        Some(out)
+    }
 }

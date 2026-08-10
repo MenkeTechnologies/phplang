@@ -105,12 +105,17 @@ fn md5_file_missing_returns_false() {
 fn hash_file_unknown_algo_valueerror() {
     let path = temp_path("hfbad");
     std::fs::write(&path, "x").unwrap();
-    let src = format!(r#"<?php echo hash_file("bogus", "{}");"#, php_path(&path));
-    let err = eval_capture(&src).unwrap_err();
+    // Catchable `ValueError`, matching the core `hash()` wording. Re-verified
+    // against php 8.5.9.
+    let src = format!(
+        r#"<?php try {{ hash_file("bogus", "{}"); }} catch (Throwable $e) {{ echo get_class($e), ': ', $e->getMessage(); }}"#,
+        php_path(&path)
+    );
+    let out = run(&src);
     std::fs::remove_file(&path).ok();
     assert_eq!(
-        err,
-        "hash_file(): Argument #1 ($algo) must be a valid hashing algorithm"
+        out,
+        "ValueError: hash_file(): Argument #1 ($algo) must be a valid hashing algorithm"
     );
 }
 

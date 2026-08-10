@@ -2151,6 +2151,12 @@ fn b_div(vm: &mut VM, _: u8) -> Value {
         return throw_php(vm, "DivisionByZeroError", "Division by zero");
     }
     match (an, bn) {
+        // `PHP_INT_MIN / -1` is the one integer division whose exact quotient is
+        // not representable, so it leaves the integer path and answers a float —
+        // and `x % y` would itself overflow on the way to deciding that, which is
+        // why the pair is excluded before the remainder is taken rather than
+        // inside the guard.
+        (Value::Int(i64::MIN), Value::Int(-1)) => Value::float(-(i64::MIN as f64)),
         (Value::Int(x), Value::Int(y)) if x % y == 0 => Value::int(x / y),
         (an, bn) => Value::float(an.to_float() / bn.to_float()),
     }
@@ -2165,7 +2171,10 @@ fn b_mod(vm: &mut VM, _: u8) -> Value {
     if y == 0 {
         return throw_php(vm, "DivisionByZeroError", "Modulo by zero");
     }
-    Value::int(x % y)
+    // `PHP_INT_MIN % -1` is mathematically 0, but the two's-complement remainder
+    // overflows because the QUOTIENT is unrepresentable. PHP answers 0; a plain
+    // `x % y` panics in debug Rust, so the remainder is taken wrapping.
+    Value::int(x.wrapping_rem(y))
 }
 
 /// PHP 8.4 deprecated a zero base raised to a negative exponent; the result is
@@ -2906,7 +2915,11 @@ pub fn call_library(name: &str, args: &[Value]) -> Result<Value, String> {
         // The `(array)` / `(object)` casts, which have no PHP-callable spelling.
         "__cast_array" => with_host(|h| php_cast_array(h, &arg(args, 0))),
         "__cast_object" => php_cast_object(&arg(args, 0))?,
+        // `abs(PHP_INT_MIN)` has no integer answer — its magnitude is one past
+        // `PHP_INT_MAX` — so it widens to a float, the same way `-PHP_INT_MIN`
+        // does. `n.abs()` alone panics on it in debug Rust.
         "abs" => with_host(|h| match h.to_number(&arg(args, 0)) {
+            Value::Int(i64::MIN) => Value::float(-(i64::MIN as f64)),
             Value::Int(n) => Value::int(n.abs()),
             Value::Float(f) => Value::float(f.abs()),
             other => other,
@@ -3343,9 +3356,13 @@ fn php_settype(args: &[Value]) -> Result<Value, String> {
         "array" => with_host(|h| php_cast_array(h, &v)),
         "object" => php_cast_object(&v)?,
         "null" => Value::Undef,
-        other => {
-            return Err(format!(
-                "settype(): Argument #2 ($type) must be a valid type, \"{other}\" given"
+        // The message does NOT name the type it was given: PHP's
+        // `zend_argument_value_error(2, "must be a valid type")` takes no
+        // argument, unlike the `, %s given` suffix a TypeError carries.
+        _ => {
+            return Err(throws(
+                "ValueError",
+                "settype(): Argument #2 ($type) must be a valid type",
             ))
         }
     };
@@ -4347,6 +4364,16 @@ fn php_intdiv(args: &[Value]) -> Result<Value, String> {
     let (x, y) = (int_operand(&a, &an), int_operand(&b, &bn));
     if y == 0 {
         return pending_php_throw("DivisionByZeroError", "Division by zero");
+    }
+    // `intdiv` has to answer an int, so the one quotient that does not fit is an
+    // error rather than the float `/` widens to. It is an `ArithmeticError`, the
+    // parent of `DivisionByZeroError` — a `catch (DivisionByZeroError)` does NOT
+    // see it, so the two cannot share an arm.
+    if x == i64::MIN && y == -1 {
+        return pending_php_throw(
+            "ArithmeticError",
+            "Division of PHP_INT_MIN by -1 is not an integer",
+        );
     }
     Ok(Value::int(x / y))
 }

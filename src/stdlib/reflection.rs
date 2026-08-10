@@ -21,7 +21,20 @@
 use crate::host::with_host;
 use fusevm::Value;
 
-use super::common::{arg, str_arg};
+use super::common::{arg, str_arg, throws};
+
+/// The `TypeError` a single-`$object`-parameter reflection function raises for a
+/// non-object argument.
+///
+/// The type is named by [`crate::host::PhpHost::type_name_for_error`], not by
+/// `get_debug_type()`: `get_class(true)` reports `true given`, not `bool given`.
+fn object_arg_type_error(func: &str, v: &Value) -> String {
+    let t = with_host(|h| h.type_name_for_error(v));
+    throws(
+        "TypeError",
+        format!("{func}(): Argument #1 ($object) must be of type object, {t} given"),
+    )
+}
 
 /// Dispatch a `reflection`-category PHP function by lowercased name.
 pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
@@ -67,15 +80,34 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
 
         // ── class identity ──────────────────────────────────────────────────
         // `get_class($object)`: the object's class name (original casing). The
-        // no-argument form (PHP: the enclosing class) is unsupported here; a
-        // non-object argument yields `false`, mirroring PHP's failure result
-        // rather than raising, since this module cannot throw a TypeError.
+        // no-argument form (PHP: the enclosing class) is unsupported here.
+        //
+        // A non-object argument is a `TypeError`. Returning `false` was PHP 7's
+        // answer; PHP 8 made every non-object a hard rejection, so the old
+        // return value is stale rather than invented.
+        //
+        // Passing NOTHING is a different case from passing `null`, and the two
+        // must not share a path: no argument means the ENCLOSING class (with a
+        // deprecation since PHP 8.3), while an explicit `null` is just a
+        // non-object and gets the `TypeError`. Collapsing them would answer
+        // `null given` to a call that named no argument at all.
+        "get_class" if args.is_empty() => {
+            let cls = with_host(|h| h.magic_class());
+            if cls.is_empty() {
+                return Some(Err(crate::builtins::throws_bare(
+                    "Error",
+                    "get_class() without arguments must be called from within a class",
+                )));
+            }
+            with_host(|h| h.deprecated("Calling get_class() without arguments is deprecated"));
+            Value::str(cls)
+        }
         "get_class" => {
             let a = arg(args, 0);
-            with_host(|h| match h.object_class(&a) {
+            match with_host(|h| h.object_class(&a)) {
                 Some(c) => Value::str(c),
-                None => Value::bool(false),
-            })
+                None => return Some(Err(object_arg_type_error("get_class", &a))),
+            }
         }
         // `get_parent_class($object_or_class = null)`: parent name or `false`.
         // The no-argument form (enclosing class) is unsupported — returns false.
@@ -98,13 +130,14 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
 
         // ── member enumeration ──────────────────────────────────────────────
         // `get_object_vars($object)`: the object's accessible properties as an
-        // associative array (insertion order). A non-object yields `false`.
+        // associative array (insertion order). A non-object is a `TypeError`,
+        // for the same reason `get_class` is — see there.
         "get_object_vars" => {
             let a = arg(args, 0);
+            if !with_host(|h| h.is_object(&a)) {
+                return Some(Err(object_arg_type_error("get_object_vars", &a)));
+            }
             with_host(|h| {
-                if !h.is_object(&a) {
-                    return Value::bool(false);
-                }
                 // Only the properties the *calling scope* may see: public ones
                 // from outside the class, everything from inside a method of it.
                 let arr = h.new_array();

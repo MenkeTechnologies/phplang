@@ -642,11 +642,11 @@ fn php_array_rand(h: &mut host::PhpHost, args: &[Value]) -> Result<Value, String
         1
     };
     if len == 0 || num < 1 || num as usize > len {
-        return Err(
+        return Err(throws(
+            "ValueError",
             "array_rand(): Argument #2 ($num) must be between 1 and the number of elements in \
-             $array"
-                .into(),
-        );
+             argument #1 ($array)",
+        ));
     }
     let num = num as usize;
     if num == 1 {

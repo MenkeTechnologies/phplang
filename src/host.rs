@@ -1278,7 +1278,16 @@ impl PhpHost {
 
     /// How a value's type reads in a `TypeError`: PHP names the four scalars and
     /// `null` in lower case, an array as `array`, and an object by its CLASS.
-    fn type_name_for_error(&self, v: &Value) -> String {
+    ///
+    /// This is NOT [`crate::stdlib::types::debug_type`], and the two disagree on
+    /// exactly one type. A diagnostic names a boolean by its VALUE — `true given`
+    /// / `false given` — while `get_debug_type()` answers `"bool"` for both. PHP
+    /// keeps them in separate functions (`zend_zval_value_name` against
+    /// `zend_zval_get_legacy_type`/`get_debug_type`) for that reason, so any
+    /// message of the form `… , <type> given` has to come from HERE. Reaching for
+    /// `debug_type` because it is the public one silently writes `bool given`,
+    /// which no PHP has ever printed.
+    pub(crate) fn type_name_for_error(&self, v: &Value) -> String {
         match v {
             Value::Undef => "null".to_string(),
             Value::Bool(b) => if *b { "true" } else { "false" }.to_string(),
@@ -5991,7 +6000,9 @@ pub fn clone_object(v: Value) -> Result<Value, String> {
                 "Trying to clone an uncloneable object of class Generator",
             ));
         }
-        let t = with_host(|h| crate::stdlib::types::debug_type(h, &v));
+        // `type_name_for_error`, not `debug_type`: `clone true` is rejected with
+        // `true given`, not `bool given`. See the note on that method.
+        let t = with_host(|h| h.type_name_for_error(&v));
         return Err(crate::builtins::throws_bare(
             "TypeError",
             format!("clone(): Argument #1 ($object) must be of type object, {t} given"),

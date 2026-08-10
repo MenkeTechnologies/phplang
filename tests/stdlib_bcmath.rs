@@ -2,12 +2,13 @@
 //! arbitrary-precision decimal arithmetic where every operand and result is a
 //! string and the trailing `$scale` argument truncates (never rounds) to an
 //! exact number of fractional digits. Expected values were captured from the
-//! reference `php` 8 bcmath extension, with ONE exception, verified against
-//! `php 8.5.9` and pinned here as a divergence rather than left implied:
+//! reference `php` 8 bcmath extension.
 //!
-//!   * `bcadd("abc", "2", 2)` answers `"2.00"` here; the reference throws
-//!     `ValueError: bcadd(): Argument #1 ($num1) is not well-formed`. A
-//!     malformed operand reads as zero rather than being rejected.
+//! `bcadd("abc", "2", 2)` used to be recorded here as answering `"2.00"` — a
+//! malformed operand read as zero. Operands are now validated against the
+//! reference's grammar, and the divergence is gone; the tests below pin both
+//! halves of that grammar, including the digitless spellings (`""`, `"."`,
+//! `"+"`) that ARE well-formed and do read as zero.
 
 use phplang::eval_capture;
 
@@ -166,11 +167,124 @@ fn powmod_by_zero_errors() {
     assert!(e.to_lowercase().contains("modulo by zero"), "got: {e}");
 }
 
-// ── lenient parsing (documented divergence) ──────────────────────────────────
+// ── operand grammar ──────────────────────────────────────────────────────────
 
+/// bcmath accepts `[+-]? DIGIT* ( '.' DIGIT* )?` and nothing else. A string with
+/// no digits at all is still well-formed and reads as zero, which is why `""`
+/// and `"."` are values rather than errors — the surprising half of the grammar,
+/// and the half a "reject anything that is not a number" implementation breaks.
 #[test]
-fn empty_and_malformed_operands_read_as_zero() {
-    assert_eq!(run(r#"<?php echo bcadd("", "", 2);"#), "0.00");
-    // PHP 8 raises ValueError for "abc"; this port leniently treats it as 0.
-    assert_eq!(run(r#"<?php echo bcadd("abc", "2", 2);"#), "2.00");
+fn digitless_but_well_formed_operands_read_as_zero() {
+    for spelling in [r#""""#, r#"".""#, r#""+""#, r#""-""#, r#""-.""#, r#""+.""#] {
+        assert_eq!(
+            run(&format!(r#"<?php echo bcadd({spelling}, "0", 2);"#)),
+            "0.00",
+            "bcadd({spelling}, \"0\", 2)"
+        );
+    }
+    // A point on either side is well-formed and keeps its digits.
+    assert_eq!(run(r#"<?php echo bcadd("5.", "0", 2);"#), "5.00");
+    assert_eq!(run(r#"<?php echo bcadd(".5", "0", 2);"#), "0.50");
+    assert_eq!(run(r#"<?php echo bcadd("00012", "0", 2);"#), "12.00");
+    assert_eq!(run(r#"<?php echo bcadd("-0", "0", 2);"#), "0.00");
+}
+
+/// A malformed operand is a `ValueError`, not a lenient zero. The message names
+/// the FIRST bad argument, so the position and parameter name both have to be
+/// right — an implementation that validated after computing, or that checked
+/// argument 2 first, would still throw but name the wrong one.
+///
+/// Every expectation re-verified against php 8.5.9.
+#[test]
+fn malformed_operands_are_value_errors_naming_the_first_bad_argument() {
+    let cases = [
+        (r#"bcadd("abc", "2")"#, "bcadd(): Argument #1 ($num1)"),
+        (r#"bcadd("2", "abc")"#, "bcadd(): Argument #2 ($num2)"),
+        (r#"bcsub("2", "xyz")"#, "bcsub(): Argument #2 ($num2)"),
+        (r#"bcmul("q", "1")"#, "bcmul(): Argument #1 ($num1)"),
+        // The well-formed check runs BEFORE the zero divisor is noticed, so this
+        // is an operand error and not a DivisionByZeroError.
+        (r#"bcdiv("a", "0")"#, "bcdiv(): Argument #1 ($num1)"),
+        (r#"bcmod("a", "0")"#, "bcmod(): Argument #1 ($num1)"),
+        (r#"bccomp("0", "a")"#, "bccomp(): Argument #2 ($num2)"),
+        (r#"bcpow("2", "a")"#, "bcpow(): Argument #2 ($exponent)"),
+        (r#"bcsqrt("a")"#, "bcsqrt(): Argument #1 ($num)"),
+        (
+            r#"bcpowmod("1", "1", "a")"#,
+            "bcpowmod(): Argument #3 ($modulus)",
+        ),
+    ];
+    for (call, prefix) in cases {
+        assert_eq!(
+            run(&format!(
+                r#"<?php try {{ {call}; }} catch (Throwable $e) {{ echo get_class($e), ': ', $e->getMessage(); }}"#
+            )),
+            format!("ValueError: {prefix} is not well-formed"),
+            "{call}"
+        );
+    }
+    // Spellings that look numeric to a general-purpose parser but are outside
+    // bcmath's grammar — these are the ones a `f64::from_str` fallback accepts.
+    for spelling in [
+        r#""1e3""#,
+        r#"" 1""#,
+        r#""1 ""#,
+        r#""0x10""#,
+        r#""1_000""#,
+        r#""1.2.3""#,
+    ] {
+        assert_eq!(
+            run(&format!(
+                r#"<?php try {{ bcadd({spelling}, "0"); }} catch (Throwable $e) {{ echo $e->getMessage(); }}"#
+            )),
+            "bcadd(): Argument #1 ($num1) is not well-formed",
+            "bcadd({spelling}, \"0\")"
+        );
+    }
+}
+
+/// `bcpow`/`bcpowmod` use some operands as integers and reject a fractional part
+/// rather than truncating it. The check order is observable when a call is bad in
+/// two ways at once, and it is not left-to-right: `$exponent >= 0` is tested
+/// between the `$num`/`$exponent` fractional checks and the `$modulus` one.
+#[test]
+fn integral_operand_checks_run_in_the_reference_order() {
+    let cases = [
+        (
+            r#"bcpow("2", "1.5")"#,
+            "bcpow(): Argument #2 ($exponent) cannot have a fractional part",
+        ),
+        (
+            r#"bcpowmod("2.5", "3", "7")"#,
+            "bcpowmod(): Argument #1 ($num) cannot have a fractional part",
+        ),
+        (
+            r#"bcpowmod("1", "1", "2.5")"#,
+            "bcpowmod(): Argument #3 ($modulus) cannot have a fractional part",
+        ),
+        // A negative exponent outranks a fractional MODULUS...
+        (
+            r#"bcpowmod("1", "-1", "2.5")"#,
+            "bcpowmod(): Argument #2 ($exponent) must be greater than or equal to 0",
+        ),
+        // ...but a fractional $num outranks the negative exponent.
+        (
+            r#"bcpowmod("1.5", "-1", "7")"#,
+            "bcpowmod(): Argument #1 ($num) cannot have a fractional part",
+        ),
+        // A malformed operand outranks every one of them.
+        (
+            r#"bcpowmod("a", "-1", "0")"#,
+            "bcpowmod(): Argument #1 ($num) is not well-formed",
+        ),
+    ];
+    for (call, msg) in cases {
+        assert_eq!(
+            run(&format!(
+                r#"<?php try {{ {call}; }} catch (Throwable $e) {{ echo $e->getMessage(); }}"#
+            )),
+            msg,
+            "{call}"
+        );
+    }
 }

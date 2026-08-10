@@ -86,9 +86,10 @@ fn hash_file(args: &[Value]) -> Result<Value, String> {
     let raw = bool_arg(args, 2);
     if !is_supported_algo(&algo) {
         // PHP 8 ValueError text (mirrors the core `hash()` wording).
-        return Err(
-            "hash_file(): Argument #1 ($algo) must be a valid hashing algorithm".to_string(),
-        );
+        return Err(throws(
+            "ValueError",
+            "hash_file(): Argument #1 ($algo) must be a valid hashing algorithm",
+        ));
     }
     let bytes = match read_file(&path) {
         Some(b) => b,

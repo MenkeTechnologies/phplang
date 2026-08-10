@@ -263,9 +263,10 @@ fn strncasecmp(args: &[Value]) -> Result<Value, String> {
     let b = str_arg(args, 1);
     let n_raw = int_arg(args, 2);
     if n_raw < 0 {
-        return Err(
-            "strncasecmp(): Argument #3 ($length) must be greater than or equal to 0".into(),
-        );
+        return Err(throws(
+            "ValueError",
+            "strncasecmp(): Argument #3 ($length) must be greater than or equal to 0",
+        ));
     }
     let n = n_raw as usize;
     let ab = &a.as_bytes()[..n.min(a.len())];

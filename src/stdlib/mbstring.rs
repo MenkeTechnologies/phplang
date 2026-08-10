@@ -39,7 +39,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         "mb_strripos" => return Some(mb_strrpos(args, true)),
         "mb_substr_count" => return Some(mb_substr_count(args)),
         "mb_str_pad" => return Some(mb_str_pad(args)),
-        "mb_ord" => mb_ord(args),
+        "mb_ord" => return Some(mb_ord(args)),
         "mb_chr" => mb_chr(args),
         "mb_lcfirst" => Value::str(mb_lcfirst(&str_arg(args, 0))),
         "mb_ucfirst" => Value::str(mb_ucfirst(&str_arg(args, 0))),
@@ -180,9 +180,12 @@ fn mb_strpos(args: &[Value], ci: bool) -> Result<Value, String> {
     let len = hay.len() as i64;
     let off_raw = int_arg(args, 2);
     if off_raw > len || off_raw < -len {
-        return Err(format!(
-            "{}(): Argument #3 ($offset) must be contained in argument #1 ($haystack)",
-            if ci { "mb_stripos" } else { "mb_strpos" }
+        return Err(throws(
+            "ValueError",
+            format!(
+                "{}(): Argument #3 ($offset) must be contained in argument #1 ($haystack)",
+                if ci { "mb_stripos" } else { "mb_strpos" }
+            ),
         ));
     }
     let off = if off_raw < 0 {
@@ -210,9 +213,12 @@ fn mb_strrpos(args: &[Value], ci: bool) -> Result<Value, String> {
     let ilen = len as i64;
     let off = int_arg(args, 2);
     if off > ilen || off < -ilen {
-        return Err(format!(
-            "{}(): Argument #3 ($offset) must be contained in argument #1 ($haystack)",
-            if ci { "mb_strripos" } else { "mb_strrpos" }
+        return Err(throws(
+            "ValueError",
+            format!(
+                "{}(): Argument #3 ($offset) must be contained in argument #1 ($haystack)",
+                if ci { "mb_strripos" } else { "mb_strrpos" }
+            ),
         ));
     }
     if needle.is_empty() {
@@ -348,12 +354,17 @@ fn resolve_pad_type(v: &Value) -> i64 {
 
 // ── codepoint <-> character ──────────────────────────────────────────────────
 
-/// `mb_ord($string, $encoding = null)`: the codepoint of the first character, or
-/// `false` for an empty string.
-fn mb_ord(args: &[Value]) -> Value {
+/// `mb_ord($string, $encoding = null)`: the codepoint of the first character.
+///
+/// An empty string is a `ValueError`, not `false` — PHP 8 rejects it rather than
+/// answering a failure sentinel the way PHP 7 did.
+fn mb_ord(args: &[Value]) -> Result<Value, String> {
     match str_arg(args, 0).chars().next() {
-        Some(c) => Value::int(c as i64),
-        None => Value::bool(false),
+        Some(c) => Ok(Value::int(c as i64)),
+        None => Err(throws(
+            "ValueError",
+            "mb_ord(): Argument #1 ($string) must not be empty",
+        )),
     }
 }
 

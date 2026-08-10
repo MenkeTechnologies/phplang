@@ -5679,8 +5679,8 @@ pub const CORPUS: &[Entry] = &[
     (
         "get_class",
         "Reflection",
-        "get_class(object $object): string|false",
-        "The object's class name in its original DECLARED casing, or `false` for a non-object or a missing argument.",
+        "get_class(object $object = null): string",
+        "The object's class name in its original DECLARED casing. A non-object is a `TypeError` — returning `false` was PHP 7's answer — and a boolean is named in that message by its VALUE (`true given`), not as `bool`. Called with NO argument it answers the enclosing `__CLASS__` and raises `Deprecated: Calling get_class() without arguments is deprecated`; outside a class that form is an `Error` instead.",
         "class Foo {} echo get_class(new Foo);   // => Foo",
     ),
     (
@@ -5693,8 +5693,8 @@ pub const CORPUS: &[Entry] = &[
     (
         "get_object_vars",
         "Reflection",
-        "get_object_vars(object $object): array|false",
-        "Every property of the instance in insertion order. DIVERGENCE: there is no calling-scope filter, so private and protected properties are ALWAYS included regardless of where the call is made.",
+        "get_object_vars(object $object): array",
+        "The properties of the instance the CALLING SCOPE may see, in insertion order — public ones from outside the class, everything from inside a method of it. A non-object is a `TypeError`, including an array.",
         "class C { public $a = 1; } print_r(get_object_vars(new C));   // => Array\\n(\\n    [a] => 1\\n)",
     ),
     (
@@ -5707,8 +5707,8 @@ pub const CORPUS: &[Entry] = &[
     (
         "get_class_vars",
         "Reflection",
-        "get_class_vars(string $class): array|false",
-        "DIVERGENCE: a stub — an EMPTY array for any declared class, `false` for an undeclared one. Property defaults are stored as compiled chunks with no evaluator reachable from this module, so no names or values are reported.",
+        "get_class_vars(string $class): array",
+        "DIVERGENCE: a stub — an EMPTY array for any declared class, and `false` for an undeclared one where the reference raises `TypeError: get_class_vars(): Argument #1 ($class) must be a valid class name, <name> given`. Property defaults are stored as compiled chunks with no evaluator reachable from this module, so no names or values are reported.",
         "class C { public $a = 1; } print_r(get_class_vars(\"C\"));   // => Array\\n(\\n)",
     ),
     (

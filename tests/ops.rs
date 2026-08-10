@@ -504,3 +504,86 @@ fn the_swap_decides_which_operand_warns_first() {
         format!("{}Unsupported operand types: string + string", warn(1))
     );
 }
+
+// ── PHP_INT_MIN / -1: the four operations that overflow on it ────────────────
+
+/// `PHP_INT_MIN` divided by `-1` is the one case where the exact answer is one
+/// past `PHP_INT_MAX`, and each of the four operations that meet it resolves it
+/// differently. Every one of them panicked in debug Rust before this was pinned
+/// — `attempt to divide with overflow`, `attempt to calculate the remainder with
+/// overflow`, and `attempt to negate with overflow` — which is a crash where the
+/// reference produces a value or a catchable error.
+///
+/// Each expectation below was taken from `php 8.5.9`.
+#[test]
+fn int_min_over_minus_one_does_not_overflow() {
+    // `/` widens to float rather than reporting anything.
+    assert_eq!(
+        run("<?php var_dump(PHP_INT_MIN / -1);"),
+        "float(9.223372036854776E+18)\n"
+    );
+    // `%` is mathematically 0 even though the quotient is unrepresentable.
+    assert_eq!(run("<?php var_dump(PHP_INT_MIN % -1);"), "int(0)\n");
+    // `abs` widens for the same reason `-PHP_INT_MIN` does.
+    assert_eq!(
+        run("<?php var_dump(abs(PHP_INT_MIN));"),
+        "float(9.223372036854776E+18)\n"
+    );
+    assert_eq!(
+        run("<?php var_dump(-PHP_INT_MIN);"),
+        "float(9.223372036854776E+18)\n"
+    );
+    // `intdiv` must answer an int, so it is the only one that raises.
+    assert_eq!(
+        run("<?php try { intdiv(PHP_INT_MIN, -1); } \
+             catch (Throwable $e) { echo get_class($e), ': ', $e->getMessage(); }"),
+        "ArithmeticError: Division of PHP_INT_MIN by -1 is not an integer"
+    );
+}
+
+/// `intdiv`'s overflow is an `ArithmeticError` and its zero divisor a
+/// `DivisionByZeroError`. `DivisionByZeroError` EXTENDS `ArithmeticError`, so the
+/// narrow arm must not swallow the overflow — a test that caught only `Throwable`
+/// would pass with the two collapsed into one class.
+#[test]
+fn intdiv_overflow_and_zero_are_different_classes() {
+    assert_eq!(
+        run("<?php try { intdiv(PHP_INT_MIN, -1); } \
+             catch (DivisionByZeroError $e) { echo 'dbz'; } \
+             catch (ArithmeticError $e) { echo 'arith'; }"),
+        "arith"
+    );
+    assert_eq!(
+        run("<?php try { intdiv(1, 0); } \
+             catch (DivisionByZeroError $e) { echo 'dbz:', $e->getMessage(); }"),
+        "dbz:Division by zero"
+    );
+}
+
+/// The neighbouring values must keep the ordinary integer answers — a fix that
+/// widened or raised too eagerly would still pass the overflow test above.
+#[test]
+fn int_min_neighbours_stay_integers() {
+    assert_eq!(
+        run("<?php var_dump(intdiv(PHP_INT_MIN, 1));"),
+        "int(-9223372036854775808)\n"
+    );
+    assert_eq!(
+        run("<?php var_dump(intdiv(PHP_INT_MAX, -1));"),
+        "int(-9223372036854775807)\n"
+    );
+    assert_eq!(run("<?php var_dump(PHP_INT_MAX % -1);"), "int(0)\n");
+    assert_eq!(
+        run("<?php var_dump(abs(PHP_INT_MIN + 1));"),
+        "int(9223372036854775807)\n"
+    );
+    // Truncation toward zero, not flooring, on every sign combination.
+    assert_eq!(
+        run("<?php var_dump(intdiv(-7, 2), intdiv(7, -2), intdiv(-7, -2));"),
+        "int(-3)\nint(-3)\nint(3)\n"
+    );
+    assert_eq!(
+        run("<?php var_dump(-7 % 3, 7 % -3, -7 % -3);"),
+        "int(-1)\nint(1)\nint(-1)\n"
+    );
+}
