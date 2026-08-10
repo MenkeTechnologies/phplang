@@ -185,12 +185,16 @@ pub enum Expr {
         params: Vec<Param>,
         uses: Vec<Capture>,
         body: Vec<Stmt>,
+        /// The declared return type (`function (): int { … }`), or `None`.
+        ret: Option<TypeHint>,
     },
     /// An arrow function `fn(params) => expr` — its body is a single expression
     /// and every free variable is captured by value automatically.
     ArrowFn {
         params: Vec<Param>,
         body: Box<Expr>,
+        /// The declared return type (`fn (): int => …`), or `None`.
+        ret: Option<TypeHint>,
     },
     /// `new Class(args)` — instantiate an object (class name literal, or the
     /// `self`/`parent`/`static` keyword resolved at compile time).
@@ -390,6 +394,8 @@ pub enum StmtKind {
         name: String,
         params: Vec<Param>,
         body: Vec<Stmt>,
+        /// The declared return type (`function f(): int`), or `None`.
+        ret: Option<TypeHint>,
         /// `function &f()` — the function returns by reference, so `$r = &f()`
         /// aliases the storage its `return` names rather than copying its value.
         by_ref_return: bool,
@@ -435,6 +441,65 @@ pub struct CatchArm {
     pub body: Vec<Stmt>,
 }
 
+/// A type as written in a declaration: `int`, `?string`, `int|float`, `Foo\Bar`.
+///
+/// `?T` is normalised on the way in to the two-part union `T|null`, so nullability
+/// has one spelling here rather than two. The parts keep their SOURCE order and
+/// spelling; PHP reorders a union when it renders one in a diagnostic, which this
+/// engine does not reproduce (it never renders a union — see below).
+///
+/// Only a single scalar type is enforced at a call. A union, an intersection, a
+/// class name, `array`, `iterable`, `callable`, `mixed`, `object` and the return-only
+/// `void`/`never`/`static` are parsed and carried so the syntax is accepted, but
+/// they impose no check — exactly the pre-existing behaviour for every hint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeHint {
+    /// The alternatives of a union type. A plain type is a one-entry union.
+    pub parts: Vec<String>,
+}
+
+impl TypeHint {
+    /// The one scalar type this hint enforces, or `None` when it enforces nothing.
+    ///
+    /// A hint enforces a check only when it names exactly one type and that type is
+    /// one of PHP's four coercible scalars. `?int` reports `int` — the `null` part is
+    /// reported separately by [`TypeHint::nullable`] — because a nullable scalar
+    /// still checks its non-null case. Anything else (a union of two real types, a
+    /// class name, `array`, …) reports `None` and is left unchecked.
+    pub fn scalar(&self) -> Option<&str> {
+        let mut real = self
+            .parts
+            .iter()
+            .filter(|p| !p.eq_ignore_ascii_case("null"));
+        let one = real.next()?;
+        if real.next().is_some() {
+            return None;
+        }
+        match one.to_ascii_lowercase().as_str() {
+            "int" => Some("int"),
+            "float" => Some("float"),
+            "string" => Some("string"),
+            "bool" => Some("bool"),
+            _ => None,
+        }
+    }
+
+    /// Whether `null` is one of the accepted alternatives (`?T`, or `T|null`).
+    pub fn nullable(&self) -> bool {
+        self.parts.iter().any(|p| p.eq_ignore_ascii_case("null"))
+    }
+
+    /// How the type reads in a `TypeError`. A nullable scalar renders `?int`, which
+    /// is the spelling PHP uses for the single-type nullable form.
+    pub fn render(&self) -> String {
+        match (self.scalar(), self.nullable()) {
+            (Some(s), true) => format!("?{s}"),
+            (Some(s), false) => s.to_string(),
+            _ => self.parts.join("|"),
+        }
+    }
+}
+
 /// One formal parameter of a function definition: its name, an optional default
 /// value expression (used when the caller omits the argument), whether it is
 /// variadic (`...$rest`, collecting all trailing arguments into an array), and
@@ -443,6 +508,14 @@ pub struct CatchArm {
 #[derive(Debug, Clone)]
 pub struct Param {
     pub name: String,
+    /// The line the parameter is DECLARED on. PHP attributes an implicit-
+    /// conversion `Deprecated` to the declaration, not to the call, so the check
+    /// has to know where the parameter was written.
+    pub line: u32,
+    /// The declared type (`int $x`, `?string $s`, `int|float $n`), or `None` for
+    /// an untyped parameter. Only a single scalar type is *enforced* — see
+    /// [`TypeHint::scalar`].
+    pub ty: Option<TypeHint>,
     pub default: Option<Expr>,
     pub variadic: bool,
     pub promoted: bool,
@@ -563,6 +636,8 @@ pub struct Method {
     pub name: String,
     pub params: Vec<Param>,
     pub body: Vec<Stmt>,
+    /// The declared return type (`function m(): int`), or `None`.
+    pub ret: Option<TypeHint>,
     pub is_static: bool,
     pub visibility: Visibility,
     /// `function &m()` — see `StmtKind::Function::by_ref_return`.

@@ -139,10 +139,17 @@ pub const CORPUS: &[Entry] = &[
         "foreach ([1, 2, 3] as $v) { if ($v == 2) continue; echo $v; }   // => 13",
     ),
     (
+        "declare",
+        "Keyword",
+        "declare(directive=value);\ndeclare(directive=value) { body }   //  not for strict_types",
+        "Sets a compilation-unit directive. `strict_types=1` turns off the coercion a scalar parameter or return type would otherwise perform, so a value must already be of the declared type — with int→float widening the one exception, since it cannot lose anything. Its rules are all COMPILE-time, and each has its own message: it must be the very first statement (a preceding `declare` does not count against it, any other statement does), its value must be the literal `0` or `1`, and it may not use the block form even though `ticks` may. `ticks` is accepted and ignored — no tick handler exists to call. `encoding` is recognised and refused with the reference's own wording; any other directive warns `Unsupported declare`. DIVERGENCE: upstream reads the mode from the CALLER's file, so a strict file calling a non-strict file's function still checks strictly; phplang has no `include`, so a run is one file and the two readings coincide.",
+        "declare(strict_types=1); function f(int $x) { return $x; } f(\"5\");   // => TypeError",
+    ),
+    (
         "function",
         "Keyword",
         "function name(params) [: type] { body }\nfunction (params) [use (vars)] [: type] { body }   //  closure",
-        "Declares a named function as a statement, or an anonymous closure as an expression. Return-type hints are parsed and discarded — no type is enforced. A function with no `return` yields null.",
+        "Declares a named function as a statement, or an anonymous closure as an expression. A scalar parameter or return type (`int`, `float`, `string`, `bool`, and their `?` nullable forms) is ENFORCED: coerced on the way in by default, required exactly under `declare(strict_types=1)`. Any other type — a union, an intersection, a class name, `array`, `iterable`, `callable`, `mixed`, `object`, `void`, `never`, `static` — is parsed and carried but imposes no check. A function with no `return` yields null.",
         "function sq($x) { return $x * $x; } echo sq(4);   // => 16",
     ),
     (

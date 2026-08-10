@@ -8,7 +8,7 @@
 //! lives in a `thread_local!` `PhpHost`, so a fresh `VM` can be spun up per
 //! function call (see `call_function`) while sharing one heap.
 
-use crate::ast::Visibility;
+use crate::ast::{TypeHint, Visibility};
 use crate::errlevel;
 use fusevm::{Chunk, VMResult, Value, VM};
 use indexmap::IndexMap;
@@ -265,10 +265,15 @@ pub mod arrmut {
 #[derive(Debug, Clone)]
 pub struct Param {
     pub name: String,
+    /// The line the parameter is DECLARED on — where PHP reports a coercion
+    /// `Deprecated` against, rather than the call site.
+    pub line: u32,
     pub default: Option<Chunk>,
     pub variadic: bool,
     /// `&$x` — a by-reference parameter (final value copied back to the caller).
     pub by_ref: bool,
+    /// The declared type, carried from the source so the bind can check it.
+    pub ty: Option<TypeHint>,
 }
 
 /// A compiled user function: its parameters plus the lowered body chunk.
@@ -279,6 +284,8 @@ pub struct FuncDef {
     /// True when the body contains a `yield`: calling it builds a suspended
     /// `Generator` (a host-side stackful coroutine) instead of running the body.
     pub is_generator: bool,
+    /// The declared return type, checked on the way out of the call.
+    pub ret: Option<TypeHint>,
 }
 
 /// A closure unpacked for a call: its parameters, body chunk, captured bindings,
@@ -290,6 +297,8 @@ pub struct ClosureCall {
     pub bound_this: Option<Value>,
     pub scope: Option<String>,
     pub is_generator: bool,
+    /// The declared return type, checked on the way out of the call.
+    pub ret: Option<TypeHint>,
 }
 
 /// A compiled class: its parent (for single-inheritance resolution), constant and
@@ -401,6 +410,8 @@ pub enum PhpObj {
         bound_this: Option<Value>,
         scope: Option<String>,
         is_generator: bool,
+        /// The declared return type, checked on the way out of a call.
+        ret: Option<TypeHint>,
     },
     /// A live generator: an index into `PhpHost::generators`, where the suspended
     /// stackful coroutine and its execution context live. Built by calling a
@@ -515,6 +526,13 @@ pub struct PhpHost {
     /// What a diagnostic names as the source: the script path, or
     /// `"Command line code"` for `php -r`. Set once at startup.
     script_name: String,
+    /// Whether this compilation unit declared `strict_types=1`.
+    ///
+    /// Upstream this is PER FILE and read from the CALLER's file, so a strict file
+    /// calling a non-strict file's function still checks strictly. This engine has
+    /// no `include`, so a run is exactly one file and the two readings coincide;
+    /// the flag is therefore whole-program without being unfaithful.
+    strict_types: bool,
     /// The source line a diagnostic raised right now belongs to. The builtin that
     /// is about to warn records it from the line table of the op it is executing,
     /// so the host never has to walk the VM.
@@ -804,6 +822,7 @@ impl PhpHost {
             readonly_init: FxHashMap::default(),
             magic_in_progress: Vec::new(),
             transient_objs: FxHashSet::default(),
+            strict_types: false,
         };
         h.init_superglobals();
         // `-d` overrides land before the program is read, so a compile-time
@@ -1141,6 +1160,129 @@ impl PhpHost {
     /// sends to stderr is not reproduced: nothing observes it.
     pub fn warn(&mut self, msg: impl std::fmt::Display) {
         self.diagnose("Warning", errlevel::E_WARNING, self.warn_line, msg);
+    }
+
+    /// Record whether this run declared `strict_types=1`. Set once, from the
+    /// parse, before the program runs.
+    pub fn set_strict_types(&mut self, on: bool) {
+        self.strict_types = on;
+    }
+
+    /// Whether this run declared `strict_types=1`.
+    pub fn strict_types(&self) -> bool {
+        self.strict_types
+    }
+
+    /// How a value's type reads in a `TypeError`: PHP names the four scalars and
+    /// `null` in lower case, an array as `array`, and an object by its CLASS.
+    fn type_name_for_error(&self, v: &Value) -> String {
+        match v {
+            Value::Undef => "null".to_string(),
+            Value::Bool(b) => if *b { "true" } else { "false" }.to_string(),
+            Value::Int(_) => "int".to_string(),
+            Value::Float(_) => "float".to_string(),
+            Value::Str(_) => "string".to_string(),
+            Value::Obj(_) => match self.as_array(v) {
+                Some(PhpObj::Array { .. }) => "array".to_string(),
+                _ => self.object_class(v).unwrap_or_else(|| "object".to_string()),
+            },
+            _ => "mixed".to_string(),
+        }
+    }
+
+    /// Apply a declared scalar type to `v`, returning the value the callee should
+    /// see, or `Err(actual_type_name)` when it does not satisfy the declaration.
+    ///
+    /// This is the ONE place the two typing modes differ, and the whole of what
+    /// `declare(strict_types=1)` changes:
+    ///
+    /// - **Coercive** (the default): a scalar is converted to the declared type on
+    ///   the way in. A string is accepted only when it is fully numeric — a
+    ///   trailing-garbage string like `"5abc"` is a `TypeError`, not a 5 — and a
+    ///   conversion that loses information (float `5.9`, or the float-string
+    ///   `"5.5"`, into an `int`) is performed but `Deprecated`-warned.
+    /// - **Strict**: the value must ALREADY be of the declared type. The single
+    ///   exception is the int→float widening, which is still allowed because it is
+    ///   the one conversion that cannot lose a value.
+    ///
+    /// `null` satisfies a nullable declaration in either mode and nothing else; an
+    /// array or object satisfies neither, in either mode.
+    fn apply_scalar_type(&mut self, v: Value, ty: &TypeHint) -> Result<Value, String> {
+        let Some(want) = ty.scalar() else {
+            return Ok(v);
+        };
+        if matches!(v, Value::Undef) {
+            return if ty.nullable() {
+                Ok(Value::Undef)
+            } else {
+                Err("null".to_string())
+            };
+        }
+        let strict = self.strict_types;
+        match (want, &v) {
+            // Already the declared type — nothing to do in either mode.
+            ("int", Value::Int(_))
+            | ("float", Value::Float(_))
+            | ("string", Value::Str(_))
+            | ("bool", Value::Bool(_)) => Ok(v),
+            // int→float widens even under strict: it is the one conversion PHP
+            // considers lossless, so `f(float $x)` takes `f(5)` in both modes.
+            ("float", Value::Int(i)) => Ok(Value::Float(*i as f64)),
+            _ if strict => Err(self.type_name_for_error(&v)),
+            // Below here the mode is coercive, and only scalars convert.
+            _ if !matches!(
+                v,
+                Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::Str(_)
+            ) =>
+            {
+                Err(self.type_name_for_error(&v))
+            }
+            ("bool", _) => Ok(Value::bool(self.is_truthy(&v))),
+            ("string", _) => Ok(Value::str(self.to_str(&v))),
+            ("int", Value::Str(_)) | ("float", Value::Str(_)) => {
+                let s = self.to_str(&v);
+                // Only a FULLY numeric string converts. A trailing-garbage string
+                // like `"5abc"` is a `TypeError` here, not a 5 — which is what
+                // separates a parameter bind from an arithmetic operand, where the
+                // same string would warn and carry on.
+                let Some(num) = parse_php_number_full(&s) else {
+                    return Err("string".to_string());
+                };
+                match (want, &num) {
+                    ("float", n) => Ok(Value::Float(n.to_float())),
+                    (_, Value::Int(i)) => Ok(Value::Int(*i)),
+                    (_, n) => {
+                        let f = n.to_float();
+                        if f.fract() != 0.0 {
+                            self.deprecated(format!(
+                                "Implicit conversion from float-string \"{s}\" to int loses precision"
+                            ));
+                        }
+                        Ok(Value::Int(f as i64))
+                    }
+                }
+            }
+            ("int", Value::Float(f)) => {
+                let f = *f;
+                if f.fract() != 0.0 {
+                    self.deprecated(format!(
+                        "Implicit conversion from float {} to int loses precision",
+                        self.to_str(&Value::Float(f))
+                    ));
+                }
+                Ok(Value::Int(f as i64))
+            }
+            ("int", Value::Bool(b)) => Ok(Value::Int(i64::from(*b))),
+            ("float", Value::Bool(b)) => Ok(Value::Float(f64::from(*b))),
+            _ => Err(self.type_name_for_error(&v)),
+        }
+    }
+
+    /// A `Warning` about a specific source line rather than the one the runtime
+    /// last touched — used for the compile-time diagnostics, which are issued
+    /// before any statement has run and so have no "current" line to borrow.
+    pub fn warn_at(&mut self, msg: impl std::fmt::Display, line: u32) {
+        self.diagnose("Warning", errlevel::E_WARNING, line, msg);
     }
 
     /// Emit a PHP `Deprecated` diagnostic. Same stream and shape as [`warn`],
@@ -1966,6 +2108,7 @@ impl PhpHost {
             bound_this,
             scope,
             is_generator: def.is_generator,
+            ret: def.ret,
         });
         Value::Obj((self.objs.len() - 1) as u32)
     }
@@ -1982,6 +2125,7 @@ impl PhpHost {
                 bound_this,
                 scope,
                 is_generator,
+                ret,
             }) => Some(ClosureCall {
                 params: params.clone(),
                 chunk: (**chunk).clone(),
@@ -1989,6 +2133,7 @@ impl PhpHost {
                 bound_this: bound_this.clone(),
                 scope: scope.clone(),
                 is_generator: *is_generator,
+                ret: ret.clone(),
             }),
             _ => None,
         }
@@ -2003,18 +2148,20 @@ impl PhpHost {
         this: Option<Value>,
         scope: Option<String>,
     ) -> Option<Value> {
-        let (params, chunk, captured, is_generator) = match self.as_array(v) {
+        let (params, chunk, captured, is_generator, ret) = match self.as_array(v) {
             Some(PhpObj::Closure {
                 params,
                 chunk,
                 captured,
                 is_generator,
+                ret,
                 ..
             }) => (
                 params.clone(),
                 chunk.clone(),
                 captured.clone(),
                 *is_generator,
+                ret.clone(),
             ),
             _ => return None,
         };
@@ -2025,6 +2172,7 @@ impl PhpHost {
             bound_this: this,
             scope,
             is_generator,
+            ret,
         });
         Some(Value::Obj((self.objs.len() - 1) as u32))
     }
@@ -4625,7 +4773,10 @@ pub fn call_function(name: &str, args: Vec<Value>) -> Result<Value, String> {
     if let Some(def) = def {
         return invoke(
             name,
-            &def.params,
+            Signature {
+                params: &def.params,
+                ret: def.ret.as_ref(),
+            },
             def.chunk,
             Vec::new(),
             args,
@@ -4673,7 +4824,10 @@ pub fn call_function_named(
     if let Some(def) = def {
         return invoke(
             name,
-            &def.params,
+            Signature {
+                params: &def.params,
+                ret: def.ret.as_ref(),
+            },
             def.chunk,
             Vec::new(),
             args,
@@ -4693,15 +4847,193 @@ pub fn call_function_named(
 /// the body fell off the end). Default chunks run OUTSIDE the binding `with_host`
 /// closure because `run_chunk_on` itself borrows the thread-local host.
 #[allow(clippy::too_many_arguments)]
-fn invoke(
+/// Apply each declared parameter type to the argument bound to it, returning the
+/// values the callee should actually see.
+///
+/// Runs BEFORE any binding, because a `TypeError` here means the call never
+/// happens — no scope is pushed and no default is evaluated. A parameter with no
+/// type, or one whose type is not an enforced scalar, passes its argument through
+/// untouched, which is what every parameter did before types were carried at all.
+/// A frame name as it should READ in a diagnostic.
+///
+/// `resolve_method` keys classes by their lowercased name and hands that back, so
+/// a frame arrives as `c::m` where PHP writes `C::m`. The declared spelling is
+/// recovered here rather than at the call sites, which use the frame for scope
+/// lookups that must keep matching case-insensitively.
+fn display_frame(frame: &str) -> String {
+    match frame.split_once("::") {
+        Some((cls, rest)) => {
+            let shown = with_host(|h| h.class_display_name(&cls.to_ascii_lowercase()));
+            format!("{shown}::{rest}")
+        }
+        None => frame.to_string(),
+    }
+}
+
+/// `Ok(None)` means a `TypeError` was raised and is pending: the call must not
+/// happen, and the caller returns null while the dispatcher unwinds it.
+type ArgCheck = Result<Option<(Vec<Value>, Vec<(String, Value)>)>, String>;
+
+fn check_arg_types(
     frame: &str,
     params: &[Param],
+    args: Vec<Value>,
+    named: Vec<(String, Value)>,
+) -> ArgCheck {
+    if params.iter().all(|p| p.ty.is_none()) {
+        return Ok(Some((args, named)));
+    }
+    // The trace frame prints the arguments AS CALLED, so it is built from the
+    // originals rather than from whatever survived coercion.
+    let called_with = args.clone();
+    let mut out = Vec::with_capacity(args.len());
+    for (i, a) in args.into_iter().enumerate() {
+        // Past the last declared parameter every remaining argument belongs to the
+        // variadic one, and so is checked against ITS type.
+        let p = params
+            .get(i)
+            .or_else(|| params.last().filter(|p| p.variadic));
+        match coerce_arg(p, a)? {
+            Ok(v) => out.push(v),
+            Err(given) => {
+                arg_type_error(frame, &called_with, p, i + 1, &given)?;
+                return Ok(None);
+            }
+        }
+    }
+    let mut nout = Vec::with_capacity(named.len());
+    for (n, v) in named {
+        let pos = params.iter().position(|p| !p.variadic && p.name == n);
+        let p = pos.map(|i| &params[i]);
+        match coerce_arg(p, v)? {
+            Ok(v) => nout.push((n, v)),
+            Err(given) => {
+                arg_type_error(frame, &called_with, p, pos.map_or(0, |i| i + 1), &given)?;
+                return Ok(None);
+            }
+        }
+    }
+    Ok(Some((out, nout)))
+}
+
+/// One argument against one parameter's declared type. The inner `Result` is the
+/// TYPE verdict — `Err(name)` carrying the type the value actually had — while the
+/// outer one is reserved for a host failure.
+#[allow(clippy::type_complexity)]
+fn coerce_arg(p: Option<&Param>, v: Value) -> Result<Result<Value, String>, String> {
+    let Some(p) = p else { return Ok(Ok(v)) };
+    let Some(ty) = &p.ty else { return Ok(Ok(v)) };
+    // A by-reference parameter arrives as a cell rather than a value; checking it
+    // would read through an alias the callee may legitimately rewrite, so it is
+    // left alone — as is a default, which PHP checks at declaration, not per call.
+    if p.by_ref {
+        return Ok(Ok(v));
+    }
+    let ty = ty.clone();
+    // A lossy implicit conversion is reported against the PARAMETER's declaration,
+    // not against the call — `f(int $x)` on line 2 called from line 9 names line 2
+    // — so the diagnostic line is moved for the duration of the check and put back
+    // after it, leaving the caller's line intact for anything the body warns about.
+    Ok(with_host(|h| {
+        let saved = h.warn_line;
+        h.warn_line = p.line;
+        let r = h.apply_scalar_type(v, &ty);
+        h.warn_line = saved;
+        r
+    }))
+}
+
+/// Raise the `TypeError` for an argument that did not satisfy its declared type,
+/// from a frame naming the callee — so the trace reads `#0 file(line): f('abc')`
+/// exactly as it does when the reference rejects the same call.
+fn arg_type_error(
+    frame: &str,
+    called_with: &[Value],
+    p: Option<&Param>,
+    pos: usize,
+    given: &str,
+) -> Result<Value, String> {
+    let (name, ty) = match p {
+        // A variadic parameter has no name in the message: PHP writes
+        // `Argument #2 must be of type int`, with no `($xs)` after the number.
+        Some(p) if p.variadic => (String::new(), p.ty.clone()),
+        Some(p) => (format!(" (${})", p.name), p.ty.clone()),
+        None => (String::new(), None),
+    };
+    let rendered = ty.map(|t| t.render()).unwrap_or_default();
+    let (file, line) = with_host(|h| (h.script_name().to_string(), h.cur_frame_line()));
+    let shown = display_frame(frame);
+    throw_from_internal(
+        frame,
+        called_with,
+        "TypeError",
+        &format!(
+            "{shown}(): Argument #{pos}{name} must be of type {rendered}, {given} given, \
+             called in {file} on line {line}"
+        ),
+    )
+}
+
+/// Apply a declared return type to the value a body produced. Like the argument
+/// check, a failure raises a pending `TypeError` and yields null.
+fn check_ret_type(
+    frame: &str,
+    ret: Option<&TypeHint>,
+    called_with: &[Value],
+    v: Value,
+) -> Result<Value, String> {
+    let Some(ty) = ret else { return Ok(v) };
+    if ty.scalar().is_none() {
+        return Ok(v);
+    }
+    let ty = ty.clone();
+    match with_host(|h| h.apply_scalar_type(v, &ty)) {
+        Ok(nv) => Ok(nv),
+        // A return diagnostic names no call site — the `return` IS the site — but
+        // the trace still enters the function the value was returned from.
+        Err(given) => throw_from_internal(
+            frame,
+            called_with,
+            "TypeError",
+            &format!(
+                "{}(): Return value must be of type {}, {given} returned",
+                display_frame(frame),
+                ty.render()
+            ),
+        ),
+    }
+}
+
+/// A callee's declared signature: the parameters to bind on the way in and the
+/// return type to check on the way out. The two travel together because every
+/// caller of [`invoke`] has both and `invoke` reads them at opposite ends of the
+/// same call.
+struct Signature<'a> {
+    params: &'a [Param],
+    ret: Option<&'a TypeHint>,
+}
+
+fn invoke(
+    frame: &str,
+    sig: Signature<'_>,
     body: Chunk,
     pre: Vec<(String, Value)>,
     args: Vec<Value>,
     named: Vec<(String, Value)>,
     is_generator: bool,
 ) -> Result<Value, String> {
+    let Signature { params, ret } = sig;
+    let Some((args, named)) = check_arg_types(frame, params, args, named)? else {
+        // The call was rejected before it began: a `TypeError` is pending and the
+        // dispatcher will unwind it.
+        return Ok(Value::Undef);
+    };
+    // The trace of a return-type failure prints the arguments the call was made
+    // with, so they are kept only when there is such a type to fail.
+    let ret_args: Vec<Value> = match ret.filter(|t| t.scalar().is_some()) {
+        Some(_) => args.clone(),
+        None => Vec::new(),
+    };
     // Which parameter positions a positional or named argument (or a null-fill for
     // a no-default omitted param) already bound — so the default pass below runs
     // only the chunks that are actually needed. Computed inside the binding closure.
@@ -4866,9 +5198,12 @@ fn invoke(
     // scope pop and takes precedence — the caller's dispatcher checks
     // `has_pending_throw` and re-halts to keep it bubbling.
     match sig {
-        Some(Signal::Return(v)) => Ok(v),
+        Some(Signal::Return(v)) => check_ret_type(frame, ret, &ret_args, v),
         // A `break`/`continue` that escapes a function body has no loop to
-        // target; PHP treats it as falling off the end (null result).
+        // target; PHP treats it as falling off the end (null result). Falling off
+        // the end is NOT checked against the return type: a `void` function does
+        // it by design, and a typed one that reaches the end without returning is
+        // a separate diagnostic this engine does not raise.
         Some(Signal::Break(_)) | Some(Signal::Continue(_)) | None => r.map(|_| Value::Undef),
     }
 }
@@ -4894,7 +5229,10 @@ fn invoke_closure(
     }
     invoke(
         &frame,
-        &cc.params,
+        Signature {
+            params: &cc.params,
+            ret: cc.ret.as_ref(),
+        },
         cc.chunk,
         pre,
         args,
@@ -5230,7 +5568,10 @@ pub fn call_method(
     with_host(|h| h.lsb_set_for_next_call(class));
     invoke(
         &format!("{def_class}::{method}"),
-        &def.params,
+        Signature {
+            params: &def.params,
+            ret: def.ret.as_ref(),
+        },
         def.chunk,
         pre,
         args,
@@ -5324,7 +5665,10 @@ fn call_magic_call_packed(
     with_host(|h| h.lsb_set_for_next_call(class));
     invoke(
         &format!("{def_class}::{magic}"),
-        &def.params,
+        Signature {
+            params: &def.params,
+            ret: def.ret.as_ref(),
+        },
         def.chunk,
         pre,
         magic_args,
@@ -5388,7 +5732,10 @@ pub fn call_method_named(
     with_host(|h| h.lsb_set_for_next_call(class));
     invoke(
         &format!("{def_class}::{method}"),
-        &def.params,
+        Signature {
+            params: &def.params,
+            ret: def.ret.as_ref(),
+        },
         def.chunk,
         pre,
         args,

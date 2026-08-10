@@ -165,9 +165,11 @@ impl Compiler {
             };
             out.push(host::Param {
                 name: p.name.clone(),
+                line: p.line,
                 default,
                 variadic: p.variadic,
                 by_ref: p.by_ref,
+                ty: p.ty.clone(),
             });
         }
         Ok(out)
@@ -400,6 +402,7 @@ impl Compiler {
                 name,
                 params,
                 body,
+                ret,
                 by_ref_return,
             } => {
                 // Each default-value expression is lowered to its own tiny chunk,
@@ -419,6 +422,7 @@ impl Compiler {
                         params: cparams,
                         chunk: fb.build(),
                         is_generator: body_has_yield(body),
+                        ret: ret.clone(),
                     },
                 ));
             }
@@ -1026,6 +1030,7 @@ impl Compiler {
                     params: cparams,
                     chunk: mb.build(),
                     is_generator: body_has_yield(&m.body),
+                    ret: m.ret.clone(),
                 },
             );
         }
@@ -1754,10 +1759,19 @@ impl Compiler {
                     self.cur_line,
                 );
             }
-            Expr::Closure { params, uses, body } => {
-                self.compile_closure(b, params, uses, body)?;
+            Expr::Closure {
+                params,
+                uses,
+                body,
+                ret,
+            } => {
+                self.compile_closure(b, params, uses, body, ret.as_ref())?;
             }
-            Expr::ArrowFn { params, body } => {
+            Expr::ArrowFn {
+                params,
+                body,
+                ret: ret_ty,
+            } => {
                 // An arrow fn desugars to a closure whose single-statement body
                 // returns the expression; it captures every free variable of the
                 // body (minus its own parameters) by value.
@@ -1777,7 +1791,7 @@ impl Compiler {
                         by_ref: false,
                     })
                     .collect();
-                self.compile_closure(b, params, &captures, &ret)?;
+                self.compile_closure(b, params, &captures, &ret, ret_ty.as_ref())?;
             }
             // The declaration is compiled here, once, and the expression becomes
             // an ordinary `new` on the name it was given — so re-evaluating it
@@ -2952,6 +2966,7 @@ impl Compiler {
         params: &[Param],
         captures: &[Capture],
         body: &[Stmt],
+        ret: Option<&TypeHint>,
     ) -> Result<(), String> {
         let cparams = self.compile_params(params)?;
         let mut fb = ChunkBuilder::new();
@@ -2967,6 +2982,7 @@ impl Compiler {
                 params: cparams,
                 chunk: fb.build(),
                 is_generator: body_has_yield(body),
+                ret: ret.cloned(),
             },
         ));
 
@@ -3283,7 +3299,7 @@ fn collect_free_vars(e: &Expr, out: &mut Vec<String>) {
         // A nested arrow fn captures its own body's free variables minus its
         // parameters; those free names must in turn be captured by the enclosing
         // arrow fn so the binding is available when the inner one runs.
-        Expr::ArrowFn { params, body } => {
+        Expr::ArrowFn { params, body, .. } => {
             let mut inner = Vec::new();
             collect_free_vars(body, &mut inner);
             for n in inner {

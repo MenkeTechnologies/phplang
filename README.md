@@ -325,12 +325,37 @@ end-to-end (see `tests/basic.rs`):
 
 ## [0x04] NOT YET (LATER WAVES)
 
-Strict typed-parameter enforcement (type hints are parsed but not enforced —
-phplang follows PHP's coercive/weak-typing mode) and true (non-flat) namespaces
-with `as` alias remapping. A few current deviations, documented
-in-code:
+True (non-flat) namespaces with `as` alias remapping. A few current deviations,
+documented in-code:
 
-- Default parameter values are not restricted to constant expressions.
+- Only a SCALAR type declaration is enforced — `int`, `float`, `string`, `bool`
+  and their `?` nullable forms, on a parameter or a return. Every other type is
+  parsed and carried but checks nothing: a union (`int|string`), an intersection,
+  a class name, `array`, `iterable`, `callable`, `mixed`, `object`, and the
+  return-only `void`/`never`/`static`. A value that would not satisfy one of
+  those passes through where the reference raises a `TypeError`.
+- `declare(strict_types=1)` is whole-program rather than per-file. Upstream reads
+  the mode from the file containing the CALL, so a strict file calling a
+  non-strict file's function still checks strictly; phplang has no `include`, so
+  a run is exactly one file and the two readings coincide. If `include` is added,
+  this becomes a real divergence and the flag has to move onto the call site.
+- A callback invoked BY a library function (`array_map`, `usort`) is checked in
+  whatever mode the program declared. Upstream treats an internal caller as
+  having no strict-mode file and so coerces, while `call_user_func` forwards the
+  caller's mode; phplang forwards it in both cases.
+- The UNCAUGHT rendering of a parameter/return `TypeError` names the CALL site
+  where the reference names the function's DEFINITION — `in file:9` rather than
+  ` and defined in file:2` — because no definition line is recorded for a
+  function. `getMessage()` itself is byte-exact, which is what a `catch` sees.
+- A closure's frame reads `{closure}` where PHP 8.4+ writes
+  `{closure:file:line}`, so a `TypeError` from a typed closure parameter differs
+  in that name alone.
+- A typed parameter that is also by-reference (`int &$x`) is not checked: it is
+  an alias the callee may rewrite, and reading through it to check would report
+  on a value the caller still owns.
+- Default parameter values are not restricted to constant expressions, and a
+  default is not checked against the parameter's declared type (upstream checks
+  it once, at declaration).
 - The by-reference OUT parameter is implemented for `preg_match`/
   `preg_match_all`/`preg_replace`(`_callback`)/`parse_str`/`similar_text`/
   `str_replace`/`settype` and not for the rest of the library

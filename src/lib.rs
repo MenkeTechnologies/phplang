@@ -28,14 +28,29 @@ pub use fusevm::Value;
 
 /// Compile a PHP source string to a runnable program.
 pub fn compile(src: &str) -> Result<compiler::Program, String> {
-    let stmts = parser::parse(src)?;
-    compiler::compile(&stmts, false)
+    compile_with_meta(src, false)
 }
 
 /// Compile with per-statement DAP line markers enabled (`php --dap`).
 pub fn compile_debug(src: &str) -> Result<compiler::Program, String> {
-    let stmts = parser::parse(src)?;
-    compiler::compile(&stmts, true)
+    compile_with_meta(src, true)
+}
+
+/// The shared body of [`compile`] and [`compile_debug`].
+///
+/// The file-level facts the parse turns up have to be applied HERE rather than only
+/// on the CLI path: `declare(strict_types=1)` changes how every later call binds its
+/// arguments, so a program compiled through the library API would otherwise run in
+/// coercive mode however it was written.
+fn compile_with_meta(src: &str, debug: bool) -> Result<compiler::Program, String> {
+    let (stmts, meta) = parser::parse_meta(src).map_err(|e| e.message)?;
+    host::with_host(|h| {
+        for (line, msg) in &meta.declare_warnings {
+            h.warn_at(msg, *line);
+        }
+        h.set_strict_types(meta.strict_types);
+    });
+    compiler::compile(&stmts, debug)
 }
 
 /// The built-in exception class hierarchy, written in PHP so it flows through the
@@ -380,7 +395,13 @@ fn prelude_defs() -> &'static PreludeDefs {
     static CACHE: OnceLock<PreludeDefs> = OnceLock::new();
     CACHE.get_or_init(|| {
         let src = format!("{EXCEPTION_PRELUDE}{DATETIME_PRELUDE}{SPL_PRELUDE}");
-        let prog = compile(&src).expect("prelude compiles");
+        // NOT `compile`: that applies the file-level facts of whatever it is given,
+        // and this runs from `load_merged` — after the user program was compiled —
+        // so going through it would reset the typing mode the user's own
+        // `declare(strict_types=1)` had just set. The prelude declares nothing of
+        // the sort, so it has no facts of its own to apply.
+        let stmts = parser::parse(&src).expect("prelude parses");
+        let prog = compiler::compile(&stmts, false).expect("prelude compiles");
         (prog.functions, prog.classes)
     })
 }
@@ -443,14 +464,13 @@ pub fn eval_str(src: &str) -> Result<Value, String> {
 /// no reference equivalent (it is scaffold-specific), so it falls through to the
 /// terse `php: …` form.
 fn compile_cli(src: &str) -> Result<compiler::Program, String> {
-    let stmts = match parser::parse(src) {
-        Ok(s) => s,
-        Err(e) => {
-            host::with_host(|h| h.fatal("Parse error", &e));
-            return Err(e);
-        }
-    };
-    compiler::compile(&stmts, false)
+    if let Err(e) = parser::parse_meta(src) {
+        // A `declare(strict_types=…)` violation is a `Fatal error`, not a
+        // `Parse error`; both stop the run before it produces any output.
+        host::with_host(|h| h.fatal(e.severity, &e.message));
+        return Err(e.message);
+    }
+    compile(src)
 }
 
 /// [`eval_str`] for the CLI: identical, except a syntax error is displayed in

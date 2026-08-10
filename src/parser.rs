@@ -155,24 +155,76 @@ fn cast_fn(t: &str) -> Option<&'static str> {
     }
 }
 
+/// A parse failure, carrying the SEVERITY PHP prints it under.
+///
+/// Almost every failure is a `Parse error`, but the `declare(strict_types=…)`
+/// constraints are rejected as a `Fatal error` — a different word, a stack trace
+/// after it, and the same "nothing ran" outcome. The distinction is only visible
+/// on stdout, which is exactly what the parity harness compares.
+#[derive(Debug, Clone)]
+pub struct ParseFail {
+    /// `"Parse error"` or `"Fatal error"`.
+    pub severity: &'static str,
+    pub message: String,
+}
+
+/// What the parse learned about the compilation unit as a whole, beyond its
+/// statements.
+#[derive(Debug, Clone, Default)]
+pub struct ParseMeta {
+    /// `declare(strict_types=1)` was in force for this file.
+    pub strict_types: bool,
+    /// `(line, message)` for each `declare` warning, to be issued before the run.
+    pub declare_warnings: Vec<(u32, String)>,
+}
+
 /// Parse a PHP source string into a statement list. Inline `rust { ... }` FFI
 /// blocks are desugared to `__rust_compile(...)` calls before lexing.
 pub fn parse(src: &str) -> Result<Vec<Stmt>, String> {
+    parse_meta(src).map(|(s, _)| s).map_err(|e| e.message)
+}
+
+/// [`parse`], keeping the severity of a failure and the file-level facts a plain
+/// statement list cannot carry. The CLI uses this so a `declare` violation prints
+/// under the word PHP prints it under.
+pub fn parse_meta(src: &str) -> Result<(Vec<Stmt>, ParseMeta), ParseFail> {
     let src = crate::rust_ffi::desugar(src);
     lexer::clear_diags();
-    let toks = lexer::lex(&src)?;
+    let toks = lexer::lex(&src).map_err(|e| ParseFail {
+        severity: "Parse error",
+        message: e,
+    })?;
     let mut p = Parser {
         toks,
         pos: 0,
         pending_attrs: Vec::new(),
         top_level: true,
+        only_declares_so_far: true,
+        strict_types: false,
+        declare_warnings: Vec::new(),
     };
     let mut stmts = Vec::new();
     while !p.at_end() {
-        stmts.push(p.statement()?);
+        let was_declare = p.at_kw("declare");
+        let stmt = p.statement().map_err(|e| p.classify(e))?;
+        // A `declare` does not close the window `strict_types` must appear in;
+        // every other statement does, inline HTML in front of `<?php` included.
+        if !was_declare {
+            p.only_declares_so_far = false;
+        }
+        stmts.push(stmt);
     }
-    Ok(stmts)
+    let meta = ParseMeta {
+        strict_types: p.strict_types,
+        declare_warnings: std::mem::take(&mut p.declare_warnings),
+    };
+    Ok((stmts, meta))
 }
+
+/// The marker `Parser::fatal_at` wraps a message in so `Parser::classify` can tell
+/// a `Fatal error` apart from an ordinary syntax error on the way back out. It is
+/// a control character, so no source text can forge one.
+const FATAL_MARK: char = '\u{1}';
 
 /// Turn the lexer's string segments into parsed ones: a bare `$name` becomes the
 /// expression that reads it, and a [`StrPart::Raw`] — `{$expr}`, `$a->p`, `$a[k]`
@@ -193,6 +245,9 @@ fn resolve_interp_parts(parts: Vec<StrPart>) -> Result<Vec<InterpPart>, String> 
                     // An interpolation is a bare expression, never a statement,
                     // so no declaration can appear in it and the value is moot.
                     top_level: false,
+                    only_declares_so_far: false,
+                    strict_types: false,
+                    declare_warnings: Vec::new(),
                 };
                 let e = inner.expression()?;
                 if !inner.at_punct(";") {
@@ -216,6 +271,16 @@ struct Parser {
     /// treats the same way. False anywhere inside a function body, an `if`, a
     /// loop, or any other brace-delimited block.
     ///
+    /// Whether every statement parsed so far was a `declare`. `strict_types` is
+    /// legal only while this holds: PHP requires it to be the very first statement
+    /// but does NOT count a preceding `declare` of any directive against it.
+    only_declares_so_far: bool,
+    /// Whether `declare(strict_types=1)` was seen, i.e. whether this compilation
+    /// unit runs in strict mode.
+    strict_types: bool,
+    /// `(line, message)` for each `declare` PHP warns about — its full text, since
+    /// the two warned-about directives do not share one wording.
+    declare_warnings: Vec<(u32, String)>,
     /// Only the `const` declaration reads this: it is a top-level statement
     /// upstream, so `if (x) { const A = 1; }` is a syntax error there and must
     /// be one here.
@@ -302,6 +367,31 @@ impl Parser {
     /// wrong more often than no list.
     fn syntax_error(&self) -> String {
         self.syntax_error_at(self.pos)
+    }
+
+    /// A COMPILE-time `Fatal error` at `line`, in PHP's rendering: the message,
+    /// the script and line it names, and the empty stack trace it carries (these
+    /// are `CompileError`s upstream, which is why one has a trace at all).
+    ///
+    /// Marked so [`Parser::classify`] can recover the severity on the way out;
+    /// `parse` (which yields only a string) drops the marker with it.
+    fn fatal_at(&self, line: u32, msg: String) -> String {
+        let file = crate::host::with_host(|h| h.script_name().to_string());
+        format!("{FATAL_MARK}{msg} in {file} on line {line}\nStack trace:\n#0 {{main}}")
+    }
+
+    /// Split a raised message back into the severity PHP prints it under.
+    fn classify(&self, e: String) -> ParseFail {
+        match e.strip_prefix(FATAL_MARK) {
+            Some(rest) => ParseFail {
+                severity: "Fatal error",
+                message: rest.to_string(),
+            },
+            None => ParseFail {
+                severity: "Parse error",
+                message: e,
+            },
+        }
     }
 
     /// [`syntax_error`](Self::syntax_error) for a token the caller has already
@@ -418,6 +508,7 @@ impl Parser {
                 self.expect_punct(";")?;
                 StmtKind::Echo(vec![e])
             }
+            _ if self.at_kw("declare") => self.declare_stmt()?,
             _ if self.at_kw("namespace") => self.namespace_stmt()?,
             _ if self.at_kw("use") => self.use_import_stmt()?,
             // `const NAME = expr, ...;` — the declaration spelling of a global
@@ -770,14 +861,120 @@ impl Parser {
             _ => return Err(self.syntax_error_at(self.pos - 1)),
         };
         let params = self.param_list()?;
-        self.skip_return_type();
+        let ret = self.return_type()?;
         let body = self.block()?;
         Ok(StmtKind::Function {
             name,
             params,
             body,
+            ret,
             by_ref_return,
         })
+    }
+
+    /// `declare(directive=value);` or `declare(directive=value) { ... }`.
+    ///
+    /// `strict_types` is the only directive with an effect here; it is also the only
+    /// one PHP constrains, and every constraint is a COMPILE-time one — the script
+    /// produces no output at all before the diagnostic, which is why these are
+    /// raised from the parser rather than emitted as a runtime fatal:
+    ///
+    /// - it must be the very first statement, where a preceding `declare` of any
+    ///   directive does NOT disqualify it but anything else — including the inline
+    ///   HTML in front of a leading `<?php` — does;
+    /// - its value must be the literal `0` or `1`, and must be a literal at all;
+    /// - it must not use the block form, though `declare(ticks=1) { … }` may.
+    ///
+    /// Every other directive (`ticks`, `encoding`) is accepted and ignored, and an
+    /// unknown one draws PHP's `Unsupported declare` warning. Ignoring `ticks` is
+    /// right rather than merely convenient: this engine registers no tick handler,
+    /// so a declared tick count has nothing to call.
+    fn declare_stmt(&mut self) -> Result<StmtKind, String> {
+        let kw_line = self.line();
+        self.pos += 1; // `declare`
+        self.expect_punct("(")?;
+        let mut body: Option<Vec<Stmt>> = None;
+        // Whether THIS `declare` names `strict_types` — the block-mode rule is
+        // about this statement, not about one that ran earlier in the file.
+        let mut here_strict = false;
+        loop {
+            let name = match self.next() {
+                Some(Tok::Ident(n)) => n,
+                _ => return Err(self.syntax_error_at(self.pos - 1)),
+            };
+            self.expect_punct("=")?;
+            if name.eq_ignore_ascii_case("strict_types") {
+                // The value is read BEFORE the position is judged, because PHP
+                // reports a bad value on a first-statement `declare` too — the
+                // checks are independent, and this is the order it applies them.
+                // Strictly a LITERAL: `-1` is a unary minus applied to one, which
+                // upstream rejects as "not a literal" rather than as a bad value.
+                let lit = match self.peek() {
+                    Some(Tok::Int(v)) => {
+                        let v = *v;
+                        self.pos += 1;
+                        Some(v)
+                    }
+                    _ => None,
+                };
+                let Some(v) = lit else {
+                    return Err(self.fatal_at(
+                        kw_line,
+                        "declare(strict_types) value must be a literal".to_string(),
+                    ));
+                };
+                if v != 0 && v != 1 {
+                    return Err(self.fatal_at(
+                        kw_line,
+                        "strict_types declaration must have 0 or 1 as its value".to_string(),
+                    ));
+                }
+                if !self.only_declares_so_far {
+                    return Err(self.fatal_at(
+                        kw_line,
+                        "strict_types declaration must be the very first statement in the script"
+                            .to_string(),
+                    ));
+                }
+                self.strict_types = v == 1;
+                here_strict = true;
+            } else {
+                // A non-`strict_types` directive: its value is an ordinary
+                // expression, evaluated for nothing and discarded.
+                self.expression()?;
+                // `ticks` is the one directive accepted in silence. `encoding` is
+                // recognised but always refused, because the reference is built
+                // without the Zend multibyte feature it would need — so it warns
+                // with its own text rather than the generic one. Anything else is
+                // unknown. All three are COMPILE-time, hence collected not emitted.
+                let w = if name.eq_ignore_ascii_case("ticks") {
+                    None
+                } else if name.eq_ignore_ascii_case("encoding") {
+                    Some("declare(encoding=...) ignored because Zend multibyte feature is turned off by settings".to_string())
+                } else {
+                    Some(format!("Unsupported declare '{name}'"))
+                };
+                if let Some(w) = w {
+                    self.declare_warnings.push((kw_line, w));
+                }
+            }
+            if !self.eat_punct(",") {
+                break;
+            }
+        }
+        self.expect_punct(")")?;
+        if self.at_punct("{") {
+            if here_strict {
+                return Err(self.fatal_at(
+                    kw_line,
+                    "strict_types declaration must not use block mode".to_string(),
+                ));
+            }
+            body = Some(self.block()?);
+        } else {
+            self.eat_punct(";");
+        }
+        Ok(StmtKind::Block(body.unwrap_or_default()))
     }
 
     /// `namespace Name;` or `namespace Name { ... }`. phplang uses a flat
@@ -899,13 +1096,100 @@ impl Parser {
         Ok(name)
     }
 
-    /// Skip an optional return-type hint (`: [?]type`).
-    fn skip_return_type(&mut self) {
-        if self.eat_punct(":") {
-            self.eat_punct("?");
-            if let Some(Tok::Ident(_)) = self.peek() {
+    /// Whether the token `n` positions ahead of the cursor begins a type NAME —
+    /// a bareword, or the `\` that anchors a qualified one.
+    fn nth_starts_type_name(&self, n: usize) -> bool {
+        matches!(
+            self.toks.get(self.pos + n).map(|s| &s.tok),
+            Some(Tok::Ident(_)) | Some(Tok::Punct("\\"))
+        )
+    }
+
+    /// One possibly-qualified type name: `int`, `Foo`, `\Foo\Bar`, `Foo\Bar`.
+    ///
+    /// The qualification is CONSUMED but not kept — like every other class name in
+    /// this engine, which is flat-namespaced — so `\Foo\Bar` reads as `Bar`. That
+    /// matters only for rendering, since no qualified name is ever a scalar and so
+    /// no qualified name is ever enforced.
+    fn qualified_type_name(&mut self) -> Result<String, String> {
+        self.eat_punct("\\");
+        let mut name = match self.next() {
+            Some(Tok::Ident(n)) => n,
+            _ => return Err(self.syntax_error()),
+        };
+        while self.at_punct("\\") && self.nth_starts_type_name(1) {
+            self.pos += 1;
+            name = match self.next() {
+                Some(Tok::Ident(n)) => n,
+                _ => return Err(self.syntax_error()),
+            };
+        }
+        Ok(name)
+    }
+
+    /// Parse a type as written in a declaration, or `None` when none is present.
+    ///
+    /// Handles the nullable shorthand (`?T`), unions (`A|B`), intersections (`A&B`)
+    /// and the PHP 8.2 DNF spelling (`(A&B)|C`). Only the SHAPE is recovered; a
+    /// non-scalar imposes no check, so an intersection is kept as one joined part
+    /// purely so it renders back the way it was written.
+    ///
+    /// In a parameter list `&` is ambiguous — `int &$x` is a by-reference marker,
+    /// `A&B $x` an intersection. It is read as an intersection only when a type NAME
+    /// follows it, which is the same rule PHP's own parser applies.
+    fn type_hint(&mut self) -> Result<Option<TypeHint>, String> {
+        let nullable = self.eat_punct("?");
+        let mut parts: Vec<String> = Vec::new();
+        loop {
+            if self.at_punct("(") {
+                // A DNF member: `(A&B)`. Its alternatives are joined back into the
+                // one part they came from, since an intersection is never enforced.
                 self.pos += 1;
+                let mut names = vec![self.qualified_type_name()?];
+                while self.eat_punct("&") {
+                    names.push(self.qualified_type_name()?);
+                }
+                self.expect_punct(")")?;
+                parts.push(names.join("&"));
+            } else if self.nth_starts_type_name(0) {
+                parts.push(self.qualified_type_name()?);
+            } else {
+                break;
             }
+            if self.eat_punct("|") {
+                continue;
+            }
+            if self.at_punct("&") && self.nth_starts_type_name(1) {
+                self.pos += 1;
+                let rhs = self.qualified_type_name()?;
+                if let Some(last) = parts.last_mut() {
+                    last.push('&');
+                    last.push_str(&rhs);
+                }
+                continue;
+            }
+            break;
+        }
+        if parts.is_empty() {
+            // A lone `?` with no type after it is not a type at all.
+            return if nullable {
+                Err(self.syntax_error())
+            } else {
+                Ok(None)
+            };
+        }
+        if nullable {
+            parts.push("null".to_string());
+        }
+        Ok(Some(TypeHint { parts }))
+    }
+
+    /// Parse an optional return-type hint (`: [?]type`).
+    fn return_type(&mut self) -> Result<Option<TypeHint>, String> {
+        if self.eat_punct(":") {
+            self.type_hint()
+        } else {
+            Ok(None)
         }
     }
 
@@ -977,35 +1261,31 @@ impl Parser {
             loop {
                 // A parameter may be attributed (`function f(#[Attr] int $x)`).
                 self.attributes()?;
+                let pline = self.line();
                 // Skip a leading modifier/type-hint chain up to `...` or `$var`. A
                 // visibility/readonly keyword marks a promoted constructor property.
                 let mut promoted = false;
                 let mut readonly = false;
                 let mut by_ref = false;
-                loop {
-                    if self.eat_punct("&") {
-                        by_ref = true;
-                        continue;
-                    }
-                    if self.eat_punct("?") {
-                        continue;
-                    }
-                    if self.at_punct("...") || matches!(self.peek(), Some(Tok::Var(_))) {
-                        break;
-                    }
-                    if let Some(Tok::Ident(kw)) = self.peek() {
-                        match kw.to_ascii_lowercase().as_str() {
-                            "readonly" => {
-                                promoted = true;
-                                readonly = true;
-                            }
-                            "public" | "private" | "protected" => promoted = true,
-                            _ => {}
+                // Leading modifiers, which precede the type: `public int $x`.
+                while let Some(Tok::Ident(kw)) = self.peek() {
+                    match kw.to_ascii_lowercase().as_str() {
+                        "readonly" => {
+                            promoted = true;
+                            readonly = true;
                         }
-                        self.pos += 1;
-                        continue;
+                        "public" | "private" | "protected" => promoted = true,
+                        // Not a modifier — this identifier is the TYPE, which
+                        // `type_hint` reads next.
+                        _ => break,
                     }
-                    break;
+                    self.pos += 1;
+                }
+                let ty = self.type_hint()?;
+                // `&` after the type is the by-reference marker; an intersection
+                // was already absorbed by `type_hint`.
+                if self.eat_punct("&") {
+                    by_ref = true;
                 }
                 // `...$rest` collects all trailing arguments into an array.
                 let variadic = self.eat_punct("...");
@@ -1018,6 +1298,8 @@ impl Parser {
                 };
                 params.push(Param {
                     name,
+                    line: pline,
+                    ty,
                     default,
                     variadic,
                     promoted,
@@ -1085,6 +1367,8 @@ impl Parser {
         self.pos += 2; // consume `...` and `)`
         let param = Param {
             name: "args".to_string(),
+            line: self.line(),
+            ty: None,
             default: None,
             variadic: true,
             promoted: false,
@@ -1098,6 +1382,7 @@ impl Parser {
         Ok(Some(Expr::ArrowFn {
             params: vec![param],
             body: Box::new(body),
+            ret: None,
         }))
     }
 
@@ -1271,7 +1556,7 @@ impl Parser {
                     _ => return Err(self.syntax_error_at(self.pos - 1)),
                 };
                 let params = self.param_list()?;
-                self.skip_return_type();
+                let ret = self.return_type()?;
                 // An abstract/interface method has no body, just `;`.
                 let body = if self.eat_punct(";") {
                     Vec::new()
@@ -1282,6 +1567,7 @@ impl Parser {
                     name: mname,
                     params,
                     body,
+                    ret,
                     is_static,
                     visibility,
                     by_ref_return,
@@ -1923,19 +2209,25 @@ impl Parser {
                     }
                     self.expect_punct(")")?;
                 }
-                self.skip_return_type();
+                let ret = self.return_type()?;
                 let body = self.block()?;
-                Ok(Expr::Closure { params, uses, body })
+                Ok(Expr::Closure {
+                    params,
+                    uses,
+                    body,
+                    ret,
+                })
             }
             // An arrow function `fn (params) => expr` — implicit by-value capture.
             Some(Tok::Ident(kw)) if kw.eq_ignore_ascii_case("fn") && self.at_punct("(") => {
                 let params = self.param_list()?;
-                self.skip_return_type();
+                let ret = self.return_type()?;
                 self.expect_punct("=>")?;
                 let body = self.expression()?;
                 Ok(Expr::ArrowFn {
                     params,
                     body: Box::new(body),
+                    ret,
                 })
             }
             Some(Tok::Ident(name)) => {
