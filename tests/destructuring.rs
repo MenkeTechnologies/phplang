@@ -214,3 +214,103 @@ fn destructuring_a_scalar_warns_with_its_type() {
         "\nWarning: Cannot use bool as array in Command line code on line 1\nNULL\n"
     );
 }
+
+// ── by-reference targets ─────────────────────────────────────────────────────
+//
+// `&` in a target list makes the target an ALIAS of the subject's element, so a
+// later write through it is visible in the subject. That is the only observable
+// difference from a plain target, which is why every case below writes through
+// the target and then reads the SUBJECT back. Expectations are byte-for-byte
+// from the reference `php` 8.5.9.
+
+#[test]
+fn by_reference_target_writes_through_to_the_subject() {
+    // php -r '$a=[1,2]; [&$x,$y]=$a; $x=9; echo implode(",",$a),"|",$y;' → 9,2|2
+    assert_eq!(
+        run(r#"<?php $a=[1,2]; [&$x,$y]=$a; $x=9; echo implode(",",$a),"|",$y;"#),
+        "9,2|2"
+    );
+    // The `list()` spelling is the same node and must agree.
+    assert_eq!(
+        run(r#"<?php $a=[1,2]; list(&$x,$y)=$a; $x=9; echo implode(",",$a),"|",$y;"#),
+        "9,2|2"
+    );
+    // A plain target still copies — the contrast that makes the above mean
+    // something rather than passing by accident.
+    assert_eq!(
+        run(r#"<?php $a=[1,2]; [$x,$y]=$a; $x=9; echo implode(",",$a),"|",$x;"#),
+        "1,2|9"
+    );
+}
+
+#[test]
+fn by_reference_target_respects_value_semantics_of_other_copies() {
+    // `$b = $a` copied the array before the alias existed, so writing through
+    // the reference reaches `$a` and must NOT reach `$b`.
+    assert_eq!(
+        run(r#"<?php $a=[1,2]; $b=$a; [&$x]=$a; $x=9;
+            echo implode(",",$a),"|",implode(",",$b);"#),
+        "9,2|1,2"
+    );
+}
+
+#[test]
+fn by_reference_target_with_holes_keys_and_nesting() {
+    // A hole consumes its index, so the `&` after it must land on element 2.
+    assert_eq!(
+        run(r#"<?php $a=[1,2,3]; [&$x,,&$z]=$a; $x=8; $z=9; echo implode(",",$a);"#),
+        "8,2,9"
+    );
+    // `&` on the VALUE of a keyed entry.
+    assert_eq!(
+        run(r#"<?php $a=['k'=>1,'j'=>2]; ['k'=>&$u]=$a; $u=7; echo json_encode($a);"#),
+        r#"{"k":7,"j":2}"#
+    );
+    // Nested one level down: the alias must reach `$a[0][0]`, not a copy of the
+    // inner row.
+    assert_eq!(
+        run(r#"<?php $a=[[1,2]]; [[&$x,$y]]=$a; $x=9; echo json_encode($a);"#),
+        "[[9,2]]"
+    );
+    // The subject may itself be an element or a property, not just a variable.
+    assert_eq!(
+        run(r#"<?php $o=new stdClass; $o->p=[1,2]; [&$x]=$o->p; $x=9; echo json_encode($o->p);"#),
+        "[9,2]"
+    );
+}
+
+#[test]
+fn by_reference_target_inside_foreach_writes_into_the_row() {
+    // The loop binds a COPY of each row, so a `&` target that aliased that copy
+    // would appear to work and change nothing. These pin that it reaches `$a`.
+    assert_eq!(
+        run(
+            r#"<?php $a=[[1,2],[3,4]]; foreach($a as [&$x,$y]){ $x*=10; } unset($x);
+            echo json_encode($a);"#
+        ),
+        "[[10,2],[30,4]]"
+    );
+    // With a key binding alongside the pattern.
+    assert_eq!(
+        run(
+            r#"<?php $a=[[1,2],[3,4]]; foreach($a as $k=>[&$x,$y]){ $x*=10; } unset($x);
+            echo json_encode($a);"#
+        ),
+        "[[10,2],[30,4]]"
+    );
+    // Keyed pattern, and a nested one.
+    assert_eq!(
+        run(
+            r#"<?php $a=[['k'=>1]]; foreach($a as ['k'=>&$v]){ $v=7; } unset($v);
+            echo json_encode($a);"#
+        ),
+        r#"[{"k":7}]"#
+    );
+    assert_eq!(
+        run(
+            r#"<?php $a=[[1,[2]]]; foreach($a as [$p,[&$q]]){ $q=6; } unset($q);
+            echo json_encode($a);"#
+        ),
+        "[[1,[6]]]"
+    );
+}

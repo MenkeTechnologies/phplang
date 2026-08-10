@@ -1722,8 +1722,8 @@ impl Parser {
                 let member = self.member_name()?;
                 if self.eat_punct("(") {
                     if let Some(fcc) = self.try_fcc(Expr::Array(vec![
-                        (None, e.clone()),
-                        (None, Expr::Str(member.clone())),
+                        ArrayElem::new(None, e.clone()),
+                        ArrayElem::new(None, Expr::Str(member.clone())),
                     ]))? {
                         e = fcc;
                     } else {
@@ -1772,8 +1772,8 @@ impl Parser {
                         let callable = match &class {
                             ClassRef::Name(c) => Expr::Str(format!("{c}::{member}")),
                             ClassRef::Expr(ce) => Expr::Array(vec![
-                                (None, (**ce).clone()),
-                                (None, Expr::Str(member.clone())),
+                                ArrayElem::new(None, (**ce).clone()),
+                                ArrayElem::new(None, Expr::Str(member.clone())),
                             ]),
                         };
                         if let Some(fcc) = self.try_fcc(callable)? {
@@ -2034,15 +2034,29 @@ impl Parser {
             // this array is used as an assignment LHS).
             if self.at_punct(",") {
                 self.next();
-                elems.push((None, Expr::Null));
+                elems.push(ArrayElem::new(None, Expr::Null));
                 continue;
             }
+            // A leading `&` marks a by-reference element: `[&$x, $y] = $a` binds
+            // `$x` as an alias of `$a[0]`. It may also precede the VALUE of a
+            // keyed entry (`['k' => &$v]`), which is why it is read in both
+            // places rather than only at the head of the element.
+            let by_ref = self.eat_punct("&");
             let first = self.expression()?;
-            if self.eat_punct("=>") {
+            if !by_ref && self.eat_punct("=>") {
+                let val_by_ref = self.eat_punct("&");
                 let val = self.expression()?;
-                elems.push((Some(first), val));
+                elems.push(ArrayElem {
+                    key: Some(first),
+                    value: val,
+                    by_ref: val_by_ref,
+                });
             } else {
-                elems.push((None, first));
+                elems.push(ArrayElem {
+                    key: None,
+                    value: first,
+                    by_ref,
+                });
             }
             if !self.eat_punct(",") {
                 break;

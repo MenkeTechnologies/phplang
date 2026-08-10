@@ -169,9 +169,13 @@ end-to-end (see `tests/basic.rs`):
   (`new` on either is a `Cannot instantiate …` error). **References** — `$b = &$a`,
   references to a container slot in either direction (`$r = &$a['x']['y']`,
   `$r = &$o->p`, `$a[] = &$v`, `$o->p = &$v`), return-by-reference
-  (`function &f()`), `foreach ($a as &$v)`, and by-reference parameters
-  (`function f(&$x)`); a referenced element stays shared across an array copy and
-  `var_dump` marks it with `&`, as PHP does.
+  (`function &f()`), `foreach ($a as &$v)`, by-reference parameters
+  (`function f(&$x)`), and by-reference destructuring targets (`[&$x, $y] = $a`
+  in both spellings, keyed, nested, alongside holes, and inside `foreach`, each
+  aliasing the subject's element so a write through the target reaches the
+  subject); a referenced element stays shared across an array copy and
+  `var_dump` marks it with `&`, as PHP does. A `&` inside a *value* array
+  (`$arr = [&$a]`) is a distinct feature and is rejected rather than copied.
   Namespaces are accepted in a flat model
   (`namespace X;` / `use A\B\C;`; qualified names fold to their short name).
 - **Enums** (PHP 8.1): pure enums (`enum Suit { case Hearts; … }` with

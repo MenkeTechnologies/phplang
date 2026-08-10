@@ -103,6 +103,33 @@ impl ClassRef {
     }
 }
 
+/// One element of an [`Expr::Array`] — a literal entry, or one target of a
+/// destructuring pattern, since both spellings parse to the same node.
+///
+/// `by_ref` is the `&` in `[&$x, $y] = $a`. It is meaningful only in a
+/// destructuring TARGET, where it makes the target an alias of the source
+/// element rather than a copy of it, so a later write through the target is
+/// visible in the source array.
+#[derive(Debug, Clone)]
+pub struct ArrayElem {
+    /// `None` means the next auto-increment integer index.
+    pub key: Option<Expr>,
+    pub value: Expr,
+    pub by_ref: bool,
+}
+
+impl ArrayElem {
+    /// A plain `key => value` entry with no `&`, which is what every
+    /// construction site that predates by-reference targets wants.
+    pub fn new(key: Option<Expr>, value: Expr) -> Self {
+        Self {
+            key,
+            value,
+            by_ref: false,
+        }
+    }
+}
+
 /// An expression.
 #[derive(Debug, Clone)]
 pub enum Expr {
@@ -116,9 +143,9 @@ pub enum Expr {
     Interp(Vec<InterpPart>),
     /// A `$name` variable read.
     Var(String),
-    /// An array literal: `[k => v, v, ...]` / `array(...)`. A `None` key means
-    /// the next auto-increment integer index.
-    Array(Vec<(Option<Expr>, Expr)>),
+    /// An array literal: `[k => v, v, ...]` / `array(...)`. Also every
+    /// destructuring pattern — see [`ArrayElem`].
+    Array(Vec<ArrayElem>),
     /// `recv[index]`.
     Index(Box<Expr>, Box<Expr>),
     /// One element read of a destructuring assignment — `[$a, $b] = $src` and

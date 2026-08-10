@@ -741,7 +741,14 @@ impl Compiler {
             Ok(())
         })?;
 
-        self.emit_foreach_destructure(b, pattern, val_var)?;
+        // `@arr` shares the subject array's handle — the by-reference write-back
+        // further down relies on the same fact — so `@arr[@k]` is the real
+        // element, and it is what a `&` target in the pattern aliases.
+        let row_path = Expr::Index(
+            Box::new(Expr::Var(arr_t.clone())),
+            Box::new(Expr::Var(k_t.clone())),
+        );
+        self.emit_foreach_destructure(b, pattern, val_var, Some(&row_path))?;
 
         self.loops.push(LoopCtx {
             breaks: vec![],
@@ -821,7 +828,9 @@ impl Compiler {
             b.emit(Op::CallBuiltin(ops::GEN_CURRENT, 1), 0);
             Ok(())
         })?;
-        self.emit_foreach_destructure(b, pattern, val_var)?;
+        // A yielded value is a temporary with no element behind it, so a `&`
+        // target in the pattern has nothing to alias.
+        self.emit_foreach_destructure(b, pattern, val_var, None)?;
 
         self.loops.push(LoopCtx {
             breaks: vec![],
@@ -854,15 +863,26 @@ impl Compiler {
     ///
     /// The assignment expression leaves its right-hand value on the stack (that
     /// is what makes `$r = [$a, $b] = $src` work), so it is popped here.
+    /// `ref_path` is where a `&` target in the pattern must alias — the element
+    /// of the SUBJECT being iterated, not the temp the loop bound the row into.
+    /// The temp holds a copy for a by-value `foreach`, so a reference to it
+    /// would be written and then discarded at the next iteration; PHP's
+    /// `foreach ($a as [&$x, $y])` writes through to `$a`. `None` where there is
+    /// no such element to point at, as in a generator loop.
     fn emit_foreach_destructure(
         &mut self,
         b: &mut ChunkBuilder,
         pattern: Option<&Expr>,
         val_var: &str,
+        ref_path: Option<&Expr>,
     ) -> Result<(), String> {
         let Some(p) = pattern else {
             return Ok(());
         };
+        if let Expr::Array(elems) = p {
+            self.compile_list_targets(b, elems, val_var, ref_path)?;
+            return Ok(());
+        }
         self.compile_assign(b, p, None, &Expr::Var(val_var.to_string()))?;
         b.emit(Op::Pop, 0);
         Ok(())
@@ -1526,14 +1546,25 @@ impl Compiler {
             Expr::Interp(parts) => self.compile_interp(b, parts)?,
             Expr::Var(name) => self.emit_get_var(b, name),
             Expr::Array(elems) => {
-                for (k, v) in elems {
-                    match k {
+                // `&` in a VALUE array (`$arr = [&$a]`, which makes the element
+                // and `$a` one slot) is a different feature from the `&` target
+                // this compiler supports, and needs an array element that can
+                // hold a reference cell. Rejected rather than compiled as a
+                // plain copy, which would answer silently and wrongly.
+                if let Some(e) = elems.iter().find(|e| e.by_ref) {
+                    let _ = e;
+                    return Err("`&` in an array literal is supported only in a \
+                                destructuring target, not in a value array"
+                        .into());
+                }
+                for e in elems {
+                    match &e.key {
                         Some(k) => self.compile_expr(b, k)?,
                         None => {
                             b.emit(Op::LoadUndef, 0);
                         }
                     }
-                    self.compile_expr(b, v)?;
+                    self.compile_expr(b, &e.value)?;
                 }
                 b.emit(Op::CallBuiltin(ops::MKARRAY, (elems.len() * 2) as u8), 0);
             }
@@ -2631,30 +2662,116 @@ impl Compiler {
                 if op.is_some() {
                     return Err("compound assignment cannot target a list()/[] pattern".into());
                 }
+                // A `&` target aliases the SUBJECT, so it needs a subject a
+                // reference can point into. Against a literal PHP refuses at
+                // COMPILE time — `echo "pre"; [&$x] = [1, 2];` prints nothing
+                // before the fatal, because the whole file is compiled before
+                // any of it runs — so this is rejected here rather than emitted
+                // as an op. (The reverse of `ops::DECL_FATAL`, which is an op
+                // precisely because PHP's trait fatal lands at run time.)
+                let ref_root = Self::ref_source(rhs);
+                if ref_root.is_none() && Self::pattern_binds_by_ref(elems) && is_literal(rhs) {
+                    return Err("Cannot assign reference to non referenceable value".into());
+                }
                 let src = self.tmp_name("list");
                 self.emit_set_var(b, &src, |c, b| c.compile_rhs(b, rhs))?;
-                let mut counter: i64 = 0;
-                for (k, target) in elems {
-                    let key = match k {
-                        Some(ke) => ke.clone(),
-                        None => {
-                            let i = counter;
-                            counter += 1;
-                            Expr::Int(i)
-                        }
-                    };
-                    // A hole binds nothing but has already consumed its index.
-                    if matches!(target, Expr::Null) {
-                        continue;
-                    }
-                    let elem = Expr::ListElem(Box::new(Expr::Var(src.clone())), Box::new(key));
-                    self.compile_assign(b, target, None, &elem)?;
-                    b.emit(Op::Pop, 0);
-                }
+                self.compile_list_targets(b, elems, &src, ref_root)?;
                 // The whole `[...] = rhs` expression evaluates to the RHS value.
                 self.emit_get_var(b, &src);
             }
             _ => return Err("invalid assignment target".into()),
+        }
+        Ok(())
+    }
+
+    /// The subject a by-reference destructuring target aliases INTO.
+    ///
+    /// `[&$x] = $a` binds `$x` to `$a[0]`, so the reference has to be taken
+    /// against the ORIGINAL subject and never against the temp the pattern
+    /// copies it into — writing through the temp would be invisible in `$a`,
+    /// which is the whole observable effect of the `&`. Only an lvalue can
+    /// serve: a variable, an array element, or an object property.
+    fn ref_source(rhs: &Expr) -> Option<&Expr> {
+        match rhs {
+            Expr::Var(_) | Expr::Index(..) | Expr::PropGet(..) => Some(rhs),
+            _ => None,
+        }
+    }
+
+    /// Whether any target in this pattern is by reference, at any depth — a
+    /// nested `[[&$x]]` needs the subject to be referenceable just as much as a
+    /// flat one does.
+    fn pattern_binds_by_ref(elems: &[ArrayElem]) -> bool {
+        elems.iter().any(|e| {
+            e.by_ref
+                || match &e.value {
+                    Expr::Array(inner) => Self::pattern_binds_by_ref(inner),
+                    _ => false,
+                }
+        })
+    }
+
+    /// Assign each target of a destructuring pattern.
+    ///
+    /// Two sources are threaded, not one. `value_tmp` names the temp holding a
+    /// COPY of the subject, which every by-value target reads — that is what
+    /// makes `[$x] = $a; $x = 9;` leave `$a` alone. `ref_path` is the path to
+    /// the ORIGINAL subject, present only when it is referenceable, and it is
+    /// what a `&` target aliases. Recursion deepens both in step so a nested
+    /// `[[&$x]] = $a` still reaches `$a[0][0]` rather than a copy of it.
+    fn compile_list_targets(
+        &mut self,
+        b: &mut ChunkBuilder,
+        elems: &[ArrayElem],
+        value_tmp: &str,
+        ref_path: Option<&Expr>,
+    ) -> Result<(), String> {
+        let mut counter: i64 = 0;
+        for e in elems {
+            let key = match &e.key {
+                Some(ke) => ke.clone(),
+                None => {
+                    let i = counter;
+                    counter += 1;
+                    Expr::Int(i)
+                }
+            };
+            // A hole binds nothing but has already consumed its index.
+            if matches!(e.value, Expr::Null) {
+                continue;
+            }
+            let elem = Expr::ListElem(
+                Box::new(Expr::Var(value_tmp.to_string())),
+                Box::new(key.clone()),
+            );
+            let deeper = ref_path.map(|p| Expr::Index(Box::new(p.clone()), Box::new(key.clone())));
+            match &e.value {
+                // A nested pattern recurses, carrying both sources down.
+                Expr::Array(inner) => {
+                    let inner_tmp = self.tmp_name("list");
+                    self.emit_set_var(b, &inner_tmp, |c, b| c.compile_expr(b, &elem))?;
+                    self.compile_list_targets(b, inner, &inner_tmp, deeper.as_ref())?;
+                }
+                // `&$x` — alias the subject's element rather than copy it.
+                // Without a referenceable subject there is nothing to alias, so
+                // the target falls back to the copy (PHP notices and does the
+                // same for a subject it cannot reference, such as a call
+                // result).
+                target if e.by_ref => match &deeper {
+                    Some(source) => {
+                        self.compile_ref_assign(b, target, source)?;
+                        b.emit(Op::Pop, 0);
+                    }
+                    None => {
+                        self.compile_assign(b, target, None, &elem)?;
+                        b.emit(Op::Pop, 0);
+                    }
+                },
+                target => {
+                    self.compile_assign(b, target, None, &elem)?;
+                    b.emit(Op::Pop, 0);
+                }
+            }
         }
         Ok(())
     }
@@ -3109,11 +3226,11 @@ fn collect_free_vars(e: &Expr, out: &mut Vec<String>) {
             }
         }
         Expr::Array(elems) => {
-            for (k, v) in elems {
-                if let Some(k) = k {
+            for e in elems {
+                if let Some(k) = &e.key {
                     collect_free_vars(k, out);
                 }
-                collect_free_vars(v, out);
+                collect_free_vars(&e.value, out);
             }
         }
         Expr::Index(a, b)
@@ -3333,7 +3450,7 @@ fn expr_has_yield(e: &Expr) -> bool {
         }
         Expr::Array(items) => items
             .iter()
-            .any(|(k, v)| k.as_ref().is_some_and(expr_has_yield) || expr_has_yield(v)),
+            .any(|e| e.key.as_ref().is_some_and(expr_has_yield) || expr_has_yield(&e.value)),
         // `Interp` parts are only literals and bare `$var`s — neither holds a yield.
         Expr::Interp(parts) => parts.iter().any(|p| match p {
             InterpPart::Expr(e) => expr_has_yield(e),
@@ -3457,6 +3574,25 @@ fn is_silently_numeric(e: &Expr) -> bool {
         Expr::Binary(op, a, b) if is_foldable_arith(*op) => folds_without_diagnostic(*op, a, b),
         _ => false,
     }
+}
+
+/// Whether an expression is a literal value written in the source.
+///
+/// Distinguishes the two ways a destructuring subject can fail to be
+/// referenceable, which PHP treats differently: a literal is a fatal
+/// (`Cannot assign reference to non referenceable value`), while a temporary
+/// that merely has no home — a call result — is a notice and then a copy.
+fn is_literal(e: &Expr) -> bool {
+    matches!(
+        e,
+        Expr::Null
+            | Expr::Bool(_)
+            | Expr::Int(_)
+            | Expr::Float(_)
+            | Expr::Str(_)
+            | Expr::Interp(_)
+            | Expr::Array(_)
+    )
 }
 
 fn is_literal_zero(e: &Expr) -> bool {
