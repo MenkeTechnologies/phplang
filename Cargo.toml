@@ -17,21 +17,12 @@ publish = true
 # `php` bin — not the CI config, integration-test corpus, or self-test .php
 # examples. None are referenced at compile time (no include_str! into them), so
 # the packaged crate still builds and its bin runs.
-# `third_party/` holds the Drupal / php-polyfill checkouts the `parity_*` bins
-# read at runtime from CARGO_MANIFEST_DIR — not a compile input.
 exclude = [
     "/.github/",
     "/tests/",
     "/examples/",
     "/docs/",
-    "/bench/",
-    "/benches/",
-    "/parity/",
     "/scripts/",
-    "/third_party/",
-    "/vendor/",
-    "/tools/",
-    "/fuzz/",
     "/BUGS.md",
 ]
 
