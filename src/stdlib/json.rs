@@ -5,9 +5,9 @@
 //! and the error-state accessors. `json_decode` is a hand-written recursive
 //! descent parser over the byte stream, matching PHP 8's `ext/json` semantics:
 //!
-//! * Both JSON objects and arrays decode to PHP arrays. phplang has no
-//!   `stdClass`, so the `$associative` flag is effectively always-`true`; it is
-//!   accepted and ignored (documented on `json_decode`).
+//! * A JSON array always decodes to a PHP array. A JSON **object** decodes to a
+//!   `stdClass` unless `$associative` (or `JSON_OBJECT_AS_ARRAY`) asks for an
+//!   array, exactly as `ext/json` does.
 //! * Integral numbers become `int`, everything with a `.`/`e`/`E` (or that
 //!   overflows `i64`) becomes `float`, matching PHP's default (no
 //!   `JSON_BIGINT_AS_STRING`).
@@ -164,20 +164,32 @@ fn decode_depth(args: &[Value], idx: usize, func: &str, pos: usize) -> Result<us
 /// programs that explicitly raise `$depth` past 1024 can observe it.
 const NATIVE_DEPTH_CEILING: usize = 1024;
 
+/// `JSON_OBJECT_AS_ARRAY` — decode JSON objects as PHP arrays. Only consulted
+/// when `$associative` is left `null`, which is `ext/json`'s own precedence
+/// (`php_json_decode_ex` ORs the flag in only for a null `$assoc`).
+const JSON_OBJECT_AS_ARRAY: i64 = 1;
+
 /// `json_decode($json, $associative = null, $depth = 512, $flags = 0)`.
 ///
-/// LIMITATION: `$associative` is accepted but ignored — phplang has no
-/// `stdClass`, so JSON objects always decode to PHP arrays (as if
-/// `$associative = true`). `$flags` beyond depth handling are ignored.
+/// `$associative` selects the container a JSON **object** decodes into: `true`
+/// gives a PHP array, `false` a `stdClass`. Left `null` (the default) the
+/// `JSON_OBJECT_AS_ARRAY` bit of `$flags` decides, defaulting to `stdClass`.
+/// `$flags` beyond that and `JSON_THROW_ON_ERROR` are ignored.
 fn json_decode(args: &[Value]) -> Result<Value, String> {
     let json = crate::host::with_host(|h| h.to_str(&args.first().cloned().unwrap_or(Value::Undef)));
     // 3rd argument is depth; default 512 (see `decode_depth`).
     let depth = decode_depth(args, 2, "json_decode", 3)?;
     let flags = args.get(3).map(|v| v.to_int()).unwrap_or(0);
+    let assoc = match args.get(1) {
+        // Absent or an explicit `null`: the flag bit is the tie-breaker.
+        None | Some(Value::Undef) => flags & JSON_OBJECT_AS_ARRAY != 0,
+        Some(v) => crate::host::with_host(|h| h.is_truthy(v)),
+    };
 
     set_last_error(JSON_ERROR_NONE);
     let parsed = crate::host::with_host(|h| {
         let mut p = Parser::new(json.as_bytes(), depth, h);
+        p.assoc = assoc;
         p.parse_document()
     });
     match parsed {
@@ -231,6 +243,9 @@ struct Parser<'a, 'h> {
     /// allocating PHP arrays; container values are placeholder `Undef`s and the
     /// only observable result is `Ok`/`Err`.
     build: bool,
+    /// `json_decode`'s resolved `$associative`: a JSON object becomes a PHP array
+    /// when set, a `stdClass` when clear. `json_validate` never reads it.
+    assoc: bool,
     h: &'h mut PhpHost,
 }
 
@@ -242,6 +257,7 @@ impl<'a, 'h> Parser<'a, 'h> {
             max_depth,
             depth: 0,
             build: true,
+            assoc: true,
             h,
         }
     }
@@ -254,6 +270,7 @@ impl<'a, 'h> Parser<'a, 'h> {
             max_depth,
             depth: 0,
             build: false,
+            assoc: true,
             h,
         }
     }
@@ -264,6 +281,27 @@ impl<'a, 'h> Parser<'a, 'h> {
             self.h.new_array()
         } else {
             Value::Undef
+        }
+    }
+
+    /// The container a JSON `{…}` decodes into: a PHP array under
+    /// `$associative`, otherwise an empty `stdClass`.
+    ///
+    /// WHEN this runs is observable, because `var_dump` prints an object's
+    /// creation-order handle as `#N`. `ext/json`'s grammar allocates the object
+    /// in `php_json_parser_object_init`, which the `members` rule reduces AFTER
+    /// the first member's value has been parsed (or immediately for `{}`), so a
+    /// nested object is numbered BEFORE the object holding it:
+    /// `json_decode('{"a":{"b":1}}')` gives the inner `#1` and the outer `#2`.
+    /// [`parse_object`] therefore calls this at the same point, not on `{`.
+    fn make_object_container(&mut self) -> Value {
+        if !self.build {
+            return Value::Undef;
+        }
+        if self.assoc {
+            self.h.new_array()
+        } else {
+            self.h.new_object_bare("stdClass", Vec::new())
         }
     }
 
@@ -366,13 +404,15 @@ impl<'a, 'h> Parser<'a, 'h> {
     fn parse_object(&mut self) -> Result<Value, i64> {
         self.enter()?;
         self.pos += 1; // '{'
-        let arr = self.make_container();
         self.skip_ws();
         if self.peek() == Some(b'}') {
             self.pos += 1;
             self.depth -= 1;
-            return Ok(arr);
+            return Ok(self.make_object_container());
         }
+        // Deliberately not allocated yet — see `make_object_container` for why the
+        // first member's value has to be parsed first.
+        let mut arr: Option<Value> = None;
         loop {
             self.skip_ws();
             if self.peek() != Some(b'"') {
@@ -386,10 +426,25 @@ impl<'a, 'h> Parser<'a, 'h> {
             self.pos += 1; // ':'
             self.skip_ws();
             let v = self.parse_value()?;
-            // arr_set_key normalizes canonical integer string keys to int keys,
-            // matching PHP array-key coercion for objects like {"0":...}.
+            let container = match &arr {
+                Some(c) => c.clone(),
+                None => {
+                    let c = self.make_object_container();
+                    arr = Some(c.clone());
+                    c
+                }
+            };
             if self.build {
-                self.h.arr_set_key(&arr, &Value::str(key), v);
+                if self.assoc {
+                    // arr_set_key normalizes canonical integer string keys to int
+                    // keys, matching PHP array-key coercion for objects like
+                    // {"0":...}.
+                    self.h.arr_set_key(&container, &Value::str(key), v);
+                } else {
+                    // A property name is NOT array-key coerced: `{"0":1}` decodes
+                    // to a stdClass whose property is the string "0".
+                    self.h.prop_set(&container, &key, v);
+                }
             }
             self.skip_ws();
             match self.peek() {
@@ -404,7 +459,7 @@ impl<'a, 'h> Parser<'a, 'h> {
             }
         }
         self.depth -= 1;
-        Ok(arr)
+        Ok(arr.unwrap_or(Value::Undef))
     }
 
     /// Parse a `"..."` string starting at the opening quote. Handles the JSON

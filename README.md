@@ -278,6 +278,12 @@ end-to-end (see `tests/basic.rs`):
   `__call` does not answer `C::m()`. Every call form routes through them,
   including `call_user_func([$o, 'm'])`, so `is_callable([$o, 'm'])` is true for
   a name only the catch-all handles while `method_exists` stays false.
+- **`__invoke`** makes every instance of the declaring class callable, and it is
+  recognized wherever a callable is: `$obj(…)`, `is_callable($obj)`, and any
+  builtin taking a callback (`array_map`, `usort`, `array_filter`,
+  `Closure::fromCallable`). One decoder in `host::call_value` reads every callable
+  form — closure handle, `"function"`, `"C::m"`, `[$obj, "m"]`, `["C", "m"]`, and
+  an `__invoke` object — so no two call sites can disagree about what is callable.
 - **Call errors throw.** `Call to undefined method C::m()`, `Call to undefined
   function f()` and `Call to private method C::m() from global scope` are all
   catchable `Error`s, with the trace starting at the call site (no frame is
@@ -352,8 +358,9 @@ end-to-end (see `tests/basic.rs`):
   - **hash** — `md5`/`sha1`/`hash`/`crc32`/`hash_hmac`. **encoding** —
     `base64_*`, `bin2hex`/`hex2bin`, quoted-printable, `utf8_*`. **url** —
     `urlencode`/`rawurlencode` (+decode), `http_build_query`, `parse_url`,
-    `parse_str`.
-  - **json** — `json_encode`, `json_decode`, `json_last_error`(`_msg`). **filter**
+    `parse_str` (with the `PHP_URL_*` component selectors).
+  - **json** — `json_encode`, `json_decode` (objects to `stdClass`, or to arrays
+    under `$associative` / `JSON_OBJECT_AS_ARRAY`), `json_last_error`(`_msg`). **filter**
     — `filter_var` (`VALIDATE_INT`/`FLOAT`/`BOOLEAN`/`EMAIL`/`URL`/`IP`/`DOMAIN`/
     `REGEXP`, `SANITIZE_*`). **mbstring** — `mb_str_split`, `mb_convert_case`,
     `mb_strpos`/`rpos`, `mb_ord`/`chr`, `mb_convert_encoding`, `mb_detect_encoding`.

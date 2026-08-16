@@ -241,3 +241,121 @@ fn call_user_func_inherited_method_array() {
         $c = new Child(); echo call_user_func([$c, 'tag']);";
     assert_eq!(run(src), "base");
 }
+
+// ── callable forms reach every call site ─────────────────────────────────────
+
+/// An object whose class declares `__invoke` is callable everywhere a callback
+/// is taken, not only through `call_user_func`.
+///
+/// Before the forms were unified in `host::call_value`, `$obj(…)` raised
+/// "Object of type C is not callable" and — worse — `array_map($obj, …)` judged
+/// the callback absent and returned its input UNMAPPED, a wrong answer rather
+/// than an error.
+#[test]
+fn invoke_object_is_callable_everywhere() {
+    let cls = "class Twice { public function __invoke($x) { return $x * 2; } }";
+    assert_eq!(
+        run(&format!("<?php {cls} $c = new Twice; echo $c(21);")),
+        "42"
+    );
+    assert_eq!(
+        run(&format!(
+            "<?php {cls} $c = new Twice; var_dump(is_callable($c));"
+        )),
+        "bool(true)\n"
+    );
+    assert_eq!(
+        run(&format!(
+            "<?php {cls} $c = new Twice; echo implode(',', array_map($c, [1, 2, 3]));"
+        )),
+        "2,4,6"
+    );
+    assert_eq!(
+        run(&format!(
+            "<?php {cls} $c = new Twice; echo call_user_func($c, 5);"
+        )),
+        "10"
+    );
+    // Named arguments reach `__invoke`'s parameter list.
+    assert_eq!(
+        run(&format!("<?php {cls} $c = new Twice; echo $c(x: 5);")),
+        "10"
+    );
+    // An object WITHOUT `__invoke` stays uncallable.
+    assert_eq!(
+        run("<?php var_dump(is_callable(new stdClass));"),
+        "bool(false)\n"
+    );
+}
+
+/// `[$obj, "m"]`, `["C", "m"]` and `"C::m"` used to work only inside
+/// `call_user_func`; every other entry point either threw "Array callback must
+/// have exactly two elements" on a two-element array or silently ignored it.
+#[test]
+fn array_and_static_callables_reach_every_call_site() {
+    let inst = "class C { public function m($v) { return $v * 2; } }";
+    let stat = "class S { public static function m($v) { return $v * 3; } }";
+    // Direct invocation of a callable held in a variable.
+    assert_eq!(
+        run(&format!(
+            "<?php {inst} $c = new C; $f = [$c, 'm']; echo $f(4);"
+        )),
+        "8"
+    );
+    // Sorting and mapping callbacks.
+    assert_eq!(
+        run(
+            "<?php class K { public function cmp($a, $b) { return $a <=> $b; } }
+             $k = new K; $x = [3, 1, 2]; usort($x, [$k, 'cmp']); echo implode(',', $x);"
+        ),
+        "1,2,3"
+    );
+    assert_eq!(
+        run(&format!(
+            "<?php {inst} $c = new C; echo implode(',', array_map([$c, 'm'], [1, 2]));"
+        )),
+        "2,4"
+    );
+    assert_eq!(
+        run(&format!(
+            "<?php {stat} echo implode(',', array_map(['S', 'm'], [1, 2]));"
+        )),
+        "3,6"
+    );
+    assert_eq!(
+        run(&format!(
+            "<?php {stat} echo implode(',', array_map('S::m', [1, 2]));"
+        )),
+        "3,6"
+    );
+    // array_filter kept EVERY element when it could not read the callback.
+    assert_eq!(
+        run(
+            "<?php class P { public function big($v) { return $v > 1; } }
+             $p = new P; echo implode(',', array_filter([1, 2, 3], [$p, 'big']));"
+        ),
+        "2,3"
+    );
+}
+
+/// `Closure::fromCallable` accepts the same forms, and the closure it returns
+/// keeps the bound `$this`.
+#[test]
+fn closure_from_callable_accepts_every_form() {
+    assert_eq!(
+        run(
+            "<?php class C { public $v = 7; public function m() { return $this->v; } }
+             $c = new C; $f = Closure::fromCallable([$c, 'm']); echo $f();"
+        ),
+        "7"
+    );
+    assert_eq!(
+        run("<?php class S { public static function m() { return 8; } }
+             $f = Closure::fromCallable('S::m'); echo $f();"),
+        "8"
+    );
+    assert_eq!(
+        run("<?php $f = Closure::fromCallable('strtoupper'); echo $f('abc');"),
+        "ABC"
+    );
+}

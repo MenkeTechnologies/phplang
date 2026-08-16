@@ -414,9 +414,11 @@ fn array_walk_scalar_mutation_does_not_propagate() {
 
 #[test]
 fn compact_gathers_bound_vars() {
+    // The unbound name is skipped AND diagnosed: the CLI writes the warning to
+    // stdout, so it is part of the byte-for-byte output the reference produces.
     assert_eq!(
         run("<?php $name='Bob'; $age=30; $a=compact('name','age','missing'); echo $a['name'],':',$a['age'],'|',count($a);"),
-        "Bob:30|2"
+        "\nWarning: compact(): Undefined variable $missing in Command line code on line 1\nBob:30|2"
     );
 }
 
@@ -636,4 +638,37 @@ fn array_sum_and_product_widen_on_overflow() {
     );
     assert_eq!(run("<?php var_dump(array_sum([]));"), "int(0)\n");
     assert_eq!(run("<?php var_dump(array_product([]));"), "int(1)\n");
+}
+
+/// `compact()` is diagnostic-heavy, and dropping either warning is how a
+/// misspelled name goes unnoticed. A name holding NULL is bound and captured
+/// silently — the distinction that `Value::Undef` alone cannot make, since PHP
+/// null and "never set" share that representation here.
+#[test]
+fn compact_diagnoses_unbound_names_and_bad_arguments() {
+    assert_eq!(
+        run("<?php $a = null; var_dump(compact('a'));"),
+        "array(1) {\n  [\"a\"]=>\n  NULL\n}\n"
+    );
+    assert_eq!(
+        run("<?php $a = 1; unset($a); echo count(compact('a'));"),
+        "\nWarning: compact(): Undefined variable $a in Command line code on line 1\n0"
+    );
+    // A non-string, non-array argument is a DIFFERENT warning, numbered by the
+    // top-level argument even when it is nested inside an array of names.
+    assert_eq!(
+        run("<?php $a = 1; echo count(compact('a', [2]));"),
+        "\nWarning: compact(): Argument #2 must be string or array of strings, int given \
+         in Command line code on line 1\n1"
+    );
+    assert_eq!(
+        run("<?php echo count(compact(true));"),
+        "\nWarning: compact(): Argument #1 must be string or array of strings, true given \
+         in Command line code on line 1\n0"
+    );
+    // The empty string is a name like any other — an unbound one.
+    assert_eq!(
+        run("<?php echo count(compact(''));"),
+        "\nWarning: compact(): Undefined variable $ in Command line code on line 1\n0"
+    );
 }

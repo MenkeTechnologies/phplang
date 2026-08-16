@@ -3105,9 +3105,17 @@ pub fn call_library(name: &str, args: &[Value]) -> Result<Value, String> {
         }),
         "lcfirst" => with_host(|h| Value::str(lcfirst(&h.to_str(&arg(args, 0))))),
         "number_format" => with_host(|h| Value::str(php_number_format(h, args))),
-        "htmlspecialchars" | "htmlentities" => {
-            with_host(|h| Value::str(html_special_chars(&h.to_str(&arg(args, 0)))))
-        }
+        // Same escaper; `htmlentities` additionally maps every named entity of
+        // the document type, which is the ONLY difference between the two.
+        "htmlspecialchars" | "htmlentities" => with_host(|h| {
+            let s = h.to_str(&arg(args, 0));
+            let flags = match args.get(1) {
+                Some(v) if !matches!(v, Value::Undef) => h.to_number(v).to_int(),
+                _ => crate::stdlib::textx::ENT_DEFAULT,
+            };
+            let named = lname == "htmlentities";
+            Value::str(crate::stdlib::textx::html_encode(&s, flags, named))
+        }),
         "strcmp" => with_host(|h| {
             let (a, b) = (h.to_str(&arg(args, 0)), h.to_str(&arg(args, 1)));
             Value::int(binary_strcmp(a.as_bytes(), b.as_bytes()))
@@ -4927,15 +4935,6 @@ fn lcfirst(s: &str) -> String {
     }
 }
 
-fn html_special_chars(s: &str) -> String {
-    // ENT_QUOTES-equivalent: escape &, <, >, ", and '.
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#039;")
-}
-
 fn php_number_format(h: &host::PhpHost, args: &[Value]) -> String {
     let num = h.to_number(&arg(args, 0)).to_float();
     let dec = args.get(1).map(|v| v.to_int()).unwrap_or(0).max(0) as usize;
@@ -5142,7 +5141,12 @@ fn php_array_merge(h: &mut host::PhpHost, args: &[Value]) -> Value {
 fn is_callable_arg(cb: &Value) -> bool {
     match cb {
         Value::Str(s) => !s.is_empty(),
-        v => with_host(|h| h.is_closure(v)),
+        // `host::callable_method` covers the forms a closure check misses:
+        // `[$obj, "m"]`, `["C", "m"]`, and an object whose class has `__invoke`.
+        // Missing them here did not raise an error — `array_map` treated the
+        // callback as absent and returned its input unmapped, which is a WRONG
+        // ANSWER rather than a failure, and `array_filter` kept every element.
+        v => with_host(|h| h.is_closure(v)) || host::callable_method(v).is_some(),
     }
 }
 

@@ -21,7 +21,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         "rawurlencode" => Value::str(rawurlencode(&str_of(args, 0))),
         "rawurldecode" => Value::str(percent_decode(&str_of(args, 0), false)),
         "http_build_query" => http_build_query(args),
-        "parse_url" => parse_url(args),
+        "parse_url" => return Some(parse_url(args)),
         "parse_str" => parse_str(args),
         _ => return None,
     };
@@ -342,20 +342,37 @@ struct UrlParts {
 /// `parse_url($url, $component = -1)`. With no component (or `-1`) returns an
 /// assoc array holding every found component; with a `PHP_URL_*` constant
 /// returns just that piece (an int for the port). Malformed URLs yield `false`.
-fn parse_url(args: &[Value]) -> Value {
+///
+/// Any other `$component` is a `ValueError`, and the check runs BEFORE the URL is
+/// parsed — the reference rejects `parse_url("::", 9)` on the component alone,
+/// where a check after the parse would have returned `false` for the bad URL.
+fn parse_url(args: &[Value]) -> Result<Value, String> {
     let url = str_of(args, 0);
     let component = args
         .get(1)
         .map(|v| crate::host::with_host(|h| h.to_number(v).to_int()))
         .unwrap_or(-1);
 
+    // PHP_URL_SCHEME=0 HOST=1 PORT=2 USER=3 PASS=4 PATH=5 QUERY=6 FRAGMENT=7.
+    // `php_url_parse`'s caller branches on `key > -1`, so EVERY negative value —
+    // not just the documented `-1` — asks for the whole array; only a positive
+    // one past `PHP_URL_FRAGMENT` is out of range.
+    if component > 7 {
+        return Err(crate::stdlib::common::throws(
+            "ValueError",
+            format!(
+                "parse_url(): Argument #2 ($component) must be a valid URL \
+                 component identifier, {component} given"
+            ),
+        ));
+    }
+
     let Some(p) = php_url_parse(&url) else {
-        return Value::bool(false);
+        return Ok(Value::bool(false));
     };
 
     if component >= 0 {
-        // PHP_URL_SCHEME=0 HOST=1 PORT=2 USER=3 PASS=4 PATH=5 QUERY=6 FRAGMENT=7
-        return match component {
+        return Ok(match component {
             0 => opt_str(p.scheme),
             1 => opt_str(p.host),
             2 => p.port.map(Value::int).unwrap_or(Value::Undef),
@@ -363,12 +380,11 @@ fn parse_url(args: &[Value]) -> Value {
             4 => opt_str(p.pass),
             5 => opt_str(p.path),
             6 => opt_str(p.query),
-            7 => opt_str(p.fragment),
-            _ => Value::Undef,
-        };
+            _ => opt_str(p.fragment),
+        });
     }
 
-    crate::host::with_host(|h| {
+    Ok(crate::host::with_host(|h| {
         let arr = h.new_array();
         let mut set = |k: &str, v: Value| h.arr_set_key(&arr, &Value::str(k.to_string()), v);
         // Order matches PHP's output: scheme, host, port, user, pass, path,
@@ -398,7 +414,7 @@ fn parse_url(args: &[Value]) -> Value {
             set("fragment", Value::str(v));
         }
         arr
-    })
+    }))
 }
 
 /// `Value::str` for `Some`, PHP `null` (`Undef`) for `None`.

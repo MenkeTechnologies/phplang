@@ -391,3 +391,163 @@ fn str_split_of_the_empty_string_is_an_empty_array() {
     // A non-empty subject is unaffected.
     assert_eq!(run(r#"<?php var_dump(count(str_split("a")));"#), "int(1)\n");
 }
+
+// ── strip_tags ───────────────────────────────────────────────────────────────
+
+/// `$allowed_tags` in both spellings PHP accepts. An allowed tag is re-emitted
+/// VERBATIM — attributes included — because the scanner buffers the whole
+/// `<…>` span and replays it, rather than reconstructing a bare tag.
+#[test]
+fn strip_tags_allow_list() {
+    assert_eq!(
+        run(r#"<?php echo strip_tags("<b>x</b><i>y</i>", "<b>");"#),
+        "<b>x</b>y"
+    );
+    assert_eq!(
+        run(r#"<?php echo strip_tags("<b>x</b><i>y</i>", ["b","i"]);"#),
+        "<b>x</b><i>y</i>"
+    );
+    assert_eq!(
+        run(r#"<?php echo strip_tags('<p>T <b class="x">bold</b></p>', '<b>');"#),
+        "T <b class=\"x\">bold</b>"
+    );
+    // The allow-list is matched against a NORMALIZED tag: `</b>` and `<b …>`
+    // both reduce to `<b>`, and `<br/>` to `<br>`.
+    assert_eq!(
+        run(r#"<?php echo strip_tags("<br/>a<br />b", "<br>");"#),
+        "<br/>a<br />b"
+    );
+    assert_eq!(
+        run(r#"<?php echo strip_tags("<B CLASS=y>x</B>", "<b>");"#),
+        "<B CLASS=y>x</B>"
+    );
+    // Matching is by SUBSTRING of the allow string, so `<b>` and `<body>` are
+    // not interchangeable in either direction.
+    assert_eq!(run(r#"<?php echo strip_tags("<b>x</b>", "<body>");"#), "x");
+    assert_eq!(
+        run(r#"<?php echo strip_tags("<body>x</body>", "<b>");"#),
+        "x"
+    );
+    // No allow-list at all: every tag goes.
+    assert_eq!(run(r#"<?php echo strip_tags("<b>x</b>", "");"#), "x");
+    assert_eq!(run(r#"<?php echo strip_tags("a<b>c", null);"#), "ac");
+}
+
+/// The states beyond "inside a tag": a `>` inside a quoted attribute does NOT
+/// close the tag, a comment runs to `-->`, `<?…?>` is swallowed whole, and a
+/// `<` followed by whitespace is literal text rather than a tag opener.
+#[test]
+fn strip_tags_scanner_states() {
+    // The `>` inside the quoted attribute does not CLOSE the tag, but it is
+    // also not buffered — state 1 breaks on it while `in_q` is set — so the
+    // replayed tag comes back without it.
+    assert_eq!(
+        run(r#"<?php echo strip_tags('<a href="x>y">link</a>', "<a>");"#),
+        "<a href=\"xy\">link</a>"
+    );
+    assert_eq!(
+        run(r#"<?php echo strip_tags("<!-- c --> visible");"#),
+        " visible"
+    );
+    assert_eq!(
+        run(r#"<?php echo strip_tags("<!-- <b>x</b> --> y", "<b>");"#),
+        " y"
+    );
+    assert_eq!(
+        run(r#"<?php echo strip_tags("<?php echo 1; ?>after");"#),
+        "after"
+    );
+    assert_eq!(
+        run(r#"<?php echo strip_tags('<?xml version="1.0"?><a>x</a>');"#),
+        "x"
+    );
+    assert_eq!(
+        run(r#"<?php echo strip_tags("<!DOCTYPE html><p>x</p>");"#),
+        "x"
+    );
+    // `< ` with a space is text; `5 < 6 > 7` keeps both operators.
+    assert_eq!(
+        run(r#"<?php echo strip_tags("a < b and c > d");"#),
+        "a < b and c > d"
+    );
+    assert_eq!(run(r#"<?php echo strip_tags("5 < 6 > 7");"#), "5 < 6 > 7");
+    // A tag that never closes swallows the rest of the input.
+    assert_eq!(run(r#"<?php echo strip_tags("unclosed <b");"#), "unclosed ");
+    assert_eq!(run(r#"<?php echo strip_tags("<<b>>x");"#), "x");
+}
+
+// ── HTML entities ────────────────────────────────────────────────────────────
+
+/// `htmlentities` is `htmlspecialchars` PLUS the named-entity table; the two
+/// used to share one arm and so produced identical output for every input.
+#[test]
+fn htmlentities_maps_named_entities() {
+    assert_eq!(
+        run(r#"<?php echo htmlentities("<é>");"#),
+        "&lt;&eacute;&gt;"
+    );
+    assert_eq!(run(r#"<?php echo htmlspecialchars("<é>");"#), "&lt;é&gt;");
+    // The table is the full HTML 4.01 set, not only the Latin-1 supplement.
+    assert_eq!(
+        run("<?php echo htmlentities(\"\u{20AC}\u{03B1}\u{2665}\u{00A0}\");"),
+        "&euro;&alpha;&hearts;&nbsp;"
+    );
+    // The math block is in the table too: U+2260 is `&ne;`.
+    assert_eq!(run("<?php echo htmlentities(\"\u{2260}\");"), "&ne;");
+}
+
+/// `$flags` selects which quotes are escaped. Ignoring it (the previous
+/// behavior) silently escaped BOTH quotes under every flag, including
+/// `ENT_NOQUOTES`.
+#[test]
+fn html_encode_honors_quote_flags() {
+    let s = r#"<?php echo htmlspecialchars("a'b\"c", %s);"#;
+    assert_eq!(run(&s.replace("%s", "ENT_NOQUOTES")), "a'b\"c");
+    assert_eq!(run(&s.replace("%s", "ENT_COMPAT")), "a'b&quot;c");
+    assert_eq!(run(&s.replace("%s", "ENT_QUOTES")), "a&#039;b&quot;c");
+    // Omitted flags default to ENT_QUOTES since PHP 8.1.
+    assert_eq!(
+        run(r#"<?php echo htmlspecialchars("a'b\"c");"#),
+        "a&#039;b&quot;c"
+    );
+}
+
+/// The two decoders resolve DIFFERENT sets. `htmlspecialchars_decode` knows
+/// only what `htmlspecialchars` writes, so a named or numeric reference it
+/// could never have produced is left standing.
+#[test]
+fn html_decoders_differ_in_reach() {
+    let input = r#"&lt;&eacute;&#233;&amp;&#039;&#39;&apos;&quot;"#;
+    assert_eq!(
+        run(&format!(r#"<?php echo html_entity_decode("{input}");"#)),
+        "<éé&''&apos;\""
+    );
+    assert_eq!(
+        run(&format!(
+            r#"<?php echo htmlspecialchars_decode("{input}");"#
+        )),
+        "<&eacute;&#233;&''&apos;\""
+    );
+    // Hex references decode; an unknown entity and an unterminated `&amp` do not.
+    assert_eq!(
+        run(r#"<?php echo html_entity_decode("&#xE9;|&unknown;|&amp");"#),
+        "é|&unknown;|&amp"
+    );
+    // Decoding is single-pass: `&amp;lt;` yields the literal text `&lt;`.
+    assert_eq!(run(r#"<?php echo html_entity_decode("&amp;lt;");"#), "&lt;");
+    // `$flags` gates a NUMERIC quote reference just as it gates the named one,
+    // and in BOTH decoders — under ENT_COMPAT a `&#039;` survives untouched
+    // while the `&#34;` beside it decodes.
+    let quotes = r#"&#039;&#34;&#x27;&#x22;&apos;&quot;"#;
+    for f in ["html_entity_decode", "htmlspecialchars_decode"] {
+        let src = |flag: &str| format!(r#"<?php echo {f}("{quotes}", {flag});"#);
+        assert_eq!(run(&src("ENT_NOQUOTES")), quotes);
+        assert_eq!(run(&src("ENT_COMPAT")), "&#039;\"&#x27;\"&apos;\"");
+        assert_eq!(run(&src("ENT_QUOTES")), "'\"'\"&apos;\"");
+    }
+    // Round trip through the named table.
+    assert_eq!(
+        run(r#"<?php echo html_entity_decode(htmlentities("<b>é & 'q'</b>"));"#),
+        "<b>é & 'q'</b>"
+    );
+}

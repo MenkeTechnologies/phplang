@@ -2514,6 +2514,214 @@ fn gen_numjuggle(seed: u64) -> Vec<String> {
     }
 }
 
+/// `json_decode`'s CONTAINER choice, which the generator was blind to: a grep
+/// for `json_decode` over this file returned zero hits before this mode existed,
+/// and the decoder ignored `$associative` outright — every JSON object became a
+/// PHP array, so `json_decode('{"a":1}')->a` was a fatal on a `stdClass` that
+/// was never built. `var_dump` is used deliberately: it prints the container
+/// KIND and, for an object, its creation-order `#N`, which is the half of the
+/// behaviour a `->a` read alone would not score.
+fn gen_jsondecode(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let doc = *r.pick(&[
+        r#"{"a":1}"#,
+        r#"{"0":1,"a":2}"#,
+        r#"{}"#,
+        r#"{"a":{"b":1}}"#,
+        r#"{"a":[{"x":1},{"y":2}]}"#,
+        r#"[{"a":1},{"b":2}]"#,
+        r#"{"a":{"b":1},"c":{"d":2}}"#,
+        r#"{"a":null,"b":true,"c":1.5}"#,
+        r#"[1,{"a":2},3]"#,
+    ]);
+    // The `$associative` argument in each of its meaningful spellings.
+    let assoc = *r.pick(&["", ", true", ", false", ", null"]);
+    match r.below(4) {
+        0 => vec![format!("var_dump(json_decode('{doc}'{assoc}));")],
+        1 => vec![format!(
+            "var_dump(json_decode('{doc}', null, 512, JSON_OBJECT_AS_ARRAY));"
+        )],
+        // A decoded object round-trips back through the encoder unchanged.
+        2 => vec![format!("echo json_encode(json_decode('{doc}'{assoc}));")],
+        _ => vec![format!(
+            "$v = json_decode('{doc}'{assoc}); echo gettype($v), '|', \
+             json_last_error(), '|', is_object($v) ? get_class($v) : count((array)$v);"
+        )],
+    }
+}
+
+/// The four `html*` functions. They used to collapse into two implementations —
+/// `htmlentities` was `htmlspecialchars` and `html_entity_decode` was
+/// `htmlspecialchars_decode` — so every input scored the pair as agreeing when
+/// the reference has them differ on the whole named-entity table, and `$flags`
+/// was read by none of them.
+fn gen_htmlent(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let raw = *r.pick(&[
+        "a&<>\\\"'z",
+        "caf\u{00e9}",
+        "\u{20AC}\u{03B1}\u{2665}",
+        "<b class=\\\"x\\\">t</b>",
+        "5 < 6 > 7",
+        "\u{00A0}\u{00FF}\u{2260}",
+        "",
+        "plain text",
+    ]);
+    let enc = *r.pick(&["htmlspecialchars", "htmlentities"]);
+    let dec = *r.pick(&["htmlspecialchars_decode", "html_entity_decode"]);
+    let flags = *r.pick(&["", ", ENT_QUOTES", ", ENT_COMPAT", ", ENT_NOQUOTES"]);
+    match r.below(4) {
+        0 => vec![format!("var_dump({enc}(\"{raw}\"{flags}));")],
+        1 => vec![format!("var_dump({dec}({enc}(\"{raw}\"){flags}));")],
+        // A mixed reference soup: named, decimal, hex, unknown, unterminated.
+        2 => vec![format!(
+            "var_dump({dec}(\"&lt;&eacute;&#233;&amp;&#039;&apos;&quot;&#xE9;&nope;&amp\"{flags}));"
+        )],
+        _ => vec![format!(
+            "echo count(get_html_translation_table(HTML_ENTITIES{flags})), '|', \
+             count(get_html_translation_table(HTML_SPECIALCHARS{flags}));"
+        )],
+    }
+}
+
+/// `strip_tags`, whose `$allowed_tags` was not read at all — nothing was ever
+/// preserved — and whose depth-counter stand-in disagreed with the reference's
+/// scanner on quoted attributes, comments and `<?…?>`.
+fn gen_striptags(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let doc = *r.pick(&[
+        "<b>x</b><i>y</i>",
+        "<p>T <b class=\\\"x\\\">bold</b></p>",
+        "<br/>a<br />b",
+        "<a href=\\\"x>y\\\">link</a>",
+        "<!-- c --> visible",
+        "<!-- <b>x</b> --> y",
+        "<?php echo 1; ?>after",
+        "<?xml version=\\\"1.0\\\"?><a>x</a>",
+        "<!DOCTYPE html><p>x</p>",
+        "a < b and c > d",
+        "unclosed <b",
+        "<<b>>x",
+        "<B CLASS=y>x</B>",
+        "</b>x",
+        "<>x",
+    ]);
+    let allow = *r.pick(&[
+        "",
+        ", \"<b>\"",
+        ", \"<b><i>\"",
+        ", \"<a>\"",
+        ", \"<br>\"",
+        ", \"<p>\"",
+        ", [\"b\", \"i\"]",
+        ", null",
+    ]);
+    vec![format!("var_dump(strip_tags(\"{doc}\"{allow}));")]
+}
+
+/// `compact()`'s two diagnostics. Neither was raised, so a misspelled name and a
+/// non-string argument were both silently dropped — and a variable holding NULL
+/// was dropped WITH them, because an unset name and a null one share one
+/// representation until the BINDING is what gets asked about.
+fn gen_compact(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let init = *r.pick(&[
+        "$a = 1;",
+        "$a = null;",
+        "$a = 1; unset($a);",
+        "$a = false;",
+        "$a = '';",
+        "$a = [1, 2];",
+        "",
+    ]);
+    let names = *r.pick(&[
+        "'a'",
+        "'a', 'b'",
+        "['a', 'b']",
+        "['a'], 'b'",
+        "''",
+        "1",
+        "'a', [2]",
+        "true",
+        "null",
+        "['a', ['b']]",
+    ]);
+    match r.below(3) {
+        0 => vec![format!("{init} var_dump(compact({names}));")],
+        1 => vec![format!("{init} echo count(compact({names}));")],
+        _ => vec![format!(
+            "{init} $b = 2; echo json_encode(compact({names}));"
+        )],
+    }
+}
+
+/// Every callable FORM, through every call site that takes one.
+///
+/// The forms used to be decoded in two places that disagreed: `call_user_func`
+/// understood `[$obj, "m"]` and `"C::m"` while `$f(…)`, `usort` and
+/// `Closure::fromCallable` did not, and `__invoke` was honoured nowhere. Worst of
+/// it was silent — `array_map([$obj, "m"], $a)` judged the callback absent and
+/// returned `$a` UNMAPPED, so a wrong answer came back with no diagnostic at all.
+fn gen_callform(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    const DECL: &str = "class C { public $b = 10; public function m($v) { return $v * 2; } \
+                        public static function s($v) { return $v * 3; } \
+                        public function __invoke($v) { return $v + 1; } } $c = new C;";
+    let form = *r.pick(&["[$c, 'm']", "['C', 's']", "'C::s'", "$c", "'strrev'"]);
+    match r.below(6) {
+        0 => vec![format!("{DECL} $f = {form}; var_dump($f(4));")],
+        1 => vec![format!("{DECL} var_dump(array_map({form}, [1, 2]));")],
+        2 => vec![format!("{DECL} var_dump(call_user_func({form}, 5));")],
+        3 => vec![format!(
+            "{DECL} var_dump(is_callable({form}), Closure::fromCallable({form})(6));"
+        )],
+        4 => vec![format!(
+            "{DECL} var_dump(array_filter([1, 2, 3], fn($v) => call_user_func({form}, $v) > 3));"
+        )],
+        _ => vec![format!(
+            "{DECL} $x = [3, 1, 2]; usort($x, fn($p, $q) => \
+             call_user_func({form}, $p) <=> call_user_func({form}, $q)); var_dump($x);"
+        )],
+    }
+}
+
+/// `parse_url`'s `$component`, whose `PHP_URL_*` selector constants were never
+/// seeded — the spelling every program uses died on `Undefined constant` — and
+/// whose out-of-range check did not exist.
+fn gen_parseurl(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let url = *r.pick(&[
+        "https://user:pw@host:8080/path?q=1#frag",
+        "http://h/p",
+        "/just/path",
+        "mailto:a@b.c",
+        "//host/p",
+        "host:80",
+        "file:///c:/x",
+        "::",
+    ]);
+    let comp = *r.pick(&[
+        "PHP_URL_SCHEME",
+        "PHP_URL_HOST",
+        "PHP_URL_PORT",
+        "PHP_URL_USER",
+        "PHP_URL_PASS",
+        "PHP_URL_PATH",
+        "PHP_URL_QUERY",
+        "PHP_URL_FRAGMENT",
+        "-1",
+        "-2",
+        "8",
+        "9",
+    ]);
+    // The out-of-range component throws, so the call is caught the way this
+    // file's other diagnostic modes catch theirs.
+    vec![format!(
+        "try {{ var_dump(parse_url(\"{url}\", {comp})); }} \
+         catch (Throwable $e) {{ echo get_class($e), ': ', $e->getMessage(), \"\\n\"; }}"
+    )]
+}
+
 // ---------------------------------------------------------------------------
 // Mode registry.
 // ---------------------------------------------------------------------------
@@ -2525,6 +2733,30 @@ struct Mode {
 }
 
 const MODES: &[Mode] = &[
+    Mode {
+        name: "jsondecode",
+        gen: gen_jsondecode,
+    },
+    Mode {
+        name: "htmlent",
+        gen: gen_htmlent,
+    },
+    Mode {
+        name: "striptags",
+        gen: gen_striptags,
+    },
+    Mode {
+        name: "compact",
+        gen: gen_compact,
+    },
+    Mode {
+        name: "callform",
+        gen: gen_callform,
+    },
+    Mode {
+        name: "parseurl",
+        gen: gen_parseurl,
+    },
     Mode {
         name: "pregoffset",
         gen: gen_pregoffset,

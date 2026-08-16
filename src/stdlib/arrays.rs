@@ -738,29 +738,43 @@ fn php_array_walk(args: &[Value]) -> Result<Value, String> {
 
 /// `compact(...)` — build an array from the given variable names, pulling each
 /// bound value out of the current scope. A name may itself be an array of names
-/// (recursively). Unset names are skipped.
+/// (recursively). A name that is not bound is skipped WITH a warning, and an
+/// argument that is neither a string nor an array is skipped with a different
+/// one — `compact()` is diagnostic-heavy and silently dropping either is how a
+/// misspelled name goes unnoticed.
 fn php_compact(h: &mut host::PhpHost, args: &[Value]) -> Value {
     let out = h.new_array();
-    for a in args {
-        compact_add(h, &out, a);
+    for (i, a) in args.iter().enumerate() {
+        // `php_compact_var` carries the TOP-LEVEL argument number into the
+        // recursion, so a bad entry nested inside an array of names is still
+        // reported against the argument that array was passed as.
+        compact_add(h, &out, a, i + 1);
     }
     out
 }
 
-fn compact_add(h: &mut host::PhpHost, out: &Value, name: &Value) {
+fn compact_add(h: &mut host::PhpHost, out: &Value, name: &Value, pos: usize) {
     if h.is_array(name) {
         for (_, n) in h.array_pairs(name).unwrap_or_default() {
-            compact_add(h, out, &n);
+            compact_add(h, out, &n, pos);
         }
         return;
     }
-    let n = h.to_str(name);
-    if n.is_empty() {
+    let Value::Str(n) = name else {
+        let given = h.type_name_for_error(name);
+        h.warn(format_args!(
+            "compact(): Argument #{pos} must be string or array of strings, {given} given"
+        ));
         return;
-    }
-    let val = h.get_var(&n);
-    if !matches!(val, Value::Undef) {
+    };
+    let n = n.to_string();
+    // `var_defined`, not a non-`Undef` read: a variable holding `null` IS
+    // captured, and only a name that was never bound warns.
+    if h.var_defined(&n) {
+        let val = h.get_var(&n);
         h.arr_set_key(out, &Value::str(n), val);
+    } else {
+        h.warn(format_args!("compact(): Undefined variable ${n}"));
     }
 }
 

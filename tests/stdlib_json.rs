@@ -1,7 +1,8 @@
 //! End-to-end tests for the `json` stdlib category: `json_decode`,
 //! `json_last_error`, `json_last_error_msg`. Expected values were cross-checked
-//! against PHP 8; the assertions here run headless without `php`. JSON objects
-//! decode to PHP arrays (associative always) rather than to `stdClass`.
+//! against PHP 8; the assertions here run headless without `php`. A JSON object
+//! decodes to a `stdClass` by default and to a PHP array under `$associative` /
+//! `JSON_OBJECT_AS_ARRAY`, exactly as `ext/json` does.
 //!
 //! Two `$depth` divergences used to be recorded here — a non-positive depth
 //! clamped to 1 instead of being rejected, and `json_validate("[1]", 1)`
@@ -81,24 +82,62 @@ fn decode_array() {
 
 #[test]
 fn decode_object_to_assoc_array() {
-    let src = r#"<?php $o = json_decode('{"name":"bob","age":30,"ok":true}');
+    let src = r#"<?php $o = json_decode('{"name":"bob","age":30,"ok":true}', true);
         echo $o["name"], "|", $o["age"], "|", ($o["ok"]?"T":"F");"#;
     assert_eq!(run(src), "bob|30|T");
     // Numeric string object keys normalize to int keys (PHP array coercion).
     assert_eq!(
         run(
-            r#"<?php $o = json_decode('{"0":"a","1":"b"}'); echo $o[0], $o[1], "|", array_is_list($o)?"L":"M";"#
+            r#"<?php $o = json_decode('{"0":"a","1":"b"}', true); echo $o[0], $o[1], "|", array_is_list($o)?"L":"M";"#
         ),
         "ab|L"
     );
 }
 
+/// The DEFAULT container for a JSON object is `stdClass`, not an array — which
+/// is the whole reason `$associative` exists. A decoder that ignored the flag
+/// still passed `decode_object_to_assoc_array` above, so only this test tells
+/// the two apart.
+#[test]
+fn decode_object_to_stdclass_by_default() {
+    let src = r#"<?php $o = json_decode('{"name":"bob","age":30,"ok":true}');
+        echo $o->name, "|", $o->age, "|", ($o->ok?"T":"F"), "|", get_class($o);"#;
+    assert_eq!(run(src), "bob|30|T|stdClass");
+    // A property name is NOT array-key coerced: "0" stays the string "0".
+    assert_eq!(
+        run(r#"<?php var_dump(json_decode('{"0":1}'));"#),
+        "object(stdClass)#1 (1) {\n  [\"0\"]=>\n  int(1)\n}\n"
+    );
+    // An explicit `false` and `null` both mean stdClass; `JSON_OBJECT_AS_ARRAY`
+    // flips a `null` (only) back to an array.
+    assert_eq!(
+        run(r#"<?php echo get_class(json_decode('{"a":1}', false)), ",",
+            get_class(json_decode('{"a":1}', null)), ",",
+            gettype(json_decode('{"a":1}', null, 512, JSON_OBJECT_AS_ARRAY));"#),
+        "stdClass,stdClass,array"
+    );
+    // Objects take their handles in the order `ext/json` allocates them, which is
+    // as the FIRST member of each closes — so the inner object is `#1` and the
+    // outer, which opened first, is `#2`.
+    assert_eq!(
+        run(
+            r#"<?php $o = json_decode('{"a":{"b":1}}'); echo spl_object_id($o->a), spl_object_id($o);"#
+        ),
+        "12"
+    );
+}
+
 #[test]
 fn decode_nested() {
-    let src = r#"<?php $o = json_decode('{"a":[1,{"b":2}],"c":{"d":[3,4]}}');
+    let src = r#"<?php $o = json_decode('{"a":[1,{"b":2}],"c":{"d":[3,4]}}', true);
         echo $o["a"][0], $o["a"][1]["b"], $o["c"]["d"][1];"#;
     // $o["a"][0]=1, $o["a"][1]["b"]=2, $o["c"]["d"][1]=4.
     assert_eq!(run(src), "124");
+    // The same walk over the default stdClass form: an object member is `->`,
+    // a JSON array stays a PHP array either way.
+    let obj = r#"<?php $o = json_decode('{"a":[1,{"b":2}],"c":{"d":[3,4]}}');
+        echo $o->a[0], $o->a[1]->b, $o->c->d[1];"#;
+    assert_eq!(run(obj), "124");
 }
 
 #[test]
@@ -344,11 +383,20 @@ fn round_trip_encode_decode() {
     // json_decode(json_encode($x)) preserves the structure.
     let src = r#"<?php
         $x = ["a" => 1, "b" => [2, 3], "c" => "text", "d" => true, "e" => null];
-        $y = json_decode(json_encode($x));
+        $y = json_decode(json_encode($x), true);
         echo $y["a"], $y["b"][0], $y["b"][1], $y["c"], ($y["d"]?"T":"F");
         var_dump($y["e"]);
     "#;
     assert_eq!(run(src), "123textTNULL\n");
+
+    // The same round trip through the default stdClass form.
+    let obj = r#"<?php
+        $x = ["a" => 1, "b" => [2, 3], "c" => "text", "d" => true, "e" => null];
+        $y = json_decode(json_encode($x));
+        echo $y->a, $y->b[0], $y->b[1], $y->c, ($y->d?"T":"F");
+        var_dump($y->e);
+    "#;
+    assert_eq!(run(obj), "123textTNULL\n");
 
     // A list round-trips as a JSON array and stays a list.
     assert_eq!(

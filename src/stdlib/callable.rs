@@ -5,7 +5,7 @@
 //! `crate::host::call_value`, which accepts either a closure handle or a
 //! function-name string (`call_user_func("strtoupper", "hi") === "HI"`).
 
-use crate::host::{call_method, call_value, with_host};
+use crate::host::{call_value, with_host};
 use crate::stdlib::common::*;
 use fusevm::Value;
 
@@ -357,42 +357,12 @@ const KNOWN_BUILTINS: &[&str] = &[
 
 /// Resolve and invoke any PHP callable form with `args`.
 ///
-/// `host::call_value` already handles the two simplest forms — a closure handle
-/// and a plain function-name string. This wrapper adds the three forms PHP
-/// accepts that `call_value` does not model:
-///
-///   * `[$obj, "method"]`    → instance method invoked with `$this = $obj`
-///   * `["Class", "method"]` → static method on the named class
-///   * `"Class::method"`     → static method on the named class
-///
-/// Class names resolve case-insensitively up the parent chain (via
-/// `host::call_method`); an unknown class or method surfaces as PHP's
-/// "call to undefined method" error rather than a panic.
+/// Every form — closure handle, `"function"`, `"Class::method"`,
+/// `[$obj, "method"]`, `["Class", "method"]`, and an object with `__invoke` — is
+/// decoded by `host::call_value`, so `call_user_func` and a bare `$f(…)` cannot
+/// disagree about what is callable. This wrapper exists only to name the entry
+/// point the `call_user_func*` builtins go through.
 fn invoke_callable(callee: Value, args: Vec<Value>) -> Result<Value, String> {
-    // Array callable: PHP requires exactly two elements, [target, method].
-    if with_host(|h| h.is_array(&callee)) {
-        let pairs = with_host(|h| h.array_pairs(&callee)).unwrap_or_default();
-        if pairs.len() != 2 {
-            return Err("array callable must have exactly two elements".to_string());
-        }
-        let target = pairs[0].1.clone();
-        let method = with_host(|h| h.to_str(&pairs[1].1));
-        // First element an object → instance call; otherwise a class-name string
-        // → static call.
-        if with_host(|h| h.is_object(&target)) {
-            let class = with_host(|h| h.object_class(&target)).unwrap_or_default();
-            return call_method(&class, &method, Some(target), args);
-        }
-        let class = with_host(|h| h.to_str(&target));
-        return call_method(&class, &method, None, args);
-    }
-    // "Class::method" string form → static call. A bare function name (no "::")
-    // and any closure handle fall through to `call_value`.
-    if let Value::Str(s) = &callee {
-        if let Some((class, method)) = s.as_str().split_once("::") {
-            return call_method(class, method, None, args);
-        }
-    }
     call_value(callee, args)
 }
 

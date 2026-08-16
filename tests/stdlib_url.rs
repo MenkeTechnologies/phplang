@@ -214,3 +214,53 @@ fn parse_str_nested_deep() {
         echo json_encode($r);"#;
     assert_eq!(run(src), r#"{"a":{"b":{"c":"1"}}}"#);
 }
+
+// ── PHP_URL_* component selectors ────────────────────────────────────────────
+
+/// The eight `$component` selectors, each pulled off one fully-populated URL.
+///
+/// The ordinals were always honoured; the CONSTANTS naming them were never
+/// seeded, so `parse_url($u, PHP_URL_HOST)` died on `Undefined constant
+/// "PHP_URL_HOST"` — the spelling every PHP program actually uses.
+#[test]
+fn parse_url_component_constants() {
+    let u = "https://user:pw@host:8080/path?q=1#frag";
+    let one = |c: &str| run(&format!(r#"<?php var_dump(parse_url("{u}", {c}));"#));
+    assert_eq!(one("PHP_URL_SCHEME"), "string(5) \"https\"\n");
+    assert_eq!(one("PHP_URL_HOST"), "string(4) \"host\"\n");
+    assert_eq!(one("PHP_URL_PORT"), "int(8080)\n");
+    assert_eq!(one("PHP_URL_USER"), "string(4) \"user\"\n");
+    assert_eq!(one("PHP_URL_PASS"), "string(2) \"pw\"\n");
+    assert_eq!(one("PHP_URL_PATH"), "string(5) \"/path\"\n");
+    assert_eq!(one("PHP_URL_QUERY"), "string(3) \"q=1\"\n");
+    assert_eq!(one("PHP_URL_FRAGMENT"), "string(4) \"frag\"\n");
+    // A component the URL does not carry reads back as null, not "".
+    assert_eq!(
+        run(
+            r#"<?php var_dump(parse_url("http://h/p", PHP_URL_PORT), parse_url("http://h/p", PHP_URL_QUERY));"#
+        ),
+        "NULL\nNULL\n"
+    );
+}
+
+/// Only a component ABOVE `PHP_URL_FRAGMENT` is out of range. The reference
+/// branches on `key > -1`, so every negative value — not just the documented
+/// `-1` — asks for the whole array.
+#[test]
+fn parse_url_component_range() {
+    assert_eq!(
+        run(
+            r#"<?php try { parse_url("http://h/p", 8); } catch (ValueError $e) { echo $e->getMessage(); }"#
+        ),
+        "parse_url(): Argument #2 ($component) must be a valid URL component identifier, 8 given"
+    );
+    assert_eq!(
+        run(r#"<?php echo implode(",", array_keys(parse_url("http://h/p", -2)));"#),
+        "scheme,host,path"
+    );
+    // The range check runs BEFORE the parse, so a bad component beats a bad URL.
+    assert_eq!(
+        run(r#"<?php try { parse_url("::", 9); } catch (ValueError $e) { echo "caught"; }"#),
+        "caught"
+    );
+}

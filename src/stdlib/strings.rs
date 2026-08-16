@@ -61,9 +61,18 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         "vprintf" => return Some(vformat(args, true)),
         "sscanf" => sscanf(args),
         "htmlspecialchars_decode" | "html_entity_decode" => {
-            Value::str(html_decode(&str_arg(args, 0)))
+            let flags = match args.get(1) {
+                Some(v) if !matches!(v, Value::Undef) => with_host(|h| h.to_number(v).to_int()),
+                _ => crate::stdlib::textx::ENT_DEFAULT,
+            };
+            let named = name == "html_entity_decode";
+            Value::str(crate::stdlib::textx::html_decode(
+                &str_arg(args, 0),
+                flags,
+                named,
+            ))
         }
-        "strip_tags" => Value::str(strip_tags(&str_arg(args, 0))),
+        "strip_tags" => strip_tags(args),
         "mb_strlen" => Value::int(str_arg(args, 0).chars().count() as i64),
         "mb_strtoupper" => Value::str(str_arg(args, 0).to_uppercase()),
         "mb_strtolower" => Value::str(str_arg(args, 0).to_lowercase()),
@@ -540,33 +549,327 @@ fn str_rot13(s: &str) -> String {
         .collect()
 }
 
-/// `htmlspecialchars_decode` / `html_entity_decode` (the five entities the core
-/// `htmlspecialchars` produces, plus the common `&#39;` and `&apos;`).
-fn html_decode(s: &str) -> String {
-    s.replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#039;", "'")
-        .replace("&#39;", "'")
-        .replace("&apos;", "'")
-        .replace("&amp;", "&")
+/// C `isspace`: space plus the five control whitespace bytes. Rust's
+/// `u8::is_ascii_whitespace` leaves out the vertical tab, which the C machine
+/// counts, so the two are NOT interchangeable here.
+fn c_isspace(b: u8) -> bool {
+    matches!(b, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r')
 }
 
-/// Basic `strip_tags`: drop every `<...>` span. No allow-list support.
-fn strip_tags(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut depth = 0u32;
-    for c in s.chars() {
-        match c {
-            '<' => depth += 1,
-            '>' => {
-                depth = depth.saturating_sub(1);
-            }
-            _ if depth == 0 => out.push(c),
-            _ => {}
+/// `strip_tags($string, $allowed_tags = null)` — a port of `php_strip_tags_ex`
+/// (ext/standard/string.c), state machine and all.
+///
+/// The states are the reference's: 0 outside a tag, 1 inside one, 2 inside
+/// `<? … ?>`, 3 inside `<! … >`, 4 inside `<!-- … -->`. `depth` counts nested
+/// `<`, `in_q` holds the open quote inside a tag, and `lc` the last significant
+/// byte — all of which the `<?xml`, `<!DOCTYPE` and comment exits read back.
+///
+/// `allow` is the allow-list as PHP spells it (`"<b><i>"`), already lowercased.
+/// While it is set, everything scanned between `<` and `>` is buffered, and the
+/// buffer is re-emitted verbatim when [`php_tag_find`] accepts it — which is why
+/// an allowed `<b class="x">` keeps its attributes.
+///
+/// Reading past the end yields `\0` rather than panicking, matching the C, which
+/// walks an `estrndup` copy and so may legally read the terminator (`p[1]` on the
+/// final byte, and `*(p-1)` guarded by an explicit position test).
+fn strip_tags_ex(buf: &[u8], allow: Option<&[u8]>) -> Vec<u8> {
+    let end = buf.len();
+    let at = |i: usize| -> u8 {
+        if i < end {
+            buf[i]
+        } else {
+            0
         }
+    };
+
+    let mut rp: Vec<u8> = Vec::with_capacity(end);
+    let mut tbuf: Vec<u8> = Vec::new();
+    let mut p = 0usize;
+    let mut lc: u8 = 0;
+    let mut br: i64 = 0;
+    let mut depth: i64 = 0;
+    let mut in_q: u8 = 0;
+    let mut state: u8 = 0;
+    let mut is_xml = false;
+
+    while p < end {
+        let c = at(p);
+        match state {
+            0 => match c {
+                0 => {}
+                b'<' => {
+                    if in_q == 0 {
+                        if c_isspace(at(p + 1)) {
+                            rp.push(c);
+                        } else {
+                            lc = b'<';
+                            state = 1;
+                            if allow.is_some() {
+                                tbuf.push(b'<');
+                            }
+                            p += 1;
+                            continue;
+                        }
+                    }
+                }
+                b'>' => {
+                    if depth != 0 {
+                        depth -= 1;
+                    } else if in_q == 0 {
+                        rp.push(c);
+                    }
+                }
+                _ => rp.push(c),
+            },
+            1 => {
+                let mut reg_char = false;
+                match c {
+                    0 => {}
+                    b'<' => {
+                        if in_q != 0 {
+                        } else if c_isspace(at(p + 1)) {
+                            reg_char = true;
+                        } else {
+                            depth += 1;
+                        }
+                    }
+                    b'>' => {
+                        if depth != 0 {
+                            depth -= 1;
+                        } else if in_q != 0 {
+                        } else {
+                            lc = b'>';
+                            // `-->` closing an `<?xml` run is not the tag's end.
+                            if !(is_xml && p >= 1 && at(p - 1) == b'-') {
+                                in_q = 0;
+                                state = 0;
+                                is_xml = false;
+                                if let Some(set) = allow {
+                                    tbuf.push(b'>');
+                                    if php_tag_find(&tbuf, set) {
+                                        rp.extend_from_slice(&tbuf);
+                                    }
+                                    tbuf.clear();
+                                }
+                                p += 1;
+                                continue;
+                            }
+                        }
+                    }
+                    b'"' | b'\'' => {
+                        if p != 0 && (in_q == 0 || c == in_q) {
+                            in_q = if in_q != 0 { 0 } else { c };
+                        }
+                        reg_char = true;
+                    }
+                    b'!' => {
+                        // `<!` — comment, CDATA or DOCTYPE, not an HTML tag.
+                        if p >= 1 && at(p - 1) == b'<' {
+                            state = 3;
+                            lc = c;
+                            p += 1;
+                            continue;
+                        }
+                        reg_char = true;
+                    }
+                    b'?' => {
+                        if p >= 1 && at(p - 1) == b'<' {
+                            br = 0;
+                            state = 2;
+                            p += 1;
+                            continue;
+                        }
+                        reg_char = true;
+                    }
+                    _ => reg_char = true,
+                }
+                if reg_char && allow.is_some() {
+                    tbuf.push(c);
+                }
+            }
+            2 => match c {
+                b'(' => {
+                    if lc != b'"' && lc != b'\'' {
+                        lc = b'(';
+                        br += 1;
+                    }
+                }
+                b')' => {
+                    if lc != b'"' && lc != b'\'' {
+                        lc = b')';
+                        br -= 1;
+                    }
+                }
+                b'>' => {
+                    if depth != 0 {
+                        depth -= 1;
+                    } else if in_q == 0 && br == 0 && p >= 1 && lc != b'"' && at(p - 1) == b'?' {
+                        in_q = 0;
+                        state = 0;
+                        tbuf.clear();
+                        p += 1;
+                        continue;
+                    }
+                }
+                b'"' | b'\'' => {
+                    if p >= 1 && at(p - 1) != b'\\' {
+                        if lc == c {
+                            lc = 0;
+                        } else if lc != b'\\' {
+                            lc = c;
+                        }
+                        if p != 0 && (in_q == 0 || c == in_q) {
+                            in_q = if in_q != 0 { 0 } else { c };
+                        }
+                    }
+                }
+                // `<?xml` is markup, not PHP: rejoin the HTML state machine. An
+                // `l` that does not complete that prefix falls to the no-op arm,
+                // which is the C's plain `break`.
+                b'l' | b'L'
+                    if p > 4
+                        && (at(p - 1) | 0x20) == b'm'
+                        && (at(p - 2) | 0x20) == b'x'
+                        && at(p - 3) == b'?'
+                        && at(p - 4) == b'<' =>
+                {
+                    state = 1;
+                    is_xml = true;
+                    p += 1;
+                    continue;
+                }
+                _ => {}
+            },
+            3 => match c {
+                b'>' => {
+                    if depth != 0 {
+                        depth -= 1;
+                    } else if in_q == 0 {
+                        in_q = 0;
+                        state = 0;
+                        tbuf.clear();
+                        p += 1;
+                        continue;
+                    }
+                }
+                b'"' | b'\'' => {
+                    if p != 0 && at(p - 1) != b'\\' && (in_q == 0 || c == in_q) {
+                        in_q = if in_q != 0 { 0 } else { c };
+                    }
+                }
+                b'-' => {
+                    // `<!--` opens a comment, which runs to `-->`.
+                    if p >= 2 && at(p - 1) == b'-' && at(p - 2) == b'!' {
+                        state = 4;
+                        p += 1;
+                        continue;
+                    }
+                }
+                // `<!DOCTYPE` is not a comment; its body is tag-like.
+                b'E' | b'e'
+                    if p > 6
+                        && (at(p - 1) | 0x20) == b'p'
+                        && (at(p - 2) | 0x20) == b'y'
+                        && (at(p - 3) | 0x20) == b't'
+                        && (at(p - 4) | 0x20) == b'c'
+                        && (at(p - 5) | 0x20) == b'o'
+                        && (at(p - 6) | 0x20) == b'd' =>
+                {
+                    state = 1;
+                    p += 1;
+                    continue;
+                }
+                _ => {}
+            },
+            _ => {
+                if c == b'>' && in_q == 0 && p >= 2 && at(p - 1) == b'-' && at(p - 2) == b'-' {
+                    in_q = 0;
+                    state = 0;
+                    tbuf.clear();
+                }
+            }
+        }
+        p += 1;
     }
-    out
+    rp
+}
+
+/// `php_tag_find`: is the scanned tag in the allow-list `set`?
+///
+/// `tag` is the raw `<…>` span. It is normalized first — lowercased, leading and
+/// trailing whitespace dropped, attributes cut at the first space, and a closing
+/// `</b>` or self-closing `<br/>` reduced to `<b>` / `<br>` — and the result is
+/// then looked for as a SUBSTRING of `set`. Substring, not element: that is why
+/// `strip_tags($s, "<b>")` keeps `<b>` but not `<body>`, while a `set` of
+/// `"<body>"` keeps neither `<b>` (`<b>` is not a substring of `<body>`) nor…
+/// it keeps `<body>` alone.
+fn php_tag_find(tag: &[u8], set: &[u8]) -> bool {
+    if tag.is_empty() {
+        return false;
+    }
+    let at = |i: usize| -> u8 {
+        if i < tag.len() {
+            tag[i]
+        } else {
+            0
+        }
+    };
+    let mut norm: Vec<u8> = Vec::with_capacity(tag.len() + 1);
+    let mut state = 0u8;
+    let mut done = false;
+    let mut t = 0usize;
+    let mut c = at(t).to_ascii_lowercase();
+    while !done {
+        match c {
+            b'<' => norm.push(c),
+            b'>' => done = true,
+            _ => {
+                if !c_isspace(c) {
+                    if state == 0 {
+                        state = 1;
+                    }
+                    // A `/` is dropped only where it marks the form of the tag —
+                    // right after `<` (a closing tag) or right before `>` (a
+                    // self-closing one). Anywhere else it is part of the name.
+                    let prev = if t >= 1 { at(t - 1) } else { 0 };
+                    if c != b'/' || (prev != b'<' && at(t + 1) != b'>') {
+                        norm.push(c);
+                    }
+                } else if state == 1 {
+                    done = true;
+                }
+            }
+        }
+        t += 1;
+        c = at(t).to_ascii_lowercase();
+    }
+    norm.push(b'>');
+    set.windows(norm.len()).any(|w| w == norm.as_slice())
+}
+
+/// `strip_tags` as PHP's function: `$allowed_tags` is a string (`"<b><i>"`), an
+/// array of bare tag names (`["b", "i"]`, PHP 7.4+), or `null`.
+fn strip_tags(args: &[Value]) -> Value {
+    let subject = str_arg(args, 0);
+    let allow: Option<Vec<u8>> = match args.get(1) {
+        None | Some(Value::Undef) => None,
+        Some(v) => Some(with_host(|h| match h.array_pairs(v) {
+            // The array form is assembled into the string form first, exactly as
+            // `PHP_FUNCTION(strip_tags)` does, so both share one code path.
+            Some(pairs) => {
+                let mut s = String::new();
+                for (_, tag) in pairs {
+                    s.push('<');
+                    s.push_str(&h.to_str(&tag));
+                    s.push('>');
+                }
+                s.to_ascii_lowercase().into_bytes()
+            }
+            None => h.to_str(v).to_ascii_lowercase().into_bytes(),
+        })),
+    };
+    let out = strip_tags_ex(subject.as_bytes(), allow.as_deref());
+    Value::str(String::from_utf8_lossy(&out).into_owned())
 }
 
 // ── distance metrics ─────────────────────────────────────────────────────────

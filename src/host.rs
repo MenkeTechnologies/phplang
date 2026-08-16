@@ -1830,6 +1830,22 @@ impl PhpHost {
         scope.vars.get(name).cloned().unwrap_or(Value::Undef)
     }
 
+    /// Is `name` BOUND in the scope it resolves in?
+    ///
+    /// Distinct from a non-`Undef` [`get_var`], and the difference is the whole
+    /// point: PHP `null` is `Value::Undef` here (fusevm has no null), so an unset
+    /// name and a name holding `null` read back identically. Only the binding
+    /// itself separates them, which is what `compact()` and `isset()`-shaped
+    /// checks need — `$a = null; compact('a')` yields `['a' => null]` with no
+    /// diagnostic, while an unset `$a` yields `[]` and a warning.
+    pub fn var_defined(&self, name: &str) -> bool {
+        let idx = self.scope_idx(name);
+        let Some(scope) = self.scopes.get(idx) else {
+            return false;
+        };
+        scope.refs.contains_key(name) || scope.vars.contains_key(name)
+    }
+
     pub fn set_var(&mut self, name: &str, val: Value) {
         let idx = self.scope_idx(name);
         let slot = self.scopes.get(idx).and_then(|s| s.refs.get(name).copied());
@@ -4502,6 +4518,15 @@ fn predefined_constants() -> FxHashMap<String, Value> {
     si("JSON_ERROR_CTRL_CHAR", 3);
     si("JSON_ERROR_SYNTAX", 4);
     si("JSON_ERROR_UTF8", 5);
+    // url — `parse_url()`'s `$component` selectors (ext/standard/url.h).
+    si("PHP_URL_SCHEME", 0);
+    si("PHP_URL_HOST", 1);
+    si("PHP_URL_PORT", 2);
+    si("PHP_URL_USER", 3);
+    si("PHP_URL_PASS", 4);
+    si("PHP_URL_PATH", 5);
+    si("PHP_URL_QUERY", 6);
+    si("PHP_URL_FRAGMENT", 7);
     // filter
     si("INPUT_GET", 1);
     si("INPUT_POST", 0);
@@ -5754,12 +5779,61 @@ fn not_callable(v: &Value) -> String {
     crate::builtins::throws_bare("Error", msg)
 }
 
+/// A callable value that is not a closure, resolved to the method it names.
+///
+/// PHP accepts four such forms and this is the ONE place that decodes them, so
+/// every entry point agrees: `$f(…)`, `usort`, `array_map`,
+/// `preg_replace_callback` and `Closure::fromCallable` all route through
+/// [`call_value`]. Splitting the knowledge — which is what happened before, with
+/// only `call_user_func` able to read the array and `"C::m"` forms — meant
+/// `usort($a, [$obj, "cmp"])` raised "Array callback must have exactly two
+/// elements" on an array that HAD two elements, and `array_map` silently
+/// returned its input unmapped.
+///
+/// Returns `None` when `callee` is a plain function-name string (the caller
+/// dispatches it by name) or is not callable at all.
+pub(crate) fn callable_method(callee: &Value) -> Option<(String, String, Option<Value>)> {
+    // Array callable — exactly `[target, method]`. An object target is an
+    // instance call, a class-name string a static one.
+    if with_host(|h| h.is_array(callee)) {
+        let pairs = with_host(|h| h.array_pairs(callee)).unwrap_or_default();
+        if pairs.len() != 2 {
+            return None;
+        }
+        let target = pairs[0].1.clone();
+        let method = with_host(|h| h.to_str(&pairs[1].1));
+        return match with_host(|h| h.object_class(&target)) {
+            Some(class) => Some((class, method, Some(target))),
+            None => Some((with_host(|h| h.to_str(&target)), method, None)),
+        };
+    }
+    // A non-array object is callable exactly when its class defines `__invoke`.
+    if with_host(|h| h.is_object(callee)) {
+        let class = with_host(|h| h.object_class(callee))?;
+        if with_host(|h| h.class_has_method(&class, "__invoke")) {
+            return Some((class, "__invoke".to_string(), Some(callee.clone())));
+        }
+        return None;
+    }
+    // `"Class::method"` — a static call spelled as one string.
+    if let Value::Str(s) = callee {
+        if let Some((class, method)) = s.as_str().split_once("::") {
+            return Some((class.to_string(), method.to_string(), None));
+        }
+    }
+    None
+}
+
 /// Invoke a callable *value*: a closure handle runs its captured-plus-bound body
-/// in a fresh scope; a string is dispatched by name through `call_function`. Used
-/// by `$f(...)` calls and callback builtins (`array_map`).
+/// in a fresh scope; an array / `"C::m"` / `__invoke` object resolves through
+/// [`callable_method`]; a plain string is dispatched by name through
+/// `call_function`. Used by `$f(...)` calls and callback builtins (`array_map`).
 pub fn call_value(callee: Value, args: Vec<Value>) -> Result<Value, String> {
     if let Some(cc) = with_host(|h| h.closure_of(&callee)) {
         return invoke_closure(cc, args, Vec::new());
+    }
+    if let Some((class, method, this)) = callable_method(&callee) {
+        return call_method(&class, &method, this, args);
     }
     match callee {
         Value::Str(s) => call_function(&s, args),
@@ -5775,6 +5849,9 @@ pub fn call_value_named(
 ) -> Result<Value, String> {
     if let Some(cc) = with_host(|h| h.closure_of(&callee)) {
         return invoke_closure(cc, args, named);
+    }
+    if let Some((class, method, this)) = callable_method(&callee) {
+        return call_method_named(&class, &method, this, args, named);
     }
     match callee {
         Value::Str(s) => call_function_named(&s, args, named),
