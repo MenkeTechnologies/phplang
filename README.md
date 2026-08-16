@@ -491,6 +491,27 @@ reference printed nothing. Each is named in a closing `RUN NOT CLEAN` line, and
 the summary reports the skipped and barren counts even at zero — a clean number
 is only evidence if those are visible next to it.
 
+A clean run over the existing modes proves nothing about a construct no
+generator emits, and that is where the divergences have actually been. Before
+picking a target, cross-reference the generator modes against the registered
+library surface:
+
+```sh
+# every registered builtin that no generator mode ever emits
+grep -rhoE '"[a-z_][a-z0-9_]{2,}"' src/stdlib/*.rs src/builtins.rs | tr -d '"' \
+  | sort -u | while read f; do
+      php -r "exit(function_exists('$f')?0:1);" &&
+        ! grep -q "$f" src/bin/parity_fuzz.rs && echo "$f"
+    done
+```
+
+Round 7 found `json_decode`, `ctype_*`, `parse_url`, `strip_tags`, `__invoke`,
+`compact`, `md5` and `base64_*` on that list, and every one of them was carrying
+a bug. Round 8 found `sscanf`, `addcslashes`, `count_chars`, `strtok`,
+`substr_compare` and the array forms of `substr_replace` on it, with the same
+result. A curated corpus cannot report a construct nobody captured, so a mode
+should be added for the family FIRST and the fix written against what it reports.
+
 A clean divergence count only means something alongside the two numbers printed
 under it. `skipped` counts cases that never reached a comparison — the reference
 timed out, or either side failed to run — because a mode whose programs all time

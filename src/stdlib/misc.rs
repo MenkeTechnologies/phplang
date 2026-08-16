@@ -264,6 +264,16 @@ fn soundex(s: &str) -> String {
 /// documented quirk — the escape byte is not stripped), and an empty input string
 /// yields a single `null` field.
 fn str_getcsv(args: &[Value]) -> Value {
+    // PHP 8.4 deprecated relying on the default `$escape`, ahead of changing it
+    // to "" in a later release. The notice fires on the ARGUMENT COUNT, before
+    // any parsing, so even `str_getcsv("")` raises it.
+    if args.len() < 4 {
+        host::with_host(|h| {
+            h.deprecated(
+                "str_getcsv(): the $escape parameter must be provided as its default value will change",
+            )
+        });
+    }
     let s = str_arg(args, 0);
     if s.is_empty() {
         // PHP returns a one-element array holding null for a wholly empty line.
@@ -357,13 +367,8 @@ fn nth_char_or(args: &[Value], i: usize, default: char) -> char {
 /// `$callback($value, $key [, $extra])` for every **leaf** (non-array) element,
 /// descending into nested arrays; always returns `true`.
 ///
-/// LIMITATION (documented, not a bug fixable here): PHP's callback takes its value
-/// parameter by reference (`function(&$value, $key)`) so it can rewrite each leaf
-/// in place. phplang has **no by-reference parameters** — arguments pass by value
-/// — so mutating a *scalar* leaf inside the callback does NOT write back into the
-/// array, unlike PHP. A faithful fix needs VM-level by-reference OUT-parameters,
-/// which live outside this module. (Object/array leaves are shared heap handles,
-/// but this walker only ever invokes the callback on non-array leaves anyway.)
+/// The value goes in through a reference cell, so a `function (&$v)` callback
+/// rewrites the leaf in place — the same mechanism `array_walk` uses.
 fn array_walk_recursive(args: &[Value]) -> Result<Value, String> {
     let arr = arg(args, 0);
     let cb = arg(args, 1);
@@ -388,7 +393,11 @@ fn walk_recursive(array: &Value, cb: &Value, extra: Option<Value>) -> Result<(),
             walk_recursive(&v, cb, extra.clone())?;
             continue;
         }
-        let mut call_args = vec![v, k];
+        // Same by-reference plumbing as `array_walk`: hand the leaf over in a
+        // reference cell and copy whatever the callback left there back under the
+        // same key, so `function (&$v) { $v *= 2; }` mutates the array.
+        let (cell, slot) = host::with_host(|h| h.new_ref_cell(v));
+        let mut call_args = vec![cell, k.clone()];
         if let Some(e) = &extra {
             call_args.push(e.clone());
         }
@@ -396,6 +405,10 @@ fn walk_recursive(array: &Value, cb: &Value, extra: Option<Value>) -> Result<(),
         if host::unwinding() {
             return Ok(());
         }
+        host::with_host(|h| {
+            let updated = h.ref_cell_value(slot);
+            h.arr_set_key(array, &k, updated);
+        });
     }
     Ok(())
 }
@@ -698,10 +711,9 @@ fn str_word_count(args: &[Value]) -> Result<Value, String> {
     } else {
         String::new()
     };
-    let mask = charmask(charlist.as_bytes());
-    let is_word =
-        |c: u8| c.is_ascii_alphabetic() || (has_cl && mask[c as usize]) || c == b'\'' || c == b'-';
-
+    // Upstream answers an empty subject BEFORE it builds the character mask
+    // (php-src `ext/standard/string.c:6081`), so a malformed `..` range in
+    // `$characters` raises no diagnostic when there is nothing to scan.
     let n = bytes.len();
     if n == 0 {
         return Ok(match format {
@@ -709,6 +721,10 @@ fn str_word_count(args: &[Value]) -> Result<Value, String> {
             _ => Value::int(0),
         });
     }
+
+    let mask = host::with_host(|h| charmask(h, charlist.as_bytes(), "str_word_count"));
+    let is_word =
+        |c: u8| c.is_ascii_alphabetic() || (has_cl && mask[c as usize]) || c == b'\'' || c == b'-';
 
     let mut p = 0usize;
     let mut e = n;
@@ -749,27 +765,6 @@ fn str_word_count(args: &[Value]) -> Result<Value, String> {
         2 => make_map(pairs),
         _ => Value::int(count),
     })
-}
-
-/// Port of PHP's `php_charmask`: build a 256-entry membership table from a
-/// character list that may contain `a..z` inclusive ranges.
-fn charmask(list: &[u8]) -> [bool; 256] {
-    let mut mask = [false; 256];
-    let n = list.len();
-    let mut i = 0;
-    while i < n {
-        let c = list[i];
-        if i + 3 < n && list[i + 1] == b'.' && list[i + 2] == b'.' && list[i + 3] >= c {
-            for x in c..=list[i + 3] {
-                mask[x as usize] = true;
-            }
-            i += 4;
-        } else {
-            mask[c as usize] = true;
-            i += 1;
-        }
-    }
-    mask
 }
 
 // ── metaphone ────────────────────────────────────────────────────────────────

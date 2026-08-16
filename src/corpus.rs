@@ -2243,7 +2243,7 @@ pub const CORPUS: &[Entry] = &[
         "trim",
         "Core library — strings",
         "trim(string $string): string",
-        "Removes leading and trailing characters, defaulting to PHP's set `\" \\t\\n\\r\\0\\x0B\"`. The optional `$characters` argument replaces that set and understands `a..z` ranges.",
+        "Removes leading and trailing characters, defaulting to PHP's set `\" \\t\\n\\r\\0\\x0B\"`. The optional `$characters` argument replaces that set and understands `a..z` inclusive ranges; a malformed range warns `trim(): Invalid '..'-range, …` and contributes nothing. Byte-oriented.",
         "echo trim(\"  hi  \");   // => hi",
     ),
     (
@@ -2390,7 +2390,7 @@ pub const CORPUS: &[Entry] = &[
         "substr_compare",
         "Core library — strings",
         "substr_compare(string $haystack, string $needle, int $offset, ?int $length = null, bool $case_insensitive = false): int",
-        "Compares `$needle` against the slice of `$haystack` starting at `$offset`, returning the sign of the comparison.",
+        "Compares `$needle` against the slice of `$haystack` starting at `$offset` (negatives count from the end), over `$length` bytes or, when that is null, `max(strlen($needle), strlen($haystack) - $offset)`. The result is NOT normalized: differing bytes answer their signed difference, and only a tie on content falls back to -1/0/1 on length. An `$offset` past the haystack, or a negative `$length`, throws `ValueError`; a `$length` of 0 answers 0.",
         "echo substr_compare(\"Hello\", \"llo\", 2);   // => 0",
     ),
     (
@@ -2531,14 +2531,14 @@ pub const CORPUS: &[Entry] = &[
         "array_sum",
         "Core library — arrays",
         "array_sum(array $array): int|float",
-        "Sum of the values as numbers. The result is an integer while every addend is one, and a float as soon as any is.",
+        "Sum of the values as numbers. The result is an integer while every addend is one, and a float as soon as any is. An entry the `+` operator would reject warns `array_sum(): Addition is not supported on type <type>`; an array or an object with no numeric cast then contributes nothing, while a non-numeric string keeps the pre-8 behaviour of counting as 0.",
         "var_dump(array_sum([1, 2.5]));   // => float(3.5)",
     ),
     (
         "array_product",
         "Core library — arrays",
         "array_product(array $array): int|float",
-        "Product of the values as numbers, following the same integer-until-a-float rule as `array_sum`. An empty array yields 1.",
+        "Product of the values as numbers, following the same integer-until-a-float rule as `array_sum`, and the same `Multiplication is not supported on type <type>` warning for an entry `*` would reject — which is why `array_product([2, \"a\"])` is 0, the non-numeric string counting as a factor of 0. An empty array yields 1.",
         "echo array_product([2, 3, 4]);   // => 24",
     ),
     (
@@ -2976,9 +2976,37 @@ pub const CORPUS: &[Entry] = &[
     (
         "substr_replace",
         "Strings",
-        "substr_replace(string $string, string $replace, int $offset, ?int $length = null): string",
-        "Splices the replacement over the byte range starting at `$offset`. DIVERGENCE: only the all-scalar form exists — PHP also accepts arrays for every argument and returns an array. The result is rebuilt lossily, so splicing at a non-character boundary yields U+FFFD.",
+        "substr_replace(array|string $string, array|string $replace, array|int $offset, array|int|null $length = null): string|array",
+        "Splices the replacement over the byte range starting at `$offset`. An array `$string` returns an array spliced element-wise, with `$replace`, `$offset` and `$length` consumed positionally and falling back to `\"\"` / `0` / to-the-end once exhausted. The result is rebuilt lossily, so splicing at a non-character boundary yields U+FFFD.",
         "echo substr_replace(\"Hello\", \"XY\", 1, 3);   // => HXYo",
+    ),
+    (
+        "addcslashes",
+        "Strings",
+        "addcslashes(string $string, string $characters): string",
+        "Backslash-escapes every byte listed in `$characters`, which may use `a..z` inclusive ranges. Outside printable ASCII the escape is the C mnemonic (`\\n`, `\\t`, `\\r`, `\\a`, `\\v`, `\\b`, `\\f`) or a three-digit octal. A malformed range warns `addcslashes(): Invalid '..'-range, …` and contributes nothing.",
+        "echo addcslashes(\"foo[bar]\", \"A..z\");   // => \\f\\o\\o\\[\\b\\a\\r\\]",
+    ),
+    (
+        "stripcslashes",
+        "Strings",
+        "stripcslashes(string $string): string",
+        "The inverse of `addcslashes`: understands the C mnemonics plus `\\xHH` (one or two hex digits) and `\\NNN` (up to three octal digits). An unrecognized escape yields the escaped character itself, so `\\z` is `z`.",
+        "echo stripcslashes('\\101\\x42');   // => AB",
+    ),
+    (
+        "count_chars",
+        "Strings",
+        "count_chars(string $string, int $mode = 0): array|string",
+        "Per-byte histogram. Mode 0 reports all 256 counters, 1 only the non-zero ones, 2 only the zero ones; modes 3 and 4 return a STRING of the bytes that did / did not occur. A `$mode` outside 0-4 throws `ValueError`. DIVERGENCE: modes 3 and 4 can name bytes above 0x7F, which this engine's UTF-8 strings widen to two bytes each (see BUGS.md).",
+        "print_r(count_chars(\"aab\", 3));   // => ab",
+    ),
+    (
+        "strtok",
+        "Strings",
+        "strtok(string $string, ?string $token = null): string|false",
+        "Stateful tokenizer. Two arguments install a new subject and answer its first token; one argument continues the saved subject with a (possibly different) delimiter set. Running out of tokens answers `false` AND discards the subject, so a further one-argument call keeps answering `false` rather than restarting.",
+        "echo strtok(\"a b\", \" \"), strtok(\" \");   // => ab",
     ),
     (
         "strtr",
@@ -3144,8 +3172,8 @@ pub const CORPUS: &[Entry] = &[
     (
         "sscanf",
         "Strings",
-        "sscanf(string $string, string $format): array",
-        "Parses the string against the format and returns the parsed values. Supports `%d %i %f %e %g %s %c %%`, literal text, and whitespace runs; a field width applies to `%s` only. DIVERGENCE: the by-reference extra-argument form does not exist, and a mismatch silently returns the partial list rather than PHP's `-1`.",
+        "sscanf(string $string, string $format, mixed &...$vars): array|int|null",
+        "Parses the string against the format. With two arguments the result is an array of the converted values, padded with nulls to one entry per non-suppressed specifier; with by-reference arguments it is the number of specifiers processed, and a variable no conversion reached is left untouched. Supports `%d %D %i %o %x %X %u %f %e %E %g %s %c %n %[…] %%`, `*` suppression, field widths, the ignored `l`/`L`/`h` size modifiers, literal text and whitespace runs. When the input runs out before any conversion the answer is `null` (two-argument) or `-1` (by-reference). DIVERGENCE: the `%n$` positional form is not implemented, and no format is rejected up front the way PHP's `ValidateFormat` does.",
         "print_r(sscanf(\"age:42\", \"age:%d\"));   // => Array\\n(\\n    [0] => 42\\n)",
     ),
     (
@@ -3364,7 +3392,7 @@ pub const CORPUS: &[Entry] = &[
         "fscanf",
         "Text formatting",
         "fscanf(resource $stream, string $format): array|false",
-        "Reads one line from the stream and parses it with `sscanf`. DIVERGENCE: at end of file it returns `false`, not PHP's `-1`, deliberately so that `while ($r = fscanf(…))` terminates. The by-reference extra-argument form does not exist.",
+        "Reads one line from the stream and parses it with `sscanf`. DIVERGENCE: at end of file it returns `false`, not PHP's `-1`, deliberately so that `while ($r = fscanf(…))` terminates. The by-reference extra-argument form does not exist — unlike `sscanf`, which does implement it.",
         "",
     ),
     (
@@ -3472,6 +3500,13 @@ pub const CORPUS: &[Entry] = &[
         "array_replace(array $base, array ...$rest): array",
         "Starts from `$base`, then overwrites or inserts every entry of each later array by key. There is no recursion into nested arrays.",
         "print_r(array_replace([\"a\" => 1], [\"a\" => 2]));   // => Array\\n(\\n    [a] => 2\\n)",
+    ),
+    (
+        "array_replace_recursive",
+        "Arrays",
+        "array_replace_recursive(array $base, array ...$rest): array",
+        "As `array_replace`, except that when both sides hold an array under the same key the two are merged recursively instead of the later one replacing the earlier wholesale. Any other type pairing, or a key present on only one side, replaces.",
+        "print_r(array_replace_recursive([\"a\" => [\"b\" => 1, \"c\" => 2]], [\"a\" => [\"b\" => 9]]));   // => Array\\n(\\n    [a] => Array\\n        (\\n            [b] => 9\\n            [c] => 2\\n        )\\n\\n)",
     ),
     (
         "array_count_values",
@@ -5319,7 +5354,7 @@ pub const CORPUS: &[Entry] = &[
         "array_walk_recursive",
         "Misc",
         "array_walk_recursive(array $array, callable $callback, mixed $arg = null): bool",
-        "Descends nested arrays and invokes `$callback($value, $key[, $arg])` on non-array LEAVES only — a nested array is recursed into but never passed to the callback. It carries the same limitation as `array_walk`: with no by-reference parameters, mutating a scalar leaf inside the callback does not write back.",
+        "Descends nested arrays and invokes `$callback($value, $key[, $arg])` on non-array LEAVES only — a nested array is recursed into but never passed to the callback. The leaf goes in through a reference cell, so a `function (&$v)` callback rewrites it in place, exactly as with `array_walk`.",
         "$a = [1, [2, 3]]; array_walk_recursive($a, function ($v, $k) { echo $v; });   // => 123",
     ),
     (
@@ -5361,7 +5396,7 @@ pub const CORPUS: &[Entry] = &[
         "str_getcsv",
         "Misc",
         "str_getcsv(string $string, string $separator = \",\", string $enclosure = \"\\\"\", string $escape = \"\\\\\"): array",
-        "Parses ONE line. Doubled enclosures inside a quoted field are literals, and unenclosed fields keep their blanks. DIVERGENCE: the escape character keeps BOTH itself and the following character — it is not stripped; an embedded newline is an ordinary field character, so multi-line records are never reassembled; an empty input returns a one-element array holding null; and an empty `$separator` or `$enclosure` falls back to the DEFAULT rather than disabling it.",
+        "Parses ONE line. Doubled enclosures inside a quoted field are literals, and unenclosed fields keep their blanks. DIVERGENCE: the escape character keeps BOTH itself and the following character — it is not stripped; an embedded newline is an ordinary field character, so multi-line records are never reassembled; an empty input returns a one-element array holding null; and an empty `$separator` or `$enclosure` falls back to the DEFAULT rather than disabling it. Omitting `$escape` raises PHP 8.4's deprecation notice.",
         "print_r(str_getcsv(\"a,b\"));   // => Array\\n(\\n    [0] => a\\n    [1] => b\\n)",
     ),
     (

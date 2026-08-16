@@ -159,6 +159,60 @@ pub(crate) mod common {
         with_host(|h| h.to_number(&arg(args, i)).to_float())
     }
 
+    /// Port of `php_charmask` (php-src 8.5 `ext/standard/string.c:475`): build a
+    /// 256-entry membership table from a character list in which `a..z` denotes
+    /// an inclusive, *incrementing* byte range.
+    ///
+    /// The four diagnostics are part of the contract, not decoration — every
+    /// caller of `php_charmask` inherits them, so `trim`, `str_word_count` and
+    /// `addcslashes` all report a malformed range under their own name. That is
+    /// why `fname` is a parameter: upstream `php_error_docref` prefixes the
+    /// message with whichever function is on the stack.
+    ///
+    /// A malformed range contributes nothing to the mask; upstream `continue`s
+    /// past it without setting a bit, which is why `addcslashes("a..b", "..z")`
+    /// escapes the literal dots rather than a range.
+    ///
+    /// The host is threaded through rather than reached for with `with_host`
+    /// because most callers already hold the borrow, and a second `borrow_mut`
+    /// on the thread-local `RefCell` panics.
+    pub fn charmask(h: &mut crate::host::PhpHost, list: &[u8], fname: &str) -> [bool; 256] {
+        let mut mask = [false; 256];
+        let n = list.len();
+        let mut i = 0;
+        while i < n {
+            let c = list[i];
+            if i + 3 < n && list[i + 1] == b'.' && list[i + 2] == b'.' && list[i + 3] >= c {
+                for x in c..=list[i + 3] {
+                    mask[x as usize] = true;
+                }
+                i += 4;
+            } else if i + 1 < n && list[i] == b'.' && list[i + 1] == b'.' {
+                let why = if i == 0 {
+                    "no character to the left of '..'"
+                } else if i + 2 >= n {
+                    "no character to the right of '..'"
+                } else if list[i - 1] > list[i + 2] {
+                    "'..'-range needs to be incrementing"
+                } else {
+                    // Upstream's own FIXME: `a..b..c` is the only shape left.
+                    ""
+                };
+                let msg = if why.is_empty() {
+                    format!("{fname}(): Invalid '..'-range")
+                } else {
+                    format!("{fname}(): Invalid '..'-range, {why}")
+                };
+                h.warn(msg);
+                i += 1;
+            } else {
+                mask[c as usize] = true;
+                i += 1;
+            }
+        }
+        mask
+    }
+
     /// Build a PHP array (list) from an ordered value list.
     pub fn make_list(vals: Vec<Value>) -> Value {
         with_host(|h| {

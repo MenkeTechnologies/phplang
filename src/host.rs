@@ -595,6 +595,12 @@ pub struct PhpHost {
     /// that reached the regex compiler. Sticky — only another such call rewrites
     /// it, so `preg_last_error()` itself and `preg_quote()` leave it alone.
     preg_error: i64,
+    /// `strtok`'s tokenizer position: the subject it was last handed and the byte
+    /// offset the next call resumes from. Upstream this is the pair
+    /// `BG(strtok_string)` / `BG(strtok_last)`; `None` is upstream's NULL
+    /// `strtok_string`, which is both the never-started state and the state
+    /// `strtok` resets to when it runs out of tokens.
+    strtok_state: Option<(String, usize)>,
     /// The object whose `__clone()` is currently running, if any. A `readonly`
     /// property is writable exactly once, and PHP 8.3 reopens that one write
     /// inside `__clone` so a copy can be given a fresh identity — the only
@@ -926,6 +932,7 @@ impl PhpHost {
             error_reporting: errlevel::E_ALL,
             ini: default_ini(),
             preg_error: 0,
+            strtok_state: None,
             cloning: None,
             readonly_init: FxHashMap::default(),
             magic_in_progress: Vec::new(),
@@ -1537,6 +1544,19 @@ impl PhpHost {
     /// then finds nothing.
     pub fn set_preg_error(&mut self, code: i64) {
         self.preg_error = code;
+    }
+
+    /// `strtok`'s saved subject and resume offset, or `None` before the first
+    /// two-argument call and after the subject has been exhausted.
+    pub fn strtok_state(&self) -> Option<(String, usize)> {
+        self.strtok_state.clone()
+    }
+
+    /// Install a fresh `strtok` subject (two-argument form) or advance/clear the
+    /// resume offset. `None` is the "tokenization finished" state, which is what
+    /// makes a later one-argument call answer `false` rather than restart.
+    pub fn set_strtok_state(&mut self, state: Option<(String, usize)>) {
+        self.strtok_state = state;
     }
 
     /// Set the `error_reporting` mask, returning the previous one — what

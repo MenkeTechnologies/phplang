@@ -36,6 +36,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         "array_intersect_assoc" => host::with_host(|h| php_diff_intersect_assoc(h, args, true)),
         "array_merge_recursive" => host::with_host(|h| php_array_merge_recursive(h, args)),
         "array_replace" => host::with_host(|h| php_array_replace(h, args)),
+        "array_replace_recursive" => host::with_host(|h| php_array_replace_recursive(h, args)),
         "array_count_values" => host::with_host(|h| php_array_count_values(h, args)),
         "usort" => return Some(php_usort(args, SortKind::List)),
         "uasort" => return Some(php_usort(args, SortKind::Assoc)),
@@ -431,6 +432,39 @@ fn php_array_replace(h: &mut host::PhpHost, args: &[Value]) -> Value {
         }
     }
     out
+}
+
+/// `array_replace_recursive($base, ...$rest)` — as `array_replace`, except that
+/// when BOTH sides hold an array under the same key the two are merged
+/// recursively instead of the later one replacing the earlier wholesale. Any
+/// other type pairing (or a key present on only one side) replaces.
+fn php_array_replace_recursive(h: &mut host::PhpHost, args: &[Value]) -> Value {
+    let out = h.new_array();
+    for a in args {
+        replace_recursive_into(h, &out, a);
+    }
+    out
+}
+
+/// Merge every entry of `src` into the existing array `dst`, descending wherever
+/// both sides already hold an array. `dst` is a heap handle, so the descent
+/// writes through to the copy `array_replace_recursive` is building.
+fn replace_recursive_into(h: &mut host::PhpHost, dst: &Value, src: &Value) {
+    for (k, v) in h.array_pairs(src).unwrap_or_default() {
+        let existing = h.index_get(dst, &k);
+        if h.is_array(&existing) && h.is_array(&v) {
+            // Copy the destination subtree first: PHP arrays are value types, so
+            // merging must not write through into an array the caller still holds.
+            let sub = h.new_array();
+            for (ek, ev) in h.array_pairs(&existing).unwrap_or_default() {
+                h.arr_set_key(&sub, &ek, ev);
+            }
+            replace_recursive_into(h, &sub, &v);
+            h.arr_set_key(dst, &k, sub);
+        } else {
+            h.arr_set_key(dst, &k, v);
+        }
+    }
 }
 
 // ── array_count_values ───────────────────────────────────────────────────────

@@ -69,10 +69,21 @@ fn soundex_no_letters_pads_zeros() {
 
 // ── str_getcsv ───────────────────────────────────────────────────────────────
 
+/// PHP 8.4 deprecated relying on `str_getcsv`'s default `$escape`, so every call
+/// below that omits it is PREFIXED by this notice — the reference emits it
+/// before any parsing, even for an empty subject. Each test therefore asserts
+/// the notice AND the unchanged parse result, and pairs the call with an
+/// explicit-`$escape` form that proves the notice is the only difference.
+const CSV_DEPRECATED: &str = "\nDeprecated: str_getcsv(): the $escape parameter must be provided as its default value will change in Command line code on line 1\n";
+
 #[test]
 fn str_getcsv_plain_fields() {
     assert_eq!(
         run("<?php echo implode('|', str_getcsv('a,b,c'));"),
+        format!("{CSV_DEPRECATED}a|b|c")
+    );
+    assert_eq!(
+        run("<?php echo implode('|', str_getcsv('a,b,c', ',', '\"', '\\\\'));"),
         "a|b|c"
     );
 }
@@ -82,7 +93,7 @@ fn str_getcsv_enclosed_field_with_separator() {
     // A comma inside the enclosure is part of the field, not a delimiter.
     assert_eq!(
         run("<?php $r=str_getcsv('\"a,b\",c'); echo $r[0],'/',$r[1];"),
-        "a,b/c"
+        format!("{CSV_DEPRECATED}a,b/c")
     );
 }
 
@@ -91,24 +102,30 @@ fn str_getcsv_doubled_enclosure_is_literal() {
     // "" inside an enclosure collapses to a single literal quote.
     assert_eq!(
         run("<?php $r=str_getcsv('\"a\"\"b\",c'); echo $r[0],'/',$r[1];"),
-        "a\"b/c"
+        format!("{CSV_DEPRECATED}a\"b/c")
     );
 }
 
 #[test]
 fn str_getcsv_custom_separator() {
+    // A custom separator does not satisfy the deprecation: only $escape does.
     assert_eq!(
         run("<?php echo implode('|', str_getcsv('a;b;c', ';'));"),
+        format!("{CSV_DEPRECATED}a|b|c")
+    );
+    assert_eq!(
+        run("<?php echo implode('|', str_getcsv('a;b;c', ';', '\"', '\\\\'));"),
         "a|b|c"
     );
 }
 
 #[test]
 fn str_getcsv_empty_line_is_single_null() {
-    // A wholly empty line yields one null field.
+    // A wholly empty line yields one null field — and still raises the notice,
+    // which fires on the argument count before any parsing.
     assert_eq!(
         run("<?php $r=str_getcsv(''); echo count($r),':',var_export($r[0],true);"),
-        "1:NULL"
+        format!("{CSV_DEPRECATED}1:NULL")
     );
 }
 
@@ -117,7 +134,7 @@ fn str_getcsv_empty_fields_are_empty_strings() {
     // A bare separator yields two empty-string fields (not null).
     assert_eq!(
         run("<?php $r=str_getcsv(','); echo count($r),':[',$r[0],'][',$r[1],']';"),
-        "2:[][]"
+        format!("{CSV_DEPRECATED}2:[][]")
     );
 }
 

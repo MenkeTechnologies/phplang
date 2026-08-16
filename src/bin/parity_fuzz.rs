@@ -2722,6 +2722,159 @@ fn gen_parseurl(seed: u64) -> Vec<String> {
     )]
 }
 
+
+/// `sscanf` in both of its shapes: the two-argument array form and the
+/// by-reference form, over the whole specifier alphabet. Round 2 found this
+/// family unrepresented, and with it `%x`/`%o`/`%i`, the `%[…]` scan sets, the
+/// null padding of unreached slots, and the by-reference form itself.
+fn gen_sscanf(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let input = *r.pick(&[
+        "42 foo", "ff 10 0x1F", "12:34:56", "abc123", "  42", "1e3", "a b",
+        "hello5", "SN/2350001", "12abc", "3.14 abc", "[abc]", "-17", "017",
+        "0x1F", "00x10", "+5", "a1b2", "XYZ", "abcdef", "50%", "", "  ",
+        "99999999999999999999", "1e+", ".", "]ab", "a-b",
+    ]);
+    let fmt = *r.pick(&[
+        "%d %s", "%x %o %i", "%d:%d:%d", "%[a-c]", "%[^0-9]", "%[]a]", "%[a-]",
+        "%d", "%s", "%c", "%c%c%c", "%2c", "%5s", "%f", "%e", "%u", "%o", "%i",
+        "%*c%c", "%3s%3s", "%s%n", "%ld %hd %Lf", "%d%%", "SN/%d", "%d%s",
+        "%d %d %d", "age %d name %s", "[%[a-c]]", "%[a-z]%d%[a-z]%d", "x%d", "  ",
+    ]);
+    let byref = r.below(2) == 0;
+    if byref {
+        // Untouched-variable semantics only show up when the variables are
+        // pre-set: PHP leaves a slot no conversion reached exactly as it was.
+        vec![format!(
+            "$a = $b = $c = 'UNSET'; \
+             var_dump(sscanf(\"{input}\", \"{fmt}\", $a, $b, $c), $a, $b, $c);"
+        )]
+    } else {
+        vec![format!("var_dump(sscanf(\"{input}\", \"{fmt}\"));")]
+    }
+}
+
+/// The `php_charmask` consumers — `addcslashes`, `trim`/`ltrim`/`rtrim` and
+/// `str_word_count` — plus `stripcslashes`. The charlists deliberately include
+/// every malformed `..` range, because the four diagnostics are shared by all of
+/// them and were missing from all of them.
+fn gen_cslashes(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let subject = *r.pick(&[
+        "foo[bar]", "zoo['.']", "a..b", "x", "hello", "\\n\\t\\x07", "A1z9",
+        "  padded  ", "XYZhi", "aqz", "!hi!", "",
+    ]);
+    let list = *r.pick(&[
+        "A..Z", "A..z", "a..z", "z..A", "..z", "a..", "a..b..c", "z..a", "0..9",
+        "!..#", "", "abc", ".", "\\n\\t\\x07",
+    ]);
+    let call = *r.pick(&[
+        "addcslashes", "trim", "ltrim", "rtrim",
+    ]);
+    vec![
+        format!("var_dump({call}(\"{subject}\", \"{list}\"));"),
+        format!("var_dump(stripcslashes(\"{subject}\"));"),
+        format!("var_dump(str_word_count(\"{subject}\", 0, \"{list}\"));"),
+    ]
+}
+
+/// `count_chars` and `strtok` — the two newly ported string functions whose
+/// contracts are stateful or mode-driven. `strtok` is exercised as a SEQUENCE,
+/// because the interesting part is that running out of tokens discards the
+/// subject rather than restarting it.
+fn gen_strtok_counts(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let subject = *r.pick(&[
+        "a b c", "  a  b  ", "a;b.c", "abc", "", "aab", "hello world", "  ",
+    ]);
+    let delims = *r.pick(&[" ", ";.", "", "x", "abc", " \\t"]);
+    let mode = *r.pick(&["0", "1", "2", "3", "5", "-1"]);
+    vec![
+        format!(
+            "var_dump(strtok(\"{subject}\", \"{delims}\"), strtok(\"{delims}\"), \
+             strtok(\"{delims}\"), strtok(\"{delims}\"));"
+        ),
+        format!(
+            "try {{ $c = count_chars(\"{subject}\", {mode}); \
+             var_dump(is_array($c) ? count($c) : $c); }} \
+             catch (Throwable $e) {{ echo get_class($e), ': ', $e->getMessage(), \"\\n\"; }}"
+        ),
+    ]
+}
+
+/// `substr_replace` with an array in each of its four parameters, and
+/// `substr_compare` across its offset/length/case-insensitive matrix. Both were
+/// uncovered, and both were wrong: the array form stringified its subject to
+/// `"Array"`, and `$case_insensitive` was ignored outright.
+fn gen_substrx(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let subject = *r.pick(&[
+        "\"Hello\"", "[\"ab\", \"cd\"]", "[\"hello\", \"world\"]",
+        "[\"k\" => \"abc\"]", "[\"abcd\", \"efgh\"]", "[]", "\"\"",
+    ]);
+    let replace = *r.pick(&["\"Z\"", "[\"X\", \"Y\"]", "[\"X\"]", "\"\"", "[]"]);
+    let from = *r.pick(&["0", "1", "-2", "10", "[1, 0]", "[1, 2]", "[]"]);
+    let length = *r.pick(&["1", "-1", "0", "100", "[2, 1]", "null", ""]);
+    let call = if length.is_empty() {
+        format!("substr_replace({subject}, {replace}, {from})")
+    } else {
+        format!("substr_replace({subject}, {replace}, {from}, {length})")
+    };
+
+    let hay = *r.pick(&["\"Hello\"", "\"Hello World\"", "\"abc\"", "\"a\"", "\"\""]);
+    let needle = *r.pick(&["\"hello\"", "\"world\"", "\"abz\"", "\"ABD\"", "\"\"", "\"abcdef\""]);
+    let off = *r.pick(&["0", "3", "6", "-3", "5"]);
+    let len2 = *r.pick(&["null", "5", "2", "0", "-1", "3"]);
+    let ci = *r.pick(&["true", "false"]);
+    vec![
+        format!(
+            "try {{ var_dump({call}); }} \
+             catch (Throwable $e) {{ echo get_class($e), ': ', $e->getMessage(), \"\\n\"; }}"
+        ),
+        format!(
+            "try {{ var_dump(substr_compare({hay}, {needle}, {off}, {len2}, {ci})); }} \
+             catch (Throwable $e) {{ echo get_class($e), ': ', $e->getMessage(), \"\\n\"; }}"
+        ),
+    ]
+}
+
+/// The recursive array pair (`array_replace_recursive`, `array_walk_recursive`)
+/// and the `array_sum`/`array_product` fold. The fold's entries are chosen to
+/// straddle the three outcomes upstream distinguishes: a clean number, a
+/// leading-numeric string, and an operand `+`/`*` rejects outright.
+fn gen_arrayfold(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let base = *r.pick(&[
+        "[\"a\" => [\"b\" => 1, \"c\" => 2]]",
+        "[\"a\" => 1]",
+        "[\"a\" => [\"x\"]]",
+        "[1, 2, 3]",
+        "[]",
+    ]);
+    let over = *r.pick(&[
+        "[\"a\" => [\"b\" => 9]]",
+        "[\"a\" => [\"b\" => 2]]",
+        "[\"a\" => \"s\"]",
+        "[9]",
+        "[]",
+    ]);
+    let fold = *r.pick(&[
+        "[1, \"a\"]", "[1, \"2abc\"]", "[1, [2]]", "[2, \"a\"]", "[]",
+        "[1, null, true, false]", "[1, \"1e3\"]", "[1, new stdClass]",
+        "[PHP_INT_MAX, 1]", "[1, 2.5]",
+    ]);
+    let fname = *r.pick(&["array_sum", "array_product"]);
+    let nested = *r.pick(&["[1, [2, [3]]]", "[\"x\" => 1]", "[]", "[1, 2]"]);
+    vec![
+        format!("var_dump(array_replace_recursive({base}, {over}));"),
+        format!("var_dump({fname}({fold}));"),
+        format!(
+            "$a = {nested}; \
+             var_dump(array_walk_recursive($a, function (&$v, $k) {{ $v = \"$k:$v\"; }}), $a);"
+        ),
+    ]
+}
+
 // ---------------------------------------------------------------------------
 // Mode registry.
 // ---------------------------------------------------------------------------
@@ -2733,6 +2886,26 @@ struct Mode {
 }
 
 const MODES: &[Mode] = &[
+    Mode {
+        name: "sscanf",
+        gen: gen_sscanf,
+    },
+    Mode {
+        name: "cslashes",
+        gen: gen_cslashes,
+    },
+    Mode {
+        name: "strtokcounts",
+        gen: gen_strtok_counts,
+    },
+    Mode {
+        name: "substrx",
+        gen: gen_substrx,
+    },
+    Mode {
+        name: "arrayfold",
+        gen: gen_arrayfold,
+    },
     Mode {
         name: "jsondecode",
         gen: gen_jsondecode,

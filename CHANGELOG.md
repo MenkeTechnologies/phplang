@@ -26,6 +26,112 @@ comment above it.
 
 ---
 
+## Round 8 — the scanner, the charmask, and the array-shaped arguments
+
+Chosen by the same method that found round 7's gaps: cross-referencing the 62
+`parity_fuzz` generator modes against the registered library surface. 341 of the
+511 registered functions had no generator hit at all, and the families picked out
+of that list — `sscanf`, the `php_charmask` consumers, `count_chars`, `strtok`,
+the array forms of `substr_replace`, `substr_compare`'s case flag, the recursive
+array pair, and the `array_sum`/`array_product` fold — held eleven measured
+divergences between them. Five new generator modes now cover them
+(`sscanf`, `cslashes`, `strtokcounts`, `substrx`, `arrayfold`), and those modes
+found three further divergences within minutes of being written.
+
+### `sscanf` rewritten as a port of `php_sscanf_internal`
+
+The previous implementation handled `%d %i %f %e %g %s %c %%` and dropped
+everything else on the floor, silently returning a SHORT or EMPTY array.
+
+- `%x`, `%o`, `%u` and `%i`'s base auto-detection now exist. Each was previously
+  an unrecognized specifier that aborted the whole scan, so
+  `sscanf("ff 10 0x1F", "%x %o %i")` answered `[]` instead of `[255, 8, 31]`.
+- `%[…]` scan sets now exist, including `^` negation, `a-z` ranges, and the two
+  placement quirks `BuildCharSet` has (a leading `]` is a member, a trailing `-`
+  is a literal).
+- `%n` (byte offset, consumes nothing) and the `l`/`L`/`h` size modifiers
+  (parsed and ignored) now exist, as does `*` assignment suppression.
+- The result array is now PRE-FILLED with one null per non-suppressed specifier,
+  so a format that outruns its input pads rather than truncating:
+  `sscanf("a b", "%s %s %s")` is `["a", "b", null]`, not `["a", "b"]`.
+- Underflow with zero conversions is now distinguished from a mismatch, and
+  answers `null` (two-argument form) or `-1` (by-reference form).
+- **The by-reference form now exists.** `sscanf($s, $fmt, $a, $b)` previously
+  warned `Undefined variable $a`, returned the array, and wrote nothing back.
+  It now returns the conversion count and assigns the variables — and a variable
+  no conversion reached is left UNTOUCHED rather than nulled.
+- Its arity is validated against the format before any input is read, raising
+  `ValueError: Variable is not assigned by any conversion specifiers` or
+  `ValueError: Different numbers of variable names and field specifiers`.
+
+The compiler grew a variadic by-reference builtin table for this. The existing
+table maps a name to fixed positions; `sscanf` takes every argument from index 2
+on, so the positions are a property of the call. The write-back is emitted
+GUARDED (`ops::BYREF_LIVE`), which is what preserves the untouched-variable rule.
+
+### `php_charmask` unified, with its four diagnostics
+
+Three separate range parsers existed (`trim_char_set` in `builtins.rs`,
+`charmask` in `stdlib::misc`, and none at all for the new `addcslashes`), and
+none of them raised any of the four malformed-range warnings. They are now one
+port of `php_charmask` in `stdlib::common`, threaded through the host so the
+message names whichever function is running:
+
+```text
+$ php -r 'echo trim("a..b", "z..a");'
+Warning: trim(): Invalid '..'-range, '..'-range needs to be incrementing …
+```
+
+`trim`/`ltrim`/`rtrim` also became byte-oriented, as `php_trim_int` is.
+`str_word_count` now answers an empty subject BEFORE building the mask, matching
+upstream's early return — so a malformed range there is silent when there is
+nothing to scan.
+
+### Five string functions that did not exist
+
+`addcslashes`, `stripcslashes`, `count_chars`, `strtok` and
+`array_replace_recursive` were all `Call to undefined function`. Each is a port;
+`strtok` carries its tokenizer state on the host, including the rule that
+running out of tokens DISCARDS the subject so later one-argument calls keep
+answering `false` instead of restarting.
+
+### Array-shaped arguments and unnormalized comparisons
+
+- `substr_replace` accepted only the all-scalar form. An array subject was
+  stringified to `"Array"` and spliced, so `substr_replace(["ab","cd"], "Z", 1, 1)`
+  answered the STRING `"AZray"` instead of `["aZ", "cZ"]`. All four parameters
+  may now be arrays, consumed positionally; an array `$offset` or `$length`
+  against a single string is now the `TypeError` upstream raises.
+- `substr_compare` ignored `$case_insensitive` entirely, and normalized its
+  result to -1/0/1. It now honours the flag and returns the raw byte difference
+  (`substr_compare("abc","abz",0,3)` is `-23`), falling back to the three-way
+  length comparison only on a content tie, with the two `ValueError`s for a bad
+  offset or a negative length.
+- `array_walk_recursive` passed leaves by value, so a `function (&$v)` callback
+  could not write back. It now uses the same reference-cell plumbing `array_walk`
+  already had.
+- `array_sum`/`array_product` coerced every entry silently. Following
+  `php_array_binop`, an operand `+`/`*` rejects now warns
+  `<op> is not supported on type <type>`; an array or an object with no numeric
+  cast contributes nothing, while a non-numeric string keeps the pre-8 behaviour
+  of counting as `0` — which is why `array_product([2, "a"])` is `0`, not `2`.
+- `str_getcsv` now raises PHP 8.4's deprecation when `$escape` is omitted. Six
+  existing tests encoded the pre-deprecation output; they were re-pointed at the
+  reference's measured output and extended with an explicit-`$escape` form that
+  proves the notice is the only difference.
+
+### Not closed
+
+`quoted_printable_decode`, `hex2bin`, `base64_decode` and `count_chars` modes 3
+and 4 all diverge for the same architectural reason — `Value::Str` is a Rust
+`String`, so a byte above 0x7F widens to two. Recorded in
+[BUGS.md](BUGS.md#a-non-ascii-byte-cannot-be-represented) rather than papered
+over. The `{closure}` vs `{closure:file:line}` stack-frame naming gap is
+unchanged and is still the only divergence a 25,000-case full-corpus fuzz run
+reports.
+
+---
+
 ## Round 7 — degenerate input, vacuous tests, and error shape
 
 ### Panics, hangs and aborts turned into PHP behaviour

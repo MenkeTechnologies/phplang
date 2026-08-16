@@ -269,6 +269,31 @@ impl Compiler {
         }
     }
 
+    /// The by-reference OUT positions of the builtins whose by-ref tail is
+    /// VARIADIC, as `(name, first by-reference position)`. `sscanf($s, $fmt,
+    /// &$a, &$b, …)` takes every argument from index 2 on by reference, so the
+    /// position list is a property of the CALL, not of the function.
+    const BYREF_VARIADIC_BUILTINS: &'static [(&'static str, usize)] = &[("sscanf", 2)];
+
+    /// The by-reference argument positions of a call to `name` with `nargs`
+    /// arguments, plus whether the write-back needs the run-time
+    /// [`ops::BYREF_LIVE`] guard.
+    ///
+    /// A variadic by-ref builtin needs the guard even though its callee is known:
+    /// it decides *per call* how many of those positions it actually assigns —
+    /// `sscanf` leaves a variable no conversion reached completely untouched,
+    /// which an unguarded write-back would overwrite with null.
+    fn byref_positions(&self, name: &str, nargs: usize) -> Option<(Vec<usize>, bool)> {
+        let lname = name.to_ascii_lowercase();
+        if let Some(p) = self.byref_fns.get(&lname) {
+            return Some((p.clone(), false));
+        }
+        Self::BYREF_VARIADIC_BUILTINS
+            .iter()
+            .find(|(n, _)| *n == lname)
+            .map(|&(_, from)| ((from..nargs).collect(), true))
+    }
+
     /// Pre-pass: record the by-reference parameter positions of every `function`
     /// declaration (recursing into nested bodies) so call sites can write the
     /// callee's finals back to the caller — even for forward references.
@@ -1753,14 +1778,14 @@ impl Compiler {
                 } else {
                     let idx = b.add_constant(Value::str(name.clone()));
                     b.emit(Op::LoadConst(idx), 0);
-                    let byref = self.byref_fns.get(&name.to_ascii_lowercase()).cloned();
+                    let byref = self.byref_positions(name, args.len());
                     for (i, a) in args.iter().enumerate() {
                         // An argument in a by-reference position is an output
                         // location, not a value the call reads, so an unset one is
                         // not a mistake and PHP raises no diagnostic for it —
                         // `preg_match($re, $s, $m)` with a fresh `$m` is the norm.
                         match &byref {
-                            Some(p) if p.contains(&i) => self.compile_quiet(b, a)?,
+                            Some((p, _)) if p.contains(&i) => self.compile_quiet(b, a)?,
                             _ => self.compile_expr(b, a)?,
                         }
                     }
@@ -1772,8 +1797,8 @@ impl Compiler {
                     // to the caller's argument variables (leaving the call result).
                     // The callee is named here, so which positions those are is a
                     // compile-time fact and no run-time guard is needed.
-                    if let Some(positions) = byref {
-                        self.emit_byref_writeback(b, args, &positions, false)?;
+                    if let Some((positions, guarded)) = byref {
+                        self.emit_byref_writeback(b, args, &positions, guarded)?;
                     }
                 }
             }

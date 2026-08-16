@@ -22,7 +22,7 @@ use fusevm::Value;
 pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
     let v = match name {
         "substr_count" => return Some(substr_count(args)),
-        "substr_replace" => substr_replace(args),
+        "substr_replace" => return Some(substr_replace(args)),
         "strtr" => strtr(args),
         "strstr" | "strchr" => strstr(args, false),
         "stristr" => strstr(args, true),
@@ -41,6 +41,10 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         "addslashes" => Value::str(addslashes(&str_arg(args, 0))),
         "stripslashes" => Value::str(stripslashes(&str_arg(args, 0))),
         "str_rot13" => Value::str(str_rot13(&str_arg(args, 0))),
+        "addcslashes" => addcslashes(args),
+        "stripcslashes" => stripcslashes(args),
+        "count_chars" => return Some(count_chars(args)),
+        "strtok" => strtok(args),
         "similar_text" => {
             let (a, b) = (str_arg(args, 0), str_arg(args, 1));
             let common = similar_text_bytes(a.as_bytes(), b.as_bytes());
@@ -59,7 +63,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         "levenshtein" => levenshtein(args),
         "vsprintf" => return Some(vformat(args, false)),
         "vprintf" => return Some(vformat(args, true)),
-        "sscanf" => sscanf(args),
+        "sscanf" => return Some(sscanf(args)),
         "htmlspecialchars_decode" | "html_entity_decode" => {
             let flags = match args.get(1) {
                 Some(v) if !matches!(v, Value::Undef) => with_host(|h| h.to_number(v).to_int()),
@@ -361,34 +365,137 @@ fn strtr(args: &[Value]) -> Value {
     Value::str(out)
 }
 
-/// `substr_replace($string, $replace, $offset, $length = null)` (scalar form).
-fn substr_replace(args: &[Value]) -> Value {
-    let s = str_arg(args, 0);
-    let replace = str_arg(args, 1);
-    let len = s.len() as i64;
-    let mut start = int_arg(args, 2);
-    if start < 0 {
-        start = (len + start).max(0);
-    }
-    let start = start.clamp(0, len) as usize;
-    let end = match args.get(3) {
-        Some(v) if !matches!(v, Value::Undef) => {
-            let l = v.to_int();
-            if l < 0 {
-                ((len + l).max(start as i64)) as usize
-            } else {
-                (start + l as usize).min(s.len())
-            }
-        }
-        _ => s.len(),
-    };
-    // Byte-oriented splice so multibyte offsets never slice mid-UTF-8-char.
+/// One splice: replace `l` bytes of `s` starting at `f` with `replace`, where
+/// `f` and `l` have already been clamped by [`substr_replace_bounds`].
+fn substr_splice(s: &str, replace: &str, f: usize, l: usize) -> String {
     let sb = s.as_bytes();
-    let mut out: Vec<u8> = Vec::with_capacity(start + replace.len() + (sb.len() - end));
-    out.extend_from_slice(&sb[..start]);
+    let mut out: Vec<u8> = Vec::with_capacity(sb.len() - l + replace.len());
+    out.extend_from_slice(&sb[..f]);
     out.extend_from_slice(replace.as_bytes());
-    out.extend_from_slice(&sb[end..]);
-    Value::str(String::from_utf8_lossy(&out).into_owned())
+    out.extend_from_slice(&sb[f + l..]);
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Clamp a raw `$offset`/`$length` pair against a subject length, exactly as
+/// `PHP_FUNCTION(substr_replace)` does (php-src 8.5
+/// `ext/standard/string.c:2366`): a negative offset counts from the end, a
+/// negative length stops that many bytes from the end, and the pair is finally
+/// trimmed so `f + l` never runs past the subject.
+fn substr_replace_bounds(slen: usize, from: i64, len: i64) -> (usize, usize) {
+    let n = slen as i64;
+    let f = if from < 0 {
+        (n + from).max(0)
+    } else {
+        from.min(n)
+    };
+    let mut l = if len < 0 { ((n - f) + len).max(0) } else { len };
+    if l > n {
+        l = n;
+    }
+    if f + l > n {
+        l = n - f;
+    }
+    (f as usize, l as usize)
+}
+
+/// `substr_replace($string, $replace, $offset, $length = null)`.
+///
+/// Every one of the four parameters may be an array. An array `$string` makes
+/// the result an array spliced element-wise, with `$replace`, `$offset` and
+/// `$length` each consumed positionally — one entry per subject, falling back to
+/// `""` / `0` / "to the end" once that array is exhausted.
+fn substr_replace(args: &[Value]) -> Result<Value, String> {
+    let subject = arg(args, 0);
+    let repl_v = arg(args, 1);
+    let from_v = arg(args, 2);
+    let len_v = arg(args, 3);
+    let len_is_null = args.len() < 4 || matches!(len_v, Value::Undef);
+    let (is_arr_subj, is_arr_repl, is_arr_from, is_arr_len) = with_host(|h| {
+        (
+            h.is_array(&subject),
+            h.is_array(&repl_v),
+            h.is_array(&from_v),
+            h.is_array(&len_v),
+        )
+    });
+    let seq = |v: &Value| -> Vec<Value> {
+        with_host(|h| {
+            h.array_pairs(v)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(_, val)| val)
+                .collect()
+        })
+    };
+    let as_int = |v: &Value| with_host(|h| h.to_number(v).to_int());
+
+    if !is_arr_subj {
+        let s = str_arg(args, 0);
+        // An array offset or length against a SINGLE string is rejected outright
+        // (php-src `ext/standard/string.c:2352`), even though an array $replace
+        // in the same position is accepted and read for its first element.
+        if is_arr_from {
+            return Err(throws(
+                "TypeError",
+                "substr_replace(): Argument #3 ($offset) cannot be an array when working on a single string",
+            ));
+        }
+        if is_arr_len {
+            return Err(throws(
+                "TypeError",
+                "substr_replace(): Argument #4 ($length) cannot be an array when working on a single string",
+            ));
+        }
+        let replace = if is_arr_repl {
+            seq(&repl_v)
+                .first()
+                .map(|v| with_host(|h| h.to_str(v)))
+                .unwrap_or_default()
+        } else {
+            str_arg(args, 1)
+        };
+        let l = if len_is_null {
+            s.len() as i64
+        } else {
+            int_arg(args, 3)
+        };
+        let (f, l) = substr_replace_bounds(s.len(), int_arg(args, 2), l);
+        return Ok(Value::str(substr_splice(&s, &replace, f, l)));
+    }
+
+    let repls = if is_arr_repl { seq(&repl_v) } else { Vec::new() };
+    let froms = if is_arr_from { seq(&from_v) } else { Vec::new() };
+    let lens = if is_arr_len { seq(&len_v) } else { Vec::new() };
+    let pairs = with_host(|h| h.array_pairs(&subject).unwrap_or_default());
+    let mut out: Vec<(Value, Value)> = Vec::with_capacity(pairs.len());
+    for (i, (key, val)) in pairs.into_iter().enumerate() {
+        let s = with_host(|h| h.to_str(&val));
+        let raw_from = if is_arr_from {
+            froms.get(i).map(&as_int).unwrap_or(0)
+        } else {
+            as_int(&from_v)
+        };
+        let raw_len = if is_arr_len {
+            lens.get(i)
+                .map(|v| v.to_int())
+                .unwrap_or(s.len() as i64)
+        } else if !len_is_null {
+            as_int(&len_v)
+        } else {
+            s.len() as i64
+        };
+        let (f, l) = substr_replace_bounds(s.len(), raw_from, raw_len);
+        let replace = if is_arr_repl {
+            repls
+                .get(i)
+                .map(|v| with_host(|h| h.to_str(v)))
+                .unwrap_or_default()
+        } else {
+            with_host(|h| h.to_str(&repl_v))
+        };
+        out.push((key, Value::str(substr_splice(&s, &replace, f, l))));
+    }
+    Ok(make_map(out))
 }
 
 /// `str_ireplace($search, $replace, $subject)`: case-insensitive `str_replace`.
@@ -537,6 +644,208 @@ fn stripslashes(s: &str) -> String {
         }
     }
     out
+}
+
+// ── addcslashes / stripcslashes ──────────────────────────────────────────────
+
+/// Port of `php_addcslashes_str` (php-src 8.5 `ext/standard/string.c:3812`).
+///
+/// A byte selected by the charlist is escaped. Outside printable ASCII the
+/// escape is the C mnemonic (`\n`, `\t`, `\r`, `\a`, `\v`, `\b`, `\f`) or a
+/// three-digit octal escape; inside it, a plain backslash prefix.
+fn addcslashes(args: &[Value]) -> Value {
+    let s = str_arg(args, 0);
+    let what = str_arg(args, 1);
+    // Both short-circuits sit ABOVE `php_charmask` (php-src
+    // `ext/standard/string.c:3691`), so neither an empty subject nor an empty
+    // charlist can raise the malformed-range warning.
+    if s.is_empty() || what.is_empty() {
+        return Value::str(s);
+    }
+    let flags = with_host(|h| charmask(h, what.as_bytes(), "addcslashes"));
+    let mut out: Vec<u8> = Vec::with_capacity(s.len());
+    for &c in s.as_bytes() {
+        if flags[c as usize] {
+            if c < 32 || c > 126 {
+                out.push(b'\\');
+                match c {
+                    b'\n' => out.push(b'n'),
+                    b'\t' => out.push(b't'),
+                    b'\r' => out.push(b'r'),
+                    0x07 => out.push(b'a'),
+                    0x0b => out.push(b'v'),
+                    0x08 => out.push(b'b'),
+                    0x0c => out.push(b'f'),
+                    _ => out.extend_from_slice(format!("{c:03o}").as_bytes()),
+                }
+                continue;
+            }
+            out.push(b'\\');
+        }
+        out.push(c);
+    }
+    Value::str(String::from_utf8_lossy(&out).into_owned())
+}
+
+/// Port of `php_stripcslashes` (php-src 8.5 `ext/standard/string.c:3749`) — the
+/// inverse of [`addcslashes`], understanding the C mnemonics plus `\xHH`
+/// (one or two hex digits) and `\NNN` (up to three octal digits). An unknown
+/// escape yields the escaped character itself, so `\z` is `z`.
+fn stripcslashes(args: &[Value]) -> Value {
+    let s = str_arg(args, 0);
+    let b = s.as_bytes();
+    let n = b.len();
+    let mut out: Vec<u8> = Vec::with_capacity(n);
+    let mut i = 0;
+    while i < n {
+        if b[i] != b'\\' || i + 1 >= n {
+            out.push(b[i]);
+            i += 1;
+            continue;
+        }
+        i += 1;
+        let c = b[i];
+        match c {
+            b'n' => out.push(b'\n'),
+            b'r' => out.push(b'\r'),
+            b'a' => out.push(0x07),
+            b't' => out.push(b'\t'),
+            b'v' => out.push(0x0b),
+            b'b' => out.push(0x08),
+            b'f' => out.push(0x0c),
+            b'\\' => out.push(b'\\'),
+            _ => {
+                // `\x` takes one or two hex digits; with none it falls through to
+                // the octal/default arm, exactly as upstream's ZEND_FALLTHROUGH.
+                let hex = c == b'x' && i + 1 < n && b[i + 1].is_ascii_hexdigit();
+                if hex {
+                    i += 1;
+                    let mut v = (b[i] as char).to_digit(16).unwrap();
+                    if i + 1 < n && b[i + 1].is_ascii_hexdigit() {
+                        i += 1;
+                        v = v * 16 + (b[i] as char).to_digit(16).unwrap();
+                    }
+                    out.push(v as u8);
+                } else {
+                    let mut digits = 0usize;
+                    let mut v: u32 = 0;
+                    while i < n && (b'0'..=b'7').contains(&b[i]) && digits < 3 {
+                        v = v * 8 + (b[i] - b'0') as u32;
+                        i += 1;
+                        digits += 1;
+                    }
+                    if digits > 0 {
+                        out.push(v as u8);
+                        i -= 1;
+                    } else {
+                        out.push(b[i]);
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+    Value::str(String::from_utf8_lossy(&out).into_owned())
+}
+
+// ── count_chars ──────────────────────────────────────────────────────────────
+
+/// Port of `PHP_FUNCTION(count_chars)` (php-src 8.5
+/// `ext/standard/string.c:5574`) — the per-byte histogram of `$string`.
+///
+/// Mode 0 reports all 256 counters, 1 only the non-zero ones, 2 only the zero
+/// ones; modes 3 and 4 answer a STRING of the bytes that did / did not occur.
+fn count_chars(args: &[Value]) -> Result<Value, String> {
+    let s = str_arg(args, 0);
+    let mode = int_arg(args, 1);
+    if !(0..=4).contains(&mode) {
+        return Err(throws(
+            "ValueError",
+            "count_chars(): Argument #2 ($mode) must be between 0 and 4 (inclusive)",
+        ));
+    }
+    let mut chars = [0i64; 256];
+    for &b in s.as_bytes() {
+        chars[b as usize] += 1;
+    }
+    if mode >= 3 {
+        // Byte-valued output: this is one of the places the engine's UTF-8
+        // `Value::Str` cannot hold the reference's answer for a non-ASCII
+        // subject. See BUGS.md, "A non-ASCII byte cannot be represented".
+        let want_zero = mode == 4;
+        let bytes: Vec<u8> = (0..=255u8)
+            .filter(|&i| (chars[i as usize] == 0) == want_zero)
+            .collect();
+        return Ok(Value::str(String::from_utf8_lossy(&bytes).into_owned()));
+    }
+    Ok(make_map(
+        (0..256)
+            .filter(|&i| match mode {
+                1 => chars[i] != 0,
+                2 => chars[i] == 0,
+                _ => true,
+            })
+            .map(|i| (Value::int(i as i64), Value::int(chars[i])))
+            .collect(),
+    ))
+}
+
+// ── strtok ───────────────────────────────────────────────────────────────────
+
+/// Port of `PHP_FUNCTION(strtok)` (php-src 8.5 `ext/standard/string.c:1129`).
+///
+/// Two arguments install a new subject and return its first token; one argument
+/// continues the saved subject. Running out of tokens returns `false` AND
+/// discards the subject, so a further one-argument call keeps answering `false`
+/// rather than restarting.
+fn strtok(args: &[Value]) -> Value {
+    let two_arg = args.len() > 1 && !matches!(arg(args, 1), Value::Undef);
+    let (subject, mut pos) = if two_arg {
+        (str_arg(args, 0), 0usize)
+    } else {
+        match with_host(|h| h.strtok_state()) {
+            Some(st) => st,
+            None => {
+                with_host(|h| {
+                    h.warn("strtok(): Both arguments must be provided when starting tokenization")
+                });
+                return Value::bool(false);
+            }
+        }
+    };
+    // One argument means the subject IS the delimiter list (upstream's
+    // `if (!tok) tok = str;`), which is how `strtok(" ")` reads.
+    let delims = if two_arg {
+        str_arg(args, 1)
+    } else {
+        str_arg(args, 0)
+    };
+    let mut table = [false; 256];
+    for &d in delims.as_bytes() {
+        table[d as usize] = true;
+    }
+    if two_arg {
+        with_host(|h| h.set_strtok_state(Some((subject.clone(), 0))));
+    }
+    let b = subject.as_bytes();
+    if pos >= b.len() {
+        return Value::bool(false);
+    }
+    while pos < b.len() && table[b[pos] as usize] {
+        pos += 1;
+    }
+    if pos >= b.len() {
+        // Nothing but delimiters left: upstream releases the subject here.
+        with_host(|h| h.set_strtok_state(None));
+        return Value::bool(false);
+    }
+    let tok_start = pos;
+    while pos < b.len() && !table[b[pos] as usize] {
+        pos += 1;
+    }
+    let token = String::from_utf8_lossy(&b[tok_start..pos]).into_owned();
+    with_host(|h| h.set_strtok_state(Some((subject, pos + 1))));
+    Value::str(token)
 }
 
 fn str_rot13(s: &str) -> String {
@@ -959,150 +1268,580 @@ fn vformat(args: &[Value], echo: bool) -> Result<Value, String> {
     }
 }
 
-/// `sscanf($string, $format)` (2-arg form): returns an array of the parsed
-/// values. Supports `%d`/`%i`, `%f`/`%e`/`%g`, `%s`, `%c`, `%%`, optional field
-/// width, and whitespace/literal matching. The by-reference (extra-args) form is
-/// not supported — call it with two arguments.
-fn sscanf(args: &[Value]) -> Value {
-    let input: Vec<char> = str_arg(args, 0).chars().collect();
-    let fmt: Vec<char> = str_arg(args, 1).chars().collect();
-    let mut ii = 0;
-    let mut fi = 0;
-    let mut out: Vec<Value> = Vec::new();
-    let skip_ws = |inp: &[char], p: &mut usize| {
-        while *p < inp.len() && inp[*p].is_whitespace() {
-            *p += 1;
-        }
-    };
-    while fi < fmt.len() {
-        let fc = fmt[fi];
-        if fc == '%' {
-            fi += 1;
-            if fi >= fmt.len() {
-                break;
-            }
-            let mut width = String::new();
-            while fi < fmt.len() && fmt[fi].is_ascii_digit() {
-                width.push(fmt[fi]);
-                fi += 1;
-            }
-            if fi >= fmt.len() {
-                break;
-            }
-            let spec = fmt[fi];
-            fi += 1;
-            let maxw = width.parse::<usize>().ok();
-            match spec {
-                'd' | 'i' => {
-                    skip_ws(&input, &mut ii);
-                    let s = take_number(&input, &mut ii, false);
-                    if s.is_empty() {
-                        break;
-                    }
-                    out.push(Value::int(s.parse().unwrap_or(0)));
-                }
-                'f' | 'e' | 'g' => {
-                    skip_ws(&input, &mut ii);
-                    let s = take_number(&input, &mut ii, true);
-                    if s.is_empty() {
-                        break;
-                    }
-                    out.push(Value::float(s.parse().unwrap_or(0.0)));
-                }
-                's' => {
-                    skip_ws(&input, &mut ii);
-                    let mut s = String::new();
-                    while ii < input.len() && !input[ii].is_whitespace() {
-                        s.push(input[ii]);
-                        ii += 1;
-                        if maxw.map(|w| s.chars().count() >= w).unwrap_or(false) {
-                            break;
-                        }
-                    }
-                    if s.is_empty() {
-                        break;
-                    }
-                    out.push(Value::str(s));
-                }
-                'c' => {
-                    if ii < input.len() {
-                        out.push(Value::str(input[ii].to_string()));
-                        ii += 1;
-                    } else {
-                        break;
-                    }
-                }
-                '%' => {
-                    if ii < input.len() && input[ii] == '%' {
-                        ii += 1;
-                    } else {
-                        break;
-                    }
-                }
-                _ => break,
-            }
-        } else if fc.is_whitespace() {
-            fi += 1;
-            skip_ws(&input, &mut ii);
-        } else {
-            if ii < input.len() && input[ii] == fc {
-                ii += 1;
-                fi += 1;
-            } else {
-                break;
-            }
-        }
-    }
-    make_list(out)
+// ── sscanf ───────────────────────────────────────────────────────────────────
+//
+// Port of `php_sscanf_internal` (php-src 8.5 `ext/standard/scanf.c:574`), which
+// is itself Tcl's scanner. The shape worth keeping in mind while reading:
+//
+//   * The result array is PRE-FILLED with one null per non-suppressed specifier
+//     and conversions overwrite slots in place, so a format that runs out of
+//     input leaves the tail as nulls (`scanf.c:626`, and the never-implemented
+//     "prune the list" TODO at `:1176`).
+//   * `underflow` (input exhausted) is distinct from a plain MISMATCH. Only
+//     `underflow` with zero conversions produces the all-or-nothing failure
+//     answer — null in the two-argument form, `-1` in the by-reference one.
+//   * `nconversions` counts specifiers PROCESSED, so `%*d` and `%n` both count
+//     even though `%*d` assigns nothing and `%n` consumes nothing.
+
+/// A `%[…]` scan set: literal members plus inclusive ranges, optionally negated.
+/// `CharInSet` (`scanf.c:238`) compares as a *signed* `char`, so ranges are
+/// ordered by `i8` and one spanning the high half of the byte range behaves
+/// accordingly.
+struct ScanSet {
+    exclude: bool,
+    chars: Vec<u8>,
+    ranges: Vec<(i8, i8)>,
 }
 
-/// Consume an optionally-signed integer (or float when `float`) literal.
-fn take_number(inp: &[char], p: &mut usize, float: bool) -> String {
-    let mut s = String::new();
-    if *p < inp.len() && (inp[*p] == '-' || inp[*p] == '+') {
-        s.push(inp[*p]);
-        *p += 1;
+impl ScanSet {
+    fn contains(&self, c: u8) -> bool {
+        let sc = c as i8;
+        let hit = self.chars.contains(&c) || self.ranges.iter().any(|&(a, b)| a <= sc && sc <= b);
+        hit != self.exclude
     }
-    while *p < inp.len() && inp[*p].is_ascii_digit() {
-        s.push(inp[*p]);
-        *p += 1;
+}
+
+/// Port of `BuildCharSet` (`scanf.c:137`). `fmt[i..]` starts just past the `[`;
+/// returns the set and the index just past its closing `]`.
+///
+/// The quirks are upstream's: a `]` in first position is a literal member rather
+/// than the terminator, a `-` in first or last position is a literal, and a
+/// reversed range like `z-a` is normalized rather than rejected.
+fn build_char_set(fmt: &[u8], mut i: usize) -> (ScanSet, usize) {
+    let mut set = ScanSet {
+        exclude: false,
+        chars: Vec::new(),
+        ranges: Vec::new(),
+    };
+    if fmt.get(i) == Some(&b'^') {
+        set.exclude = true;
+        i += 1;
     }
-    if float {
-        if *p < inp.len() && inp[*p] == '.' {
-            s.push('.');
-            *p += 1;
-            while *p < inp.len() && inp[*p].is_ascii_digit() {
-                s.push(inp[*p]);
-                *p += 1;
-            }
-        }
-        if *p < inp.len() && (inp[*p] == 'e' || inp[*p] == 'E') {
-            let save = *p;
-            let mut exp = String::from("e");
-            *p += 1;
-            if *p < inp.len() && (inp[*p] == '-' || inp[*p] == '+') {
-                exp.push(inp[*p]);
-                *p += 1;
-            }
-            let mut any = false;
-            while *p < inp.len() && inp[*p].is_ascii_digit() {
-                exp.push(inp[*p]);
-                *p += 1;
-                any = true;
-            }
-            if any {
-                s.push_str(&exp);
+    let mut start = *fmt.get(i).unwrap_or(&0);
+    if matches!(fmt.get(i), Some(&b']') | Some(&b'-')) {
+        set.chars.push(fmt[i]);
+        i += 1;
+    }
+    while i < fmt.len() && fmt[i] != b']' {
+        let c = fmt[i];
+        let next = fmt.get(i + 1).copied();
+        if next == Some(b'-') {
+            // Might open a range — hold it back until the next iteration decides.
+            start = c;
+        } else if c == b'-' {
+            if next == Some(b']') || next.is_none() {
+                // A trailing `-` is a literal, and so is the character it held.
+                set.chars.push(start);
+                set.chars.push(c);
             } else {
-                *p = save;
+                i += 1;
+                let end = fmt[i];
+                let (a, b) = (start as i8, end as i8);
+                set.ranges.push(if a < b { (a, b) } else { (b, a) });
+            }
+        } else {
+            set.chars.push(c);
+        }
+        i += 1;
+    }
+    (set, i + 1)
+}
+
+/// One parsed conversion specifier.
+struct ScanSpec {
+    suppress: bool,
+    /// `0` means "unset", which each conversion reads as its own default.
+    width: usize,
+    conv: u8,
+    set: Option<ScanSet>,
+}
+
+/// One element of a parsed format.
+enum ScanItem {
+    /// A run of format whitespace: matches zero or more input whitespace bytes.
+    Space,
+    Literal(u8),
+    Conv(ScanSpec),
+}
+
+/// Split a format into literals, whitespace and conversion specifiers, following
+/// the grammar both `ValidateFormat` (`scanf.c:307`) and the scanner accept:
+/// `% [*] [width] [l|L|h] conv`. An unterminated `%` at the very end is dropped,
+/// as upstream's parser walks off the same way.
+fn parse_scan_format(fmt: &[u8]) -> Vec<ScanItem> {
+    let mut items = Vec::new();
+    let mut i = 0;
+    while i < fmt.len() {
+        let c = fmt[i];
+        if c.is_ascii_whitespace() {
+            items.push(ScanItem::Space);
+            while i < fmt.len() && fmt[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            continue;
+        }
+        if c != b'%' {
+            items.push(ScanItem::Literal(c));
+            i += 1;
+            continue;
+        }
+        i += 1;
+        if i >= fmt.len() {
+            break;
+        }
+        if fmt[i] == b'%' {
+            items.push(ScanItem::Literal(b'%'));
+            i += 1;
+            continue;
+        }
+        let mut suppress = false;
+        if fmt[i] == b'*' {
+            suppress = true;
+            i += 1;
+        }
+        let mut width = 0usize;
+        while i < fmt.len() && fmt[i].is_ascii_digit() {
+            width = width * 10 + (fmt[i] - b'0') as usize;
+            i += 1;
+        }
+        // The size modifiers are parsed and discarded, exactly as upstream does.
+        if matches!(fmt.get(i), Some(b'l') | Some(b'L') | Some(b'h')) {
+            i += 1;
+        }
+        let Some(&conv) = fmt.get(i) else { break };
+        i += 1;
+        let set = if conv == b'[' {
+            let (s, next) = build_char_set(fmt, i);
+            i = next;
+            Some(s)
+        } else {
+            None
+        };
+        items.push(ScanItem::Conv(ScanSpec {
+            suppress,
+            width,
+            conv,
+            set,
+        }));
+    }
+    items
+}
+
+/// What the numeric DFAs cap a field at: `buf[64]` in `php_sscanf_internal`.
+const SCAN_NUM_MAX: usize = 63;
+
+/// Port of the integer DFA (`scanf.c:919`). Consumes at most `width` bytes of
+/// `s` from `p` and returns the digits collected plus the base finally in force,
+/// or `None` when no digit was ever scanned (upstream's `SCAN_NODIGITS` abort).
+///
+/// `base == 0` is `%i`'s auto-detection: a leading `0` selects octal and arms
+/// the `0x` probe, a leading `1`-`9` selects decimal.
+fn scan_int_field(s: &[u8], p: &mut usize, width: usize, mut base: u32) -> Option<(String, u32)> {
+    let width = if width == 0 || width > SCAN_NUM_MAX {
+        SCAN_NUM_MAX
+    } else {
+        width
+    };
+    let mut buf: Vec<u8> = Vec::new();
+    let (mut signok, mut nodigits, mut xok, mut nozero) = (true, true, false, true);
+    let mut taken = 0usize;
+    while taken < width && *p < s.len() {
+        let c = s[*p];
+        let accept = match c {
+            b'0' => {
+                if base == 16 {
+                    xok = true;
+                }
+                if base == 0 {
+                    base = 8;
+                    xok = true;
+                }
+                if nozero {
+                    signok = false;
+                    nodigits = false;
+                    nozero = false;
+                } else {
+                    signok = false;
+                    xok = false;
+                    nodigits = false;
+                }
+                true
+            }
+            b'1'..=b'7' => {
+                if base == 0 {
+                    base = 10;
+                }
+                signok = false;
+                xok = false;
+                nodigits = false;
+                true
+            }
+            b'8' | b'9' => {
+                if base == 0 {
+                    base = 10;
+                }
+                if base <= 8 {
+                    false
+                } else {
+                    signok = false;
+                    xok = false;
+                    nodigits = false;
+                    true
+                }
+            }
+            b'a'..=b'f' | b'A'..=b'F' => {
+                if base <= 10 {
+                    false
+                } else {
+                    signok = false;
+                    xok = false;
+                    nodigits = false;
+                    true
+                }
+            }
+            b'+' | b'-' => {
+                if signok {
+                    signok = false;
+                    true
+                } else {
+                    false
+                }
+            }
+            b'x' | b'X' => {
+                // Only ever the SECOND byte of the buffer, so `-0x10` is not hex.
+                if xok && buf.len() == 1 {
+                    base = 16;
+                    xok = false;
+                    true
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        };
+        if !accept {
+            break;
+        }
+        buf.push(c);
+        *p += 1;
+        taken += 1;
+    }
+    if nodigits {
+        return None;
+    }
+    // A `0x` that no hex digit followed: give the `x` back to the input.
+    if matches!(buf.last(), Some(b'x') | Some(b'X')) {
+        buf.pop();
+        *p -= 1;
+    }
+    Some((String::from_utf8_lossy(&buf).into_owned(), base))
+}
+
+/// Port of the float DFA (`scanf.c:1061`). Returns the collected literal, or
+/// `None` when nothing was scanned.
+fn scan_float_field(s: &[u8], p: &mut usize, width: usize) -> Option<String> {
+    let width = if width == 0 || width > SCAN_NUM_MAX {
+        SCAN_NUM_MAX
+    } else {
+        width
+    };
+    let mut buf: Vec<u8> = Vec::new();
+    let (mut signok, mut nodigits, mut ptok, mut expok) = (true, true, true, true);
+    let mut taken = 0usize;
+    while taken < width && *p < s.len() {
+        let c = s[*p];
+        let accept = match c {
+            b'0'..=b'9' => {
+                signok = false;
+                nodigits = false;
+                true
+            }
+            b'+' | b'-' => {
+                if signok {
+                    signok = false;
+                    true
+                } else {
+                    false
+                }
+            }
+            b'.' => {
+                if ptok {
+                    ptok = false;
+                    signok = false;
+                    true
+                } else {
+                    false
+                }
+            }
+            b'e' | b'E' => {
+                // An exponent needs a mantissa digit already and no earlier `e`.
+                if !nodigits && expok {
+                    expok = false;
+                    ptok = false;
+                    signok = true;
+                    nodigits = true;
+                    true
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        };
+        if !accept {
+            break;
+        }
+        buf.push(c);
+        *p += 1;
+        taken += 1;
+    }
+    if nodigits {
+        if expok {
+            // Nothing was ever scanned.
+            return None;
+        }
+        // A dangling exponent: hand back the `e` and any sign that followed it.
+        buf.pop();
+        *p -= 1;
+        if !matches!(buf.last(), Some(b'e') | Some(b'E')) {
+            // The popped byte was the exponent's sign, so the `e` goes back too.
+        } else {
+            buf.pop();
+            *p -= 1;
+        }
+    }
+    Some(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// The outcome of one scan: the value produced per specifier index (`None` for a
+/// slot no conversion reached), how many specifiers were processed, whether the
+/// scan ended because the input ran out, and how many slots the two-argument
+/// form pre-allocates.
+struct ScanResult {
+    values: Vec<Option<Value>>,
+    nconversions: usize,
+    underflow: bool,
+    total_vars: usize,
+}
+
+/// `sscanf($string, $format, &...$vars)` — port of `php_sscanf_internal`.
+///
+/// With two arguments the return is an array of the converted values, padded
+/// with nulls to one entry per non-suppressed specifier. With by-reference
+/// arguments the return is the number of specifiers processed, the values land
+/// in the variables, and a variable no conversion reached is left untouched.
+fn sscanf(args: &[Value]) -> Result<Value, String> {
+    let input = str_arg(args, 0);
+    let fmt = str_arg(args, 1);
+    let num_vars = args.len().saturating_sub(2);
+
+    // `ValidateFormat` (`scanf.c:523`) checks the by-reference arity against the
+    // format BEFORE any input is read, so both of these fire even on input that
+    // could never have matched.
+    if num_vars > 0 {
+        let nspecs = parse_scan_format(fmt.as_bytes())
+            .iter()
+            .filter(|it| matches!(it, ScanItem::Conv(s) if !s.suppress))
+            .count();
+        if num_vars > nspecs {
+            return Err(throws(
+                "ValueError",
+                "Variable is not assigned by any conversion specifiers",
+            ));
+        }
+        if nspecs > num_vars {
+            return Err(throws(
+                "ValueError",
+                "Different numbers of variable names and field specifiers",
+            ));
+        }
+    }
+    let r = sscanf_scan(input.as_bytes(), fmt.as_bytes(), num_vars);
+
+    // Nothing converted AND the input ran out: `scan_set_error_return`
+    // (`scanf.c:1184`) replaces the whole answer.
+    if r.underflow && r.nconversions == 0 {
+        return Ok(if num_vars > 0 {
+            Value::int(-1)
+        } else {
+            Value::Undef
+        });
+    }
+    if num_vars > 0 {
+        for (i, v) in r.values.iter().enumerate() {
+            if let Some(v) = v {
+                // Argument 0 is the subject and 1 the format, so the first
+                // by-reference slot is argument 2.
+                with_host(|h| h.byref_out_put(i + 2, v.clone()));
+            }
+        }
+        return Ok(Value::int(r.nconversions as i64));
+    }
+    Ok(make_list(
+        (0..r.total_vars)
+            .map(|i| r.values.get(i).cloned().flatten().unwrap_or(Value::Undef))
+            .collect(),
+    ))
+}
+
+fn sscanf_scan(input: &[u8], fmt: &[u8], num_vars: usize) -> ScanResult {
+    let items = parse_scan_format(fmt);
+    let spec_slots = items
+        .iter()
+        .filter(|it| matches!(it, ScanItem::Conv(s) if !s.suppress))
+        .count();
+    let total_vars = if num_vars > 0 { num_vars } else { spec_slots };
+    let mut r = ScanResult {
+        values: vec![None; total_vars],
+        nconversions: 0,
+        underflow: false,
+        total_vars,
+    };
+    let mut obj = 0usize;
+    let mut p = 0usize;
+    let store = |r: &mut ScanResult, obj: &mut usize, v: Value| {
+        if *obj < r.values.len() {
+            r.values[*obj] = Some(v);
+        }
+        *obj += 1;
+    };
+
+    for item in &items {
+        match item {
+            ScanItem::Space => {
+                while p < input.len() && input[p].is_ascii_whitespace() {
+                    p += 1;
+                }
+            }
+            ScanItem::Literal(c) => {
+                if p >= input.len() {
+                    r.underflow = true;
+                    return r;
+                }
+                let got = input[p];
+                p += 1;
+                if got != *c {
+                    // A mismatch stops the scan without being an underflow, so
+                    // whatever was converted so far survives.
+                    return r;
+                }
+            }
+            ScanItem::Conv(spec) => {
+                // `%n` never touches the input, so it is answered before the
+                // end-of-input and whitespace-skip guards.
+                if spec.conv == b'n' {
+                    if !spec.suppress {
+                        store(&mut r, &mut obj, Value::int(p as i64));
+                    }
+                    r.nconversions += 1;
+                    continue;
+                }
+                if p >= input.len() {
+                    r.underflow = true;
+                    return r;
+                }
+                // `%c` and `%[` are the two that do NOT skip leading whitespace.
+                if !matches!(spec.conv, b'c' | b'[') {
+                    while p < input.len() && input[p].is_ascii_whitespace() {
+                        p += 1;
+                    }
+                    if p >= input.len() {
+                        r.underflow = true;
+                        return r;
+                    }
+                }
+                let value = match spec.conv {
+                    b'd' | b'D' | b'i' | b'o' | b'x' | b'X' | b'u' => {
+                        let base = match spec.conv {
+                            b'i' => 0,
+                            b'o' => 8,
+                            b'x' | b'X' => 16,
+                            _ => 10,
+                        };
+                        let Some((digits, base)) = scan_int_field(input, &mut p, spec.width, base)
+                        else {
+                            if p >= input.len() {
+                                r.underflow = true;
+                            }
+                            return r;
+                        };
+                        let (neg, body) = match digits.as_bytes().first() {
+                            Some(b'-') => (true, &digits[1..]),
+                            Some(b'+') => (false, &digits[1..]),
+                            _ => (false, digits.as_str()),
+                        };
+                        let body = if base == 16 && (body.starts_with("0x") || body.starts_with("0X"))
+                        {
+                            &body[2..]
+                        } else {
+                            body
+                        };
+                        let mag = u64::from_str_radix(body, base.max(2)).unwrap_or(u64::MAX);
+                        if spec.conv == b'u' {
+                            // `%u` runs through `strtoul`, so a value that does
+                            // not fit a signed long comes back as a STRING.
+                            let wrapped = if neg { mag.wrapping_neg() } else { mag };
+                            if wrapped > i64::MAX as u64 {
+                                Value::str(wrapped.to_string())
+                            } else {
+                                Value::int(wrapped as i64)
+                            }
+                        } else {
+                            let n = mag.min(i64::MAX as u64) as i64;
+                            Value::int(if neg { -n } else { n })
+                        }
+                    }
+                    b'f' | b'e' | b'E' | b'g' => {
+                        let Some(lit) = scan_float_field(input, &mut p, spec.width) else {
+                            if p >= input.len() {
+                                r.underflow = true;
+                            }
+                            return r;
+                        };
+                        Value::float(lit.parse::<f64>().unwrap_or(0.0))
+                    }
+                    b's' | b'c' => {
+                        // `%c` is `%s` with the whitespace skip off and a default
+                        // width of 1, so it can legitimately produce "".
+                        let width = if spec.conv == b'c' && spec.width == 0 {
+                            1
+                        } else {
+                            spec.width
+                        };
+                        let start = p;
+                        while p < input.len() && !input[p].is_ascii_whitespace() {
+                            p += 1;
+                            if width != 0 && p - start >= width {
+                                break;
+                            }
+                        }
+                        Value::str(String::from_utf8_lossy(&input[start..p]).into_owned())
+                    }
+                    b'[' => {
+                        let set = spec.set.as_ref();
+                        let start = p;
+                        while p < input.len() && set.map(|s| s.contains(input[p])).unwrap_or(false) {
+                            p += 1;
+                            if spec.width != 0 && p - start >= spec.width {
+                                break;
+                            }
+                        }
+                        if p == start {
+                            // The one conversion that aborts the whole scan on a
+                            // zero-length match.
+                            return r;
+                        }
+                        Value::str(String::from_utf8_lossy(&input[start..p]).into_owned())
+                    }
+                    _ => return r,
+                };
+                if !spec.suppress {
+                    store(&mut r, &mut obj, value);
+                }
+                r.nconversions += 1;
             }
         }
     }
-    // A lone sign is not a number.
-    if s.is_empty() || s == "-" || s == "+" {
-        String::new()
-    } else {
-        s
-    }
+    r
 }
 
 // ── multibyte ────────────────────────────────────────────────────────────────

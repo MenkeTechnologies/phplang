@@ -106,10 +106,30 @@ $ php -r 'var_dump(chr(-1));'                 => string(1) "\xff"
 $ target/debug/php -r 'var_dump(chr(-1));'    => string(2) "ÿ"
 ```
 
-The `chr()` deprecation for an out-of-range value IS emitted (fixed this round);
-only the byte width differs. This is architectural and affects `chr`,
-`strpbrk` on a mid-character match, and any other path that would produce a raw
-byte. Already recorded in the `chr` corpus entry as a DIVERGENCE.
+The `chr()` deprecation for an out-of-range value IS emitted; only the byte
+width differs. This is architectural and affects `chr`, `strpbrk` on a
+mid-character match, and any other path that would produce a raw byte. Already
+recorded in the `chr` corpus entry as a DIVERGENCE.
+
+Further members of this family, measured in round 8 while porting the string
+functions around them. All four are the SAME root cause — there is no binary
+string type — and none can be fixed inside the function:
+
+```text
+$ php -r 'var_dump(quoted_printable_decode("h=C3=A9llo"));'              => string(6) "héllo"
+$ target/debug/php -r 'var_dump(quoted_printable_decode("h=C3=A9llo"));' => string(8) "hÃ©llo"
+
+$ php -r 'var_dump(strlen(hex2bin("c3a9")), strlen(base64_decode("w6k=")));'              => int(2) int(2)
+$ target/debug/php -r 'var_dump(strlen(hex2bin("c3a9")), strlen(base64_decode("w6k=")));' => int(4) int(4)
+
+$ php -r 'var_dump(strlen(count_chars("aab", 4)));'              => int(254)
+$ target/debug/php -r 'var_dump(strlen(count_chars("aab", 4)));' => int(510)
+```
+
+`count_chars` modes 3 and 4 are the clearest case: their whole contract is to
+name bytes, and 128 of the 256 possible ones widen. Modes 0-2 and every
+ASCII-subject call are exact. Closing this needs `Value::Str` to become a byte
+string, which is an engine-wide change, not a library one.
 
 ---
 

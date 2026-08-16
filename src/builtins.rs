@@ -3135,7 +3135,7 @@ pub fn call_library(name: &str, args: &[Value]) -> Result<Value, String> {
                 &bb[..n.min(bb.len())],
             ))
         }),
-        "substr_compare" => with_host(|h| php_substr_compare(h, args)),
+        "substr_compare" => return with_host(|h| php_substr_compare(h, args)),
         // `str_word_count` is served by `stdlib::misc`, which implements the
         // `$format`/`$characters` arguments; it is intentionally not handled here
         // so the full version wins (this core arm was a count-only stub).
@@ -3632,45 +3632,53 @@ fn php_implode(args: &[Value]) -> Value {
     Value::str(parts.join(&glue))
 }
 
-/// The set of characters a `trim` charlist denotes. PHP supports `a..z` ranges
-/// inside the list, so `"a..z"` means every lowercase letter rather than the
-/// three characters `a`, `.`, `z`.
-fn trim_char_set(list: &str) -> Vec<char> {
-    let cs: Vec<char> = list.chars().collect();
-    let mut out = Vec::with_capacity(cs.len());
-    let mut i = 0;
-    while i < cs.len() {
-        // `x..y` — expand to the inclusive range when it is well formed.
-        if i + 3 < cs.len() && cs[i + 1] == '.' && cs[i + 2] == '.' && cs[i + 3] >= cs[i] {
-            for c in cs[i]..=cs[i + 3] {
-                out.push(c);
-            }
-            i += 4;
-        } else {
-            out.push(cs[i]);
-            i += 1;
-        }
+/// The name `php_charmask` reports a malformed `..` range under, given which of
+/// the three trim entry points is running. Upstream this falls out of
+/// `php_error_docref(NULL, …)` reading the active function from the stack.
+fn trim_fname(start: bool, end: bool) -> &'static str {
+    match (start, end) {
+        (true, true) => "trim",
+        (true, false) => "ltrim",
+        _ => "rtrim",
     }
-    out
 }
 
 /// `trim`/`ltrim`/`rtrim` with PHP's optional `$characters` list. The default set
 /// is `" \t\n\r\0\x0B"` — note it does NOT include the form feed `\x0C`, which
 /// Rust's `str::trim` would strip.
-fn php_trim(h: &host::PhpHost, args: &[Value], start: bool, end: bool) -> Value {
+///
+/// Byte-oriented, like `php_trim_int`: the charlist goes through the shared
+/// [`crate::stdlib::common::charmask`] so `"a..z"` is an inclusive range and a
+/// malformed one warns under this function's own name.
+fn php_trim(h: &mut host::PhpHost, args: &[Value], start: bool, end: bool) -> Value {
     let s = h.to_str(&arg(args, 0));
-    let set = match args.get(1) {
-        Some(v) if !matches!(v, Value::Undef) => trim_char_set(&h.to_str(v)),
-        _ => vec![' ', '\t', '\n', '\r', '\0', '\x0b'],
+    let mask = match args.get(1) {
+        Some(v) if !matches!(v, Value::Undef) => {
+            let list = h.to_str(v);
+            crate::stdlib::common::charmask(h, list.as_bytes(), trim_fname(start, end))
+        }
+        _ => {
+            let mut m = [false; 256];
+            for c in [b' ', b'\t', b'\n', b'\r', 0, 0x0b] {
+                m[c as usize] = true;
+            }
+            m
+        }
     };
-    let mut out = s.as_str();
+    let b = s.as_bytes();
+    let mut lo = 0usize;
+    let mut hi = b.len();
     if start {
-        out = out.trim_start_matches(|c| set.contains(&c));
+        while lo < hi && mask[b[lo] as usize] {
+            lo += 1;
+        }
     }
     if end {
-        out = out.trim_end_matches(|c| set.contains(&c));
+        while hi > lo && mask[b[hi - 1] as usize] {
+            hi -= 1;
+        }
     }
-    Value::str(out.to_string())
+    Value::str(String::from_utf8_lossy(&b[lo..hi]).into_owned())
 }
 
 /// `explode($separator, $string, $limit = PHP_INT_MAX)`.
@@ -4818,29 +4826,72 @@ fn sign(o: std::cmp::Ordering) -> i64 {
     }
 }
 
-/// `substr_compare($main, $str, $offset, $length = null)` — compares `$str` with
-/// the substring of `$main` beginning at `$offset` (negatives count from the
-/// end), over at most `$length` bytes. Byte-accurate, case-sensitive.
-fn php_substr_compare(h: &host::PhpHost, args: &[Value]) -> Value {
+/// `substr_compare($haystack, $needle, $offset, $length = null, $case_insensitive
+/// = false)` — port of `PHP_FUNCTION(substr_compare)` (php-src 8.5
+/// `ext/standard/string.c:6216`) over `zend_binary_strncmp` /
+/// `zend_binary_strncasecmp_l` (`Zend/zend_operators.c:3259`, `:3340`).
+///
+/// The result is NOT normalized to -1/0/1: when the compared bytes differ the
+/// answer is their signed difference (`substr_compare("abc","abz",0,3)` is -23),
+/// and only a tie on content falls back to the three-way length comparison.
+fn php_substr_compare(h: &mut host::PhpHost, args: &[Value]) -> Result<Value, String> {
     let main = h.to_str(&arg(args, 0));
     let needle = h.to_str(&arg(args, 1));
     let mb = main.as_bytes();
-    let len = mb.len() as i64;
+    let nb = needle.as_bytes();
+    let slen = mb.len() as i64;
+
+    let len_given = matches!(args.get(3), Some(v) if !matches!(v, Value::Undef));
+    let len = if len_given { arg(args, 3).to_int() } else { 0 };
+    if len_given && len <= 0 {
+        if len == 0 {
+            return Ok(Value::int(0));
+        }
+        return Err(throws(
+            "ValueError",
+            "substr_compare(): Argument #4 ($length) must be greater than or equal to 0",
+        ));
+    }
+
     let mut off = arg(args, 2).to_int();
     if off < 0 {
-        off += len;
+        off = (slen + off).max(0);
     }
-    let off = off.clamp(0, len) as usize;
+    if off > slen {
+        return Err(throws(
+            "ValueError",
+            "substr_compare(): Argument #3 ($offset) must be contained in argument #1 ($haystack)",
+        ));
+    }
+    let off = off as usize;
+    let ci = args.get(4).map(|v| h.is_truthy(v)).unwrap_or(false);
+
     let hay = &mb[off..];
-    let nb = needle.as_bytes();
-    let (a, b): (&[u8], &[u8]) = match args.get(3) {
-        Some(v) if !matches!(v, Value::Undef) => {
-            let l = v.to_int().max(0) as usize;
-            (&hay[..l.min(hay.len())], &nb[..l.min(nb.len())])
-        }
-        _ => (hay, nb),
+    // `len == 0` here means "not supplied": upstream's `cmp_len = len ? len :
+    // MAX(needle_len, haystack_len - offset)`.
+    let cmp_len = if len != 0 {
+        len as usize
+    } else {
+        nb.len().max(hay.len())
     };
-    Value::int(sign(a.cmp(b)))
+
+    let n = cmp_len.min(hay.len()).min(nb.len());
+    for i in 0..n {
+        let (a, b) = if ci {
+            (
+                hay[i].to_ascii_lowercase() as i64,
+                nb[i].to_ascii_lowercase() as i64,
+            )
+        } else {
+            (hay[i] as i64, nb[i] as i64)
+        };
+        if a != b {
+            return Ok(Value::int(a - b));
+        }
+    }
+    Ok(Value::int(sign(
+        cmp_len.min(hay.len()).cmp(&cmp_len.min(nb.len())),
+    )))
 }
 
 fn php_str_split(h: &mut host::PhpHost, args: &[Value]) -> Result<Value, String> {
@@ -5319,8 +5370,42 @@ fn php_array_reverse(h: &mut host::PhpHost, args: &[Value]) -> Value {
     out
 }
 
-fn php_array_fold(h: &host::PhpHost, arr: &Value, product: bool) -> Value {
-    let pairs = h.array_pairs(arr).unwrap_or_default();
+/// `array_sum` / `array_product` — port of `php_array_binop` (php-src 8.5
+/// `ext/standard/array.c:6493`).
+///
+/// Upstream runs the real `+`/`*` on each entry and recovers from the `TypeError`
+/// it may raise, so an entry that cannot take part is not silently zero: an
+/// array or an object with no numeric cast contributes NOTHING and warns
+/// `"<op> is not supported on type <type>"`, while a non-numeric STRING keeps the
+/// pre-8 behaviour of counting as `0` — which is why `array_product([2, "a"])` is
+/// `0` rather than `2`. A leading-numeric string such as `"2abc"` is a normal
+/// coercion and raises `"A non-numeric value encountered"` instead.
+fn php_array_fold(h: &mut host::PhpHost, arr: &Value, product: bool) -> Value {
+    let op_name = if product { "Multiplication" } else { "Addition" };
+    let fname = if product { "array_product" } else { "array_sum" };
+    let mut pairs = h.array_pairs(arr).unwrap_or_default();
+    // Resolve every entry to the number it contributes (or drop it), raising the
+    // diagnostics in element order, BEFORE the fold picks an integer or float path.
+    let mut terms: Vec<Value> = Vec::with_capacity(pairs.len());
+    for (_, v) in pairs.drain(..) {
+        let n = match host::classify_arith(h, &v) {
+            host::ArithOperand::Numeric(n) => n,
+            host::ArithOperand::Leading(n) => {
+                h.warn("A non-numeric value encountered");
+                n
+            }
+            host::ArithOperand::Unsupported => {
+                let ty = host::arith_type_name(h, &v);
+                h.warn(format!("{fname}(): {op_name} is not supported on type {ty}"));
+                match v {
+                    Value::Str(_) => Value::int(0),
+                    _ => continue,
+                }
+            }
+        };
+        terms.push(n);
+    }
+    let pairs: Vec<(Value, Value)> = terms.into_iter().map(|n| (Value::Undef, n)).collect();
     let all_int = pairs
         .iter()
         .all(|(_, v)| matches!(h.to_number(v), Value::Int(_)));
