@@ -26,6 +26,7 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::CALL, b_call);
     vm.register_builtin(ops::CALL_SPREAD, b_call_spread);
     vm.register_builtin(ops::MKARRAY, b_mkarray);
+    vm.register_builtin(ops::MKARRAY_ADD, b_mkarray_add);
     vm.register_builtin(ops::INDEX_GET, b_index_get);
     vm.register_builtin(ops::INDEX_SET, b_index_set);
     vm.register_builtin(ops::ARR_APPEND, b_arr_append);
@@ -1367,16 +1368,38 @@ fn b_mkarray(vm: &mut VM, argc: u8) -> Value {
     let raw = pop_args(vm, argc as usize);
     with_host(|h| {
         let arr = h.new_array();
-        let mut it = raw.into_iter();
-        while let Some(k) = it.next() {
-            let Some(v) = it.next() else { break };
-            match k {
-                Value::Undef => h.arr_push_auto(&arr, v),
-                key => h.arr_set_key(&arr, &key, v),
-            }
-        }
+        fill_array(h, &arr, raw.into_iter());
         arr
     })
+}
+
+/// `MKARRAY_ADD`: the continuation chunks of a literal too long for one
+/// `MKARRAY` (see [`host::MKARRAY_CHUNK_PAIRS`]). The first operand is the
+/// array built so far; the rest are more `key => value` pairs.
+fn b_mkarray_add(vm: &mut VM, argc: u8) -> Value {
+    let raw = pop_args(vm, argc as usize);
+    let mut it = raw.into_iter();
+    let Some(arr) = it.next() else {
+        return Value::Undef;
+    };
+    with_host(|h| fill_array(h, &arr, it));
+    arr
+}
+
+/// Write a flat `key, value, key, value, …` operand run into `arr`.
+///
+/// A key equal to [`host::AUTO_INDEX`] means the element was written WITHOUT a
+/// key and takes the next integer index. `Value::Undef` is a real PHP `null`
+/// key here, which becomes the empty-string key — it is not a "no key" marker.
+fn fill_array(h: &mut host::PhpHost, arr: &Value, mut it: impl Iterator<Item = Value>) {
+    while let Some(k) = it.next() {
+        let Some(v) = it.next() else { break };
+        if host::is_auto_index(&k) {
+            h.arr_push_auto(arr, v);
+        } else {
+            h.arr_set_key(arr, &k, v);
+        }
+    }
 }
 
 /// Route `$o[k]` through an `ArrayAccess` object's `offsetX` method, if that is
@@ -2370,7 +2393,9 @@ fn loose_eq(h: &host::PhpHost, a: &Value, b: &Value) -> bool {
         },
         (Str(x), Str(y)) => {
             if host::is_numeric_string(x) && host::is_numeric_string(y) {
-                num_eq(a, b)
+                // The PARSED numbers, not the raw strings: `num_eq` falls back
+                // to `Value::to_float`, whose reading of `" 1"` is `0.0`.
+                num_eq(&as_php_number(h, a), &as_php_number(h, b))
             } else {
                 x == y
             }
@@ -2494,7 +2519,7 @@ fn php_compare(h: &host::PhpHost, a: &Value, b: &Value) -> i32 {
         (_, Obj(_)) => -1,
         (Str(x), Str(y)) => {
             if host::is_numeric_string(x) && host::is_numeric_string(y) {
-                cmp_f64(a.to_float(), b.to_float())
+                cmp_php_num(&as_php_number(h, a), &as_php_number(h, b))
             } else {
                 strcmp_i32(x, y)
             }
@@ -2504,19 +2529,19 @@ fn php_compare(h: &host::PhpHost, a: &Value, b: &Value) -> i32 {
         // (`"abc" <= 10` is false because "abc" > "10" lexically).
         (Str(x), Int(_) | Float(_)) => {
             if host::is_numeric_string(x) {
-                cmp_f64(a.to_float(), b.to_float())
+                cmp_php_num(&as_php_number(h, a), &as_php_number(h, b))
             } else {
                 strcmp_i32(x, &h.to_str(b))
             }
         }
         (Int(_) | Float(_), Str(y)) => {
             if host::is_numeric_string(y) {
-                cmp_f64(a.to_float(), b.to_float())
+                cmp_php_num(&as_php_number(h, a), &as_php_number(h, b))
             } else {
                 strcmp_i32(&h.to_str(a), y)
             }
         }
-        _ => cmp_f64(h.to_number(a).to_float(), h.to_number(b).to_float()),
+        _ => cmp_php_num(&h.to_number(a), &h.to_number(b)),
     }
 }
 
@@ -2559,6 +2584,36 @@ fn cmp_f64(x: f64, y: f64) -> i32 {
         1
     } else {
         0
+    }
+}
+
+/// A comparison operand read as a NUMBER, using PHP's numeric-string grammar.
+///
+/// `Value::to_float` parses a string with Rust's rules, which reject the
+/// surrounding whitespace PHP 8 accepts and answer `0.0` instead of failing.
+/// That silent zero is what made `" 1" == "0"` true and `" 1" == "1"` false.
+/// A string with no complete numeric reading falls back to the host's
+/// leading-prefix conversion, which is what the non-numeric arms already use.
+fn as_php_number(h: &host::PhpHost, v: &Value) -> Value {
+    match v {
+        Value::Str(s) => host::parse_php_number_full(s).unwrap_or_else(|| h.to_number(v)),
+        _ => h.to_number(v),
+    }
+}
+
+/// Order two numeric operands the way `zend_compare` does.
+///
+/// Two integers compare AS integers. Widening them to `f64` first drops the low
+/// bits of anything past 2^53, so `PHP_INT_MAX <=> PHP_INT_MAX - 1` answered 0
+/// and `sort()` over large integers came back in an arbitrary order.
+fn cmp_php_num(a: &Value, b: &Value) -> i32 {
+    match (a, b) {
+        (Value::Int(x), Value::Int(y)) => match x.cmp(y) {
+            std::cmp::Ordering::Less => -1,
+            std::cmp::Ordering::Equal => 0,
+            std::cmp::Ordering::Greater => 1,
+        },
+        _ => cmp_f64(a.to_float(), b.to_float()),
     }
 }
 

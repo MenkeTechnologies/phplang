@@ -1684,16 +1684,34 @@ impl Compiler {
                                 destructuring target, not in a value array"
                         .into());
                 }
-                for e in elems {
-                    match &e.key {
-                        Some(k) => self.compile_expr(b, k)?,
-                        None => {
-                            b.emit(Op::LoadUndef, 0);
+                // `CallBuiltin`'s operand count is a `u8`, so the pairs go out
+                // in chunks: one `MKARRAY` builds the array, and each further
+                // chunk extends it through `MKARRAY_ADD`.
+                for (chunk, es) in elems.chunks(host::MKARRAY_CHUNK_PAIRS).enumerate() {
+                    for e in es {
+                        match &e.key {
+                            Some(k) => self.compile_expr(b, k)?,
+                            // NOT `LoadUndef`: that is PHP `null`, and a
+                            // `null` KEY is the empty string, not the next
+                            // integer index. See `host::AUTO_INDEX`.
+                            None => {
+                                let ai = b.add_constant(host::AUTO_INDEX);
+                                b.emit(Op::LoadConst(ai), 0);
+                            }
                         }
+                        self.compile_expr(b, &e.value)?;
                     }
-                    self.compile_expr(b, &e.value)?;
+                    let (op, argc) = if chunk == 0 {
+                        (ops::MKARRAY, es.len() * 2)
+                    } else {
+                        (ops::MKARRAY_ADD, es.len() * 2 + 1)
+                    };
+                    b.emit(Op::CallBuiltin(op, argc as u8), 0);
                 }
-                b.emit(Op::CallBuiltin(ops::MKARRAY, (elems.len() * 2) as u8), 0);
+                // An empty literal still needs its (empty) array.
+                if elems.is_empty() {
+                    b.emit(Op::CallBuiltin(ops::MKARRAY, 0), 0);
+                }
             }
             Expr::Index(recv, idx) => {
                 self.compile_expr(b, recv)?;

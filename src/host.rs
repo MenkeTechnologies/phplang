@@ -284,7 +284,35 @@ pub mod ops {
     /// execution, once to read and once to store, which in a counted loop is
     /// two hashes an iteration for a variable the compiler had already placed.
     pub const INCDEC_SLOT: u16 = 119;
+    /// `[arr, k,v, ...] argc=1+2n -> arr` — append more `key => value` pairs to
+    /// an array already built by `MKARRAY`.
+    ///
+    /// `CallBuiltin`'s operand count is a `u8`, so one `MKARRAY` can carry at
+    /// most 127 pairs. A longer literal is emitted as an `MKARRAY` followed by
+    /// `MKARRAY_ADD` continuations rather than overflowing that count — which
+    /// is what a 200-element literal used to do (`400 as u8` == 144, so the
+    /// builtin popped 144 of its 400 operands and left the rest on the stack).
+    pub const MKARRAY_ADD: u16 = 120;
 }
+
+/// The key operand of an array-literal element that has NO key — `[1, 2]`
+/// rather than `[0 => 1, 1 => 2]`.
+///
+/// It cannot be `Value::Undef`: that is how PHP `null` rides through the VM, so
+/// `[null => "a"]` and `["a"]` would compile to the same operand sequence.
+/// They did, and the first one produced the integer key `0` instead of `""`.
+/// `Value::Status` carries no PHP value at all, so no expression can forge it.
+pub const AUTO_INDEX: Value = Value::Status(i32::MIN);
+
+/// Whether a key operand is the [`AUTO_INDEX`] marker rather than a real key.
+pub fn is_auto_index(v: &Value) -> bool {
+    matches!(v, Value::Status(n) if *n == i32::MIN)
+}
+
+/// The largest number of `key => value` pairs one `MKARRAY`/`MKARRAY_ADD` can
+/// carry, bounded by `CallBuiltin`'s `u8` operand count (`MKARRAY_ADD` spends
+/// one of the 255 on the array itself).
+pub const MKARRAY_CHUNK_PAIRS: usize = 127;
 
 /// Sub-ops for the by-reference array mutators lowered through `ops::ARR_MUT`
 /// (`array_push`/`array_pop`/`array_shift`/`array_unshift`/`array_splice`). These
