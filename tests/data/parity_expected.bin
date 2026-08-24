@@ -1,0 +1,709 @@
+#REC 0 exit=0 out=420 err=0
+10001010001001100000
+01010000000010001100
+00100100000010000000
+01010000000010001100
+10001000001001100000
+00100100000010000000
+10000011010001100000
+00000011000001000000
+00000000100010000000
+00000010010001000000
+10001000001010100000
+00000000000110000000
+01110100101110011111
+10001011010001100000
+10001010001001100000
+00000000000010010000
+01010000000010001100
+01010000000010001100
+00000000000010000010
+00000000000010000001
+
+#REC 1 exit=0 out=406 err=0
+0,-1,-1,0,0,-1,1,-1,0,0,-1,-1,-1,
+1,0,0,1,1,-1,1,0,1,1,-1,0,0,
+1,0,0,1,1,-1,1,0,1,1,-1,0,0,
+0,-1,-1,0,1,-1,1,-1,0,0,-1,-1,-1,
+0,-1,-1,-1,0,-1,0,-1,0,0,-1,-1,-1,
+1,1,1,1,1,0,1,0,1,1,1,1,1,
+-1,-1,-1,-1,0,-1,0,-1,0,-1,-1,-1,-1,
+1,0,0,1,1,0,1,0,1,1,0,0,0,
+0,-1,-1,0,0,-1,0,-1,0,0,-1,-1,-1,
+0,-1,-1,0,0,-1,1,-1,0,0,-1,-1,-1,
+1,1,1,1,1,-1,1,0,1,1,0,1,1,
+1,0,0,1,1,-1,1,0,1,1,-1,0,0,
+1,0,0,1,1,-1,1,0,1,1,-1,0,0,
+
+#REC 2 exit=0 out=264 err=0
+bool(false)
+int(1)
+int(0)
+int(1)
+bool(true)
+bool(true)
+bool(true)
+int(1)
+bool(false)
+bool(true)
+int(9223372036854775806)
+int(9223372036854775807)
+array(3) {
+  [0]=>
+  int(9223372036854775805)
+  [1]=>
+  int(9223372036854775806)
+  [2]=>
+  int(9223372036854775807)
+}
+
+#REC 3 exit=0 out=201 err=0
+int(1)
+int(1)
+int(1)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+bool(true)
+bool(false)
+bool(true)
+bool(true)
+int(0)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+
+#REC 4 exit=0 out=297 err=0
+array(7) {
+  [0]=>
+  string(1) "f"
+  [1]=>
+  string(1) "t"
+  [7]=>
+  string(2) "s7"
+  ["07"]=>
+  string(3) "s07"
+  [-3]=>
+  string(2) "m3"
+  [""]=>
+  string(1) "e"
+  ["1.0"]=>
+  string(2) "f1"
+}
+array(1) {
+  [0]=>
+  string(1) "x"
+}
+array(3) {
+  [0]=>
+  int(0)
+  [1]=>
+  int(9)
+  [2]=>
+  int(10)
+}
+
+#REC 5 exit=0 out=115 err=0
+int(200)
+int(19900)
+bool(true)
+int(127)
+int(128)
+int(199)
+int(26)
+int(351)
+string(26) "abcdefghijklmnopqrstuvwxyz"
+
+#REC 6 exit=0 out=474 err=0
+9,2|9,9|
+Array
+(
+    [0] => 1
+    [1] => 2
+)
+Array
+(
+    [0] => 1
+    [1] => 2
+    [2] => 2
+)
+Array
+(
+    [0] => 1
+    [1] => 99
+)
+Array
+(
+    [0] => Array
+        (
+            [0] => 2
+            [1] => 3
+        )
+
+    [1] => Array
+        (
+            [0] => 4
+            [1] => 5
+        )
+
+)
+Array
+(
+    [0] => 10
+    [1] => 2
+    [2] => 30
+)
+Array
+(
+    [0] => 10
+    [1] => 2
+    [2] => 3
+)
+Array
+(
+    [0] => 0
+    [1] => 0
+)
+Array
+(
+    [0] => 1
+    [1] => 2
+)
+
+#REC 7 exit=0 out=195 err=0
+array(3) {
+  [1]=>
+  int(1)
+  [2]=>
+  int(2)
+  [5]=>
+  string(1) "a"
+}
+array(2) {
+  [1]=>
+  int(2)
+  [3]=>
+  int(4)
+}
+array(1) {
+  ["a"]=>
+  int(1)
+}
+array(1) {
+  ["b"]=>
+  int(2)
+}
+array(0) {
+}
+
+#REC 8 exit=0 out=444 err=0
+string(2) "[]"
+string(2) "{}"
+string(13) "{"0":1,"1":2}"
+string(19) "{"0":1,"1":{"0":2}}"
+string(26) "{
+    "0": 1,
+    "1": 2
+}"
+string(16) "{
+    "k": "v"
+}"
+string(6) ""a\/b""
+string(5) ""a/b""
+string(8) ""\u00e9""
+string(4) ""é""
+bool(false)
+string(34) "Inf and NaN cannot be JSON encoded"
+array(2) {
+  ["a"]=>
+  int(1)
+  ["b"]=>
+  array(4) {
+    [0]=>
+    int(1)
+    [1]=>
+    float(2.5)
+    [2]=>
+    NULL
+    [3]=>
+    bool(true)
+  }
+}
+
+#REC 9 exit=0 out=1080 err=862
+
+Warning: The float 1.0E+19 is not representable as an int, cast occurred in Command line code on line 3
+
+Warning: The float 1.0E+20 is not representable as an int, cast occurred in Command line code on line 3
+
+Warning: The float -1.0E+19 is not representable as an int, cast occurred in Command line code on line 3
+
+Warning: The float 1.0E+30 is not representable as an int, cast occurred in Command line code on line 3
+int(-8446744073709551616)
+int(7766279631452241920)
+int(8446744073709551616)
+int(5076964154930102272)
+
+Warning: The float NAN is not representable as an int, cast occurred in Command line code on line 4
+
+Warning: The float INF is not representable as an int, cast occurred in Command line code on line 4
+
+Warning: The float -INF is not representable as an int, cast occurred in Command line code on line 4
+int(0)
+int(0)
+int(0)
+int(1)
+int(-1)
+int(9200000000000000000)
+int(9223372036854775807)
+int(0)
+int(1)
+
+Warning: The float 1.0E+19 is not representable as an int, cast occurred in Command line code on line 6
+array(1) {
+  [0]=>
+  int(-8446744073709551616)
+}
+PHP Warning:  The float 1.0E+19 is not representable as an int, cast occurred in Command line code on line 3
+PHP Warning:  The float 1.0E+20 is not representable as an int, cast occurred in Command line code on line 3
+PHP Warning:  The float -1.0E+19 is not representable as an int, cast occurred in Command line code on line 3
+PHP Warning:  The float 1.0E+30 is not representable as an int, cast occurred in Command line code on line 3
+PHP Warning:  The float NAN is not representable as an int, cast occurred in Command line code on line 4
+PHP Warning:  The float INF is not representable as an int, cast occurred in Command line code on line 4
+PHP Warning:  The float -INF is not representable as an int, cast occurred in Command line code on line 4
+PHP Warning:  The float 1.0E+19 is not representable as an int, cast occurred in Command line code on line 6
+
+#REC 10 exit=0 out=600 err=0
+0.3|0.30000000000000004|float(0.30000000000000004)
+0.33333333333333|0.3333333333333333|float(0.3333333333333333)
+1.0E+100|1.0E+100|float(1.0E+100)
+1.0E-100|1.0E-100|float(1.0E-100)
+1|1.0|float(1)
+100|100.0|float(100)
+1.0E+15|1000000000000000.0|float(1000000000000000)
+1.0E+16|10000000000000000.0|float(10000000000000000)
+1.0E+17|1.0E+17|float(1.0E+17)
+1.0E-5|1.0E-5|float(1.0E-5)
+1.0E-6|1.0E-6|float(1.0E-6)
+1.0E+21|1.0E+21|float(1.0E+21)
+1.0E+22|1.0E+22|float(1.0E+22)
+-0|-0.0|float(-0)
+INF|INF|float(INF)
+-INF|-INF|float(-INF)
+2.2204460492503E-16|2.220446049250313E-16|float(2.220446049250313E-16)
+
+#REC 11 exit=0 out=319 err=0
+[   42][42   ][00042][+42][-42]
+[ 3.14][2][1.234568e+4][1.234568E+4][1.230e-4]
+[ab][        ab][ab        ][********ab][00000000ab]
+[11111111][377][ff][FF][A]
+[b-a][%][0]
+[1.234e-5][1.23457E+8][1.23e+8]
+string(12) "0.3333333333"
+string(2) "12"
+string(1) "1"
+string(1) "1"
+string(0) ""
+string(5) "    a"
+string(3) "a-b"
+
+#REC 12 exit=0 out=52 err=0
+1,235
+1,234.57
+1.234,57
+-1 234.568
+1|2|3
+1234567.89
+
+#REC 13 exit=0 out=466 err=0
+string(3) "llo"
+string(2) "ll"
+string(3) "ell"
+string(5) "hello"
+string(0) ""
+string(0) ""
+string(0) ""
+string(3) "005"
+string(7) "xyabxyx"
+string(3) "abc"
+int(2)
+bool(false)
+int(3)
+int(3)
+string(5) "1,2,3"
+string(1) "a"
+array(3) {
+  [0]=>
+  string(1) "a"
+  [1]=>
+  string(1) "b"
+  [2]=>
+  string(1) "c"
+}
+array(2) {
+  [0]=>
+  string(1) "a"
+  [1]=>
+  string(3) "b,c"
+}
+array(2) {
+  [0]=>
+  string(1) "a"
+  [1]=>
+  string(1) "b"
+}
+array(1) {
+  [0]=>
+  string(0) ""
+}
+
+#REC 14 exit=0 out=392 err=0
+string(1) "x"
+string(2) "xa"
+string(2) "12"
+string(4) "a..b"
+string(1) "x"
+string(2) "cc"
+string(3) "bbb"
+int(3)
+string(3) "xyc"
+string(11) "hello world"
+array(3) {
+  [0]=>
+  string(2) "ab"
+  [1]=>
+  string(2) "cd"
+  [2]=>
+  string(1) "e"
+}
+string(6) "ab-cd-"
+string(3) "cba"
+string(19) "The quick
+brown fox"
+string(11) "Hello|World"
+bool(true)
+bool(true)
+int(-1)
+int(1)
+int(1)
+int(0)
+int(1)
+
+#REC 15 exit=0 out=249 err=0
+int(3)
+int(-3)
+int(-3)
+int(3)
+int(1)
+int(-1)
+int(1)
+int(-1)
+float(1.5)
+float(-1.5)
+float(3.5)
+int(2)
+float(-3.5)
+int(1024)
+float(1.4142135623730951)
+float(NAN)
+float(9.223372036854776E+18)
+float(1.8446744073709552E+19)
+float(-9.223372036854776E+18)
+
+#REC 16 exit=0 out=80 err=0
+str
+zero
+loose
+bool(false)
+bool(true)
+string(1) "d"
+string(1) "e"
+string(1) "f"
+
+#REC 17 exit=0 out=441 err=0
+Array
+(
+    [0] => 1
+    [1] => 2
+    [2] => 3
+    [a] => 2
+)
+Array
+(
+    [0] => 1
+    [1] => 2
+    [2] => 5
+)
+Array
+(
+    [0] => 1
+    [1] => b
+    [2] => 3
+    [3] => d
+)
+Array
+(
+    [0] => 2
+    [1] => 3
+)
+Array
+(
+    [0] => 1
+    [1] => x
+    [2] => y
+    [3] => z
+    [4] => 4
+    [5] => 5
+)
+Array
+(
+    [0] => 1
+    [1] => 2
+)
+Array
+(
+    [0] => 2
+    [1] => 3
+)
+Array
+(
+    [0] => 4
+    [1] => 5
+)
+Array
+(
+    [b] => 2
+    [0] => 3
+)
+
+#REC 18 exit=0 out=565 err=0
+Array
+(
+    [b] => 1
+    [c] => 1
+    [a] => 2
+)
+Array
+(
+    [a] => 2
+    [b] => 1
+    [c] => 1
+)
+Array
+(
+    [a] => 2
+    [b] => 1
+    [c] => 1
+)
+Array
+(
+    [0] => 2
+    [1] => 9
+    [2] => 10
+    [3] => 1e1
+    [4] => abc
+)
+Array
+(
+    [0] => abc
+    [1] => 10
+    [2] => 1e1
+    [3] => 9
+    [4] => 2
+)
+Array
+(
+    [0] => 10
+    [1] => 1e1
+    [2] => 2
+    [3] => 9
+    [4] => abc
+)
+Array
+(
+    [0] => abc
+    [1] => 2
+    [2] => 9
+    [3] => 10
+    [4] => 1e1
+)
+Array
+(
+    [0] => 1
+    [1] => 2
+    [2] => 3
+)
+Array
+(
+    [0] => 3
+    [1] => 1
+    [2] => 2
+)
+
+#REC 19 exit=0 out=477 err=0
+Array
+(
+    [0] => 1
+    [1] => 2
+    [2] => Array
+        (
+            [a] => Array
+                (
+                    [b] => c
+                )
+
+        )
+
+)
+
+array (
+  0 => 1,
+  1 => 2,
+  2 => 
+  array (
+    'a' => 
+    array (
+      'b' => 'c',
+    ),
+  ),
+)
+array (
+  'x' => true,
+  'y' => NULL,
+  'z' => 1.5,
+)
+str
+1
+1|
+string(23) "Array
+(
+    [0] => 1
+)
+"
+string(3) "abc"
+int(1)
+float(1.5)
+bool(true)
+NULL
+array(1) {
+  [1]=>
+  array(1) {
+    [0]=>
+    int(2)
+  }
+}
+
+#REC 20 exit=0 out=387 err=0
+string(1) "1"
+string(0) ""
+string(0) ""
+string(1) "0"
+int(0)
+int(0)
+float(1500)
+bool(false)
+bool(true)
+bool(false)
+bool(true)
+bool(false)
+array(1) {
+  [0]=>
+  string(1) "x"
+}
+array(0) {
+}
+array(1) {
+  [0]=>
+  int(1)
+}
+string(7) "integer"
+string(6) "double"
+string(6) "string"
+string(7) "boolean"
+string(4) "NULL"
+string(5) "array"
+bool(true)
+bool(true)
+bool(true)
+bool(false)
+bool(true)
+
+#REC 21 exit=0 out=164 err=0
+string(1) "h"
+string(1) "o"
+bool(false)
+string(5) "Hello"
+string(6) "ababab"
+string(11) "Hello world"
+string(3) "aBC"
+int(6)
+int(5)
+string(3) "él"
+string(3) "àb"
+
+#REC 22 exit=0 out=375 err=0
+int(1)
+array(3) {
+  [0]=>
+  string(5) "12-34"
+  [1]=>
+  string(2) "12"
+  [2]=>
+  string(2) "34"
+}
+int(2)
+array(1) {
+  [0]=>
+  array(2) {
+    [0]=>
+    string(1) "1"
+    [1]=>
+    string(1) "2"
+  }
+}
+string(3) "a b"
+string(4) "a2b4"
+array(3) {
+  [0]=>
+  string(1) "a"
+  [1]=>
+  string(1) "b"
+  [2]=>
+  string(1) "c"
+}
+string(7) "a\.b\*c"
+array(1) {
+  [0]=>
+  string(2) "ab"
+}
+
+#REC 23 exit=0 out=161 err=159
+
+Warning: Undefined variable $undefined_variable in Command line code on line 2
+after
+
+Warning: Undefined array key "missing" in Command line code on line 5
+end
+PHP Warning:  Undefined variable $undefined_variable in Command line code on line 2
+PHP Warning:  Undefined array key "missing" in Command line code on line 5
+
+#REC 24 exit=255 out=279 err=151
+DivisionByZeroError: Division by zero
+DivisionByZeroError: Modulo by zero
+TypeError: Unsupported operand types: string + int
+int(6)
+
+Fatal error: Uncaught DivisionByZeroError: Division by zero in Command line code:5
+Stack trace:
+#0 {main}
+  thrown in Command line code on line 5
+PHP Fatal error:  Uncaught DivisionByZeroError: Division by zero in Command line code:5
+Stack trace:
+#0 {main}
+  thrown in Command line code on line 5
+
