@@ -6097,8 +6097,7 @@ fn php_json_encode(h: &host::PhpHost, v: &Value, flags: i64, depth: usize) -> St
             };
             // A real object always encodes as a JSON object, even with no
             // properties — `json_encode(new stdClass())` is `{}`, not `[]`.
-            let as_list =
-                is_list(&pairs) && !h.is_object(v) && flags & JSON_FORCE_OBJECT == 0;
+            let as_list = is_list(&pairs) && !h.is_object(v) && flags & JSON_FORCE_OBJECT == 0;
             let (open, close) = if as_list { ('[', ']') } else { ('{', '}') };
             if pairs.is_empty() {
                 return format!("{open}{close}");
