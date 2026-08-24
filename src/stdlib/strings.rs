@@ -463,8 +463,16 @@ fn substr_replace(args: &[Value]) -> Result<Value, String> {
         return Ok(Value::str(substr_splice(&s, &replace, f, l)));
     }
 
-    let repls = if is_arr_repl { seq(&repl_v) } else { Vec::new() };
-    let froms = if is_arr_from { seq(&from_v) } else { Vec::new() };
+    let repls = if is_arr_repl {
+        seq(&repl_v)
+    } else {
+        Vec::new()
+    };
+    let froms = if is_arr_from {
+        seq(&from_v)
+    } else {
+        Vec::new()
+    };
     let lens = if is_arr_len { seq(&len_v) } else { Vec::new() };
     let pairs = with_host(|h| h.array_pairs(&subject).unwrap_or_default());
     let mut out: Vec<(Value, Value)> = Vec::with_capacity(pairs.len());
@@ -476,9 +484,7 @@ fn substr_replace(args: &[Value]) -> Result<Value, String> {
             as_int(&from_v)
         };
         let raw_len = if is_arr_len {
-            lens.get(i)
-                .map(|v| v.to_int())
-                .unwrap_or(s.len() as i64)
+            lens.get(i).map(|v| v.to_int()).unwrap_or(s.len() as i64)
         } else if !len_is_null {
             as_int(&len_v)
         } else {
@@ -1769,12 +1775,12 @@ fn sscanf_scan(input: &[u8], fmt: &[u8], num_vars: usize) -> ScanResult {
                             Some(b'+') => (false, &digits[1..]),
                             _ => (false, digits.as_str()),
                         };
-                        let body = if base == 16 && (body.starts_with("0x") || body.starts_with("0X"))
-                        {
-                            &body[2..]
-                        } else {
-                            body
-                        };
+                        let body =
+                            if base == 16 && (body.starts_with("0x") || body.starts_with("0X")) {
+                                &body[2..]
+                            } else {
+                                body
+                            };
                         let mag = u64::from_str_radix(body, base.max(2)).unwrap_or(u64::MAX);
                         if spec.conv == b'u' {
                             // `%u` runs through `strtoul`, so a value that does
@@ -1819,7 +1825,8 @@ fn sscanf_scan(input: &[u8], fmt: &[u8], num_vars: usize) -> ScanResult {
                     b'[' => {
                         let set = spec.set.as_ref();
                         let start = p;
-                        while p < input.len() && set.map(|s| s.contains(input[p])).unwrap_or(false) {
+                        while p < input.len() && set.map(|s| s.contains(input[p])).unwrap_or(false)
+                        {
                             p += 1;
                             if spec.width != 0 && p - start >= spec.width {
                                 break;

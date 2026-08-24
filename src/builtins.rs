@@ -995,11 +995,18 @@ fn pop_args(vm: &mut VM, n: usize) -> Vec<Value> {
 }
 
 /// Pop a value used as a name (variable / function name).
-fn pop_name(vm: &mut VM) -> String {
-    let v = vm.pop();
-    match v {
-        Value::Str(s) => s.to_string(),
-        other => with_host(|h| h.to_str(&other)),
+/// The name operand of a `$name` op, without copying it.
+///
+/// The compiler emits the name as a constant, so it arrives as an
+/// `Arc<String>` and the clone is a refcount bump. Returning `String` copied
+/// the characters on every variable read and every variable write — six times
+/// an iteration in a loop like `for ($i = 0; $i < $n; $i++) { $s += $i; }`.
+/// Only a variable-variable (`$$x`), whose operand is not already a string,
+/// has to allocate.
+fn pop_name(vm: &mut VM) -> std::sync::Arc<String> {
+    match vm.pop() {
+        Value::Str(s) => s,
+        other => std::sync::Arc::new(with_host(|h| h.to_str(&other))),
     }
 }
 
@@ -1721,7 +1728,7 @@ fn b_prop_get(vm: &mut VM, _: u8) -> Value {
             with_host(|h| h.prop_get_warn(&recv, &name))
         }
         PropAccess::Magic => {
-            let v = call_magic(&recv, &name, "__get", vec![Value::str(name.clone())]);
+            let v = call_magic(&recv, &name, "__get", vec![Value::Str(name.clone())]);
             bubbled(vm, v)
         }
         PropAccess::Denied(msg) => throw_php(vm, "Error", &msg),
@@ -1810,7 +1817,7 @@ fn b_prop_set(vm: &mut VM, _: u8) -> Value {
                 &recv,
                 &name,
                 "__set",
-                vec![Value::str(name.clone()), val.clone()],
+                vec![Value::Str(name.clone()), val.clone()],
             );
             bubbled(vm, val)
         }
@@ -1858,7 +1865,7 @@ fn b_prop_set_rw(vm: &mut VM, _: u8) -> Value {
                 &recv,
                 &name,
                 "__set",
-                vec![Value::str(name.clone()), val.clone()],
+                vec![Value::Str(name.clone()), val.clone()],
             );
             bubbled(vm, val)
         }
@@ -1904,7 +1911,7 @@ fn b_prop_isset(vm: &mut VM, _: u8) -> Value {
             Value::bool(!matches!(v, Value::Undef))
         }
         PropAccess::Magic => {
-            let present = call_magic(&recv, &name, "__isset", vec![Value::str(name.clone())]);
+            let present = call_magic(&recv, &name, "__isset", vec![Value::Str(name.clone())]);
             if bubble_throw(vm) {
                 return Value::Undef;
             }
@@ -1927,7 +1934,7 @@ fn b_prop_unset(vm: &mut VM, _: u8) -> Value {
             Value::Undef
         }
         PropAccess::Magic => {
-            call_magic(&recv, &name, "__unset", vec![Value::str(name.clone())]);
+            call_magic(&recv, &name, "__unset", vec![Value::Str(name.clone())]);
             bubbled(vm, Value::Undef)
         }
         PropAccess::Denied(msg) => throw_php(vm, "Error", &msg),
@@ -2007,7 +2014,7 @@ fn b_prop_incdec(vm: &mut VM, _: u8) -> Value {
         // Same read-modify-write shape as `$o->p += 1`: `__get` supplies the old
         // value, and `__set` takes the new one back only if the class has both.
         PropAccess::Magic => {
-            let old = call_magic(&recv, &name, "__get", vec![Value::str(name.clone())]);
+            let old = call_magic(&recv, &name, "__get", vec![Value::Str(name.clone())]);
             if bubble_throw(vm) {
                 return Value::Undef;
             }
@@ -2024,7 +2031,7 @@ fn b_prop_incdec(vm: &mut VM, _: u8) -> Value {
                     &recv,
                     &name,
                     "__set",
-                    vec![Value::str(name.clone()), newv.clone()],
+                    vec![Value::Str(name.clone()), newv.clone()],
                 );
             } else {
                 if readonly_refused(vm, &recv, &name) {
@@ -5381,8 +5388,16 @@ fn php_array_reverse(h: &mut host::PhpHost, args: &[Value]) -> Value {
 /// `0` rather than `2`. A leading-numeric string such as `"2abc"` is a normal
 /// coercion and raises `"A non-numeric value encountered"` instead.
 fn php_array_fold(h: &mut host::PhpHost, arr: &Value, product: bool) -> Value {
-    let op_name = if product { "Multiplication" } else { "Addition" };
-    let fname = if product { "array_product" } else { "array_sum" };
+    let op_name = if product {
+        "Multiplication"
+    } else {
+        "Addition"
+    };
+    let fname = if product {
+        "array_product"
+    } else {
+        "array_sum"
+    };
     let mut pairs = h.array_pairs(arr).unwrap_or_default();
     // Resolve every entry to the number it contributes (or drop it), raising the
     // diagnostics in element order, BEFORE the fold picks an integer or float path.
@@ -5396,7 +5411,9 @@ fn php_array_fold(h: &mut host::PhpHost, arr: &Value, product: bool) -> Value {
             }
             host::ArithOperand::Unsupported => {
                 let ty = host::arith_type_name(h, &v);
-                h.warn(format!("{fname}(): {op_name} is not supported on type {ty}"));
+                h.warn(format!(
+                    "{fname}(): {op_name} is not supported on type {ty}"
+                ));
                 match v {
                     Value::Str(_) => Value::int(0),
                     _ => continue,

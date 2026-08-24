@@ -24,26 +24,56 @@ fn sscanf_integer_bases() {
         "Array\n(\n    [0] => 255\n    [1] => 8\n    [2] => 31\n)\n"
     );
     // `%i` auto-detects: a leading 0 is octal, `0x` is hex, otherwise decimal.
-    assert_eq!(run(r#"<?php print_r(sscanf("017", "%i"));"#), "Array\n(\n    [0] => 15\n)\n");
-    assert_eq!(run(r#"<?php print_r(sscanf("19", "%i"));"#), "Array\n(\n    [0] => 19\n)\n");
+    assert_eq!(
+        run(r#"<?php print_r(sscanf("017", "%i"));"#),
+        "Array\n(\n    [0] => 15\n)\n"
+    );
+    assert_eq!(
+        run(r#"<?php print_r(sscanf("19", "%i"));"#),
+        "Array\n(\n    [0] => 19\n)\n"
+    );
     // A `0x` with no hex digit after it gives the `x` back to the input.
-    assert_eq!(run(r#"<?php print_r(sscanf("00x10", "%i"));"#), "Array\n(\n    [0] => 0\n)\n");
-    assert_eq!(run(r#"<?php print_r(sscanf("-17", "%o"));"#), "Array\n(\n    [0] => -15\n)\n");
+    assert_eq!(
+        run(r#"<?php print_r(sscanf("00x10", "%i"));"#),
+        "Array\n(\n    [0] => 0\n)\n"
+    );
+    assert_eq!(
+        run(r#"<?php print_r(sscanf("-17", "%o"));"#),
+        "Array\n(\n    [0] => -15\n)\n"
+    );
 }
 
 /// `%[…]` scan sets, including the two placement quirks `BuildCharSet` has: a
 /// `]` in first position is a member, and a trailing `-` is a literal.
 #[test]
 fn sscanf_scan_sets() {
-    assert_eq!(run(r#"<?php print_r(sscanf("abc123", "%[a-c]"));"#), "Array\n(\n    [0] => abc\n)\n");
-    assert_eq!(run(r#"<?php print_r(sscanf("abc123", "%[^0-9]"));"#), "Array\n(\n    [0] => abc\n)\n");
-    assert_eq!(run(r#"<?php print_r(sscanf("]ab", "%[]a]"));"#), "Array\n(\n    [0] => ]a\n)\n");
-    assert_eq!(run(r#"<?php print_r(sscanf("a-b", "%[a-]"));"#), "Array\n(\n    [0] => a-\n)\n");
+    assert_eq!(
+        run(r#"<?php print_r(sscanf("abc123", "%[a-c]"));"#),
+        "Array\n(\n    [0] => abc\n)\n"
+    );
+    assert_eq!(
+        run(r#"<?php print_r(sscanf("abc123", "%[^0-9]"));"#),
+        "Array\n(\n    [0] => abc\n)\n"
+    );
+    assert_eq!(
+        run(r#"<?php print_r(sscanf("]ab", "%[]a]"));"#),
+        "Array\n(\n    [0] => ]a\n)\n"
+    );
+    assert_eq!(
+        run(r#"<?php print_r(sscanf("a-b", "%[a-]"));"#),
+        "Array\n(\n    [0] => a-\n)\n"
+    );
     // A scan set does NOT skip leading whitespace, so this matches nothing and
     // the scan stops with the pre-filled null still in place.
-    assert_eq!(run(r#"<?php var_dump(sscanf(" abc", "%[a-z]"));"#), "array(1) {\n  [0]=>\n  NULL\n}\n");
+    assert_eq!(
+        run(r#"<?php var_dump(sscanf(" abc", "%[a-z]"));"#),
+        "array(1) {\n  [0]=>\n  NULL\n}\n"
+    );
     // Literal text around a scan set still has to match.
-    assert_eq!(run(r#"<?php print_r(sscanf("[abc]", "[%[a-c]]"));"#), "Array\n(\n    [0] => abc\n)\n");
+    assert_eq!(
+        run(r#"<?php print_r(sscanf("[abc]", "[%[a-c]]"));"#),
+        "Array\n(\n    [0] => abc\n)\n"
+    );
 }
 
 /// The two-argument form pre-fills one slot per non-suppressed specifier, so a
@@ -57,7 +87,10 @@ fn sscanf_pads_unreached_slots_with_null() {
     // Nothing converted AND the input ran out: the whole answer is null.
     assert_eq!(run(r#"<?php var_dump(sscanf("", "%d"));"#), "NULL\n");
     // A MISMATCH is not an underflow — the partial list survives.
-    assert_eq!(run(r#"<?php var_dump(sscanf("abc", "%d"));"#), "array(1) {\n  [0]=>\n  NULL\n}\n");
+    assert_eq!(
+        run(r#"<?php var_dump(sscanf("abc", "%d"));"#),
+        "array(1) {\n  [0]=>\n  NULL\n}\n"
+    );
 }
 
 /// The by-reference form. Before this round the extra arguments were compiled as
@@ -111,23 +144,47 @@ fn sscanf_by_reference_arity_is_validated() {
 fn sscanf_char_and_offset_conversions() {
     // `%c` does not skip whitespace, but it does stop AT whitespace, so a
     // leading blank yields the empty string rather than the blank itself.
-    assert_eq!(run(r#"<?php var_dump(sscanf(" x", "%c"));"#), "array(1) {\n  [0]=>\n  string(0) \"\"\n}\n");
-    assert_eq!(run(r#"<?php print_r(sscanf("abc", "%c%c%c"));"#), "Array\n(\n    [0] => a\n    [1] => b\n    [2] => c\n)\n");
-    assert_eq!(run(r#"<?php print_r(sscanf("hello", "%s%n"));"#), "Array\n(\n    [0] => hello\n    [1] => 5\n)\n");
+    assert_eq!(
+        run(r#"<?php var_dump(sscanf(" x", "%c"));"#),
+        "array(1) {\n  [0]=>\n  string(0) \"\"\n}\n"
+    );
+    assert_eq!(
+        run(r#"<?php print_r(sscanf("abc", "%c%c%c"));"#),
+        "Array\n(\n    [0] => a\n    [1] => b\n    [2] => c\n)\n"
+    );
+    assert_eq!(
+        run(r#"<?php print_r(sscanf("hello", "%s%n"));"#),
+        "Array\n(\n    [0] => hello\n    [1] => 5\n)\n"
+    );
     // The size modifiers are accepted and ignored.
-    assert_eq!(run(r#"<?php print_r(sscanf("1 2 3.5", "%ld %hd %Lf"));"#), "Array\n(\n    [0] => 1\n    [1] => 2\n    [2] => 3.5\n)\n");
+    assert_eq!(
+        run(r#"<?php print_r(sscanf("1 2 3.5", "%ld %hd %Lf"));"#),
+        "Array\n(\n    [0] => 1\n    [1] => 2\n    [2] => 3.5\n)\n"
+    );
 }
 
 /// `addcslashes` did not exist. Outside printable ASCII the escape is the C
 /// mnemonic, and a charlist range is inclusive.
 #[test]
 fn addcslashes_escapes_the_selected_bytes() {
-    assert_eq!(run(r#"<?php echo addcslashes("foo[bar]", "A..z");"#), r"\f\o\o\[\b\a\r\]");
+    assert_eq!(
+        run(r#"<?php echo addcslashes("foo[bar]", "A..z");"#),
+        r"\f\o\o\[\b\a\r\]"
+    );
     // Only the bytes actually in the list are touched.
-    assert_eq!(run(r#"<?php echo addcslashes("foo[bar]", "A..Z");"#), "foo[bar]");
-    assert_eq!(run(r#"<?php echo addcslashes("\n\t\x07", "\n\t\x07");"#), r"\n\t\a");
+    assert_eq!(
+        run(r#"<?php echo addcslashes("foo[bar]", "A..Z");"#),
+        "foo[bar]"
+    );
+    assert_eq!(
+        run(r#"<?php echo addcslashes("\n\t\x07", "\n\t\x07");"#),
+        r"\n\t\a"
+    );
     // Both short-circuits sit above the charmask, so neither warns.
-    assert_eq!(run(r#"<?php echo addcslashes("", "z..A"), "|", addcslashes("hi", "");"#), "|hi");
+    assert_eq!(
+        run(r#"<?php echo addcslashes("", "z..A"), "|", addcslashes("hi", "");"#),
+        "|hi"
+    );
 }
 
 /// A malformed `..` range is a warning shared by every `php_charmask` consumer,
@@ -167,7 +224,10 @@ fn stripcslashes_reverses_the_c_escapes() {
     assert_eq!(run(r#"<?php echo stripcslashes('a\tb\x41');"#), "a\tbA");
     assert_eq!(run(r#"<?php echo stripcslashes('\101\x42\z');"#), "ABz");
     // A lone trailing backslash has nothing to escape and is kept.
-    assert_eq!(run(r#"<?php var_dump(stripcslashes("a\\"));"#), "string(2) \"a\\\"\n");
+    assert_eq!(
+        run(r#"<?php var_dump(stripcslashes("a\\"));"#),
+        "string(2) \"a\\\"\n"
+    );
 }
 
 /// `count_chars` did not exist. Modes 0-2 answer counter arrays, 3 and 4 answer
@@ -197,7 +257,9 @@ fn count_chars_histogram_modes() {
 #[test]
 fn strtok_tokenizes_and_then_stays_exhausted() {
     assert_eq!(
-        run(r#"<?php var_dump(strtok("a b c", " "), strtok(" "), strtok(" "), strtok(" "), strtok(" "));"#),
+        run(
+            r#"<?php var_dump(strtok("a b c", " "), strtok(" "), strtok(" "), strtok(" "), strtok(" "));"#
+        ),
         "string(1) \"a\"\nstring(1) \"b\"\nstring(1) \"c\"\nbool(false)\nbool(false)\n"
     );
     // Runs of delimiters are collapsed, leading and trailing alike.
@@ -260,13 +322,28 @@ fn substr_replace_array_forms() {
 /// result to -1/0/1 where the reference answers the raw byte difference.
 #[test]
 fn substr_compare_is_case_aware_and_unnormalized() {
-    assert_eq!(run(r#"<?php echo substr_compare("Hello", "hello", 0, 5, true);"#), "0");
-    assert_eq!(run(r#"<?php echo substr_compare("Hello World", "world", 6, 5, true);"#), "0");
+    assert_eq!(
+        run(r#"<?php echo substr_compare("Hello", "hello", 0, 5, true);"#),
+        "0"
+    );
+    assert_eq!(
+        run(r#"<?php echo substr_compare("Hello World", "world", 6, 5, true);"#),
+        "0"
+    );
     // Differing bytes answer their signed difference: 'c' - 'z' is -23.
-    assert_eq!(run(r#"<?php echo substr_compare("abc", "abz", 0, 3);"#), "-23");
-    assert_eq!(run(r#"<?php echo substr_compare("abz", "abc", 0, 3);"#), "23");
+    assert_eq!(
+        run(r#"<?php echo substr_compare("abc", "abz", 0, 3);"#),
+        "-23"
+    );
+    assert_eq!(
+        run(r#"<?php echo substr_compare("abz", "abc", 0, 3);"#),
+        "23"
+    );
     // Only a tie on content falls back to the three-way length comparison.
-    assert_eq!(run(r#"<?php echo substr_compare("abc", "abcdef", 0);"#), "-1");
+    assert_eq!(
+        run(r#"<?php echo substr_compare("abc", "abcdef", 0);"#),
+        "-1"
+    );
     assert_eq!(run(r#"<?php echo substr_compare("a", "", 0);"#), "1");
     // A zero length answers 0 without comparing; a negative one throws.
     assert_eq!(run(r#"<?php echo substr_compare("abc", "x", 0, 0);"#), "0");
@@ -302,7 +379,9 @@ fn array_replace_recursive_merges_only_matching_arrays() {
     );
     // The inputs are value types: merging must not write through into the base.
     assert_eq!(
-        run(r#"<?php $b = ["a" => ["b" => 1]]; array_replace_recursive($b, ["a" => ["b" => 9]]); print_r($b);"#),
+        run(
+            r#"<?php $b = ["a" => ["b" => 1]]; array_replace_recursive($b, ["a" => ["b" => 9]]); print_r($b);"#
+        ),
         "Array\n(\n    [a] => Array\n        (\n            [b] => 1\n        )\n\n)\n"
     );
 }
@@ -317,7 +396,9 @@ fn array_walk_recursive_mutates_leaves_by_reference() {
     );
     // The extra argument still reaches the callback.
     assert_eq!(
-        run(r#"<?php $a = ["x" => 1]; array_walk_recursive($a, function ($v, $k, $e) { echo "$k=$v/$e"; }, "E");"#),
+        run(
+            r#"<?php $a = ["x" => 1]; array_walk_recursive($a, function ($v, $k, $e) { echo "$k=$v/$e"; }, "E");"#
+        ),
         "x=1/E"
     );
 }
@@ -347,7 +428,9 @@ fn array_fold_diagnoses_unsupported_operands() {
     );
     // Clean input stays silent, and the empty-array identities are unchanged.
     assert_eq!(
-        run(r#"<?php var_dump(array_sum([1, null, true, false]), array_sum([]), array_product([]));"#),
+        run(
+            r#"<?php var_dump(array_sum([1, null, true, false]), array_sum([]), array_product([]));"#
+        ),
         "int(2)\nint(0)\nint(1)\n"
     );
 }
