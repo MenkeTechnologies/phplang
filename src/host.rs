@@ -304,6 +304,11 @@ pub mod ops {
 /// `Value::Status` carries no PHP value at all, so no expression can forge it.
 pub const AUTO_INDEX: Value = Value::Status(i32::MIN);
 
+/// `array_filter()` `$mode`: the callback is handed the KEY alone.
+pub const ARRAY_FILTER_USE_KEY: i64 = 2;
+/// `array_filter()` `$mode`: the callback is handed the VALUE and the key.
+pub const ARRAY_FILTER_USE_BOTH: i64 = 1;
+
 /// Whether a key operand is the [`AUTO_INDEX`] marker rather than a real key.
 pub fn is_auto_index(v: &Value) -> bool {
     matches!(v, Value::Status(n) if *n == i32::MIN)
@@ -4725,8 +4730,8 @@ fn predefined_constants() -> FxHashMap<String, Value> {
     si("STR_PAD_RIGHT", 1);
     si("STR_PAD_LEFT", 0);
     si("STR_PAD_BOTH", 2);
-    si("ARRAY_FILTER_USE_KEY", 2);
-    si("ARRAY_FILTER_USE_BOTH", 1);
+    si("ARRAY_FILTER_USE_KEY", ARRAY_FILTER_USE_KEY);
+    si("ARRAY_FILTER_USE_BOTH", ARRAY_FILTER_USE_BOTH);
     // preg
     si("PREG_PATTERN_ORDER", 1);
     si("PREG_SET_ORDER", 2);

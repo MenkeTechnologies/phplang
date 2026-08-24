@@ -1201,14 +1201,14 @@ pub const CORPUS: &[Entry] = &[
         "ARRAY_FILTER_USE_KEY",
         "Predefined constant",
         "ARRAY_FILTER_USE_KEY: int = 2",
-        "`array_filter()` mode passing only the key to the callback. DIVERGENCE: the core `array_filter` arm does not read its third argument, so the mode has no effect.",
+        "`array_filter()` mode passing only the key to the callback.",
         "",
     ),
     (
         "ARRAY_FILTER_USE_BOTH",
         "Predefined constant",
         "ARRAY_FILTER_USE_BOTH: int = 1",
-        "`array_filter()` mode passing value and key to the callback. Defined but, like `ARRAY_FILTER_USE_KEY`, not honoured.",
+        "`array_filter()` mode passing the value and then the key to the callback.",
         "",
     ),
     (
@@ -1292,7 +1292,7 @@ pub const CORPUS: &[Entry] = &[
         "JSON_FORCE_OBJECT",
         "Predefined constant",
         "JSON_FORCE_OBJECT: int = 16",
-        "`json_encode()` flag emitting an object even for a list. Defined but not honoured.",
+        "`json_encode()` flag emitting a JSON object even for an array whose keys are already `0..n`.",
         "",
     ),
     (
@@ -2502,8 +2502,8 @@ pub const CORPUS: &[Entry] = &[
     (
         "array_filter",
         "Core library — arrays",
-        "array_filter(array $array, ?callable $callback = null): array",
-        "Keeps the elements for which the callback is truthy, PRESERVING keys. With no callback it keeps the truthy values. DIVERGENCE: the `$mode` argument is not read, so `ARRAY_FILTER_USE_KEY` and `ARRAY_FILTER_USE_BOTH` have no effect.",
+        "array_filter(array $array, ?callable $callback = null, int $mode = 0): array",
+        "Keeps the elements for which the callback is truthy, PRESERVING keys. With no callback it keeps the truthy values. `$mode` selects what the callback receives: the value (0), the value and the key (`ARRAY_FILTER_USE_BOTH`), or the key alone (`ARRAY_FILTER_USE_KEY`).",
         "echo implode(\",\", array_filter([0, 1, 2]));   // => 1,2",
     ),
     (

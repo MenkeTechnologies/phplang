@@ -5390,15 +5390,28 @@ fn php_array_map(args: &[Value]) -> Result<Value, String> {
     }))
 }
 
+/// `array_filter($array, $callback = null, $mode = 0)`.
+///
+/// `$mode` selects what the callback receives: the value (0), the value and the
+/// key (`ARRAY_FILTER_USE_BOTH` == 1), or the key alone
+/// (`ARRAY_FILTER_USE_KEY` == 2). It used to be ignored, so a `USE_KEY`
+/// callback was handed the VALUE and `array_filter($a, fn($k) => $k == "a",
+/// ARRAY_FILTER_USE_KEY)` dropped every element.
 fn php_array_filter(args: &[Value]) -> Result<Value, String> {
     let arr = arg(args, 0);
     let cb = arg(args, 1);
+    let mode = with_host(|h| h.to_number(&arg(args, 2))).to_int();
     let pairs = with_host(|h| h.array_pairs(&arr)).unwrap_or_default();
     let callable = is_callable_arg(&cb);
     let mut kept: Vec<(Value, Value)> = Vec::new();
     for (k, v) in pairs {
         let keep = if callable {
-            let r = host::call_value(cb.clone(), vec![v.clone()])?;
+            let cb_args = match mode {
+                host::ARRAY_FILTER_USE_KEY => vec![k.clone()],
+                host::ARRAY_FILTER_USE_BOTH => vec![v.clone(), k.clone()],
+                _ => vec![v.clone()],
+            };
+            let r = host::call_value(cb.clone(), cb_args)?;
             if host::unwinding() {
                 return Ok(Value::Undef);
             }
@@ -6056,6 +6069,8 @@ fn json_prepare_seen(v: &Value, seen: &mut host::Visiting) -> Result<Value, i64>
 
 /// `json_encode` flags this encoder honours.
 const JSON_UNESCAPED_SLASHES: i64 = 64;
+/// Emit every array as a JSON OBJECT, even one whose keys are already `0..n`.
+const JSON_FORCE_OBJECT: i64 = 16;
 const JSON_PRETTY_PRINT: i64 = 128;
 const JSON_UNESCAPED_UNICODE: i64 = 256;
 
@@ -6082,7 +6097,8 @@ fn php_json_encode(h: &host::PhpHost, v: &Value, flags: i64, depth: usize) -> St
             };
             // A real object always encodes as a JSON object, even with no
             // properties — `json_encode(new stdClass())` is `{}`, not `[]`.
-            let as_list = is_list(&pairs) && !h.is_object(v);
+            let as_list =
+                is_list(&pairs) && !h.is_object(v) && flags & JSON_FORCE_OBJECT == 0;
             let (open, close) = if as_list { ('[', ']') } else { ('{', '}') };
             if pairs.is_empty() {
                 return format!("{open}{close}");
