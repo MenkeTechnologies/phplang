@@ -2,7 +2,7 @@
 //! see `src/stdlib/mod.rs`. `dispatch` returns `None` for names it does not
 //! handle.
 //!
-//! Backed by TWO engines, tried in that order by [`compile`]:
+//! Backed by TWO engines, tried in that order by `compile`:
 //!
 //! 1. The Rust `regex` crate — linear-time, byte-oriented, and the one that runs
 //!    for nearly every pattern. It is a *subset* of PCRE: no backreferences, no
@@ -31,9 +31,9 @@
 //!
 //! A backtracking blow-up is a RUNTIME fault, not a compile-time one: PCRE
 //! reports it as `PREG_BACKTRACK_LIMIT_ERROR` from `preg_last_error()` and
-//! returns the sentinel, and so does this — see [`Pattern::captures_all`].
+//! returns the sentinel, and so does this — see `Pattern::captures_all`.
 //!
-//! The `A` modifier (PCRE2_ANCHORED) is applied by [`Pattern::captures_all`].
+//! The `A` modifier (PCRE2_ANCHORED) is applied by `Pattern::captures_all`.
 //! The engine exposes no anchored-search flag, but it is leftmost-first, so a
 //! search started at `pos` yields the match beginning at `pos` when one exists
 //! — `start() == pos` is therefore exactly the anchored question, and the match
@@ -50,7 +50,7 @@
 //! (PCRE2_DOLLAR_ENDONLY) asks for, so `/a$/D` is right as it stands and the
 //! *unmodified* `/a$/` is what differs: PCRE's `$` also matches just before a
 //! newline that ENDS the subject, so `preg_match("/a$/", "a\n")` is 1. The only
-//! construct either crate has for that is the look-ahead [`END_ANCHOR`], which
+//! construct either crate has for that is the look-ahead `END_ANCHOR`, which
 //! lives on the backtracking engine — the `regex` crate has neither it nor
 //! `\Z`.
 //!
@@ -59,7 +59,7 @@
 //! that ends in a newline, which is a property of the subject, not the pattern.
 //! So the compiled engine keeps the pattern and answers for every other subject,
 //! and the rewritten body is built — and compiled — only when one ends in `\n`.
-//! See [`Pattern::dollar_variant`]. `/m` and `/D` opt out entirely: both already
+//! See `Pattern::dollar_variant`. `/m` and `/D` opt out entirely: both already
 //! give `$` a meaning the compiled engine has.
 //!
 //! `\Z` is the same anchor under every modifier, so it is rewritten once at scan
@@ -78,7 +78,7 @@
 //! suppress a zero-width match sitting immediately after a non-empty one, and
 //! neither retries an offset that matched empty for a NON-empty match there.
 //! `/a*/` turns on the first difference and the lazy `/a*?/` on the second, so
-//! [`Pattern::captures_all`] drives the walk by hand as a port of the loop in
+//! `Pattern::captures_all` drives the walk by hand as a port of the loop in
 //! `php_pcre.c`.
 //!
 //! Matching runs on **bytes** by default (`regex::bytes::Regex`), mirroring PCRE

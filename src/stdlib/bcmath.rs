@@ -26,7 +26,7 @@
 //!
 //! ## Operand validation
 //! Every operand is checked against PHP's bcmath grammar before it is used — see
-//! [`bc_normalize`] — and a spelling outside it raises the reference's
+//! `bc_normalize` — and a spelling outside it raises the reference's
 //! `ValueError: <fn>(): Argument #N ($name) is not well-formed`. `bcpow` and
 //! `bcpowmod` additionally reject an operand they use as an integer when it
 //! carries a fractional part.

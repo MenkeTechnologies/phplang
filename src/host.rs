@@ -1168,7 +1168,7 @@ impl PhpHost {
 
     /// Whether `class` is `ancestor` or descends from it, walking the compiled
     /// class table's parent chain. `ancestor` must already be lowercased.
-    /// [`PhpHost::class_is_a`] for callers outside this module (the call opcodes
+    /// `PhpHost::class_is_a` for callers outside this module (the call opcodes
     /// need it to decide whether a static call's `$this` belongs to the class).
     pub fn class_is_a_pub(&self, class: &str, ancestor: &str) -> bool {
         self.class_is_a(class, &ancestor.to_ascii_lowercase())
@@ -1340,7 +1340,7 @@ impl PhpHost {
     /// With the CLI defaults (`display_errors=STDOUT`, `html_errors=Off`) the
     /// reference interpreter writes exactly
     /// `"\nWarning: {msg} in {file} on line {n}\n"` to stdout, interleaved with
-    /// the script's own output — so it goes through [`write_out`] and lands in an
+    /// the script's own output — so it goes through `write_out` and lands in an
     /// output buffer or a capture just as `echo` does. The copy `log_errors`
     /// sends to stderr is not reproduced: nothing observes it.
     pub fn warn(&mut self, msg: impl std::fmt::Display) {
@@ -1479,7 +1479,7 @@ impl PhpHost {
         self.diagnose("Warning", errlevel::E_WARNING, line, msg);
     }
 
-    /// Emit a PHP `Deprecated` diagnostic. Same stream and shape as [`warn`],
+    /// Emit a PHP `Deprecated` diagnostic. Same stream and shape as `warn`,
     /// which is the only thing that distinguishes the severities on output.
     pub fn deprecated(&mut self, msg: impl std::fmt::Display) {
         self.diagnose("Deprecated", errlevel::E_DEPRECATED, self.warn_line, msg);
@@ -1576,7 +1576,7 @@ impl PhpHost {
     /// because the two can disagree: `ini_set('error_reporting', '12abc')` leaves
     /// `ini_get` reporting `"12abc"` while the mask becomes 12.
     ///
-    /// DIVERGENCE: only the settings [`default_ini`] lists are known — PHP core
+    /// DIVERGENCE: only the settings `default_ini` lists are known — PHP core
     /// plus `date` and `pcre`. A name belonging to an optional extension the
     /// reference happened to be built with (`mysqli.default_host`), or one whose
     /// default is that build's install prefix (`extension_dir`), reports `false`
@@ -1596,8 +1596,8 @@ impl PhpHost {
     /// which is exactly what the reference does with it.
     ///
     /// Two more ways a write is refused, both of which report `false` and change
-    /// nothing: a setting that is not runtime-changeable (see [`INI_FIXED`]), and
-    /// a value the setting rejects (see [`ini_value_rejected`]).
+    /// nothing: a setting that is not runtime-changeable (see `INI_FIXED`), and
+    /// a value the setting rejects (see `ini_value_rejected`).
     pub fn ini_set(&mut self, name: &str, value: &str) -> Option<String> {
         if INI_FIXED.contains(&name) {
             return None;
@@ -1852,7 +1852,7 @@ impl PhpHost {
 
     /// Is `name` BOUND in the scope it resolves in?
     ///
-    /// Distinct from a non-`Undef` [`get_var`], and the difference is the whole
+    /// Distinct from a non-`Undef` `get_var`, and the difference is the whole
     /// point: PHP `null` is `Value::Undef` here (fusevm has no null), so an unset
     /// name and a name holding `null` read back identically. Only the binding
     /// itself separates them, which is what `compact()` and `isset()`-shaped
@@ -2501,7 +2501,7 @@ impl PhpHost {
     /// id (`spl_object_id`). `None` for non-heap values.
     ///
     /// This is the same number `var_dump` prints as `#N`, as it is in PHP —
-    /// both are the object's handle — so it is [`object_ordinal`], not the raw
+    /// both are the object's handle — so it is `object_ordinal`, not the raw
     /// heap index, which also counts arrays, closures and resources.
     pub fn object_id(&self, v: &Value) -> Option<i64> {
         match v {
@@ -2739,7 +2739,7 @@ impl PhpHost {
     }
 
     /// The object's `(name, value, is_reference)` triples — the property form of
-    /// [`array_pairs_marked`], for `var_dump`'s `&` marker.
+    /// `array_pairs_marked`, for `var_dump`'s `&` marker.
     pub fn object_props_marked(&self, v: &Value) -> Vec<(String, Value, bool)> {
         match self.as_array(v) {
             Some(PhpObj::Object { props, .. }) => props
@@ -2930,7 +2930,7 @@ impl PhpHost {
     /// `$obj->name = val` from PHP source, with the PHP 8.2 deprecation for
     /// creating a property the class never declared.
     ///
-    /// Split from [`prop_set`] because the engine's own writes must NOT warn:
+    /// Split from `prop_set` because the engine's own writes must NOT warn:
     /// `seed_throwable` stamps `file`/`line`/`trace` onto every Throwable, and an
     /// internal write is not the user creating a dynamic property. Only the
     /// opcodes that lower a source-level `->` assignment come through here.
@@ -3231,9 +3231,7 @@ impl PhpHost {
     /// is indistinguishable from never-declared at this point.
     ///
     /// A magic method already running for this object and property is skipped,
-    /// which is the recursion guard described on [`magic_in_progress`].
-    ///
-    /// [`magic_in_progress`]: PhpHost::magic_in_progress
+    /// which is the recursion guard described on `magic_in_progress`.
     pub fn prop_access(&self, recv: &Value, name: &str, magic: &'static str) -> PropAccess {
         let Some(PhpObj::Object { class, props }) = self.as_array(recv) else {
             // Not an object: no visibility to enforce and no magic to call.
@@ -3610,7 +3608,7 @@ impl PhpHost {
     }
 
     /// `$arr[key]` read in a *value* context, where a miss is a mistake rather
-    /// than a question. Same result as [`index_get`], plus PHP's diagnostic:
+    /// than a question. Same result as `index_get`, plus PHP's diagnostic:
     /// `Undefined array key K` for a missing element, `Uninitialized string
     /// offset N` past the end of a string, and `Trying to access array offset on
     /// <type>` when the receiver is not subscriptable at all.
@@ -3649,7 +3647,7 @@ impl PhpHost {
         Value::Undef
     }
 
-    /// `$name` read in a value context — [`get_var`] plus `Undefined variable $x`
+    /// `$name` read in a value context — `get_var` plus `Undefined variable $x`
     /// when the name is not bound. Compiler temporaries (which are prefixed with
     /// `@`, outside the PHP identifier space) never warn: they are not the user's
     /// variables and are always written before they are read.
@@ -3669,7 +3667,7 @@ impl PhpHost {
         Value::Undef
     }
 
-    /// `$obj->name` read in a value context — [`prop_get`] plus PHP's diagnostic:
+    /// `$obj->name` read in a value context — `prop_get` plus PHP's diagnostic:
     /// `Undefined property: C::$p` when the instance has no such property, and
     /// `Attempt to read property "p" on <type>` when the receiver is not an
     /// object at all.
@@ -3891,7 +3889,7 @@ impl PhpHost {
         cur
     }
 
-    /// [`index_get_path`] for the read half of a read-modify-write — `$a[k] += 1`,
+    /// `index_get_path` for the read half of a read-modify-write — `$a[k] += 1`,
     /// `$a[k]++` — which diagnoses every step of the path.
     ///
     /// PHP fetches an RW path in write mode: an unset container is reported and
@@ -4250,7 +4248,7 @@ impl PhpHost {
 
     /// The array's `(key, value, is_reference)` triples, values still raw. Only
     /// `var_dump`, which prints a `&` before a referenced element, needs to see
-    /// which slots are references; every other reader wants [`array_pairs`].
+    /// which slots are references; every other reader wants `array_pairs`.
     pub fn array_pairs_marked(&self, recv: &Value) -> Option<Vec<(Value, Value, bool)>> {
         let Some(PhpObj::Array { entries, .. }) = self.as_array(recv) else {
             return None;
@@ -5846,7 +5844,7 @@ pub(crate) fn callable_method(callee: &Value) -> Option<(String, String, Option<
 
 /// Invoke a callable *value*: a closure handle runs its captured-plus-bound body
 /// in a fresh scope; an array / `"C::m"` / `__invoke` object resolves through
-/// [`callable_method`]; a plain string is dispatched by name through
+/// `callable_method`; a plain string is dispatched by name through
 /// `call_function`. Used by `$f(...)` calls and callback builtins (`array_map`).
 pub fn call_value(callee: Value, args: Vec<Value>) -> Result<Value, String> {
     if let Some(cc) = with_host(|h| h.closure_of(&callee)) {
@@ -6007,7 +6005,7 @@ fn sensitive_params(func: &str) -> &'static [usize] {
 ///
 /// A library function has no PHP call frame — it is Rust — so one is pushed for
 /// exactly as long as the exception object takes to construct, which is when PHP
-/// snapshots `file`, `line` and the trace ([`seed_throwable`]). The frame carries
+/// snapshots `file`, `line` and the trace (`seed_throwable`). The frame carries
 /// the arguments as its hidden `@args` so the trace prints them through the same
 /// `trace_arg` rendering a user frame uses, and its line is the CALLER's, which
 /// is the line PHP reports for a throw out of an internal function.
@@ -7065,7 +7063,7 @@ pub fn is_numeric_string(s: &str) -> bool {
 /// Parse a string that is *entirely* numeric (no trailing garbage), or `None`.
 ///
 /// "Entirely" allows whitespace on both ends (`" 5 "` is numeric in PHP 8) but
-/// nothing else. Routing through [`scan_php_number`] rather than Rust's own
+/// nothing else. Routing through `scan_php_number` rather than Rust's own
 /// float parser is what keeps `"INF"`/`"NAN"` non-numeric — Rust accepts those
 /// spellings and PHP does not — while still admitting `"1e400"`, which is a
 /// numeric string that happens to overflow to infinity.

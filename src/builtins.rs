@@ -2781,7 +2781,7 @@ const THROW_TAG: &str = "\u{1}throw\u{1}";
 /// process in PHP — it THROWS, catchably, and the throw carries a stack trace
 /// whose `#0` frame is the library call itself. Library functions here return
 /// `Result<Value, String>` and have no VM handle, so the class travels back in
-/// the error string under [`THROW_TAG`] and [`call_library`] turns it into a real
+/// the error string under `THROW_TAG` and [`call_library`] turns it into a real
 /// throw at the one place that still knows the function name and its arguments —
 /// the two things the trace frame needs.
 ///
