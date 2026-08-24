@@ -1646,6 +1646,112 @@ impl PhpHost {
         self.diagnose("Deprecated", errlevel::E_DEPRECATED, self.warn_line, msg);
     }
 
+    /// `(int) $v` / `intval($v)`: the explicit int cast, with the reference's
+    /// diagnostic for a double no `int` can hold.
+    ///
+    /// PHP 8.1 added `The float %s is not representable as an int, cast
+    /// occurred` for exactly the inputs [`dval_to_lval`] has to wrap — anything
+    /// outside ±2^63, plus NAN and the infinities. A merely FRACTIONAL double
+    /// is silent here; its `Implicit conversion … loses precision` deprecation
+    /// belongs to the implicit contexts (array offsets, parameter binds), not
+    /// to a cast the program asked for.
+    pub fn to_int_cast(&mut self, v: &Value) -> i64 {
+        // Only a FLOAT operand wraps. A numeric STRING written in float form
+        // goes through `ZEND_STRTOL`, which saturates and says nothing:
+        // `(int) 1e19` is -8446744073709551616 but `(int) "1e19"` is
+        // `PHP_INT_MAX`.
+        let Value::Float(f) = *v else {
+            return self.to_number(v).to_int();
+        };
+        const TWO_63: f64 = 9223372036854775808.0;
+        if !f.is_finite() || !(-TWO_63..TWO_63).contains(&f) {
+            let shown = self.to_str(&Value::Float(f));
+            self.warn(format!(
+                "The float {shown} is not representable as an int, cast occurred"
+            ));
+        }
+        dval_to_lval(f)
+    }
+
+    /// The diagnostic PHP issues when a value is USED as an array offset.
+    ///
+    /// Every offset use reports — reads and writes, and `isset`/`empty`/`unset`
+    /// /`array_key_exists` alike — because the report is about the conversion,
+    /// not about whether the element was found. Only two operand shapes convert
+    /// lossily: `null` (which becomes `""`, not `0`) and a double that is
+    /// fractional or too large for an `int`.
+    ///
+    /// It lives beside the mutating offset entry points rather than inside
+    /// [`PhpHost::norm_key`], which also normalizes keys taken back OUT of an
+    /// array during a rebuild — those are already `Int`/`Str` and fall through
+    /// here, so a rebuild cannot re-report the float key the array was built
+    /// with. A STRING receiver is left alone: its own diagnostic is the
+    /// differently worded `String offset cast occurred`.
+    pub fn diagnose_offset(&mut self, key: &Value) {
+        const TWO_63: f64 = 9223372036854775808.0;
+        match key {
+            Value::Undef => self.deprecated(
+                "Using null as an array offset is deprecated, use an empty string instead",
+            ),
+            Value::Float(f) => {
+                let (f, shown) = (*f, self.to_str(key));
+                if !f.is_finite() || !(-TWO_63..TWO_63).contains(&f) {
+                    self.warn(format!(
+                        "The float {shown} is not representable as an int, cast occurred"
+                    ));
+                } else if f.fract() != 0.0 {
+                    self.deprecated(format!(
+                        "Implicit conversion from float {shown} to int loses precision"
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// [`PhpHost::diagnose_offset`], but only for a receiver that really is an
+    /// array — a string offset reports something else entirely.
+    pub fn diagnose_array_offset(&mut self, recv: &Value, key: &Value) {
+        if matches!(self.as_array(recv), Some(PhpObj::Array { .. })) {
+            self.diagnose_offset(key);
+        }
+    }
+
+    /// [`PhpHost::diagnose_offset`] for a QUIET subscript — `isset($x[k])`,
+    /// `empty($x[k])`, `$x[k] ?? $d`.
+    ///
+    /// A string receiver reports here too, and reports the ordinary narrowing
+    /// deprecation rather than the `String offset cast occurred` warning its
+    /// value-context read emits.
+    pub fn diagnose_quiet_offset(&mut self, recv: &Value, key: &Value) {
+        if matches!(recv, Value::Str(_)) {
+            self.diagnose_offset(key);
+            return;
+        }
+        self.diagnose_array_offset(recv, key);
+    }
+
+    /// Whether `arr` holds an element under `key`, by hash lookup on the
+    /// NORMALIZED key — which is what `array_key_exists` and `isset` ask.
+    ///
+    /// `None` for a receiver that is not an array, leaving the caller to handle
+    /// an object's properties. The `array_key_exists` builtin used to walk every
+    /// pair comparing `to_str` renderings, which is O(n) per call and answers
+    /// the wrong question: `array_key_exists(1.7, [1 => "x"])` is true, because
+    /// 1.7 narrows to the int key 1, and the string forms `"1.7"` and `"1"`
+    /// never match.
+    pub fn array_has_key(&mut self, arr: &Value, key: &Value) -> Option<bool> {
+        if !matches!(self.as_array(arr), Some(PhpObj::Array { .. })) {
+            return None;
+        }
+        self.diagnose_offset(key);
+        let k = self.norm_key(key);
+        match self.as_array(arr) {
+            Some(PhpObj::Array { entries, .. }) => Some(entries.contains_key(&k)),
+            _ => None,
+        }
+    }
+
     /// Emit a PHP `Notice`.
     pub fn notice(&mut self, msg: impl std::fmt::Display) {
         self.diagnose("Notice", errlevel::E_NOTICE, self.warn_line, msg);
@@ -2439,6 +2545,7 @@ impl PhpHost {
         for k in inter {
             arr = self.index_get(&arr, k);
         }
+        self.diagnose_array_offset(&arr, last);
         let nk = self.norm_key(last);
         if let Some(PhpObj::Array { entries, .. }) = self.as_array_mut(&arr) {
             entries.shift_remove(&nk);
@@ -3781,7 +3888,9 @@ impl PhpHost {
         match key {
             Value::Int(n) => ArrayKey::Int(*n),
             Value::Bool(b) => ArrayKey::Int(*b as i64),
-            Value::Float(f) => ArrayKey::Int(*f as i64),
+            // `as i64` saturates where PHP wraps, so `$a[1e19]` landed on
+            // `PHP_INT_MAX` instead of -8446744073709551616.
+            Value::Float(f) => ArrayKey::Int(dval_to_lval(*f)),
             Value::Undef => ArrayKey::Str(String::new()),
             Value::Str(s) => {
                 // A canonical decimal integer string becomes an int key.
@@ -3830,7 +3939,9 @@ impl PhpHost {
             // `isset($s[i])` is false there (a plain read still echoes as "").
             let bytes = s.as_bytes();
             let len = bytes.len() as i64;
-            let mut i = key.to_int();
+            let StrOffset::At(mut i, _) = classify_string_offset(key) else {
+                return Value::Undef;
+            };
             if i < 0 {
                 i += len;
             }
@@ -3848,6 +3959,7 @@ impl PhpHost {
     /// offset N` past the end of a string, and `Trying to access array offset on
     /// <type>` when the receiver is not subscriptable at all.
     pub fn index_get_warn(&mut self, recv: &Value, key: &Value) -> Value {
+        self.diagnose_array_offset(recv, key);
         if let Some(PhpObj::Array { entries, .. }) = self.as_array(recv) {
             let k = self.norm_key(key);
             match entries.get(&k).cloned() {
@@ -3861,14 +3973,18 @@ impl PhpHost {
         }
         if let Value::Str(s) = recv {
             let len = s.len() as i64;
-            let mut i = key.to_int();
-            if i < 0 {
-                i += len;
+            // A key that is no offset at all was rejected by the caller (see
+            // `classify_string_offset`); reaching here it is always `At`.
+            let StrOffset::At(off, cast) = classify_string_offset(key) else {
+                return Value::Undef;
+            };
+            if cast {
+                self.warn("String offset cast occurred");
             }
+            let i = if off < 0 { off + len } else { off };
             if i >= 0 && i < len {
                 return self.index_get(recv, key);
             }
-            let off = key.to_int();
             self.warn(format_args!("Uninitialized string offset {off}"));
             return Value::Undef;
         }
@@ -4197,6 +4313,7 @@ impl PhpHost {
     /// binding has turned into a reference is written *through* — the alias sees
     /// the new value and the slot stays a reference — instead of being replaced.
     pub fn arr_set_key(&mut self, arr: &Value, key: &Value, v: Value) {
+        self.diagnose_array_offset(arr, key);
         let k = self.norm_key(key);
         if let Some(slot) = self.entry_ref_slot(arr, &k) {
             self.ref_cell_set(slot, v);
@@ -7314,6 +7431,69 @@ fn increment_alnum_string(s: &str) -> String {
 
 pub fn is_numeric_string(s: &str) -> bool {
     parse_php_number_full(s).is_some()
+}
+
+/// How PHP reads the subscript of a STRING receiver, `$s[k]`.
+pub enum StrOffset {
+    /// A byte offset. The flag is set when the key had to be CONVERTED to get
+    /// it, which the reference reports as `String offset cast occurred` — a
+    /// bool, a null, or ANY float, `$s[1.0]` included.
+    At(i64, bool),
+    /// No offset exists. A value-context read or a write throws `Cannot access
+    /// offset of type <this> on string`; `isset()` and `??` answer quietly.
+    Bad,
+}
+
+/// Classify a string subscript. See [`StrOffset`].
+///
+/// An integer key is used as-is. A STRING key is accepted only when it is
+/// written as a plain integer — surrounding whitespace, a sign, and leading
+/// zeros are all fine (`" 1"`, `"-1"`, `"01"`) — because that is what
+/// `ZEND_HANDLE_NUMERIC_STRING` accepts. `"1.5"`, `"1e0"`, and `"x"` are not
+/// offsets at all, and used to be read through `Value::to_int`, which answers
+/// 0 for each of them and silently returned the FIRST byte.
+pub fn classify_string_offset(key: &Value) -> StrOffset {
+    match key {
+        Value::Int(n) => StrOffset::At(*n, false),
+        Value::Bool(b) => StrOffset::At(i64::from(*b), true),
+        Value::Undef => StrOffset::At(0, true),
+        Value::Float(f) => StrOffset::At(dval_to_lval(*f), true),
+        Value::Str(s) => {
+            let t = s.trim_matches(PHP_SPACE);
+            let digits = t.strip_prefix(['+', '-']).unwrap_or(t);
+            match (!digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+                .then(|| t.parse::<i64>().ok())
+                .flatten()
+            {
+                Some(n) => StrOffset::At(n, false),
+                None => StrOffset::Bad,
+            }
+        }
+        _ => StrOffset::Bad,
+    }
+}
+
+/// `zend_dval_to_lval`: narrow a double to `int` the way PHP does.
+///
+/// Rust's `as i64` SATURATES, so `(int) 1e19` answered `PHP_INT_MAX`. PHP wraps
+/// modulo 2^64 (`zend_dval_to_lval_slow`) and answers -8446744073709551616.
+/// `fmod` is exact on IEEE doubles, so the wrap loses nothing the input did not
+/// already lack. A non-finite double is 0.
+pub fn dval_to_lval(f: f64) -> i64 {
+    const TWO_63: f64 = 9223372036854775808.0; // 2^63
+    const TWO_64: f64 = 18446744073709551616.0; // 2^64
+    if !f.is_finite() {
+        return 0;
+    }
+    if (-TWO_63..TWO_63).contains(&f) {
+        return f as i64;
+    }
+    let wrapped = f.trunc().rem_euclid(TWO_64);
+    if wrapped >= TWO_63 {
+        (wrapped - TWO_64) as i64
+    } else {
+        wrapped as i64
+    }
 }
 
 /// Parse a string that is *entirely* numeric (no trailing garbage), or `None`.

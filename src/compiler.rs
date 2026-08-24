@@ -1734,11 +1734,14 @@ impl Compiler {
                     } else {
                         (ops::MKARRAY_ADD, es.len() * 2 + 1)
                     };
-                    b.emit(Op::CallBuiltin(op, argc as u8), 0);
+                    // Lined, not 0: a literal KEY can diagnose (a float that
+                    // loses precision, a null offset) and the report names
+                    // this line.
+                    b.emit(Op::CallBuiltin(op, argc as u8), self.cur_line);
                 }
                 // An empty literal still needs its (empty) array.
                 if elems.is_empty() {
-                    b.emit(Op::CallBuiltin(ops::MKARRAY, 0), 0);
+                    b.emit(Op::CallBuiltin(ops::MKARRAY, 0), self.cur_line);
                 }
             }
             Expr::Index(recv, idx) => {
@@ -2172,8 +2175,9 @@ impl Compiler {
             },
             Expr::Coalesce(a, els) => {
                 // `a ?? b` — use `b` only when `a` is null (=== null). The left
-                // operand is an isset-mode read: `$a['k'] ?? $d` is exactly the
-                // question `isset($a['k'])` asks, and PHP raises no diagnostic.
+                // operand is an isset-mode read: `$a["k"] ?? $d` is exactly the
+                // question `isset($a["k"])` asks, so a MISSING key raises no
+                // diagnostic. A lossy OFFSET still does — see `INDEX_GET_Q`.
                 self.compile_quiet(b, a)?; // [a]
                 b.emit(Op::Dup, 0); // [a, a]
                 b.emit(Op::LoadUndef, 0); // [a, a, null]
@@ -2511,7 +2515,10 @@ impl Compiler {
                         LvSeg::Append => return Err("cannot unset an `[]` append target".into()),
                     }
                 }
-                b.emit(Op::CallBuiltin(ops::UNSET_PATH, (segs.len() + 1) as u8), 0);
+                b.emit(
+                    Op::CallBuiltin(ops::UNSET_PATH, (segs.len() + 1) as u8),
+                    self.cur_line,
+                );
                 b.emit(Op::Pop, 0);
             }
             _ => return Err("unset() target must be a variable or an array element".into()),

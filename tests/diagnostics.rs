@@ -151,10 +151,20 @@ fn a_by_reference_argument_is_an_output_and_is_not_reported() {
 #[test]
 fn a_key_expression_inside_isset_still_reports_its_own_diagnostics() {
     // Suppression covers the read being tested, not everything evaluated for it:
-    // `$k` here is an ordinary read in an ordinary position.
+    // `$k` here is an ordinary read in an ordinary position, and the null it
+    // reads is then an ordinary lossy OFFSET. `isset()` is quiet about a
+    // MISSING element, never about how the offset was converted to look for it.
+    //
+    // Both lines, in this order, are what the reference prints for the same
+    // program (PHP 8.5, `php -r '$a = []; echo isset($a[$k]) ? "y" : "n"; echo
+    // "end";'`).
     assert_eq!(
         run(r#"<?php $a = []; echo isset($a[$k]) ? "y" : "n"; echo "end";"#),
-        format!("{}nend", warning("Undefined variable $k"))
+        format!(
+            "{}{}nend",
+            warning("Undefined variable $k"),
+            deprecated("Using null as an array offset is deprecated, use an empty string instead")
+        )
     );
 }
 

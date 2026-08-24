@@ -677,6 +677,7 @@ fn b_unset_var(vm: &mut VM, _: u8) -> Value {
 fn b_unset_path(vm: &mut VM, argc: u8) -> Value {
     let keys = pop_args(vm, argc as usize - 1);
     let name = pop_name(vm);
+    mark_warn_site(vm);
     // `unset($o[k])` on an `ArrayAccess` object is `offsetUnset(k)`. Only the
     // single-key form reaches the object; a deeper path indexes whatever
     // `offsetGet` returned, which this scaffold does not model.
@@ -1366,6 +1367,7 @@ fn b_call_value(vm: &mut VM, argc: u8) -> Value {
 
 fn b_mkarray(vm: &mut VM, argc: u8) -> Value {
     let raw = pop_args(vm, argc as usize);
+    mark_warn_site(vm);
     with_host(|h| {
         let arr = h.new_array();
         fill_array(h, &arr, raw.into_iter());
@@ -1378,6 +1380,7 @@ fn b_mkarray(vm: &mut VM, argc: u8) -> Value {
 /// array built so far; the rest are more `key => value` pairs.
 fn b_mkarray_add(vm: &mut VM, argc: u8) -> Value {
     let raw = pop_args(vm, argc as usize);
+    mark_warn_site(vm);
     let mut it = raw.into_iter();
     let Some(arr) = it.next() else {
         return Value::Undef;
@@ -1431,8 +1434,31 @@ fn b_index_get(vm: &mut VM, _: u8) -> Value {
     if let Some(r) = array_access_call(vm, &recv, "offsetGet", vec![key.clone()]) {
         return array_access_result(vm, r);
     }
+    // A subscript no string offset can be is a TypeError in a VALUE context —
+    // `"abc"["x"]` throws rather than reading byte 0, which is what reading the
+    // key through `Value::to_int` used to do. `isset()` and `??` stay quiet, so
+    // the check belongs here and not in the host's read.
+    if let Some(e) = bad_string_offset(&recv, &key) {
+        return fail_or_throw(vm, e);
+    }
     mark_warn_site(vm);
     with_host(|h| h.index_get_warn(&recv, &key))
+}
+
+/// The `TypeError` PHP throws when `key` cannot name an offset of the string
+/// `recv`, or `None` when it can (or `recv` is not a string).
+fn bad_string_offset(recv: &Value, key: &Value) -> Option<String> {
+    if !matches!(recv, Value::Str(_)) {
+        return None;
+    }
+    if !matches!(host::classify_string_offset(key), host::StrOffset::Bad) {
+        return None;
+    }
+    let t = with_host(|h| h.type_name_for_error(key));
+    Some(throws_bare(
+        "TypeError",
+        format!("Cannot access offset of type {t} on string"),
+    ))
 }
 
 /// `$a[k]` read with no missing-key diagnostic — see `ops::INDEX_GET_Q`.
@@ -1457,7 +1483,14 @@ fn b_index_get_q(vm: &mut VM, _: u8) -> Value {
             None => Value::Undef,
         };
     }
-    with_host(|h| h.index_get(&recv, &key))
+    // Quiet about a MISSING element, not about a lossy OFFSET: `$a[1.7] ?? $d`
+    // and `empty($a[1.7])` both report the narrowing, exactly as a plain read
+    // does.
+    mark_warn_site(vm);
+    with_host(|h| {
+        h.diagnose_quiet_offset(&recv, &key);
+        h.index_get(&recv, &key)
+    })
 }
 
 /// One element of a destructuring assignment — see `ops::LIST_ELEM_GET`.
@@ -1555,10 +1588,14 @@ fn b_index_isset(vm: &mut VM, _: u8) -> Value {
         };
     }
     // Everything else: set means "reads as something other than null".
-    Value::bool(!matches!(
-        with_host(|h| h.index_get(&recv, &key)),
-        Value::Undef
-    ))
+    //
+    // `isset()` is quiet about a MISSING element but not about a lossy OFFSET:
+    // the reference reports `isset()` exactly as it reports the read.
+    mark_warn_site(vm);
+    with_host(|h| {
+        h.diagnose_quiet_offset(&recv, &key);
+        Value::bool(!matches!(h.index_get(&recv, &key), Value::Undef))
+    })
 }
 
 fn b_index_set(vm: &mut VM, _: u8) -> Value {
@@ -2373,6 +2410,9 @@ fn b_ge(vm: &mut VM, _: u8) -> Value {
 fn cmp_bool(vm: &mut VM, f: impl Fn(i32) -> bool) -> Value {
     let b = vm.pop();
     let a = vm.pop();
+    if is_unordered(&a, &b) {
+        return Value::bool(false);
+    }
     Value::bool(f(with_host(|h| php_compare(h, &a, &b))))
 }
 
@@ -2577,14 +2617,34 @@ fn strcmp_i32(x: &str, y: &str) -> i32 {
     }
 }
 
+/// `ZEND_THREEWAY_COMPARE`: equal is 0, less is -1, and everything else — which
+/// includes an UNORDERED pair, where one side is NaN — is 1.
+///
+/// Reporting 0 for unordered (what this used to do) made `NAN <=> NAN` answer 0
+/// and, through `cmp_bool`, made `NAN <= NAN` true.
 fn cmp_f64(x: f64, y: f64) -> i32 {
-    if x < y {
-        -1
-    } else if x > y {
-        1
-    } else {
+    if x == y {
         0
+    } else if x < y {
+        -1
+    } else {
+        1
     }
+}
+
+/// Whether `<`/`>`/`<=`/`>=` must answer `false` outright for this operand pair.
+///
+/// The relational operators compare the two doubles directly rather than
+/// testing `zend_compare`'s result, so a NaN operand makes all four false —
+/// `NAN >= NAN` included, which the 3-way answer of 1 would otherwise make
+/// true. A bool, null, or array operand is decided before any of that (`NAN >
+/// false` is true, `NAN < []` is true), so those pairs are never unordered.
+fn is_unordered(a: &Value, b: &Value) -> bool {
+    let decided_by_type = |v: &Value| matches!(v, Value::Bool(_) | Value::Undef | Value::Obj(_));
+    if decided_by_type(a) || decided_by_type(b) {
+        return false;
+    }
+    matches!(a, Value::Float(f) if f.is_nan()) || matches!(b, Value::Float(f) if f.is_nan())
 }
 
 /// A comparison operand read as a NUMBER, using PHP's numeric-string grammar.
@@ -3139,7 +3199,7 @@ pub fn call_library(name: &str, args: &[Value]) -> Result<Value, String> {
                 {
                     Value::int(intval_base(&h.to_str(&v), b.to_int()))
                 }
-                _ => Value::int(h.to_number(&v).to_int()),
+                _ => Value::int(h.to_int_cast(&v)),
             }
         }),
         "floatval" | "doubleval" => {
@@ -5609,9 +5669,14 @@ fn php_array_unique(h: &mut host::PhpHost, arr: &Value) -> Value {
     out
 }
 
-fn php_array_key_exists(h: &host::PhpHost, args: &[Value]) -> Value {
+fn php_array_key_exists(h: &mut host::PhpHost, args: &[Value]) -> Value {
     let key = arg(args, 0);
     let arr = arg(args, 1);
+    if let Some(found) = h.array_has_key(&arr, &key) {
+        return Value::bool(found);
+    }
+    // Not an array: an object receiver falls back to matching its property
+    // names, which is what the reference does for `ArrayObject`/`stdClass`.
     let want = h.to_str(&key);
     let found = h
         .array_pairs(&arr)
