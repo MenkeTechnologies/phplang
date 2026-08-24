@@ -845,24 +845,57 @@ impl Compiler {
             b.emit(Op::CallBuiltin(ops::INDEX_GET_Q, 2), 0);
             Ok(())
         })?;
+        // A by-reference `foreach` walks the LIVE array, so a key the body has
+        // already unset is skipped. The key list is materialized up front, so
+        // that key is still in it; without this guard the `&` binding below
+        // auto-vivified it and the element came back as a null.
+        //
+        // A by-VALUE foreach iterates a snapshot and is unaffected by the same
+        // `unset()`, which is why the guard is only on this arm.
+        let mut skip_missing = None;
+        if by_ref {
+            let fi = b.add_constant(Value::str("array_key_exists"));
+            b.emit(Op::LoadConst(fi), 0);
+            self.emit_get_var(b, &k_t);
+            self.emit_get_var(b, &arr_t);
+            b.emit(Op::CallBuiltin(ops::CALL, 3), self.cur_line);
+            b.emit(Op::CallBuiltin(ops::TRUTHY, 1), 0);
+            skip_missing = Some(b.emit(Op::JumpIfFalse(0), 0));
+        }
         if let Some(kv) = key_var {
             self.emit_set_var(b, kv, |c, b| {
                 c.emit_get_var(b, &k_t);
                 Ok(())
             })?;
         }
-        // $v = @arr[@k]. A by-value `foreach` binds a *copy* of each element, so
-        // writing through `$v` cannot reach the array; a by-reference one binds
-        // the element itself, which the write-back below relies on.
-        self.emit_set_var(b, val_var, |c, b| {
-            c.emit_get_var(b, &arr_t);
-            c.emit_get_var(b, &k_t);
-            b.emit(Op::CallBuiltin(ops::INDEX_GET_Q, 2), 0);
-            if !by_ref {
+        // A by-value `foreach` binds a *copy* of each element, so writing
+        // through `$v` cannot reach the array.
+        //
+        // A by-reference one binds the ELEMENT — `$v = &@arr[@k]`, the same
+        // lowering `$v = &$a[$k]` gets. Copying the element and writing it back
+        // after the body (what this used to do) is observably different three
+        // ways, all of which the reference gets from the aliasing: a write to
+        // `$v` is visible in the array *within* the same iteration; `unset()`ing
+        // a later key inside the body does not get it resurrected by a
+        // write-back; and after the loop `$v` is still an alias of the LAST
+        // element, so `foreach ($a as &$v) {} foreach ($a as $v) {}` leaves
+        // `$a`'s tail duplicated exactly as PHP's most-cited gotcha does.
+        if by_ref {
+            let elem = Expr::Index(
+                Box::new(Expr::Var(arr_t.clone())),
+                Box::new(Expr::Var(k_t.clone())),
+            );
+            self.compile_ref_assign(b, &Expr::Var(val_name.clone()), &elem)?;
+            b.emit(Op::Pop, 0);
+        } else {
+            self.emit_set_var(b, val_var, |c, b| {
+                c.emit_get_var(b, &arr_t);
+                c.emit_get_var(b, &k_t);
+                b.emit(Op::CallBuiltin(ops::INDEX_GET_Q, 2), 0);
                 b.emit(Op::CallBuiltin(ops::COPY, 1), 0);
-            }
-            Ok(())
-        })?;
+                Ok(())
+            })?;
+        }
 
         // `@arr` shares the subject array's handle — the by-reference write-back
         // further down relies on the same fact — so `@arr[@k]` is the real
@@ -880,17 +913,12 @@ impl Compiler {
         self.compile_seq(b, body)?;
         let ctx = self.loops.pop().unwrap();
 
-        // `continue` lands here; for a by-reference foreach the (possibly
-        // modified) value is written back into the array element first. `@arr`
-        // shares the source array's handle, so the write is visible to the caller.
+        // `continue` lands here. A by-reference foreach needs no write-back:
+        // `$v` IS the element (see the binding above), so the body already
+        // wrote through it.
         let cont_target = b.current_pos();
-        if by_ref {
-            let nidx = b.add_constant(Value::str(arr_t.clone()));
-            b.emit(Op::LoadConst(nidx), 0); // name = @arr
-            self.emit_get_var(b, &k_t); // key = @k
-            self.emit_get_var(b, val_var); // val = $v
-            b.emit(Op::CallBuiltin(ops::INDEX_SET, 3), self.cur_line);
-            b.emit(Op::Pop, 0);
+        if let Some(j) = skip_missing {
+            b.patch_jump(j, cont_target);
         }
 
         // @i = @i + 1;
