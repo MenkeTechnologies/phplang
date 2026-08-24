@@ -873,9 +873,7 @@ fn gen_arraypipe(seed: u64) -> Vec<String> {
         )],
         2 => vec![format!("echo array_sum(array_map(\"abs\", {arr}));")],
         3 => vec![format!("echo implode(\",\", array_merge([1, 2], {arr}));")],
-        4 => vec![format!(
-            "echo implode(\",\", array_unique([1, 1, 2, 2, 3]));"
-        )],
+        4 => vec!["echo implode(\",\", array_unique([1, 1, 2, 2, 3]));".to_string()],
         5 => vec![format!("echo count(array_filter({arr}));")],
         6 => vec![format!(
             "function dbl($x) {{ return $x * 2; }} echo implode(\",\", array_map(\"dbl\", {arr}));"
@@ -1035,13 +1033,13 @@ fn gen_str2(seed: u64) -> Vec<String> {
         0 => vec![format!("echo substr_count(\"{s}xx{s}\", \"{s}\");")],
         1 => vec![format!("echo ucwords(\"{s} and {s}\");")],
         2 => vec![format!("echo lcfirst(\"{s}\");")],
-        3 => vec![format!("echo str_word_count(\"one two three four\");")],
+        3 => vec!["echo str_word_count(\"one two three four\");".to_string()],
         4 => vec![format!("echo strrpos(\"{s}{s}\", \"{}\");", &s[..1])],
         5 => vec![format!(
             "echo stripos(\"{s}\", \"{}\");",
             &s[..1].to_uppercase()
         )],
-        6 => vec![format!("echo addslashes(\"a'b\\\"c\");")],
+        6 => vec!["echo addslashes(\"a'b\\\"c\");".to_string()],
         7 => vec![format!("echo strtr(\"{s}\", \"lo\", \"LO\");")],
         8 => vec![format!(
             "echo wordwrap(\"the quick brown fox\", {}, \"|\", true);",
@@ -1062,8 +1060,8 @@ fn gen_str2(seed: u64) -> Vec<String> {
             "echo levenshtein(\"{s}\", \"{}x\");",
             &s[..s.len().saturating_sub(1)]
         )],
-        14 => vec![format!("echo nl2br(\"a\\nb\");")],
-        _ => vec![format!("echo quotemeta(\"a.b*c\");")],
+        14 => vec!["echo nl2br(\"a\\nb\");".to_string()],
+        _ => vec!["echo quotemeta(\"a.b*c\");".to_string()],
     }
 }
 
@@ -1120,9 +1118,9 @@ fn gen_arr2(seed: u64) -> Vec<String> {
             "echo json_encode(array_fill_keys([\"a\", \"b\"], {}));",
             r.below(9)
         )],
-        13 => vec![format!(
-            "echo json_encode(array_diff_key([\"a\" => 1, \"b\" => 2], [\"a\" => 9]));"
-        )],
+        13 => vec![
+            "echo json_encode(array_diff_key([\"a\" => 1, \"b\" => 2], [\"a\" => 9]));".to_string(),
+        ],
         _ => vec![format!(
             "$a = [{l}]; echo array_sum($a), \"|\", array_product([1, 2, 3]);"
         )],
@@ -1585,9 +1583,7 @@ fn gen_attributes(seed: u64) -> Vec<String> {
         3 => vec![format!(
             "#[A] #[B] class C {{}} #[C] class D {{ const K = {n}; }} echo D::K;"
         )],
-        4 => vec![format!(
-            "enum E {{ #[Attr] case A; #[Attr] case B; }} echo E::A->name, count(E::cases());"
-        )],
+        4 => vec!["enum E { #[Attr] case A; #[Attr] case B; } echo E::A->name, count(E::cases());".to_string()],
         _ => vec![format!(
             "#[\\Ns\\Attr] interface I {{}} #[Attr] class C implements I {{}} \
              echo (new C) instanceof I ? \"y{n}\" : \"n{n}\";"
@@ -1608,7 +1604,7 @@ fn gen_errlevel(seed: u64) -> Vec<String> {
         "E_WARNING | E_DEPRECATED",
     ]);
     match r.below(6) {
-        0 => vec![format!("echo error_reporting();")],
+        0 => vec!["echo error_reporting();".to_string()],
         1 => vec![format!(
             "var_dump(error_reporting({lvl})); echo error_reporting();"
         )],
@@ -1618,10 +1614,11 @@ fn gen_errlevel(seed: u64) -> Vec<String> {
         3 => vec![format!(
             "error_reporting({lvl}); class C {{}} $c = new C; $c->p = 1; echo \"end\";"
         )],
-        4 => vec![format!(
+        4 => vec![
             "var_dump(ini_get(\"error_reporting\")); ini_set(\"error_reporting\", \"0\"); \
              echo $undef; var_dump(ini_get(\"error_reporting\"));"
-        )],
+                .to_string(),
+        ],
         // The `${var}` notice is raised while READING the source, so it prints
         // before the `echo` on the line before it and survives `error_reporting(0)`.
         _ => vec![format!(

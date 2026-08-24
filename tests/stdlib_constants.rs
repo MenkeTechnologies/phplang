@@ -182,18 +182,16 @@ fn redefining_a_constant_warns_and_keeps_the_first_value() {
     // is raised at the one table write both of them reach.
     assert_eq!(
         run("<?php define('E', 1); const E = 2; echo E;"),
-        format!(
-            "\nWarning: Constant E already defined, this will be an error in PHP 9 \
+        "\nWarning: Constant E already defined, this will be an error in PHP 9 \
              in Command line code on line 1\n1"
-        )
+            .to_string()
     );
     // `define()` over an existing `const` warns AND returns false.
     assert_eq!(
         run("<?php const F = 1; var_dump(define('F', 2)); echo F;"),
-        format!(
-            "\nWarning: Constant F already defined, this will be an error in PHP 9 \
+        "\nWarning: Constant F already defined, this will be an error in PHP 9 \
              in Command line code on line 1\nbool(false)\n1"
-        )
+            .to_string()
     );
 }
 

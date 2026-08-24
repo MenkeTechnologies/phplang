@@ -546,7 +546,7 @@ fn suppression_is_restored_when_an_exception_unwinds_out_of_it() {
         echo $undef; echo "|done";"#;
     assert_eq!(
         run(src),
-        format!("\nWarning: Undefined variable $undef in Command line code on line 4\n|done")
+        "\nWarning: Undefined variable $undef in Command line code on line 4\n|done".to_string()
     );
 }
 

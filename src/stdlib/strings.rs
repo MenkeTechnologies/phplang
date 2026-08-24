@@ -672,7 +672,7 @@ fn addcslashes(args: &[Value]) -> Value {
     let mut out: Vec<u8> = Vec::with_capacity(s.len());
     for &c in s.as_bytes() {
         if flags[c as usize] {
-            if c < 32 || c > 126 {
+            if !(32..=126).contains(&c) {
                 out.push(b'\\');
                 match c {
                     b'\n' => out.push(b'n'),
@@ -1505,23 +1505,12 @@ fn scan_int_field(s: &[u8], p: &mut usize, width: usize, mut base: u32) -> Optio
                     true
                 }
             }
-            b'+' | b'-' => {
-                if signok {
-                    signok = false;
-                    true
-                } else {
-                    false
-                }
-            }
-            b'x' | b'X' => {
-                // Only ever the SECOND byte of the buffer, so `-0x10` is not hex.
-                if xok && buf.len() == 1 {
-                    base = 16;
-                    xok = false;
-                    true
-                } else {
-                    false
-                }
+            b'+' | b'-' => std::mem::take(&mut signok),
+            // Only ever the SECOND byte of the buffer, so `-0x10` is not hex.
+            b'x' | b'X' if xok && buf.len() == 1 => {
+                base = 16;
+                xok = false;
+                true
             }
             _ => false,
         };
@@ -1562,14 +1551,7 @@ fn scan_float_field(s: &[u8], p: &mut usize, width: usize) -> Option<String> {
                 nodigits = false;
                 true
             }
-            b'+' | b'-' => {
-                if signok {
-                    signok = false;
-                    true
-                } else {
-                    false
-                }
-            }
+            b'+' | b'-' => std::mem::take(&mut signok),
             b'.' => {
                 if ptok {
                     ptok = false;
@@ -1579,17 +1561,13 @@ fn scan_float_field(s: &[u8], p: &mut usize, width: usize) -> Option<String> {
                     false
                 }
             }
-            b'e' | b'E' => {
-                // An exponent needs a mantissa digit already and no earlier `e`.
-                if !nodigits && expok {
-                    expok = false;
-                    ptok = false;
-                    signok = true;
-                    nodigits = true;
-                    true
-                } else {
-                    false
-                }
+            // An exponent needs a mantissa digit already and no earlier `e`.
+            b'e' | b'E' if !nodigits && expok => {
+                expok = false;
+                ptok = false;
+                signok = true;
+                nodigits = true;
+                true
             }
             _ => false,
         };
