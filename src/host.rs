@@ -1682,7 +1682,7 @@ impl PhpHost {
     /// fractional or too large for an `int`.
     ///
     /// It lives beside the mutating offset entry points rather than inside
-    /// [`PhpHost::norm_key`], which also normalizes keys taken back OUT of an
+    /// `norm_key`, which also normalizes keys taken back OUT of an
     /// array during a rebuild — those are already `Int`/`Str` and fall through
     /// here, so a rebuild cannot re-report the float key the array was built
     /// with. A STRING receiver is left alone: its own diagnostic is the
