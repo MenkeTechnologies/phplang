@@ -202,8 +202,13 @@ fn server_mirrors_argv_and_names_the_script() {
         path.to_string_lossy().contains("/./"),
         "probe path should carry a `.` segment: {path:?}"
     );
+    // Compared as strings, not as `Path`s: `Path`'s `Eq` walks `components()`,
+    // which drops `.` segments, so `/tmp/./x.php == /tmp/x.php` is true and the
+    // assertion passed only where the temp dir was also a symlink (macOS) — the
+    // exact accident the `.` segment was added to stop depending on.
     assert_ne!(
-        path, resolved,
+        path.to_string_lossy(),
+        resolved.to_string_lossy(),
         "the `.` segment must survive as written and vanish when resolved"
     );
     assert_eq!(out, format!("{}|false", path.display()));
