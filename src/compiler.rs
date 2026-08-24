@@ -2706,9 +2706,13 @@ impl Compiler {
                 match op {
                     None => self.compile_rhs(b, rhs)?,
                     Some(cop) => {
-                        // $x <op>= rhs  ⇒  $x = $x <op> rhs
+                        // $x <op>= rhs  ⇒  $x = $x <op> rhs. The value stored is
+                        // the operator's result, which is always freshly made, so
+                        // the assignment copy the plain `=` form needs would be
+                        // protecting nothing here — and `$s += $i` in a counted
+                        // loop pays for it every iteration.
                         self.emit_get_var(b, name);
-                        self.compile_rhs(b, rhs)?;
+                        self.compile_expr(b, rhs)?;
                         self.emit_binop(b, cop);
                     }
                 }
@@ -3275,7 +3279,12 @@ impl Compiler {
 
     fn compile_truthy(&mut self, b: &mut ChunkBuilder, e: &Expr) -> Result<(), String> {
         self.compile_expr(b, e)?;
-        b.emit(Op::CallBuiltin(ops::TRUTHY, 1), 0);
+        // A comparison already answers with a bool, so coercing it is a host
+        // round-trip that cannot change the value — and a loop condition pays
+        // for it on every iteration.
+        if !yields_bool(e) {
+            b.emit(Op::CallBuiltin(ops::TRUTHY, 1), 0);
+        }
         Ok(())
     }
 
@@ -4118,5 +4127,28 @@ impl SlotScan {
             }
             _ => {}
         }
+    }
+}
+
+/// Whether `e` already evaluates to a `Bool`, so PHP's truthiness coercion would
+/// return it unchanged. Deliberately narrow: every operator listed here answers
+/// with `Value::Bool` on every input, with no coercion of its own to apply.
+fn yields_bool(e: &Expr) -> bool {
+    match e {
+        Expr::Bool(_) => true,
+        Expr::InstanceOf(..) => true,
+        Expr::Unary(UnOp::Not, _) => true,
+        Expr::Binary(op, ..) => matches!(
+            op,
+            BinOp::Lt
+                | BinOp::Gt
+                | BinOp::Le
+                | BinOp::Ge
+                | BinOp::LooseEq
+                | BinOp::LooseNe
+                | BinOp::StrictEq
+                | BinOp::StrictNe
+        ),
+        _ => false,
     }
 }
