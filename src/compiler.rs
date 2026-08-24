@@ -27,6 +27,13 @@ enum LinkError {
 /// The full output of compiling a program.
 pub struct Program {
     pub main: Chunk,
+    /// The global frame's variables in the order the main chunk numbers them.
+    /// Reserved before the chunk runs, so slot `n` in it and slot `n` in the
+    /// global frame are the same variable. Another chunk that later runs in the
+    /// same frame — an `include`, an `eval`, a parameter default — addresses
+    /// variables by name and so reaches the same slots without needing an order
+    /// of its own.
+    pub main_locals: Vec<String>,
     pub functions: Vec<(String, FuncDef)>,
     pub classes: Vec<(String, ClassDef)>,
     /// `try`/`catch`/`finally` constructs, indexed by the id baked into each
@@ -117,6 +124,14 @@ pub struct Compiler {
     /// them from zero across the whole compilation unit, in source order, and
     /// bakes the number into the generated class name.
     anon_classes: usize,
+    /// The scope currently being lowered, as name → frame slot, when its
+    /// variables were resolved to indices. Empty while lowering a chunk that
+    /// runs in a frame it did not seed (a parameter default, an `include`, an
+    /// `eval`), which must keep addressing variables by name.
+    slots: FxHashMap<String, u32>,
+    /// The same names in slot order, handed to the runtime so the frame reserves
+    /// its slots in exactly the order the chunk addresses them.
+    slot_order: Vec<String>,
 }
 
 /// Compile a parsed program. `debug` enables per-statement DAP line markers.
@@ -130,9 +145,12 @@ pub fn compile(stmts: &[Stmt], debug: bool) -> Result<Program, String> {
     c.seed_builtin_byref();
     c.collect_byref(stmts);
     let mut b = ChunkBuilder::new();
+    let saved = c.enter_scope(scope_slots(&[], stmts));
     c.compile_seq(&mut b, stmts)?;
+    let main_locals = c.leave_scope(saved);
     Ok(Program {
         main: b.build(),
+        main_locals,
         functions: c.functions,
         classes: c.classes,
         try_defs: c.try_defs,
@@ -158,7 +176,7 @@ impl Compiler {
             let default = match &p.default {
                 Some(expr) => {
                     let mut db = ChunkBuilder::new();
-                    self.compile_expr(&mut db, expr)?;
+                    self.in_other_frame(|c| c.compile_expr(&mut db, expr))?;
                     Some(db.build())
                 }
                 None => None,
@@ -508,7 +526,12 @@ impl Compiler {
                 // not target a loop at the call site.
                 let saved = std::mem::take(&mut self.loops);
                 let saved_ref = std::mem::replace(&mut self.ret_by_ref, *by_ref_return);
+                // The body addresses its own frame, so its variables get slots.
+                // A parameter default is NOT compiled here — it runs as its own
+                // chunk and keeps the by-name path, which reaches the same slots.
+                let locals = self.enter_scope(scope_slots(params, body));
                 self.compile_seq(&mut fb, body)?;
+                let locals = self.leave_scope(locals);
                 self.ret_by_ref = saved_ref;
                 self.loops = saved;
                 self.functions.push((
@@ -518,6 +541,7 @@ impl Compiler {
                         chunk: fb.build(),
                         is_generator: body_has_yield(body),
                         ret: ret.clone(),
+                        locals,
                     },
                 ));
             }
@@ -1051,7 +1075,7 @@ impl Compiler {
 
         for (name, expr) in &decl.consts {
             let mut cb = ChunkBuilder::new();
-            self.compile_expr(&mut cb, expr)?;
+            self.in_other_frame(|c| c.compile_expr(&mut cb, expr))?;
             consts.retain(|(n, _)| n != name);
             consts.push((name.clone(), cb.build()));
         }
@@ -1066,7 +1090,7 @@ impl Compiler {
             }
             let mut pb = ChunkBuilder::new();
             match &prop.default {
-                Some(e) => self.compile_expr(&mut pb, e)?,
+                Some(e) => self.in_other_frame(|c| c.compile_expr(&mut pb, e))?,
                 None => {
                     pb.emit(Op::LoadUndef, 0);
                 }
@@ -1116,7 +1140,7 @@ impl Compiler {
                 }
             }
             let saved_ref = std::mem::replace(&mut self.ret_by_ref, m.by_ref_return);
-            self.compile_seq(&mut mb, &m.body)?;
+            self.in_other_frame(|c| c.compile_seq(&mut mb, &m.body))?;
             self.ret_by_ref = saved_ref;
             self.loops = saved;
             methods.insert(
@@ -1126,6 +1150,9 @@ impl Compiler {
                     chunk: mb.build(),
                     is_generator: body_has_yield(&m.body),
                     ret: m.ret.clone(),
+                    // Methods keep the by-name path for now; `$this` and the
+                    // property desugaring bind through the host either way.
+                    locals: Vec::new(),
                 },
             );
         }
@@ -1137,7 +1164,7 @@ impl Compiler {
             let chunk = match &case.value {
                 Some(e) => {
                     let mut cb = ChunkBuilder::new();
-                    self.compile_expr(&mut cb, e)?;
+                    self.in_other_frame(|c| c.compile_expr(&mut cb, e))?;
                     Some(cb.build())
                 }
                 None => None,
@@ -2207,9 +2234,14 @@ impl Compiler {
         match e {
             Expr::Quiet(inner) => self.compile_quiet(b, inner)?,
             Expr::Var(name) => {
-                let idx = b.add_constant(Value::str(name.clone()));
-                b.emit(Op::LoadConst(idx), line);
-                b.emit(Op::CallBuiltin(ops::GETVAR_Q, 1), line);
+                if let Some(&i) = self.slots.get(name) {
+                    b.emit(Op::LoadInt(i as i64), line);
+                    b.emit(Op::CallBuiltin(ops::GETSLOT_Q, 1), line);
+                } else {
+                    let idx = b.add_constant(Value::str(name.clone()));
+                    b.emit(Op::LoadConst(idx), line);
+                    b.emit(Op::CallBuiltin(ops::GETVAR_Q, 1), line);
+                }
             }
             Expr::Index(recv, idx) => {
                 self.compile_quiet(b, recv)?;
@@ -2670,8 +2702,7 @@ impl Compiler {
     ) -> Result<(), String> {
         match lhs {
             Expr::Var(name) => {
-                let nidx = b.add_constant(Value::str(name.clone()));
-                b.emit(Op::LoadConst(nidx), 0);
+                self.emit_var_target(b, name);
                 match op {
                     None => self.compile_rhs(b, rhs)?,
                     Some(cop) => {
@@ -2681,7 +2712,7 @@ impl Compiler {
                         self.emit_binop(b, cop);
                     }
                 }
-                b.emit(Op::CallBuiltin(ops::SETVAR, 2), 0);
+                self.emit_store_var(b, name);
             }
             Expr::PropGet(recv, name) => {
                 // `$o->p = rhs` and its compound form `$o->p op= rhs`. For a
@@ -3065,7 +3096,7 @@ impl Compiler {
         // Like a named function, the body gets its own loop scope so a `break`
         // inside it cannot target a loop at the creation site.
         let saved = std::mem::take(&mut self.loops);
-        self.compile_seq(&mut fb, body)?;
+        self.in_other_frame(|c| c.compile_seq(&mut fb, body))?;
         self.loops = saved;
         let def_name = self.tmp_name("closure");
         self.functions.push((
@@ -3075,6 +3106,9 @@ impl Compiler {
                 chunk: fb.build(),
                 is_generator: body_has_yield(body),
                 ret: ret.cloned(),
+                // A closure frame is seeded from its captures, not from a
+                // compiled local list, so its body stays by-name.
+                locals: Vec::new(),
             },
         ));
 
@@ -3119,12 +3153,19 @@ impl Compiler {
         // code: bit0 = increment, bit1 = prefix.
         let code = (inc as i64) | ((prefix as i64) << 1);
         match target {
-            Expr::Var(name) => {
-                let nidx = b.add_constant(Value::str(name.clone()));
-                b.emit(Op::LoadConst(nidx), 0);
-                b.emit(Op::LoadInt(code), 0);
-                b.emit(Op::CallBuiltin(ops::INCDEC, 2), self.cur_line);
-            }
+            Expr::Var(name) => match self.slots.get(name) {
+                Some(&i) => {
+                    b.emit(Op::LoadInt(i as i64), 0);
+                    b.emit(Op::LoadInt(code), 0);
+                    b.emit(Op::CallBuiltin(ops::INCDEC_SLOT, 2), self.cur_line);
+                }
+                None => {
+                    let nidx = b.add_constant(Value::str(name.clone()));
+                    b.emit(Op::LoadConst(nidx), 0);
+                    b.emit(Op::LoadInt(code), 0);
+                    b.emit(Op::CallBuiltin(ops::INCDEC, 2), self.cur_line);
+                }
+            },
             Expr::PropGet(recv, name) => {
                 // `$o->p++` — read-modify-write a scalar property.
                 self.compile_expr(b, recv)?;
@@ -3283,10 +3324,78 @@ impl Compiler {
         Ok(())
     }
 
+    /// Lower `f` as a chunk that runs in a DIFFERENT frame from the one being
+    /// compiled — a method or closure body, a parameter default, a property or
+    /// class-constant initializer, an enum case value.
+    ///
+    /// Such a chunk must address variables by name: the enclosing scope's slot
+    /// numbers name its own frame's storage, and running them against another
+    /// frame reads whatever happens to sit at that index there. (A `try` body is
+    /// NOT one of these — it runs in the same frame and keeps the numbering.)
+    fn in_other_frame<T>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let saved = self.enter_scope(Vec::new());
+        let r = f(self);
+        self.leave_scope(saved);
+        r
+    }
+
+    /// Begin lowering a scope whose variables are slot-addressed. Returns the
+    /// previous scope's state, to be handed back to [`Compiler::leave_scope`] —
+    /// a nested `function` declaration inside a function body must not inherit
+    /// the outer frame's numbering.
+    fn enter_scope(&mut self, names: Vec<String>) -> (FxHashMap<String, u32>, Vec<String>) {
+        let map = names
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.clone(), i as u32))
+            .collect();
+        (
+            std::mem::replace(&mut self.slots, map),
+            std::mem::replace(&mut self.slot_order, names),
+        )
+    }
+
+    /// Finish the scope, restore the enclosing one, and yield the slot order the
+    /// finished scope settled on.
+    fn leave_scope(&mut self, saved: (FxHashMap<String, u32>, Vec<String>)) -> Vec<String> {
+        self.slots = saved.0;
+        std::mem::replace(&mut self.slot_order, saved.1)
+    }
+
     fn emit_get_var(&mut self, b: &mut ChunkBuilder, name: &str) {
+        if let Some(&i) = self.slots.get(name) {
+            b.emit(Op::LoadInt(i as i64), 0);
+            b.emit(Op::CallBuiltin(ops::GETSLOT, 1), self.cur_line);
+            return;
+        }
         let idx = b.add_constant(Value::str(name.to_string()));
         b.emit(Op::LoadConst(idx), 0);
         b.emit(Op::CallBuiltin(ops::GETVAR, 1), self.cur_line);
+    }
+
+    /// Push the operand a variable write consumes: the slot index, or the name.
+    /// Paired with [`Compiler::emit_store_var`], which must see the same choice.
+    fn emit_var_target(&mut self, b: &mut ChunkBuilder, name: &str) {
+        match self.slots.get(name) {
+            Some(&i) => b.emit(Op::LoadInt(i as i64), 0),
+            None => {
+                let idx = b.add_constant(Value::str(name.to_string()));
+                b.emit(Op::LoadConst(idx), 0)
+            }
+        };
+    }
+
+    /// Store into the variable whose target [`Compiler::emit_var_target`]
+    /// pushed, leaving the assigned value on the stack.
+    fn emit_store_var(&mut self, b: &mut ChunkBuilder, name: &str) {
+        let op = match self.slots.contains_key(name) {
+            true => ops::SETSLOT,
+            false => ops::SETVAR,
+        };
+        b.emit(Op::CallBuiltin(op, 2), 0);
     }
 
     /// Emit `$name = <value produced by `f`>`, leaving the value on the stack.
@@ -3296,10 +3405,9 @@ impl Compiler {
         name: &str,
         f: impl FnOnce(&mut Self, &mut ChunkBuilder) -> Result<(), String>,
     ) -> Result<(), String> {
-        let idx = b.add_constant(Value::str(name.to_string()));
-        b.emit(Op::LoadConst(idx), 0);
+        self.emit_var_target(b, name);
         f(self, b)?;
-        b.emit(Op::CallBuiltin(ops::SETVAR, 2), 0);
+        self.emit_store_var(b, name);
         // The desugared statements want no residual on the stack.
         b.emit(Op::Pop, 0);
         Ok(())
@@ -3763,4 +3871,252 @@ fn is_fully_numeric(s: &str) -> bool {
         }
     }
     i == bytes.len()
+}
+
+// ── slot resolution ──────────────────────────────────────────────────────────
+//
+// A scope's variables are numbered so the chunk can address them by index. The
+// index and the name reach the SAME storage (`host::Vars`), so `extract()`,
+// `$$name`, `unset()`, a reference binding, an array-path write and a
+// by-reference parameter's write-back all remain coherent with slot access —
+// they simply arrive at the slot by name instead of by number. That is what
+// keeps this list of exclusions short: it needs to cover only the names whose
+// *slot number* would be wrong, not every name something else might touch.
+
+/// Names that must keep the by-name path in every scope.
+///
+/// A superglobal resolves to the global frame from wherever it is read, so a
+/// slot number in the current frame would address the wrong storage. `this` is
+/// bound by the call machinery, not by the body.
+fn slottable_name(name: &str) -> bool {
+    !crate::host::is_superglobal(name) && name != "this" && !name.starts_with('@')
+}
+
+/// Collect the variables a scope may address by slot: every name it mentions,
+/// minus the [`slottable_name`] exclusions.
+///
+/// Missing a name is safe — it simply keeps the by-name path, which reaches the
+/// same storage — so this walks the forms PHP code is actually written in
+/// rather than exhaustively. It does NOT descend into a nested scope (a
+/// closure, an arrow function, a nested `function` or `class` body): those are
+/// compiled against their own frame and number their own slots.
+fn scope_slots(params: &[Param], body: &[Stmt]) -> Vec<String> {
+    let mut c = SlotScan {
+        out: Vec::new(),
+        seen: FxHashSet::default(),
+    };
+    for p in params {
+        c.push(&p.name);
+    }
+    c.stmts(body);
+    c.out
+}
+
+struct SlotScan {
+    out: Vec<String>,
+    seen: FxHashSet<String>,
+}
+
+impl SlotScan {
+    fn push(&mut self, n: &str) {
+        if slottable_name(n) && self.seen.insert(n.to_string()) {
+            self.out.push(n.to_string());
+        }
+    }
+
+    fn stmts(&mut self, body: &[Stmt]) {
+        for s in body {
+            self.stmt(s);
+        }
+    }
+
+    fn stmt(&mut self, s: &Stmt) {
+        match &s.kind {
+            StmtKind::Echo(es) => self.exprs(es),
+            StmtKind::Expr(e) => self.expr(e),
+            StmtKind::Return(Some(e)) => self.expr(e),
+            StmtKind::If {
+                cond,
+                then,
+                elifs,
+                els,
+            } => {
+                self.expr(cond);
+                self.stmts(then);
+                for (c, b) in elifs {
+                    self.expr(c);
+                    self.stmts(b);
+                }
+                if let Some(b) = els {
+                    self.stmts(b);
+                }
+            }
+            StmtKind::While { cond, body } | StmtKind::DoWhile { cond, body } => {
+                self.expr(cond);
+                self.stmts(body);
+            }
+            StmtKind::For {
+                init,
+                cond,
+                step,
+                body,
+            } => {
+                self.exprs(init);
+                if let Some(c) = cond {
+                    self.expr(c);
+                }
+                self.exprs(step);
+                self.stmts(body);
+            }
+            StmtKind::Foreach {
+                arr,
+                key_var,
+                val,
+                body,
+                ..
+            } => {
+                self.expr(arr);
+                if let Some(k) = key_var {
+                    self.push(k);
+                }
+                match val {
+                    ForeachVal::Var(n) => self.push(n),
+                    ForeachVal::Pattern(e) => self.expr(e),
+                }
+                self.stmts(body);
+            }
+            StmtKind::Switch { subj, cases } => {
+                self.expr(subj);
+                for c in cases {
+                    if let Some(e) = &c.test {
+                        self.expr(e);
+                    }
+                    self.stmts(&c.body);
+                }
+            }
+            StmtKind::Try {
+                body,
+                catches,
+                finally,
+            } => {
+                self.stmts(body);
+                for c in catches {
+                    if let Some(v) = &c.var {
+                        self.push(v);
+                    }
+                    self.stmts(&c.body);
+                }
+                if let Some(f) = finally {
+                    self.stmts(f);
+                }
+            }
+            StmtKind::Block(b) => self.stmts(b),
+            StmtKind::StaticLocal(decls) => {
+                for (n, init) in decls {
+                    self.push(n);
+                    if let Some(e) = init {
+                        self.expr(e);
+                    }
+                }
+            }
+            StmtKind::ConstDecl(ds) => {
+                for (_, e) in ds {
+                    self.expr(e);
+                }
+            }
+            // A nested scope numbers its own slots; a declaration binds no
+            // variable in this one.
+            StmtKind::Function { .. }
+            | StmtKind::Class(_)
+            | StmtKind::InlineHtml(_)
+            | StmtKind::Return(None)
+            | StmtKind::Break(_)
+            | StmtKind::Continue(_) => {}
+        }
+    }
+
+    fn exprs(&mut self, es: &[Expr]) {
+        for e in es {
+            self.expr(e);
+        }
+    }
+
+    fn expr(&mut self, e: &Expr) {
+        match e {
+            Expr::Var(n) => self.push(n),
+            Expr::Interp(parts) => {
+                for p in parts {
+                    if let InterpPart::Expr(e) = p {
+                        self.expr(e);
+                    }
+                }
+            }
+            Expr::Array(elems) => {
+                for el in elems {
+                    if let Some(k) = &el.key {
+                        self.expr(k);
+                    }
+                    self.expr(&el.value);
+                }
+            }
+            Expr::Index(a, b) | Expr::ListElem(a, b) | Expr::Binary(_, a, b) => {
+                self.expr(a);
+                self.expr(b);
+            }
+            Expr::Append(a)
+            | Expr::Unary(_, a)
+            | Expr::Spread(a)
+            | Expr::Clone(a)
+            | Expr::Throw(a)
+            | Expr::Quiet(a)
+            | Expr::NamedArg(_, a)
+            | Expr::PropGet(a, _)
+            | Expr::NullsafePropGet(a, _)
+            | Expr::InstanceOf(a, _) => self.expr(a),
+            Expr::Assign(a, _, b) | Expr::RefAssign(a, b) | Expr::Elvis(a, b) => {
+                self.expr(a);
+                self.expr(b);
+            }
+            Expr::Coalesce(a, b) => {
+                self.expr(a);
+                self.expr(b);
+            }
+            Expr::IncDec { target, .. } => self.expr(target),
+            Expr::Call(_, args) | Expr::New(_, args) | Expr::NewAnon { args, .. } => {
+                self.exprs(args)
+            }
+            Expr::CallValue(f, args) => {
+                self.expr(f);
+                self.exprs(args);
+            }
+            Expr::MethodCall(r, _, args) | Expr::NullsafeMethodCall(r, _, args) => {
+                self.expr(r);
+                self.exprs(args);
+            }
+            Expr::StaticCall(_, _, args) => self.exprs(args),
+            Expr::Ternary(a, b, c) => {
+                self.expr(a);
+                self.expr(b);
+                self.expr(c);
+            }
+            Expr::Match { subj, arms } => {
+                self.expr(subj);
+                for a in arms {
+                    if let Some(cs) = &a.conds {
+                        self.exprs(cs);
+                    }
+                    self.expr(&a.body);
+                }
+            }
+            Expr::Unset(es) => self.exprs(es),
+            // A closure/arrow body is its own scope; its `use (...)` names,
+            // however, are read out of THIS one.
+            Expr::Closure { uses, .. } => {
+                for u in uses {
+                    self.push(&u.name);
+                }
+            }
+            _ => {}
+        }
+    }
 }

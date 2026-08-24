@@ -263,6 +263,27 @@ pub mod ops {
     /// `pos` by reference. Guards the write-back at a call site whose callee is
     /// not a compile-time fact — a method call, a static call, or `$f(…)`.
     pub const BYREF_LIVE: u16 = 115;
+
+    // ── slot-addressed locals ────────────────────────────────────────────────
+    // The compiler resolves a scope's variables to indices and emits these
+    // instead of the by-name ops above, so a read is a vector index rather than
+    // a superglobal-name test plus a string hash into the scope map. The slot
+    // and the name address the SAME storage (`Vars`), so `extract()`, `$$name`,
+    // `unset()`, a reference binding, an array path write and a by-reference
+    // parameter's write-back all stay coherent with slot access — they simply
+    // reach the slot the other way round.
+    /// `[] -> value` — read slot N, warning `Undefined variable` if unbound.
+    pub const GETSLOT: u16 = 116;
+    /// `[] -> value` — read slot N with no diagnostic (isset/`empty` context).
+    pub const GETSLOT_Q: u16 = 117;
+    /// `[value] -> value` — write slot N, through the shared cell if it is a
+    /// reference binding.
+    pub const SETSLOT: u16 = 118;
+    /// `[slot, code] -> value` — `++`/`--` on slot N. One op for the whole
+    /// read-modify-write: the by-name form resolved the name twice per
+    /// execution, once to read and once to store, which in a counted loop is
+    /// two hashes an iteration for a variable the compiler had already placed.
+    pub const INCDEC_SLOT: u16 = 119;
 }
 
 /// Sub-ops for the by-reference array mutators lowered through `ops::ARR_MUT`
@@ -299,6 +320,11 @@ pub struct Param {
 pub struct FuncDef {
     pub params: Vec<Param>,
     pub chunk: Chunk,
+    /// The frame's variables in the order the chunk numbers them. The call
+    /// reserves these slots before binding anything, so slot `n` in the body and
+    /// slot `n` in the frame are the same variable. Empty when the body was
+    /// compiled to address its variables by name.
+    pub locals: Vec<String>,
     /// True when the body contains a `yield`: calling it builds a suspended
     /// `Generator` (a host-side stackful coroutine) instead of running the body.
     pub is_generator: bool,
@@ -473,14 +499,116 @@ enum Signal {
     Continue(u32),
 }
 
+/// What one name in a scope is bound to.
+#[derive(Default, Clone)]
+enum Slot {
+    /// Never written, or `unset()`. Distinct from a slot holding PHP `null`
+    /// (`Value::Undef`), and the difference is what `isset()` and `compact()`
+    /// answer on: `$a = null; compact('a')` yields `['a' => null]`, an unset
+    /// `$a` yields `[]`.
+    #[default]
+    Unset,
+    Val(Value),
+    /// Bound as a reference (`$b = &$a`): the value lives in a shared
+    /// `PhpHost::ref_cells` cell, so every alias observes the others' writes.
+    Ref(usize),
+}
+
+/// A scope's variables: one slot per name, reachable either by name or by the
+/// index the compiler resolved for it.
+///
+/// Both routes address the SAME slot. That is the point — it is what lets
+/// `extract()`, `$$name`, `unset()` and reference bindings stay coherent with
+/// compiled slot access instead of needing a second, shadow representation that
+/// could drift from this one.
+#[derive(Default)]
+struct Vars {
+    slots: Vec<Slot>,
+    index: FxHashMap<String, u32>,
+}
+
+impl Vars {
+    /// The slot `name` already occupies, if it has one. A slot survives
+    /// `unset()` (it just goes back to `Unset`), so an index handed out once
+    /// stays valid for the life of the frame.
+    fn slot_of(&self, name: &str) -> Option<u32> {
+        self.index.get(name).copied()
+    }
+
+    /// The slot for `name`, reserving one if this is the first mention.
+    fn ensure_slot(&mut self, name: &str) -> u32 {
+        if let Some(&i) = self.index.get(name) {
+            return i;
+        }
+        let i = self.slots.len() as u32;
+        self.slots.push(Slot::Unset);
+        self.index.insert(name.to_string(), i);
+        i
+    }
+
+    fn at(&self, i: u32) -> &Slot {
+        self.slots.get(i as usize).unwrap_or(&Slot::Unset)
+    }
+
+    fn put(&mut self, i: u32, v: Slot) {
+        // Grow rather than drop: a frame that was not seeded from a compiled
+        // slot order still behaves self-consistently instead of silently losing
+        // the write.
+        if self.slots.len() <= i as usize {
+            self.slots.resize(i as usize + 1, Slot::Unset);
+        }
+        self.slots[i as usize] = v;
+    }
+
+    fn get(&self, name: &str) -> &Slot {
+        match self.slot_of(name) {
+            Some(i) => self.at(i),
+            None => &Slot::Unset,
+        }
+    }
+
+    /// Every bound name and its slot, unbound ones skipped — what
+    /// `get_defined_vars()`, `compact()` and the debugger's locals view walk.
+    /// Renumber so `names[i]` occupies slot `i`, keeping whatever each name is
+    /// already bound to and keeping every other binding as well.
+    ///
+    /// The global frame has its superglobals bound before the main chunk is
+    /// loaded, so simply reserving in order would push the chunk's own names
+    /// past them and every index it was compiled with would be wrong.
+    fn renumber(&mut self, names: &[String]) {
+        let mut slots: Vec<Slot> = Vec::with_capacity(names.len() + self.slots.len());
+        let mut index: FxHashMap<String, u32> = FxHashMap::default();
+        for n in names {
+            let cur = self.get(n).clone();
+            index.insert(n.clone(), slots.len() as u32);
+            slots.push(cur);
+        }
+        for (k, &i) in self.index.iter() {
+            if index.contains_key(k) {
+                continue;
+            }
+            let v = self.slots.get(i as usize).cloned().unwrap_or(Slot::Unset);
+            index.insert(k.clone(), slots.len() as u32);
+            slots.push(v);
+        }
+        self.slots = slots;
+        self.index = index;
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (&String, &Slot)> {
+        self.index
+            .iter()
+            .filter_map(|(k, &i)| match self.slots.get(i as usize) {
+                Some(Slot::Unset) | None => None,
+                Some(s) => Some((k, s)),
+            })
+    }
+}
+
 /// One variable scope (the global scope, or a function-call frame).
 #[derive(Default)]
 struct Scope {
-    vars: FxHashMap<String, Value>,
-    /// Names bound as references (`$b = &$a`) map to a shared cell in
-    /// `PhpHost::ref_cells`; reads/writes of such a name go through the cell so
-    /// aliased variables observe each other's mutations.
-    refs: FxHashMap<String, usize>,
+    vars: Vars,
     /// The source line this frame is currently executing. Under `--dap` every
     /// statement updates it; on the normal path only the ops that can start a
     /// call or raise a throw do (see `builtins::mark_frame_line`), which is all
@@ -1660,7 +1788,7 @@ impl PhpHost {
             .get(class)
             .map(|d| d.name.as_str())
             .unwrap_or(class);
-        let sep = if scope.vars.contains_key("this") {
+        let sep = if !matches!(scope.vars.get("this"), Slot::Unset) {
             "->"
         } else {
             "::"
@@ -1727,8 +1855,8 @@ impl PhpHost {
     fn get_var_in(&self, idx: usize, name: &str) -> Value {
         self.scopes
             .get(idx)
-            .and_then(|s| s.vars.get(name))
-            .cloned()
+            .map(|s| s.vars.get(name).clone())
+            .map(|s| self.read_slot(&s))
             .unwrap_or(Value::Undef)
     }
 
@@ -1843,11 +1971,17 @@ impl PhpHost {
         let Some(scope) = self.scopes.get(idx) else {
             return Value::Undef;
         };
-        // A name bound as a reference reads through its shared cell.
-        if let Some(&slot) = scope.refs.get(name) {
-            return self.ref_cells.get(slot).cloned().unwrap_or(Value::Undef);
+        self.read_slot(scope.vars.get(name))
+    }
+
+    /// The value a slot holds: a reference reads through its shared cell, an
+    /// unset slot reads as PHP `null`.
+    fn read_slot(&self, s: &Slot) -> Value {
+        match s {
+            Slot::Val(v) => v.clone(),
+            Slot::Ref(c) => self.ref_cells.get(*c).cloned().unwrap_or(Value::Undef),
+            Slot::Unset => Value::Undef,
         }
-        scope.vars.get(name).cloned().unwrap_or(Value::Undef)
     }
 
     /// Is `name` BOUND in the scope it resolves in?
@@ -1863,18 +1997,104 @@ impl PhpHost {
         let Some(scope) = self.scopes.get(idx) else {
             return false;
         };
-        scope.refs.contains_key(name) || scope.vars.contains_key(name)
+        !matches!(scope.vars.get(name), Slot::Unset)
     }
 
     pub fn set_var(&mut self, name: &str, val: Value) {
         let idx = self.scope_idx(name);
-        let slot = self.scopes.get(idx).and_then(|s| s.refs.get(name).copied());
-        if let Some(slot) = slot {
-            if let Some(cell) = self.ref_cells.get_mut(slot) {
-                *cell = val;
+        let Some(scope) = self.scopes.get_mut(idx) else {
+            return;
+        };
+        let i = scope.vars.ensure_slot(name);
+        self.write_slot(idx, i, val);
+    }
+
+    /// Store into a slot: a reference writes through its shared cell so every
+    /// alias sees it, anything else takes the value directly.
+    fn write_slot(&mut self, scope_idx: usize, i: u32, val: Value) {
+        let cell = match self.scopes.get(scope_idx).map(|s| s.vars.at(i)) {
+            Some(Slot::Ref(c)) => Some(*c),
+            _ => None,
+        };
+        match cell {
+            Some(c) => {
+                if let Some(slot) = self.ref_cells.get_mut(c) {
+                    *slot = val;
+                }
             }
-        } else if let Some(scope) = self.scopes.get_mut(idx) {
-            scope.vars.insert(name.to_string(), val);
+            None => {
+                if let Some(scope) = self.scopes.get_mut(scope_idx) {
+                    scope.vars.put(i, Slot::Val(val));
+                }
+            }
+        }
+    }
+
+    /// Read the current frame's slot `i`. The compiler resolved the name to this
+    /// index, so there is no name to test against the superglobals or to hash.
+    pub fn slot_get(&mut self, i: u32) -> Value {
+        let s = match self.scopes.last() {
+            Some(sc) => sc.vars.at(i).clone(),
+            None => Slot::Unset,
+        };
+        if matches!(s, Slot::Unset) {
+            // Only the diagnostic needs the name back, and only on the path that
+            // is already an error, so the reverse lookup is not on the hot path.
+            if let Some(n) = self.slot_name(i) {
+                if !n.starts_with('@') {
+                    self.warn(format_args!("Undefined variable ${n}"));
+                }
+            }
+            return Value::Undef;
+        }
+        self.read_slot(&s)
+    }
+
+    /// Read slot `i` with no `Undefined variable` diagnostic — the isset/`empty`
+    /// context, where an unbound name is a legitimate answer rather than a bug.
+    pub fn slot_get_quiet(&self, i: u32) -> Value {
+        match self.scopes.last() {
+            Some(sc) => self.read_slot(sc.vars.at(i)),
+            None => Value::Undef,
+        }
+    }
+
+    /// Write the current frame's slot `i`, through the shared cell when the slot
+    /// holds a reference binding.
+    pub fn slot_set(&mut self, i: u32, val: Value) {
+        let idx = self.scopes.len().saturating_sub(1);
+        self.write_slot(idx, i, val);
+    }
+
+    /// The name a slot was resolved from, for a diagnostic. Linear in the
+    /// frame's variable count and only reached when reporting an unbound read.
+    fn slot_name(&self, i: u32) -> Option<String> {
+        self.scopes
+            .last()?
+            .vars
+            .index
+            .iter()
+            .find(|(_, &v)| v == i)
+            .map(|(k, _)| k.clone())
+    }
+
+    /// Reserve the GLOBAL frame's slots in the order the main chunk numbered
+    /// them. Separate from [`PhpHost::seed_slots`], which seeds the innermost
+    /// frame: the main chunk runs in the global frame whatever is on the stack.
+    pub fn seed_global_slots(&mut self, names: &[String]) {
+        if let Some(scope) = self.scopes.first_mut() {
+            scope.vars.renumber(names);
+        }
+    }
+
+    /// Reserve this frame's slots in the order the compiler numbered them, so
+    /// index `n` in the chunk and index `n` in the frame are the same variable.
+    /// Called once per call, before any binding.
+    fn seed_slots(&mut self, names: &[String]) {
+        if let Some(scope) = self.scopes.last_mut() {
+            for n in names {
+                scope.vars.ensure_slot(n);
+            }
         }
     }
 
@@ -1894,8 +2114,8 @@ impl PhpHost {
     pub fn bind_ref_slot(&mut self, name: &str, slot: usize) {
         let idx = self.scope_idx(name);
         if let Some(scope) = self.scopes.get_mut(idx) {
-            scope.vars.remove(name);
-            scope.refs.insert(name.to_string(), slot);
+            let i = scope.vars.ensure_slot(name);
+            scope.vars.put(i, Slot::Ref(slot));
         }
     }
 
@@ -1956,19 +2176,20 @@ impl PhpHost {
     /// variable's current value into it — if the variable is still a plain one.
     fn ref_slot_of(&mut self, name: &str) -> usize {
         let idx = self.scope_idx(name);
-        if let Some(slot) = self.scopes.get(idx).and_then(|s| s.refs.get(name).copied()) {
-            return slot;
+        if let Some(Slot::Ref(c)) = self.scopes.get(idx).map(|s| s.vars.get(name)) {
+            return *c;
         }
         let cur = self
             .scopes
             .get(idx)
-            .and_then(|s| s.vars.get(name).cloned())
+            .map(|s| s.vars.get(name).clone())
+            .map(|s| self.read_slot(&s))
             .unwrap_or(Value::Undef);
         self.ref_cells.push(cur);
         let slot = self.ref_cells.len() - 1;
         if let Some(scope) = self.scopes.get_mut(idx) {
-            scope.vars.remove(name);
-            scope.refs.insert(name.to_string(), slot);
+            let i = scope.vars.ensure_slot(name);
+            scope.vars.put(i, Slot::Ref(slot));
         }
         slot
     }
@@ -2151,31 +2372,12 @@ impl PhpHost {
     pub fn ref_bind(&mut self, target: &str, source: &str) {
         let idx = self.scope_idx(source);
         // Resolve the source's cell, promoting a plain variable into one.
-        let slot = match self
-            .scopes
-            .get(idx)
-            .and_then(|s| s.refs.get(source).copied())
-        {
-            Some(s) => s,
-            None => {
-                let cur = self
-                    .scopes
-                    .get(idx)
-                    .and_then(|s| s.vars.get(source).cloned())
-                    .unwrap_or(Value::Undef);
-                self.ref_cells.push(cur);
-                let s = self.ref_cells.len() - 1;
-                if let Some(scope) = self.scopes.get_mut(idx) {
-                    scope.vars.remove(source);
-                    scope.refs.insert(source.to_string(), s);
-                }
-                s
-            }
-        };
+        let slot = self.ref_slot_of(source);
+        let _ = idx;
         let tidx = self.scope_idx(target);
         if let Some(scope) = self.scopes.get_mut(tidx) {
-            scope.vars.remove(target);
-            scope.refs.insert(target.to_string(), slot);
+            let i = scope.vars.ensure_slot(target);
+            scope.vars.put(i, Slot::Ref(slot));
         }
     }
 
@@ -2184,8 +2386,11 @@ impl PhpHost {
     pub fn unset_var(&mut self, name: &str) {
         let idx = self.scope_idx(name);
         if let Some(scope) = self.scopes.get_mut(idx) {
-            scope.vars.remove(name);
-            scope.refs.remove(name);
+            // The slot stays reserved so an index the compiler handed out is
+            // still valid; only the binding goes away.
+            if let Some(i) = scope.vars.slot_of(name) {
+                scope.vars.put(i, Slot::Unset);
+            }
         }
     }
 
@@ -2244,7 +2449,7 @@ impl PhpHost {
     /// `variables`. Compiler temporaries (`@`-prefixed) are hidden, matching a
     /// debugger's default locals view.
     pub fn dbg_locals(&self) -> Vec<(String, String)> {
-        let mut vars: Vec<(String, Value)> = self
+        let pairs: Vec<(String, Slot)> = self
             .scopes
             .last()
             .map(|s| {
@@ -2255,17 +2460,14 @@ impl PhpHost {
                     .collect()
             })
             .unwrap_or_default();
-        // Reference-bound names read through their shared cell.
-        if let Some(s) = self.scopes.last() {
-            for (k, &slot) in &s.refs {
-                if !k.starts_with('@') {
-                    vars.push((
-                        k.clone(),
-                        self.ref_cells.get(slot).cloned().unwrap_or(Value::Undef),
-                    ));
-                }
-            }
-        }
+        // A reference-bound name reads through its shared cell like any other.
+        let vars: Vec<(String, Value)> = pairs
+            .into_iter()
+            .map(|(k, s)| {
+                let v = self.read_slot(&s);
+                (k, v)
+            })
+            .collect();
         vars.into_iter()
             .map(|(n, v)| (format!("${n}"), self.to_str(&v)))
             .collect()
@@ -3457,8 +3659,8 @@ impl PhpHost {
         };
         let idx = self.scope_idx(name);
         if let Some(scope) = self.scopes.get_mut(idx) {
-            scope.vars.remove(name);
-            scope.refs.insert(name.to_string(), slot);
+            let i = scope.vars.ensure_slot(name);
+            scope.vars.put(i, Slot::Ref(slot));
         }
     }
 
@@ -3654,11 +3856,9 @@ impl PhpHost {
     pub fn get_var_warn(&mut self, name: &str) -> Value {
         let idx = self.scope_idx(name);
         if let Some(scope) = self.scopes.get(idx) {
-            if let Some(&slot) = scope.refs.get(name) {
-                return self.ref_cells.get(slot).cloned().unwrap_or(Value::Undef);
-            }
-            if let Some(v) = scope.vars.get(name) {
-                return v.clone();
+            let s = scope.vars.get(name).clone();
+            if !matches!(s, Slot::Unset) {
+                return self.read_slot(&s);
             }
         }
         if !name.starts_with('@') {
@@ -4430,7 +4630,7 @@ impl PhpHost {
 /// integer rather than the bare name.
 /// Whether a variable name (sans `$`) is a PHP superglobal — auto-global across
 /// every scope, resolved against the global frame.
-fn is_superglobal(name: &str) -> bool {
+pub fn is_superglobal(name: &str) -> bool {
     matches!(
         name,
         "_SERVER"
@@ -5258,7 +5458,7 @@ pub fn call_function(name: &str, args: Vec<Value>) -> Result<Value, String> {
         }
     }
     if let Some(def) = def {
-        return invoke(
+        return invoke_with_locals(
             name,
             Signature {
                 params: &def.params,
@@ -5269,6 +5469,7 @@ pub fn call_function(name: &str, args: Vec<Value>) -> Result<Value, String> {
             args,
             Vec::new(),
             def.is_generator,
+            &def.locals,
         );
     }
     call_library_throwing(name, args)
@@ -5323,7 +5524,7 @@ pub fn call_function_named(
 ) -> Result<Value, String> {
     let def = with_host(|h| h.functions.get(&name.to_ascii_lowercase()).cloned());
     if let Some(def) = def {
-        return invoke(
+        return invoke_with_locals(
             name,
             Signature {
                 params: &def.params,
@@ -5334,6 +5535,7 @@ pub fn call_function_named(
             args,
             named,
             def.is_generator,
+            &def.locals,
         );
     }
     let mut all = args;
@@ -5549,6 +5751,24 @@ fn invoke(
     named: Vec<(String, Value)>,
     is_generator: bool,
 ) -> Result<Value, String> {
+    invoke_with_locals(frame, sig, body, pre, args, named, is_generator, &[])
+}
+
+/// [`invoke`] plus the callee's slot order: the frame reserves those slots, in
+/// that order, before anything is bound, so an index the body was compiled with
+/// names the same variable at runtime. Binding still goes through `set_var`,
+/// which finds the reserved slot by name.
+#[allow(clippy::too_many_arguments)]
+fn invoke_with_locals(
+    frame: &str,
+    sig: Signature<'_>,
+    body: Chunk,
+    pre: Vec<(String, Value)>,
+    args: Vec<Value>,
+    named: Vec<(String, Value)>,
+    is_generator: bool,
+    locals: &[String],
+) -> Result<Value, String> {
     let Signature { params, ret } = sig;
     let Some((args, named)) = check_arg_types(frame, params, args, named)? else {
         // The call was rejected before it began: a `TypeError` is pending and the
@@ -5571,6 +5791,7 @@ fn invoke(
             ..Scope::default()
         };
         h.scopes.push(scope);
+        h.seed_slots(locals);
         // Stash the full call argument list (hidden `@args`) for func_get_args /
         // func_num_args / func_get_arg: positional args then named values, in call
         // order.
@@ -6224,7 +6445,7 @@ pub fn call_method(
     // forwarding call (`self::`, `parent::`, `static::`) has already claimed the
     // slot with the caller's own, and keeps it.
     with_host(|h| h.lsb_set_for_next_call(class));
-    invoke(
+    invoke_with_locals(
         &format!("{def_class}::{method}"),
         Signature {
             params: &def.params,
@@ -6235,6 +6456,7 @@ pub fn call_method(
         args,
         Vec::new(),
         def.is_generator,
+        &def.locals,
     )
 }
 
@@ -6388,7 +6610,7 @@ pub fn call_method_named(
     // forwarding call (`self::`, `parent::`, `static::`) has already claimed the
     // slot with the caller's own, and keeps it.
     with_host(|h| h.lsb_set_for_next_call(class));
-    invoke(
+    invoke_with_locals(
         &format!("{def_class}::{method}"),
         Signature {
             params: &def.params,
@@ -6399,6 +6621,7 @@ pub fn call_method_named(
         args,
         named,
         def.is_generator,
+        &def.locals,
     )
 }
 

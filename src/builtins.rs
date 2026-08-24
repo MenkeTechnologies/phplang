@@ -15,6 +15,10 @@ use fusevm::{NumOp, NumericCall, Value, VM};
 pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::ECHO, b_echo);
     vm.register_builtin(ops::GETVAR, b_getvar);
+    vm.register_builtin(ops::GETSLOT, b_getslot);
+    vm.register_builtin(ops::INCDEC_SLOT, b_incdec_slot);
+    vm.register_builtin(ops::GETSLOT_Q, b_getslot_q);
+    vm.register_builtin(ops::SETSLOT, b_setslot);
     vm.register_builtin(ops::SETVAR, b_setvar);
     vm.register_builtin(ops::COPY, b_copy);
     vm.register_builtin(ops::CONCAT, b_concat);
@@ -1212,6 +1216,28 @@ fn mark_frame_line(vm: &VM) {
     });
 }
 
+/// `$name` where the compiler resolved `name` to a frame slot: the index is the
+/// only operand, so the read skips the superglobal test and the string hash the
+/// by-name ops pay on every access.
+fn b_getslot(vm: &mut VM, _: u8) -> Value {
+    let i = vm.pop().to_int() as u32;
+    mark_warn_site(vm);
+    with_host(|h| h.slot_get(i))
+}
+
+/// Slot read with no `Undefined variable` diagnostic — see `ops::GETSLOT_Q`.
+fn b_getslot_q(vm: &mut VM, _: u8) -> Value {
+    let i = vm.pop().to_int() as u32;
+    with_host(|h| h.slot_get_quiet(i))
+}
+
+fn b_setslot(vm: &mut VM, _: u8) -> Value {
+    let val = vm.pop();
+    let i = vm.pop().to_int() as u32;
+    with_host(|h| h.slot_set(i, val.clone()));
+    val
+}
+
 fn b_getvar(vm: &mut VM, _: u8) -> Value {
     let name = pop_name(vm);
     mark_warn_site(vm);
@@ -1638,6 +1664,31 @@ fn b_incdec(vm: &mut VM, _: u8) -> Value {
     with_host(|h| {
         let newv = h.incdec_value(&old, inc);
         h.set_var(&name, newv.clone());
+        if prefix {
+            newv
+        } else {
+            old
+        }
+    })
+}
+
+/// `++$x` / `$x--` where the compiler resolved `x` to a frame slot: the same
+/// read-modify-write as `b_incdec`, addressing the slot directly so neither half
+/// re-resolves the name.
+fn b_incdec_slot(vm: &mut VM, _: u8) -> Value {
+    let code = vm.pop().to_int();
+    let i = vm.pop().to_int() as u32;
+    let inc = code & 1 != 0;
+    let prefix = code & 2 != 0;
+    mark_warn_site(vm);
+    // `$x++` on an unset variable reports it, exactly as reading it would.
+    let old = with_host(|h| h.slot_get(i));
+    if incdec_refused(vm, &old, inc) {
+        return Value::Undef;
+    }
+    with_host(|h| {
+        let newv = h.incdec_value(&old, inc);
+        h.slot_set(i, newv.clone());
         if prefix {
             newv
         } else {

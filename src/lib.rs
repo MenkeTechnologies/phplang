@@ -414,6 +414,7 @@ fn prelude_defs() -> &'static PreludeDefs {
 pub fn load_merged(prog: compiler::Program) -> fusevm::Chunk {
     let compiler::Program {
         main,
+        main_locals,
         functions,
         classes,
         try_defs,
@@ -427,6 +428,10 @@ pub fn load_merged(prog: compiler::Program) -> fusevm::Chunk {
         h.load_program(functions);
         h.load_classes(classes);
         h.load_try_defs(try_defs);
+        // Reserve the global frame's slots before the chunk that numbered them
+        // runs. An `include`/`eval` later in the same frame keeps the by-name
+        // path, which reaches these same slots.
+        h.seed_global_slots(&main_locals);
     });
     main
 }
