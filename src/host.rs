@@ -2079,7 +2079,7 @@ impl PhpHost {
     }
 
     /// Reserve the GLOBAL frame's slots in the order the main chunk numbered
-    /// them. Separate from [`PhpHost::seed_slots`], which seeds the innermost
+    /// them. Separate from `seed_slots`, which seeds the innermost
     /// frame: the main chunk runs in the global frame whatever is on the stack.
     pub fn seed_global_slots(&mut self, names: &[String]) {
         if let Some(scope) = self.scopes.first_mut() {
