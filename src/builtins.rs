@@ -1187,7 +1187,7 @@ fn b_echo(vm: &mut VM, argc: u8) -> Value {
 /// `ip - 1`, and the chunk's parallel line table gives its line. Reading it here
 /// costs nothing on the paths that never warn.
 fn mark_warn_site(vm: &VM) {
-    with_host(|h| h.set_warn_line(cur_op_line(vm)));
+    host::set_warn_line(cur_op_line(vm));
 }
 
 /// The source line of the op being dispatched. `VM::ip` has already advanced past
@@ -1214,7 +1214,7 @@ fn mark_frame_line(vm: &VM) {
         // the line of the call. Setting the warn site here is what gives every
         // such diagnostic a line at all; a user function that goes on to warn
         // overwrites this from its own ops.
-        h.set_warn_line(line);
+        host::set_warn_line(line);
     });
 }
 
@@ -1546,7 +1546,7 @@ fn b_const_decl(vm: &mut VM, _: u8) -> Value {
     // path and it would otherwise report line 0.
     let line = cur_op_line(vm);
     with_host(|h| {
-        h.set_warn_line(line);
+        host::set_warn_line(line);
         h.const_define(&name, value)
     });
     Value::Undef
@@ -1615,7 +1615,7 @@ fn b_index_set(vm: &mut VM, _: u8) -> Value {
     let line = cur_op_line(vm);
     mark_frame_line(vm);
     if let Err(e) = with_host(|h| {
-        h.set_warn_line(line);
+        host::set_warn_line(line);
         h.index_set_var(&name, &key, val.clone())
     }) {
         return fail_or_throw(vm, e);
@@ -2639,12 +2639,24 @@ fn cmp_f64(x: f64, y: f64) -> i32 {
 /// `NAN >= NAN` included, which the 3-way answer of 1 would otherwise make
 /// true. A bool, null, or array operand is decided before any of that (`NAN >
 /// false` is true, `NAN < []` is true), so those pairs are never unordered.
+///
+/// Ordered by how often each test decides it: every comparison in a program
+/// runs this, and almost none of them has a float operand at all, so the NaN
+/// test comes first and rejects the whole thing in one match per operand.
+#[inline]
 fn is_unordered(a: &Value, b: &Value) -> bool {
-    let decided_by_type = |v: &Value| matches!(v, Value::Bool(_) | Value::Undef | Value::Obj(_));
-    if decided_by_type(a) || decided_by_type(b) {
+    #[inline]
+    fn is_nan(v: &Value) -> bool {
+        matches!(v, Value::Float(f) if f.is_nan())
+    }
+    if !is_nan(a) && !is_nan(b) {
         return false;
     }
-    matches!(a, Value::Float(f) if f.is_nan()) || matches!(b, Value::Float(f) if f.is_nan())
+    #[inline]
+    fn decided_by_type(v: &Value) -> bool {
+        matches!(v, Value::Bool(_) | Value::Undef | Value::Obj(_))
+    }
+    !decided_by_type(a) && !decided_by_type(b)
 }
 
 /// A comparison operand read as a NUMBER, using PHP's numeric-string grammar.
@@ -2720,7 +2732,7 @@ pub(crate) fn unsupported_operands(sym: &str, a: &Value, b: &Value) -> String {
 /// throws without warning at all.
 pub(crate) fn coerce_arith(sym: &str, a: &Value, b: &Value, left: bool) -> Result<Value, String> {
     let v = if left { a } else { b };
-    match with_host(|h| host::classify_arith(h, v)) {
+    match host::classify_arith(v) {
         host::ArithOperand::Numeric(n) => Ok(n),
         host::ArithOperand::Leading(n) => {
             with_host(|h| h.warn("A non-numeric value encountered"));
@@ -2750,7 +2762,7 @@ pub fn numeric_hook_sited(call: NumericCall<'_>, lines: &[u32]) -> Result<Value,
     if op == NumOp::Add && with_host(|h| h.is_array(a) && h.is_array(b)) {
         return Ok(array_union(a, b));
     }
-    with_host(|h| h.set_warn_line(lines.get(call.ip).copied().unwrap_or(0)));
+    host::set_warn_line(lines.get(call.ip).copied().unwrap_or(0));
     let sym = op_symbol(op);
     if op == NumOp::Neg {
         // Unary minus is `$x * -1`, so the reported right-hand type is `int`.
@@ -5582,7 +5594,7 @@ fn php_array_fold(h: &mut host::PhpHost, arr: &Value, product: bool) -> Value {
     // diagnostics in element order, BEFORE the fold picks an integer or float path.
     let mut terms: Vec<Value> = Vec::with_capacity(pairs.len());
     for (_, v) in pairs.drain(..) {
-        let n = match host::classify_arith(h, &v) {
+        let n = match host::classify_arith(&v) {
             host::ArithOperand::Numeric(n) => n,
             host::ArithOperand::Leading(n) => {
                 h.warn("A non-numeric value encountered");

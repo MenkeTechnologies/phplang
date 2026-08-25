@@ -10,10 +10,10 @@
 
 use crate::ast::{TypeHint, Visibility};
 use crate::errlevel;
-use fusevm::{Chunk, VMResult, Value, VM};
+use fusevm::{Chunk, VMResult, Value};
 use indexmap::IndexMap;
 use rustc_hash::{FxHashMap, FxHashSet};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 /// Builtin ids emitted by the compiler and registered on every VM.
 pub mod ops {
@@ -722,10 +722,6 @@ pub struct PhpHost {
     /// no `include`, so a run is exactly one file and the two readings coincide;
     /// the flag is therefore whole-program without being unfaithful.
     strict_types: bool,
-    /// The source line a diagnostic raised right now belongs to. The builtin that
-    /// is about to warn records it from the line table of the op it is executing,
-    /// so the host never has to walk the VM.
-    warn_line: u32,
     /// Nesting depth of `@expr` suppression regions; a warning raised while this
     /// is non-zero is discarded.
     suppress: usize,
@@ -1084,7 +1080,6 @@ impl PhpHost {
             static_slots: FxHashMap::default(),
             enum_case_cache: FxHashMap::default(),
             script_name: "Command line code".to_string(),
-            warn_line: 0,
             suppress: 0,
             pending_lsb: None,
             ret_ref_slot: None,
@@ -1462,12 +1457,6 @@ impl PhpHost {
         &self.script_name
     }
 
-    /// Record the line a diagnostic raised next belongs to. Called by the builtin
-    /// that is about to warn, from the line table of the op it is executing.
-    pub fn set_warn_line(&mut self, line: u32) {
-        self.warn_line = line;
-    }
-
     /// The line the innermost frame is executing — where an exception created
     /// right now records itself as having been raised, and the call site the
     /// frame below it reports in a backtrace.
@@ -1505,7 +1494,7 @@ impl PhpHost {
     /// output buffer or a capture just as `echo` does. The copy `log_errors`
     /// sends to stderr is not reproduced: nothing observes it.
     pub fn warn(&mut self, msg: impl std::fmt::Display) {
-        self.diagnose("Warning", errlevel::E_WARNING, self.warn_line, msg);
+        self.diagnose("Warning", errlevel::E_WARNING, warn_line(), msg);
     }
 
     /// Record whether this run declared `strict_types=1`. Set once, from the
@@ -1643,7 +1632,7 @@ impl PhpHost {
     /// Emit a PHP `Deprecated` diagnostic. Same stream and shape as `warn`,
     /// which is the only thing that distinguishes the severities on output.
     pub fn deprecated(&mut self, msg: impl std::fmt::Display) {
-        self.diagnose("Deprecated", errlevel::E_DEPRECATED, self.warn_line, msg);
+        self.diagnose("Deprecated", errlevel::E_DEPRECATED, warn_line(), msg);
     }
 
     /// `(int) $v` / `intval($v)`: the explicit int cast, with the reference's
@@ -1754,7 +1743,7 @@ impl PhpHost {
 
     /// Emit a PHP `Notice`.
     pub fn notice(&mut self, msg: impl std::fmt::Display) {
-        self.diagnose("Notice", errlevel::E_NOTICE, self.warn_line, msg);
+        self.diagnose("Notice", errlevel::E_NOTICE, warn_line(), msg);
     }
 
     /// The one place a non-fatal diagnostic is rendered, for every severity.
@@ -3892,15 +3881,10 @@ impl PhpHost {
             // `PHP_INT_MAX` instead of -8446744073709551616.
             Value::Float(f) => ArrayKey::Int(dval_to_lval(*f)),
             Value::Undef => ArrayKey::Str(String::new()),
-            Value::Str(s) => {
-                // A canonical decimal integer string becomes an int key.
-                if let Ok(n) = s.parse::<i64>() {
-                    if n.to_string() == **s {
-                        return ArrayKey::Int(n);
-                    }
-                }
-                ArrayKey::Str(s.to_string())
-            }
+            Value::Str(s) => match canonical_int_key(s) {
+                Some(n) => ArrayKey::Int(n),
+                None => ArrayKey::Str(s.to_string()),
+            },
             Value::Obj(_) => ArrayKey::Str("Array".into()),
             _ => ArrayKey::Str(self.to_str(key)),
         }
@@ -5051,6 +5035,27 @@ fn predefined_constants() -> FxHashMap<String, Value> {
 
 thread_local! {
     static HOST: RefCell<PhpHost> = RefCell::new(PhpHost::new());
+
+    /// The source line a diagnostic raised right now belongs to. The builtin
+    /// that is about to warn records it from the line table of the op it is
+    /// executing, so the host never has to walk the VM.
+    ///
+    /// It lives OUTSIDE `HOST` because it is written far more often than it is
+    /// read: every variable read, every array subscript, and every arithmetic
+    /// operator stamps it so that a diagnostic it MIGHT raise names the right
+    /// line, and hardly any of them raises one. Through `HOST` each of those
+    /// stamps borrowed the entire host through a `RefCell`; this is a store.
+    static WARN_LINE: Cell<u32> = const { Cell::new(0) };
+}
+
+/// Record the line a diagnostic raised next belongs to.
+pub fn set_warn_line(line: u32) {
+    WARN_LINE.with(|c| c.set(line));
+}
+
+/// The line [`set_warn_line`] last recorded.
+pub fn warn_line() -> u32 {
+    WARN_LINE.with(Cell::get)
 }
 
 /// Run `f` with mutable access to the current thread's `PhpHost`.
@@ -5061,6 +5066,7 @@ pub fn with_host<R>(f: impl FnOnce(&mut PhpHost) -> R) -> R {
 /// Reset the host to a fresh state (new heap, new global scope).
 pub fn reset_host() {
     CUR_GEN.with(|c| c.set(None));
+    set_warn_line(0);
     HOST.with(|h| *h.borrow_mut() = PhpHost::new());
 }
 
@@ -5478,13 +5484,31 @@ pub fn call_generator_method(gen: &Value, method: &str, args: Vec<Value>) -> Res
 
 thread_local! {
     static DEBUG_MODE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+
+    /// Recycled VMs for [`run_chunk_on`].
+    ///
+    /// Every PHP function call, method call, closure invocation, constant
+    /// initializer and `eval` runs its own chunk on its own VM. Building one
+    /// meant `VM::new` plus `builtins::install`, which is 120 `register_builtin`
+    /// calls each growing the table — per CALL. `VM::reset` keeps the builtin
+    /// table (and the allocations behind the stack, frames and globals), so a
+    /// recycled VM starts with all of that already in place.
+    ///
+    /// A stack, not a single slot, because calls nest: a recursive PHP function
+    /// holds its VM for the whole call, and a suspended generator holds its VM
+    /// on the coroutine stack, so neither is in the pool to be handed out twice.
+    static VM_POOL: RefCell<fusevm::VMPool> = RefCell::new(fusevm::VMPool::new());
 }
 
 /// Enable/disable DAP debug execution. When on, `run_chunk_on` installs the
 /// extension-handler seam and skips the tracing JIT (which would compile hot
 /// loops and step over the `DBG_LINE` markers the debugger relies on).
+///
+/// Pooled VMs carry both of those settings across a `reset`, so the pool is
+/// dropped here: a VM built under one mode must never be handed to the other.
 pub fn set_debug_mode(on: bool) {
     DEBUG_MODE.with(|d| d.set(on));
+    VM_POOL.with(|p| *p.borrow_mut() = fusevm::VMPool::new());
 }
 
 /// Register every phplang builtin + the strict numeric hook on a VM, then run it.
@@ -5497,33 +5521,52 @@ fn run_chunk_on(chunk: Chunk) -> Result<Value, String> {
     // suspends mid-chunk, and the clone is dwarfed by the `Chunk` clone every
     // call already pays.
     let lines: std::sync::Arc<[u32]> = chunk.lines.as_slice().into();
-    let mut vm = VM::new(chunk);
-    crate::builtins::install(&mut vm);
+    // A recycled VM already has the builtin table; only a fresh one is
+    // installed onto. `VM::reset` keeps the table, the tracing-JIT flag and the
+    // extension handler, which is exactly the state `install` and the mode
+    // branch below would rebuild.
+    let (mut vm, fresh) = VM_POOL.with(|p| {
+        let mut pool = p.borrow_mut();
+        let fresh = pool.is_empty();
+        (pool.acquire(chunk), fresh)
+    });
+    if fresh {
+        crate::builtins::install(&mut vm);
+        if DEBUG_MODE.with(|d| d.get()) {
+            vm.set_extension_handler(Box::new(|vm, id, _| {
+                crate::dap::on_ext(vm, id);
+            }));
+        } else {
+            vm.enable_tracing_jit();
+        }
+    }
+    // Re-set every run: the hook closes over THIS chunk's line table.
     vm.set_sited_numeric_hook(std::sync::Arc::new(move |call| {
         crate::builtins::numeric_hook_sited(call, &lines)
     }));
-    if DEBUG_MODE.with(|d| d.get()) {
-        vm.set_extension_handler(Box::new(|vm, id, _| {
-            crate::dap::on_ext(vm, id);
-        }));
-    } else {
-        vm.enable_tracing_jit();
-    }
     let outcome = vm.run();
-    if let Some(e) = with_host(|h| h.take_error()) {
-        return Err(e);
-    }
-    match outcome {
-        VMResult::Ok(v) => Ok(v),
-        VMResult::Halted => Ok(vm.stack.last().cloned().unwrap_or(Value::Undef)),
+    let err = with_host(|h| h.take_error());
+    let result = match (&err, &outcome) {
+        (Some(_), _) => None,
+        (None, VMResult::Ok(v)) => Some(Ok(v.clone())),
+        (None, VMResult::Halted) => Some(Ok(vm.stack.last().cloned().unwrap_or(Value::Undef))),
         // A builtin raising a PHP exception halts its chunk cleanly, but the
         // numeric hook has no VM handle to do that with — its only way out is
         // an error return. When it leaves an exception pending, that exception
         // is the real signal, so report the stop as a clean halt: every caller
         // (`run_body`, `run_main`, the call dispatcher) already checks for a
         // pending throw on this path, and only that path routes it to `catch`.
-        VMResult::Error(_) if unwinding() => Ok(Value::Undef),
-        VMResult::Error(e) => Err(e),
+        (None, VMResult::Error(_)) if unwinding() => Some(Ok(Value::Undef)),
+        (None, VMResult::Error(e)) => Some(Err(e.clone())),
+    };
+    // Recycled only after the last read of `vm`. A generator that suspended
+    // never gets here — its VM stays on the coroutine stack, which is what
+    // keeps the pool from handing the same VM out twice.
+    VM_POOL.with(|p| p.borrow_mut().release(vm));
+    match (err, result) {
+        (Some(e), _) => Err(e),
+        (None, Some(r)) => r,
+        (None, None) => unreachable!("result is set whenever there is no host error"),
     }
 }
 
@@ -5791,10 +5834,10 @@ fn coerce_arg(p: Option<&Param>, v: Value) -> Result<Result<Value, String>, Stri
                 Some(s) => h.ref_cell_value(s),
                 None => v.clone(),
             };
-            let saved = h.warn_line;
-            h.warn_line = line;
+            let saved = warn_line();
+            set_warn_line(line);
             let r = h.apply_scalar_type(cur, &ty);
-            h.warn_line = saved;
+            set_warn_line(saved);
             r.map(|converted| match slot {
                 Some(s) => {
                     h.ref_cell_set(s, converted);
@@ -5814,10 +5857,10 @@ fn coerce_arg(p: Option<&Param>, v: Value) -> Result<Result<Value, String>, Stri
     // — so the diagnostic line is moved for the duration of the check and put back
     // after it, leaving the caller's line intact for anything the body warns about.
     Ok(with_host(|h| {
-        let saved = h.warn_line;
-        h.warn_line = p.line;
+        let saved = warn_line();
+        set_warn_line(p.line);
         let r = h.apply_scalar_type(v, &ty);
-        h.warn_line = saved;
+        set_warn_line(saved);
         r
     }))
 }
@@ -7433,6 +7476,31 @@ pub fn is_numeric_string(s: &str) -> bool {
     parse_php_number_full(s).is_some()
 }
 
+/// The int key a STRING array key folds to, or `None` when it stays a string.
+///
+/// PHP folds a key that is written as a CANONICAL decimal integer — no sign
+/// but `-`, no leading zeros, no `+`, and inside `i64` — and leaves every other
+/// string alone. The shape is checked BEFORE parsing so the common non-numeric
+/// key (`"name"`, `"k12"`) is rejected on its first byte, and the old
+/// round-trip test `n.to_string() == **s`, which allocated a `String` for every
+/// numeric-looking key just to compare it, is gone.
+pub fn canonical_int_key(s: &str) -> Option<i64> {
+    let b = s.as_bytes();
+    let digits = match b.first()? {
+        b'-' => &b[1..],
+        _ => b,
+    };
+    // No empty digit run, no leading zero (but "0" itself folds), and "-0" is
+    // not canonical — PHP keeps it as the string key it was written as.
+    if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    if digits[0] == b'0' && (digits.len() > 1 || b[0] == b'-') {
+        return None;
+    }
+    s.parse::<i64>().ok()
+}
+
 /// How PHP reads the subscript of a STRING receiver, `$s[k]`.
 pub enum StrOffset {
     /// A byte offset. The flag is set when the key had to be CONVERTED to get
@@ -7530,7 +7598,11 @@ pub enum ArithOperand {
 /// used to be `9` and is now a `TypeError`, while `"5g" + 1` used to be silent
 /// and is now a warning that still yields `6`. Booleans and `null` were left
 /// alone by that change and still convert without complaint.
-pub fn classify_arith(h: &PhpHost, v: &Value) -> ArithOperand {
+/// Takes no host: every arm is decided by the operand ALONE. It used to take
+/// one and ignore it, which cost the caller a thread-local lookup and a
+/// `RefCell` borrow of the whole host per arithmetic operand — on the hot path
+/// of every `%`, `intdiv`, and bitwise operator in a program.
+pub fn classify_arith(v: &Value) -> ArithOperand {
     match v {
         Value::Int(_) | Value::Float(_) => ArithOperand::Numeric(v.clone()),
         Value::Bool(b) => ArithOperand::Numeric(Value::int(*b as i64)),
@@ -7545,10 +7617,7 @@ pub fn classify_arith(h: &PhpHost, v: &Value) -> ArithOperand {
         },
         // Arrays and objects have no arithmetic reading. `__toString` is not
         // consulted here: the reference reports `Closure + int`, not `string`.
-        _ => {
-            let _ = h;
-            ArithOperand::Unsupported
-        }
+        _ => ArithOperand::Unsupported,
     }
 }
 
