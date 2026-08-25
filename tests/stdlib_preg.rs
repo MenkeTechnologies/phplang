@@ -1175,3 +1175,88 @@ fn a_negative_offset_counts_back_from_the_end_and_clamps() {
         "2"
     );
 }
+
+// ── the compiled-pattern cache ───────────────────────────────────────────────
+//
+// Compiled patterns are memoized by pattern text (src/stdlib/preg.rs). These
+// pin the three properties a memoization can silently break; each one passes
+// trivially with no cache at all and fails against a cache that gets it wrong.
+
+#[test]
+fn a_cached_pattern_still_distinguishes_its_modifiers_and_delimiters() {
+    // The KEY is the whole pattern argument. Keying on the body alone makes the
+    // second call in each pair reuse the first's engine and answer with it.
+    assert_eq!(
+        run(r#"<?php echo preg_match('/A/i', 'a'), preg_match('/A/', 'a');"#),
+        "10"
+    );
+    assert_eq!(
+        run(r#"<?php echo preg_match('/a.b/s', "a\nb"), preg_match('/a.b/', "a\nb");"#),
+        "10"
+    );
+    assert_eq!(
+        run(r#"<?php echo preg_match('/^b$/m', "a\nb"), preg_match('/^b$/', "a\nb");"#),
+        "10"
+    );
+    // Same body, different delimiters: both compile, and to the same thing.
+    assert_eq!(
+        run(r#"<?php echo preg_match('/x/', 'x'), preg_match('#x#', 'x');"#),
+        "11"
+    );
+}
+
+#[test]
+fn an_invalid_pattern_is_reported_on_every_use_not_only_the_first() {
+    // A memoized FAILURE has to replay its diagnostic. Caching only successes,
+    // or caching the failure without replaying it, leaves the second and third
+    // calls silent — the reference warns on all three.
+    let out =
+        run(r#"<?php for ($i = 0; $i < 3; $i++) { var_dump(preg_match('/[unclosed/', 'x')); }"#);
+    assert_eq!(
+        out.matches("Compilation failed").count(),
+        3,
+        "expected one warning per call, got: {out:?}"
+    );
+    assert_eq!(out.matches("bool(false)").count(), 3);
+    // And `preg_last_error()` still reflects the failure after the last one.
+    assert_eq!(
+        run(
+            r#"<?php @preg_match('/[unclosed/', 'x'); @preg_match('/[unclosed/', 'x');
+               echo preg_last_error_msg();"#
+        ),
+        "Internal error"
+    );
+}
+
+#[test]
+fn a_reused_pattern_keeps_per_call_state_out_of_the_engine() {
+    // A shared engine must not carry anything from the previous call: the same
+    // pattern used again reports its own matches, its own offsets, and its own
+    // `$matches` binding.
+    assert_eq!(
+        run(r#"<?php $r = '';
+               foreach (['a1', 'b22', 'c333'] as $s) {
+                   preg_match('/(\d+)/', $s, $m);
+                   $r .= $m[1] . '|';
+               }
+               echo $r;"#),
+        "1|22|333|"
+    );
+    assert_eq!(
+        run(r#"<?php $r = '';
+               foreach (['aaa', 'a', ''] as $s) { $r .= preg_match_all('/a/', $s) . '|'; }
+               echo $r;"#),
+        "3|1|0|"
+    );
+    // preg_replace over the same pattern, with the $count out-parameter, which
+    // is the most obvious place a leaked counter would show.
+    assert_eq!(
+        run(r#"<?php $r = '';
+               foreach (['a1b2', 'x', '9'] as $s) {
+                   preg_replace('/\d/', '#', $s, -1, $n);
+                   $r .= $n . '|';
+               }
+               echo $r;"#),
+        "2|0|1|"
+    );
+}

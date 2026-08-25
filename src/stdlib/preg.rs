@@ -106,6 +106,9 @@
 
 use crate::host::with_host;
 use fusevm::Value;
+use rustc_hash::FxHashMap;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 // PCRE (PHP without `/u`) matches BYTES, not Unicode codepoints. The bytes
 // engine is the default; the `/u` flag re-enables Unicode on the builder.
@@ -1099,13 +1102,17 @@ fn brace_quantifier(c: &[char], open: usize) -> Option<(Option<u64>, Option<u64>
 /// is what makes it observable across calls: a successful compile clears it even
 /// when the match then fails, so `preg_last_error()` reports the LAST pattern
 /// the engine compiled and not the last one that failed.
-pub(crate) fn compile_for(func: &str, pat: &str) -> Option<Pattern> {
-    match compile(pat) {
-        Ok(re) => {
+pub(crate) fn compile_for(func: &str, pat: &str) -> Option<Rc<Pattern>> {
+    // The OUTCOME is memoized, and its side effects are replayed on every call.
+    // That is what keeps an invalid pattern warning each time it is used rather
+    // than only the first time, and keeps `preg_last_error()` reporting the
+    // last pattern this call compiled.
+    match cached_compile(pat) {
+        Cached::Ok(re) => {
             with_host(|h| h.set_preg_error(PREG_NO_ERROR));
             Some(re)
         }
-        Err(PatternError::Php(msg)) => {
+        Cached::Php(msg) => {
             with_host(|h| {
                 h.set_preg_error(PREG_INTERNAL_ERROR);
                 h.warn(format_args!("{func}(): {msg}"));
@@ -1114,8 +1121,61 @@ pub(crate) fn compile_for(func: &str, pat: &str) -> Option<Pattern> {
         }
         // Silent: the reference compiled this one, so it has no error state to
         // copy and no warning to print.
-        Err(PatternError::Unsupported) => None,
+        Cached::Unsupported => None,
     }
+}
+
+/// A memoized compile outcome. Cloning shares the compiled engine.
+#[derive(Clone)]
+enum Cached {
+    Ok(Rc<Pattern>),
+    Php(String),
+    Unsupported,
+}
+
+/// How many distinct patterns are kept before the cache is emptied.
+///
+/// The reference bounds its own compiled-pattern cache the same way and clears
+/// it wholesale when full (`pcre_clean_cache`), which is what keeps a program
+/// that builds patterns from data — `preg_match("/$needle/", …)` in a loop over
+/// a large list — from growing this without limit.
+const PATTERN_CACHE_LIMIT: usize = 4096;
+
+thread_local! {
+    /// Compiled patterns, keyed by the pattern EXACTLY as the program wrote it.
+    ///
+    /// The key is the whole argument — delimiters and trailing modifiers
+    /// included — because `/a/i` and `/a/` are different engines and `#a#` and
+    /// `/a/` are the same one only by accident of body.
+    ///
+    /// `preg_*` take their pattern as a runtime string, so a match inside a loop
+    /// handed the same text to the compiler on every iteration: building the
+    /// regex (`aho_corasick` NFA construction, `regex_automata` byte classes)
+    /// dominated the profile of a `preg_match`/`preg_split`/`preg_replace` pass
+    /// over 20k lines. The reference caches compiled patterns too, so this is
+    /// parity of cost as well as of answer.
+    static PATTERN_CACHE: RefCell<FxHashMap<String, Cached>> =
+        RefCell::new(FxHashMap::default());
+}
+
+/// [`compile`], memoized. See [`PATTERN_CACHE`].
+fn cached_compile(pat: &str) -> Cached {
+    if let Some(hit) = PATTERN_CACHE.with(|c| c.borrow().get(pat).cloned()) {
+        return hit;
+    }
+    let outcome = match compile(pat) {
+        Ok(re) => Cached::Ok(Rc::new(re)),
+        Err(PatternError::Php(msg)) => Cached::Php(msg),
+        Err(PatternError::Unsupported) => Cached::Unsupported,
+    };
+    PATTERN_CACHE.with(|c| {
+        let mut map = c.borrow_mut();
+        if map.len() >= PATTERN_CACHE_LIMIT {
+            map.clear();
+        }
+        map.insert(pat.to_string(), outcome.clone());
+    });
+    outcome
 }
 
 // ── preg_match / preg_match_all ──────────────────────────────────────────────
@@ -1472,7 +1532,7 @@ fn preg_replace(args: &[Value]) -> Result<Value, String> {
     let limit = args.get(3).map(|v| v.to_int()).unwrap_or(-1);
 
     // Pre-compile the patterns; a bad pattern makes the whole call return null.
-    let mut compiled: Vec<(Pattern, String)> = Vec::with_capacity(pats.len());
+    let mut compiled: Vec<(Rc<Pattern>, String)> = Vec::with_capacity(pats.len());
     for (idx, p) in pats.iter().enumerate() {
         let Some(re) = compile_for("preg_replace", p) else {
             return Ok(Value::Undef);
@@ -1520,7 +1580,7 @@ fn preg_replace_callback(args: &[Value]) -> Result<Value, String> {
     let cb = arg(args, 1);
     let limit = args.get(3).map(|v| v.to_int()).unwrap_or(-1);
 
-    let mut compiled: Vec<Pattern> = Vec::with_capacity(pats.len());
+    let mut compiled: Vec<Rc<Pattern>> = Vec::with_capacity(pats.len());
     for p in &pats {
         let Some(re) = compile_for("preg_replace_callback", p) else {
             return Ok(Value::Undef);
