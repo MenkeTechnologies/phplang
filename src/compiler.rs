@@ -1325,6 +1325,7 @@ impl Compiler {
             let saved = std::mem::take(&mut self.loops);
             // Constructor property promotion: `public int $x` also assigns
             // `$this->x = $x` before the body runs.
+            let mut promotions: Vec<Expr> = Vec::new();
             if m.name.eq_ignore_ascii_case("__construct") {
                 for p in m.params.iter().filter(|p| p.promoted) {
                     // A promoted parameter DECLARES the property, so the synthetic
@@ -1336,20 +1337,30 @@ impl Compiler {
                     if p.readonly || decl.is_readonly {
                         readonly_props.insert(p.name.clone());
                     }
-                    let assign = Expr::Assign(
+                    promotions.push(Expr::Assign(
                         Box::new(Expr::PropGet(
                             Box::new(Expr::Var("this".to_string())),
                             p.name.clone(),
                         )),
                         None,
                         Box::new(Expr::Var(p.name.clone())),
-                    );
-                    self.compile_expr(&mut mb, &assign)?;
-                    mb.emit(Op::Pop, 0);
+                    ));
                 }
             }
             let saved_ref = std::mem::replace(&mut self.ret_by_ref, m.by_ref_return);
-            self.in_other_frame(|c| c.compile_seq(&mut mb, &m.body))?;
+            // The promotions run in the CONSTRUCTOR's frame, so they are lowered
+            // inside it. Compiled outside, `$x` on the right-hand side was
+            // numbered against the ENCLOSING scope's slots — so a top-level
+            // variable of the same name as a promoted parameter made
+            // `$this->x = $x` read whatever the constructor frame happened to
+            // hold at that index instead of the parameter.
+            self.in_other_frame(|c| {
+                for assign in &promotions {
+                    c.compile_expr(&mut mb, assign)?;
+                    mb.emit(Op::Pop, 0);
+                }
+                c.compile_seq(&mut mb, &m.body)
+            })?;
             self.ret_by_ref = saved_ref;
             self.loops = saved;
             methods.insert(
@@ -2132,8 +2143,9 @@ impl Compiler {
                 uses,
                 body,
                 ret,
+                is_static,
             } => {
-                self.compile_closure(b, params, uses, body, ret.as_ref())?;
+                self.compile_closure(b, params, uses, body, ret.as_ref(), *is_static)?;
             }
             Expr::ArrowFn {
                 params,
@@ -2159,7 +2171,7 @@ impl Compiler {
                         by_ref: false,
                     })
                     .collect();
-                self.compile_closure(b, params, &captures, &ret, ret_ty.as_ref())?;
+                self.compile_closure(b, params, &captures, &ret, ret_ty.as_ref(), false)?;
             }
             // The declaration is compiled here, once, and the expression becomes
             // an ordinary `new` on the name it was given — so re-evaluating it
@@ -3404,6 +3416,7 @@ impl Compiler {
         captures: &[Capture],
         body: &[Stmt],
         ret: Option<&TypeHint>,
+        is_static: bool,
     ) -> Result<(), String> {
         let cparams = self.compile_params(params)?;
         let mut fb = ChunkBuilder::new();
@@ -3428,6 +3441,15 @@ impl Compiler {
 
         let nidx = b.add_constant(Value::str(def_name));
         b.emit(Op::LoadConst(nidx), 0);
+        if is_static {
+            // A `static` closure travels as an ordinary capture under a name no
+            // PHP variable can have, which is how the creation site tells the
+            // host to withhold `$this`. The class SCOPE still passes, so a
+            // private static stays reachable — only the instance is withheld.
+            let kidx = b.add_constant(Value::str(host::STATIC_CLOSURE_CAPTURE.to_string()));
+            b.emit(Op::LoadConst(kidx), 0);
+            b.emit(Op::LoadTrue, 0);
+        }
         for cap in captures {
             let cidx = b.add_constant(Value::str(cap.name.clone()));
             b.emit(Op::LoadConst(cidx), 0);
@@ -3451,7 +3473,10 @@ impl Compiler {
             }
         }
         b.emit(
-            Op::CallBuiltin(ops::MKCLOSURE, (1 + captures.len() * 2) as u8),
+            Op::CallBuiltin(
+                ops::MKCLOSURE,
+                (1 + (captures.len() + usize::from(is_static)) * 2) as u8,
+            ),
             0,
         );
         Ok(())

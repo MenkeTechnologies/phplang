@@ -177,7 +177,11 @@ fn yield_err(vm: &mut VM, e: String) -> Value {
         vm.ip = vm.chunk.ops.len();
         Value::Undef
     } else {
-        fail(vm, e)
+        // A generator method can refuse the call with a real PHP exception —
+        // `getReturn()` before the body has returned — so a tagged throw has to
+        // become one rather than stopping the run with a scaffold message. An
+        // untagged error still falls through to `fail`.
+        fail_or_throw(vm, e)
     }
 }
 

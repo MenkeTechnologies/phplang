@@ -2565,6 +2565,34 @@ impl Parser {
             Some(Tok::Ident(kw)) if kw.eq_ignore_ascii_case("match") && self.at_punct("(") => {
                 self.match_expr()
             }
+            // `static function (…)` / `static fn (…)` — a closure that is NOT
+            // bound to `$this`. The keyword only affects the binding, so the
+            // closure itself is parsed by the arms below.
+            Some(Tok::Ident(kw))
+                if kw.eq_ignore_ascii_case("static")
+                    && matches!(self.peek(), Some(Tok::Ident(k))
+                        if k.eq_ignore_ascii_case("fn") || k.eq_ignore_ascii_case("function")) =>
+            {
+                Ok(match self.primary()? {
+                    Expr::Closure {
+                        params,
+                        uses,
+                        body,
+                        ret,
+                        ..
+                    } => Expr::Closure {
+                        params,
+                        uses,
+                        body,
+                        ret,
+                        is_static: true,
+                    },
+                    // `static fn (…)`: an arrow function captures by value and
+                    // reads no `$this` it was not given, so the keyword changes
+                    // nothing observable about it.
+                    other => other,
+                })
+            }
             // An anonymous function `function (params) [use (vars)] { body }`.
             // (A *named* function is a statement, caught in `statement()`; only
             // the expression form — `function (` — reaches here.)
@@ -2596,6 +2624,7 @@ impl Parser {
                     uses,
                     body,
                     ret,
+                    is_static: false,
                 })
             }
             // An arrow function `fn (params) => expr` — implicit by-value capture.

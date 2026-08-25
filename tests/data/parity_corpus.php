@@ -449,3 +449,43 @@ ty2(fn() => array_keys(1.5));
 // clause is dropped when that is the line being reported anyway.
 var_dump(1);
 $a = [1
+#==#
+// `static` closures: not bound to the `$this` of the method they were written
+// in, and no instance may be given to one afterwards.
+class SC { public $p = 7;
+  public function normal() { $f = function () { return $this->p; }; return $f(); }
+  public function stat() { $f = static function () { return isset($this) ? "has" : "none"; }; return $f(); }
+}
+$sc = new SC();
+var_dump($sc->normal(), $sc->stat());
+$sf = static fn($x) => $x + 1;
+var_dump($sf(1));
+$sg = static function ($x) { return $x * 2; };
+var_dump($sg(3));
+var_dump(Closure::bind($sg, new SC(), SC::class));
+// An ordinary closure still binds.
+$of = function () { return $this->p; };
+var_dump(Closure::bind($of, new SC(), SC::class)());
+#==#
+// A promoted constructor parameter assigns in the CONSTRUCTOR's frame, so a
+// variable of the same name at the call site cannot reach it.
+class Prom { public function __construct(public int $b = 0, public int $v = 0) {} }
+$b = new Prom(b: 5);
+var_dump($b->b, $b->v);
+$v = new Prom(3, 4);
+var_dump($v->b, $v->v);
+class Prom2 { public function __construct(public int $a = 1, public int $b = 2) {} }
+$p = new Prom2(b: 9);
+var_dump($p->a, $p->b);
+#==#
+// `getReturn()` before the body has returned is refused, not answered with null
+// — the reference cannot tell "returned nothing" from "has not returned yet".
+function genr() { yield 1; return 99; }
+$g = genr();
+try { var_dump($g->getReturn()); } catch (\Throwable $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+foreach ($g as $_) {}
+var_dump($g->getReturn());
+function genr2() { yield 1; }
+$h = genr2();
+foreach ($h as $_) {}
+var_dump($h->getReturn());

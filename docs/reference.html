@@ -44,7 +44,7 @@
             <span class="sep">/</span>
             <a href="https://github.com/MenkeTechnologies/phplang" target="_blank" rel="noopener noreferrer">GitHub</a>
           </nav>
-          <p class="docs-build-line">phplang v0.1.1 · PHP on fusevm · lex/parse → AST → fusevm bytecode → Cranelift JIT · no bespoke VM · the first compiled standalone PHP runtime · MIT · in active development</p>
+          <p class="docs-build-line">phplang v0.2.0 · PHP on fusevm · lex/parse → AST → fusevm bytecode → Cranelift JIT · no bespoke VM · the first compiled standalone PHP runtime · MIT · in active development</p>
         </div>
         <div class="tutorial-toolbar">
           <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
@@ -296,8 +296,9 @@ const G = 1, H = G + 1; echo H;   // =&gt; 2</code></pre>
 static function m() { … }
 static public $prop;
 static::member</code></pre>
-          <p>Four roles, told apart by what follows. Before a `$variable` in a function body it declares a static local that survives between calls; before a member it marks it static; as a `::` qualifier it is late static binding. DIVERGENCE: `static function () { … }` as a closure modifier is NOT parsed and is a syntax error.</p>
-          <pre><code class="lang-php">class A { static $n = 4; } echo A::$n;   // =&gt; 4</code></pre>
+          <p>Four roles, told apart by what follows. Before a `$variable` in a function body it declares a static local that survives between calls; before a member it marks it static; as a `::` qualifier it is late static binding; and before `function`/`fn` it makes a CLOSURE static, so it is not bound to the `$this` of the method it was written in and `Closure::bind` refuses to give it one afterwards (warning `Cannot bind an instance to a static closure, this will be an error in PHP 9` and answering null). It keeps that method's class scope, so a private static stays reachable.</p>
+          <pre><code class="lang-php">class A { static $n = 4; } echo A::$n;   // =&gt; 4
+$f = static fn($x) =&gt; $x + 1; echo $f(1);   // =&gt; 2</code></pre>
         </article>
         <article class="doc-entry" id="doc-keyword-35">
           <h3><a class="doc-anchor" href="#doc-keyword-35">#</a> <code>public</code></h3>
@@ -412,6 +413,12 @@ echo (new B)-&gt;f();   // =&gt; 9</code></pre>
           <pre><code class="lang-php">expr or expr</code></pre>
           <p>Logical OR that short-circuits. It carries the same precedence as `||`, with the same divergence from PHP's low-precedence `or` described under `and`. There is no `xor` — it is not a token the parser recognizes.</p>
           <pre><code class="lang-php">echo (false or true) ? "y" : "n";   // =&gt; y</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-keyword-53">
+          <h3><a class="doc-anchor" href="#doc-keyword-53">#</a> <code>global</code></h3>
+          <pre><code class="lang-php">global $var[, $var …];</code></pre>
+          <p>Binds each name to the GLOBAL variable of that name for the rest of the function. It is a reference, not a copy: a write through either side is seen by the other, and a global that does not exist yet is created by the binding. `unset()` on the local breaks the alias and leaves the global alone. Without the declaration the name is an ordinary, unrelated local. At global scope there is no second frame to bind to and the statement does nothing.</p>
+          <pre><code class="lang-php">$g = 1; function f() { global $g; $g = 2; } f(); echo $g;   // =&gt; 2</code></pre>
         </article>
       </section>
 
@@ -531,210 +538,217 @@ echo add(2, 3);   // =&gt; 5</code></pre>
       <section class="tutorial-section" id="ch-operator">
         <h2>Operator</h2>
         <article class="doc-entry" id="doc-operator-1">
-          <h3><a class="doc-anchor" href="#doc-operator-1">#</a> <code>+</code></h3>
+          <h3><a class="doc-anchor" href="#doc-operator-1">#</a> <code>$$</code></h3>
+          <pre><code class="lang-php">$$name
+${expr}</code></pre>
+          <p>A variable VARIABLE: the operand is evaluated and its string value names the variable to read or write, so the name is not known until it runs. `$$x` nests, so `$$$x` is two lookups, and `${expr}` takes any expression. What it names is an ordinary variable — assignable, unsettable, and acceptable where a by-reference parameter wants a location. A quiet context reads through it without the undefined-variable warning.</p>
+          <pre><code class="lang-php">$a = 5; $n = 'a'; echo $$n, ' ', ${'a'};   // =&gt; 5 5</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-operator-2">
+          <h3><a class="doc-anchor" href="#doc-operator-2">#</a> <code>+</code></h3>
           <pre><code class="lang-php">expr + expr   //  binary;   +expr   //  unary</code></pre>
           <p>Numeric addition, or array union when BOTH operands are arrays — the left operand's entries win and the right contributes only the keys it lacks. Under PHP 8 a string operand with no numeric prefix (`"g"`, `""`, `"   "`) makes the whole operation a `TypeError: Unsupported operand types: string + int`, while one that merely trails garbage (`"5g"`) raises `Warning: A non-numeric value encountered` and continues with its prefix. Operands resolve left before right, so `"5g" + "g"` warns and then throws while `"g" + "5g"` throws without warning.</p>
           <pre><code class="lang-php">echo 2 + 3;   // =&gt; 5</code></pre>
         </article>
-        <article class="doc-entry" id="doc-operator-2">
-          <h3><a class="doc-anchor" href="#doc-operator-2">#</a> <code>-</code></h3>
+        <article class="doc-entry" id="doc-operator-3">
+          <h3><a class="doc-anchor" href="#doc-operator-3">#</a> <code>-</code></h3>
           <pre><code class="lang-php">expr - expr   //  binary;   -expr   //  unary</code></pre>
           <p>Numeric subtraction and arithmetic negation. Unary minus binds looser than `**`, so `-2 ** 2` is `-(2 ** 2)`. Both unary signs are multiplications to the engine, which is why `-"g"` and `+"g"` report `Unsupported operand types: string * int`.</p>
           <pre><code class="lang-php">echo 7 - 2, " ", -2 ** 2;   // =&gt; 5 -4</code></pre>
         </article>
-        <article class="doc-entry" id="doc-operator-3">
-          <h3><a class="doc-anchor" href="#doc-operator-3">#</a> <code>*</code></h3>
+        <article class="doc-entry" id="doc-operator-4">
+          <h3><a class="doc-anchor" href="#doc-operator-4">#</a> <code>*</code></h3>
           <pre><code class="lang-php">expr * expr</code></pre>
           <p>Numeric multiplication. Integer operands stay integers unless the result overflows into a float.</p>
           <pre><code class="lang-php">echo 6 * 7;   // =&gt; 42</code></pre>
         </article>
-        <article class="doc-entry" id="doc-operator-4">
-          <h3><a class="doc-anchor" href="#doc-operator-4">#</a> <code>/</code></h3>
+        <article class="doc-entry" id="doc-operator-5">
+          <h3><a class="doc-anchor" href="#doc-operator-5">#</a> <code>/</code></h3>
           <pre><code class="lang-php">expr / expr</code></pre>
           <p>Division. Two integers that divide exactly yield an integer, otherwise a float. A zero divisor throws a catchable `DivisionByZeroError` with the message `Division by zero`.</p>
           <pre><code class="lang-php">echo 7 / 2;   // =&gt; 3.5</code></pre>
         </article>
-        <article class="doc-entry" id="doc-operator-5">
-          <h3><a class="doc-anchor" href="#doc-operator-5">#</a> <code>%</code></h3>
+        <article class="doc-entry" id="doc-operator-6">
+          <h3><a class="doc-anchor" href="#doc-operator-6">#</a> <code>%</code></h3>
           <pre><code class="lang-php">expr % expr</code></pre>
           <p>Integer remainder, taking the sign of the left operand. Both operands are cast to integers first, so `7.5 % 2` is `1`. A zero divisor throws a catchable `DivisionByZeroError` with the message `Modulo by zero`.</p>
           <pre><code class="lang-php">echo 7 % 3;   // =&gt; 1</code></pre>
         </article>
-        <article class="doc-entry" id="doc-operator-6">
-          <h3><a class="doc-anchor" href="#doc-operator-6">#</a> <code>**</code></h3>
+        <article class="doc-entry" id="doc-operator-7">
+          <h3><a class="doc-anchor" href="#doc-operator-7">#</a> <code>**</code></h3>
           <pre><code class="lang-php">expr ** expr</code></pre>
           <p>Exponentiation. It is right-associative and binds tighter than unary minus, and its right operand may itself be a unary expression, so `2 ** -1` parses.</p>
           <pre><code class="lang-php">echo 2 ** 3 ** 2;   // =&gt; 512</code></pre>
         </article>
-        <article class="doc-entry" id="doc-operator-7">
-          <h3><a class="doc-anchor" href="#doc-operator-7">#</a> <code>.</code></h3>
+        <article class="doc-entry" id="doc-operator-8">
+          <h3><a class="doc-anchor" href="#doc-operator-8">#</a> <code>.</code></h3>
           <pre><code class="lang-php">expr . expr</code></pre>
           <p>String concatenation, casting both operands to strings. DIVERGENCE: it carries the SAME precedence as `+` and `-` (PHP 7 behaviour). PHP 8 lowered `.` below the additive operators, so `"x" . 1 + 2` groups as `("x" . 1) + 2` here and evaluates to `2`, where PHP 8 gives `"x3"`.</p>
           <pre><code class="lang-php">echo "a" . "b";   // =&gt; ab
 echo "x" . 1 + 2;   // =&gt; 2   (PHP 8 prints: x3)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-operator-8">
-          <h3><a class="doc-anchor" href="#doc-operator-8">#</a> <code>=</code></h3>
+        <article class="doc-entry" id="doc-operator-9">
+          <h3><a class="doc-anchor" href="#doc-operator-9">#</a> <code>=</code></h3>
           <pre><code class="lang-php">target = expr</code></pre>
           <p>Assignment, right-associative and itself an expression. Arrays and objects are handles, so assigning one aliases the same storage rather than copying it — a divergence from PHP's copy-on-write arrays.</p>
           <pre><code class="lang-php">$a = 5; echo $a;   // =&gt; 5</code></pre>
         </article>
-        <article class="doc-entry" id="doc-operator-9">
-          <h3><a class="doc-anchor" href="#doc-operator-9">#</a> <code>=&amp;</code></h3>
+        <article class="doc-entry" id="doc-operator-10">
+          <h3><a class="doc-anchor" href="#doc-operator-10">#</a> <code>=&amp;</code></h3>
           <pre><code class="lang-php">$target = &amp;expr</code></pre>
           <p>Reference binding: the target becomes another name for the same storage cell rather than a copy of its value.</p>
           <pre><code class="lang-php">$a = 1; $b = &amp;$a; $b = 9; echo $a;   // =&gt; 9</code></pre>
         </article>
-        <article class="doc-entry" id="doc-operator-10">
-          <h3><a class="doc-anchor" href="#doc-operator-10">#</a> <code>+= -= *= /= %= .= **=</code></h3>
+        <article class="doc-entry" id="doc-operator-11">
+          <h3><a class="doc-anchor" href="#doc-operator-11">#</a> <code>+= -= *= /= %= .= **=</code></h3>
           <pre><code class="lang-php">target op= expr</code></pre>
           <p>The arithmetic and string compound assignments. Each reads the target, applies the matching binary operator, and stores the result back — including that operator's PHP 8 operand rules, so `$x = "g"; $x += 9;` is a `TypeError` just as `"g" + 9` is.</p>
           <pre><code class="lang-php">$x = 10; $x += 5; $x .= "!"; echo $x;   // =&gt; 15!</code></pre>
         </article>
-        <article class="doc-entry" id="doc-operator-11">
-          <h3><a class="doc-anchor" href="#doc-operator-11">#</a> <code>&amp;= |= ^= &lt;&lt;= &gt;&gt;=</code></h3>
+        <article class="doc-entry" id="doc-operator-12">
+          <h3><a class="doc-anchor" href="#doc-operator-12">#</a> <code>&amp;= |= ^= &lt;&lt;= &gt;&gt;=</code></h3>
           <pre><code class="lang-php">target op= expr</code></pre>
           <p>The bitwise compound assignments — AND, OR, XOR, left shift, and right shift applied in place.</p>
           <pre><code class="lang-php">$m = 6; $m &amp;= 3; echo $m;   // =&gt; 2</code></pre>
         </article>
-        <article class="doc-entry" id="doc-operator-12">
-          <h3><a class="doc-anchor" href="#doc-operator-12">#</a> <code>??=</code></h3>
+        <article class="doc-entry" id="doc-operator-13">
+          <h3><a class="doc-anchor" href="#doc-operator-13">#</a> <code>??=</code></h3>
           <pre><code class="lang-php">target ??= expr</code></pre>
           <p>Null-coalescing assignment: stores the right-hand value only when the target is null. It desugars to `target = (target ?? expr)`, so the target is read twice.</p>
           <pre><code class="lang-php">$a = null; $a ??= 5; echo $a;   // =&gt; 5</code></pre>
         </article>
-        <article class="doc-entry" id="doc-operator-13">
-          <h3><a class="doc-anchor" href="#doc-operator-13">#</a> <code>==</code></h3>
+        <article class="doc-entry" id="doc-operator-14">
+          <h3><a class="doc-anchor" href="#doc-operator-14">#</a> <code>==</code></h3>
           <pre><code class="lang-php">expr == expr</code></pre>
           <p>Loose equality with PHP 8 string/number comparison: a numeric string compares numerically against a number, while a non-numeric string makes the number a string first — so `"abc" == 0` is false.</p>
           <pre><code class="lang-php">var_dump("10" == 10, "abc" == 0);   // =&gt; bool(true) bool(false)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-operator-14">
-          <h3><a class="doc-anchor" href="#doc-operator-14">#</a> <code>!=</code></h3>
+        <article class="doc-entry" id="doc-operator-15">
+          <h3><a class="doc-anchor" href="#doc-operator-15">#</a> <code>!=</code></h3>
           <pre><code class="lang-php">expr != expr   //  also spelled &lt;&gt;</code></pre>
           <p>Loose inequality — the negation of `==`. The legacy `&lt;&gt;` spelling lexes to the same operator.</p>
           <pre><code class="lang-php">var_dump(1 != 2, 1 &lt;&gt; 1);   // =&gt; bool(true) bool(false)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-operator-15">
-          <h3><a class="doc-anchor" href="#doc-operator-15">#</a> <code>===</code></h3>
+        <article class="doc-entry" id="doc-operator-16">
+          <h3><a class="doc-anchor" href="#doc-operator-16">#</a> <code>===</code></h3>
           <pre><code class="lang-php">expr === expr</code></pre>
           <p>Strict equality: values must share a type and, for arrays and objects, be the same handle. It is also the comparison `match` uses for its arms.</p>
           <pre><code class="lang-php">var_dump("10" === 10, 10 === 10);   // =&gt; bool(false) bool(true)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-operator-16">
-          <h3><a class="doc-anchor" href="#doc-operator-16">#</a> <code>!==</code></h3>
+        <article class="doc-entry" id="doc-operator-17">
+          <h3><a class="doc-anchor" href="#doc-operator-17">#</a> <code>!==</code></h3>
           <pre><code class="lang-php">expr !== expr</code></pre>
           <p>Strict inequality — the negation of `===`. `isset()` desugars to a chain of these against null.</p>
           <pre><code class="lang-php">var_dump("10" !== 10);   // =&gt; bool(true)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-operator-17">
-          <h3><a class="doc-anchor" href="#doc-operator-17">#</a> <code>&lt; &gt; &lt;= &gt;=</code></h3>
+        <article class="doc-entry" id="doc-operator-18">
+          <h3><a class="doc-anchor" href="#doc-operator-18">#</a> <code>&lt; &gt; &lt;= &gt;=</code></h3>
           <pre><code class="lang-php">expr &lt; expr   //  and &gt; &lt;= &gt;=</code></pre>
           <p>Relational comparison using the same loose rules as `==`: numeric where both sides look numeric, string comparison otherwise.</p>
           <pre><code class="lang-php">var_dump(2 &lt; 10, "2" &lt; "10");   // =&gt; bool(true) bool(true)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-operator-18">
-          <h3><a class="doc-anchor" href="#doc-operator-18">#</a> <code>&lt;=&gt;</code></h3>
+        <article class="doc-entry" id="doc-operator-19">
+          <h3><a class="doc-anchor" href="#doc-operator-19">#</a> <code>&lt;=&gt;</code></h3>
           <pre><code class="lang-php">expr &lt;=&gt; expr: int</code></pre>
           <p>The spaceship operator: `-1`, `0`, or `1` as the left operand sorts before, with, or after the right. It is the natural comparator for `usort`.</p>
           <pre><code class="lang-php">echo 10 &lt;=&gt; 3;   // =&gt; 1</code></pre>
         </article>
-        <article class="doc-entry" id="doc-operator-19">
-          <h3><a class="doc-anchor" href="#doc-operator-19">#</a> <code>&amp;&amp; ||</code></h3>
+        <article class="doc-entry" id="doc-operator-20">
+          <h3><a class="doc-anchor" href="#doc-operator-20">#</a> <code>&amp;&amp; ||</code></h3>
           <pre><code class="lang-php">expr &amp;&amp; expr   //  expr || expr</code></pre>
           <p>Short-circuiting logical AND and OR. The right operand is not evaluated when the left already decides the result. Both yield a real boolean.</p>
           <pre><code class="lang-php">var_dump(true &amp;&amp; false, false || true);   // =&gt; bool(false) bool(true)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-operator-20">
-          <h3><a class="doc-anchor" href="#doc-operator-20">#</a> <code>!</code></h3>
+        <article class="doc-entry" id="doc-operator-21">
+          <h3><a class="doc-anchor" href="#doc-operator-21">#</a> <code>!</code></h3>
           <pre><code class="lang-php">!expr: bool</code></pre>
           <p>Logical negation of the operand's truthiness. `empty($x)` desugars to exactly this.</p>
           <pre><code class="lang-php">var_dump(!0, !"a");   // =&gt; bool(true) bool(false)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-operator-21">
-          <h3><a class="doc-anchor" href="#doc-operator-21">#</a> <code>&amp; | ^ ~</code></h3>
+        <article class="doc-entry" id="doc-operator-22">
+          <h3><a class="doc-anchor" href="#doc-operator-22">#</a> <code>&amp; | ^ ~</code></h3>
           <pre><code class="lang-php">expr &amp; expr   //  | ^ ;   ~expr</code></pre>
           <p>Bitwise AND, OR, XOR, and one's-complement NOT over 64-bit integers. Both operands are cast to integers first. DIVERGENCE: `&amp;`/`|`/`^` do not operate byte-wise on strings.</p>
           <pre><code class="lang-php">echo 6 &amp; 3, " ", 6 | 3, " ", 6 ^ 3, " ", ~5;   // =&gt; 2 7 5 -6</code></pre>
         </article>
-        <article class="doc-entry" id="doc-operator-22">
-          <h3><a class="doc-anchor" href="#doc-operator-22">#</a> <code>&lt;&lt; &gt;&gt;</code></h3>
+        <article class="doc-entry" id="doc-operator-23">
+          <h3><a class="doc-anchor" href="#doc-operator-23">#</a> <code>&lt;&lt; &gt;&gt;</code></h3>
           <pre><code class="lang-php">expr &lt;&lt; expr   //  expr &gt;&gt; expr</code></pre>
           <p>Arithmetic left and right shift on 64-bit integers. A shift count at or beyond 64 yields `0` for `&lt;&lt;` and the sign-fill (`0` or `-1`) for `&gt;&gt;` rather than wrapping.</p>
           <pre><code class="lang-php">echo 1 &lt;&lt; 4, " ", -16 &gt;&gt; 2;   // =&gt; 16 -4</code></pre>
         </article>
-        <article class="doc-entry" id="doc-operator-23">
-          <h3><a class="doc-anchor" href="#doc-operator-23">#</a> <code>++ --</code></h3>
+        <article class="doc-entry" id="doc-operator-24">
+          <h3><a class="doc-anchor" href="#doc-operator-24">#</a> <code>++ --</code></h3>
           <pre><code class="lang-php">++target   target++   --target   target--</code></pre>
           <p>Increment and decrement in prefix and postfix position. The prefix form evaluates to the new value, the postfix form to the old one. They apply to variables, array elements, properties, and static properties.</p>
           <pre><code class="lang-php">$i = 5; echo $i++, $i, ++$i;   // =&gt; 567</code></pre>
         </article>
-        <article class="doc-entry" id="doc-operator-24">
-          <h3><a class="doc-anchor" href="#doc-operator-24">#</a> <code>?:</code></h3>
+        <article class="doc-entry" id="doc-operator-25">
+          <h3><a class="doc-anchor" href="#doc-operator-25">#</a> <code>?:</code></h3>
           <pre><code class="lang-php">cond ? then : else
 cond ?: else</code></pre>
           <p>The full ternary and the short `?:` (Elvis) form, which yields the condition itself when it is truthy.</p>
           <pre><code class="lang-php">echo 1 ? "a" : "b", "" ?: "fallback";   // =&gt; afallback</code></pre>
         </article>
-        <article class="doc-entry" id="doc-operator-25">
-          <h3><a class="doc-anchor" href="#doc-operator-25">#</a> <code>??</code></h3>
+        <article class="doc-entry" id="doc-operator-26">
+          <h3><a class="doc-anchor" href="#doc-operator-26">#</a> <code>??</code></h3>
           <pre><code class="lang-php">expr ?? expr</code></pre>
           <p>Null coalescing: the right operand is used when the left is null, and it is quiet about undefined variables and missing keys. Right-associative, so a chain falls through left to right.</p>
           <pre><code class="lang-php">$a = null; echo $a ?? "d";   // =&gt; d</code></pre>
         </article>
-        <article class="doc-entry" id="doc-operator-26">
-          <h3><a class="doc-anchor" href="#doc-operator-26">#</a> <code>-&gt;</code></h3>
+        <article class="doc-entry" id="doc-operator-27">
+          <h3><a class="doc-anchor" href="#doc-operator-27">#</a> <code>-&gt;</code></h3>
           <pre><code class="lang-php">$object-&gt;property   $object-&gt;method(args)</code></pre>
           <p>Instance member access — property read/write and method call. The member name is a bareword; `$o-&gt;$name` is not parsed.</p>
           <pre><code class="lang-php">class C { public $x = 1; function f() { return 2; } }
 $o = new C; echo $o-&gt;x, $o-&gt;f();   // =&gt; 12</code></pre>
         </article>
-        <article class="doc-entry" id="doc-operator-27">
-          <h3><a class="doc-anchor" href="#doc-operator-27">#</a> <code>?-&gt;</code></h3>
+        <article class="doc-entry" id="doc-operator-28">
+          <h3><a class="doc-anchor" href="#doc-operator-28">#</a> <code>?-&gt;</code></h3>
           <pre><code class="lang-php">$object?-&gt;property   $object?-&gt;method(args)</code></pre>
           <p>Nullsafe member access: yields null instead of raising when the left operand is null, short-circuiting the rest of the chain.</p>
           <pre><code class="lang-php">$o = null; var_dump($o?-&gt;x);   // =&gt; NULL</code></pre>
         </article>
-        <article class="doc-entry" id="doc-operator-28">
-          <h3><a class="doc-anchor" href="#doc-operator-28">#</a> <code>::</code></h3>
+        <article class="doc-entry" id="doc-operator-29">
+          <h3><a class="doc-anchor" href="#doc-operator-29">#</a> <code>::</code></h3>
           <pre><code class="lang-php">Class::CONST   Class::$staticProp   Class::method(args)   Class::class   $cls::CONST</code></pre>
           <p>Scope resolution: class constants, static properties, static and parent method calls, and the `::class` name literal. The left side is either a bareword class name — `self`, `parent`, and `static` included — or a dereferenceable expression whose value names the class at run time: a string is the class name, an object contributes its own. A value that is neither is `Error: Class name must be a valid object or a string`, and a string naming nothing is `Error: Class "X" not found`. `::class` is stricter than the rest: it answers for an object only, and refuses even a class-name string with `TypeError: Cannot use "::class" on string`.</p>
           <pre><code class="lang-php">class A { const K = 1; static $s = 2; } $c = "A"; echo A::K, $c::$s, (new A)::class;   // =&gt; 12A</code></pre>
         </article>
-        <article class="doc-entry" id="doc-operator-29">
-          <h3><a class="doc-anchor" href="#doc-operator-29">#</a> <code>[]</code></h3>
+        <article class="doc-entry" id="doc-operator-30">
+          <h3><a class="doc-anchor" href="#doc-operator-30">#</a> <code>[]</code></h3>
           <pre><code class="lang-php">expr[index]   $array[] = expr</code></pre>
           <p>Array and string indexing. A bare `$a[]` on the left of an assignment appends with the next integer key. String indexing is by byte offset and accepts a negative offset counting from the end.</p>
           <pre><code class="lang-php">$a = [1, 2]; $a[] = 3; echo $a[2], "abc"[-1];   // =&gt; 3c</code></pre>
         </article>
-        <article class="doc-entry" id="doc-operator-30">
-          <h3><a class="doc-anchor" href="#doc-operator-30">#</a> <code>...</code></h3>
+        <article class="doc-entry" id="doc-operator-31">
+          <h3><a class="doc-anchor" href="#doc-operator-31">#</a> <code>...</code></h3>
           <pre><code class="lang-php">f(...$array)   function f(...$rest)   strlen(...)</code></pre>
           <p>Three roles for one token: argument unpacking at a call site, a variadic parameter that collects the trailing arguments into an array, and — as the sole argument — PHP 8.1 first-class callable syntax, which builds a real `Closure`.</p>
           <pre><code class="lang-php">function sum(...$n) { return array_sum($n); }
 echo sum(...[1, 2, 3]);   // =&gt; 6
 $f = strlen(...); echo $f("abcd");   // =&gt; 4</code></pre>
         </article>
-        <article class="doc-entry" id="doc-operator-31">
-          <h3><a class="doc-anchor" href="#doc-operator-31">#</a> <code>name:</code></h3>
+        <article class="doc-entry" id="doc-operator-32">
+          <h3><a class="doc-anchor" href="#doc-operator-32">#</a> <code>name:</code></h3>
           <pre><code class="lang-php">f(paramName: value)</code></pre>
           <p>PHP 8.0 named arguments. An identifier followed by a single `:` inside an argument list binds that argument to the named parameter, so arguments may be supplied out of order.</p>
           <pre><code class="lang-php">function f($a, $b = "z") { return "$a$b"; } echo f(b: "q", a: 1);   // =&gt; 1q</code></pre>
         </article>
-        <article class="doc-entry" id="doc-operator-32">
-          <h3><a class="doc-anchor" href="#doc-operator-32">#</a> <code>@</code></h3>
+        <article class="doc-entry" id="doc-operator-33">
+          <h3><a class="doc-anchor" href="#doc-operator-33">#</a> <code>@</code></h3>
           <pre><code class="lang-php">@expr</code></pre>
           <p>The error-suppression operator. The operand is evaluated exactly as it would be without the `@` and only the DIAGNOSTICS it raises are dropped — including the ones raised from inside the functions it calls, so `@preg_match('/[a', $s)` and `@range('ab', 'c')` are silent too. It is NOT an isset-mode read: `@$o-&gt;p` calls `__get` (where `isset($o-&gt;p)` would ask `__isset`), and it does not swallow an `Error`, so `@$o-&gt;privateProp` still throws. Suppression is restored when an exception unwinds out of the expression.</p>
           <pre><code class="lang-php">echo @$undefined ?? "quiet";   // =&gt; quiet</code></pre>
         </article>
-        <article class="doc-entry" id="doc-operator-33">
-          <h3><a class="doc-anchor" href="#doc-operator-33">#</a> <code>\</code></h3>
+        <article class="doc-entry" id="doc-operator-34">
+          <h3><a class="doc-anchor" href="#doc-operator-34">#</a> <code>\</code></h3>
           <pre><code class="lang-php">\Name   Ns\Name</code></pre>
           <p>The namespace separator. Because phplang uses one flat namespace, a leading `\` is skipped and a qualified name folds to its last segment — `\RuntimeException` and `App\Util\RuntimeException` both resolve to `RuntimeException`.</p>
           <pre><code class="lang-php">try { throw new \Exception("x"); } catch (\Exception $e) { echo $e-&gt;getMessage(); }   // =&gt; x</code></pre>
         </article>
-        <article class="doc-entry" id="doc-operator-34">
-          <h3><a class="doc-anchor" href="#doc-operator-34">#</a> <code>$var "…$var…"</code></h3>
+        <article class="doc-entry" id="doc-operator-35">
+          <h3><a class="doc-anchor" href="#doc-operator-35">#</a> <code>$var "…$var…"</code></h3>
           <pre><code class="lang-php">"text $var text"   //  double-quoted interpolation</code></pre>
           <p>Double-quoted strings and heredoc-free literals interpolate a bare `$name`. DIVERGENCE: the braced form `{$expr}` is NOT interpolated — the braces are emitted literally around the substituted variable — and heredoc/nowdoc (`&lt;&lt;&lt;EOT`) is not lexed at all.</p>
           <pre><code class="lang-php">$s = "ab"; echo "v=$s";   // =&gt; v=ab
@@ -1076,12 +1090,12 @@ $o = new C; unset($o-&gt;zz);   // =&gt; unset:zz</code></pre>
         <article class="doc-entry" id="doc-predefined-constant-48">
           <h3><a class="doc-anchor" href="#doc-predefined-constant-48">#</a> <code>ARRAY_FILTER_USE_KEY</code></h3>
           <pre><code class="lang-php">ARRAY_FILTER_USE_KEY: int = 2</code></pre>
-          <p>`array_filter()` mode passing only the key to the callback. DIVERGENCE: the core `array_filter` arm does not read its third argument, so the mode has no effect.</p>
+          <p>`array_filter()` mode passing only the key to the callback.</p>
         </article>
         <article class="doc-entry" id="doc-predefined-constant-49">
           <h3><a class="doc-anchor" href="#doc-predefined-constant-49">#</a> <code>ARRAY_FILTER_USE_BOTH</code></h3>
           <pre><code class="lang-php">ARRAY_FILTER_USE_BOTH: int = 1</code></pre>
-          <p>`array_filter()` mode passing value and key to the callback. Defined but, like `ARRAY_FILTER_USE_KEY`, not honoured.</p>
+          <p>`array_filter()` mode passing the value and then the key to the callback.</p>
         </article>
         <article class="doc-entry" id="doc-predefined-constant-50">
           <h3><a class="doc-anchor" href="#doc-predefined-constant-50">#</a> <code>PREG_PATTERN_ORDER</code></h3>
@@ -1141,7 +1155,7 @@ $o = new C; unset($o-&gt;zz);   // =&gt; unset:zz</code></pre>
         <article class="doc-entry" id="doc-predefined-constant-61">
           <h3><a class="doc-anchor" href="#doc-predefined-constant-61">#</a> <code>JSON_FORCE_OBJECT</code></h3>
           <pre><code class="lang-php">JSON_FORCE_OBJECT: int = 16</code></pre>
-          <p>`json_encode()` flag emitting an object even for a list. Defined but not honoured.</p>
+          <p>`json_encode()` flag emitting a JSON object even for an array whose keys are already `0..n`.</p>
         </article>
         <article class="doc-entry" id="doc-predefined-constant-62">
           <h3><a class="doc-anchor" href="#doc-predefined-constant-62">#</a> <code>JSON_NUMERIC_CHECK</code></h3>
@@ -1926,7 +1940,7 @@ echo $q-&gt;extract();   // =&gt; hi</code></pre>
         <article class="doc-entry" id="doc-core-library-strings-7">
           <h3><a class="doc-anchor" href="#doc-core-library-strings-7">#</a> <code>trim</code></h3>
           <pre><code class="lang-php">trim(string $string): string</code></pre>
-          <p>Removes leading and trailing characters, defaulting to PHP's set `" \t\n\r\0\x0B"`. The optional `$characters` argument replaces that set and understands `a..z` ranges.</p>
+          <p>Removes leading and trailing characters, defaulting to PHP's set `" \t\n\r\0\x0B"`. The optional `$characters` argument replaces that set and understands `a..z` inclusive ranges; a malformed range warns `trim(): Invalid '..'-range, …` and contributes nothing. Byte-oriented.</p>
           <pre><code class="lang-php">echo trim("  hi  ");   // =&gt; hi</code></pre>
         </article>
         <article class="doc-entry" id="doc-core-library-strings-8">
@@ -2051,7 +2065,7 @@ echo $q-&gt;extract();   // =&gt; hi</code></pre>
         <article class="doc-entry" id="doc-core-library-strings-28">
           <h3><a class="doc-anchor" href="#doc-core-library-strings-28">#</a> <code>substr_compare</code></h3>
           <pre><code class="lang-php">substr_compare(string $haystack, string $needle, int $offset, ?int $length = null, bool $case_insensitive = false): int</code></pre>
-          <p>Compares `$needle` against the slice of `$haystack` starting at `$offset`, returning the sign of the comparison.</p>
+          <p>Compares `$needle` against the slice of `$haystack` starting at `$offset` (negatives count from the end), over `$length` bytes or, when that is null, `max(strlen($needle), strlen($haystack) - $offset)`. The result is NOT normalized: differing bytes answer their signed difference, and only a tie on content falls back to -1/0/1 on length. An `$offset` past the haystack, or a negative `$length`, throws `ValueError`; a `$length` of 0 answers 0.</p>
           <pre><code class="lang-php">echo substr_compare("Hello", "llo", 2);   // =&gt; 0</code></pre>
         </article>
         <article class="doc-entry" id="doc-core-library-strings-29">
@@ -2149,8 +2163,8 @@ echo $q-&gt;extract();   // =&gt; hi</code></pre>
         </article>
         <article class="doc-entry" id="doc-core-library-arrays-10">
           <h3><a class="doc-anchor" href="#doc-core-library-arrays-10">#</a> <code>array_filter</code></h3>
-          <pre><code class="lang-php">array_filter(array $array, ?callable $callback = null): array</code></pre>
-          <p>Keeps the elements for which the callback is truthy, PRESERVING keys. With no callback it keeps the truthy values. DIVERGENCE: the `$mode` argument is not read, so `ARRAY_FILTER_USE_KEY` and `ARRAY_FILTER_USE_BOTH` have no effect.</p>
+          <pre><code class="lang-php">array_filter(array $array, ?callable $callback = null, int $mode = 0): array</code></pre>
+          <p>Keeps the elements for which the callback is truthy, PRESERVING keys. With no callback it keeps the truthy values. `$mode` selects what the callback receives: the value (0), the value and the key (`ARRAY_FILTER_USE_BOTH`), or the key alone (`ARRAY_FILTER_USE_KEY`).</p>
           <pre><code class="lang-php">echo implode(",", array_filter([0, 1, 2]));   // =&gt; 1,2</code></pre>
         </article>
         <article class="doc-entry" id="doc-core-library-arrays-11">
@@ -2174,13 +2188,13 @@ echo $q-&gt;extract();   // =&gt; hi</code></pre>
         <article class="doc-entry" id="doc-core-library-arrays-14">
           <h3><a class="doc-anchor" href="#doc-core-library-arrays-14">#</a> <code>array_sum</code></h3>
           <pre><code class="lang-php">array_sum(array $array): int|float</code></pre>
-          <p>Sum of the values as numbers. The result is an integer while every addend is one, and a float as soon as any is.</p>
+          <p>Sum of the values as numbers. The result is an integer while every addend is one, and a float as soon as any is. An entry the `+` operator would reject warns `array_sum(): Addition is not supported on type &lt;type&gt;`; an array or an object with no numeric cast then contributes nothing, while a non-numeric string keeps the pre-8 behaviour of counting as 0.</p>
           <pre><code class="lang-php">var_dump(array_sum([1, 2.5]));   // =&gt; float(3.5)</code></pre>
         </article>
         <article class="doc-entry" id="doc-core-library-arrays-15">
           <h3><a class="doc-anchor" href="#doc-core-library-arrays-15">#</a> <code>array_product</code></h3>
           <pre><code class="lang-php">array_product(array $array): int|float</code></pre>
-          <p>Product of the values as numbers, following the same integer-until-a-float rule as `array_sum`. An empty array yields 1.</p>
+          <p>Product of the values as numbers, following the same integer-until-a-float rule as `array_sum`, and the same `Multiplication is not supported on type &lt;type&gt;` warning for an entry `*` would reject — which is why `array_product([2, "a"])` is 0, the non-numeric string counting as a factor of 0. An empty array yields 1.</p>
           <pre><code class="lang-php">echo array_product([2, 3, 4]);   // =&gt; 24</code></pre>
         </article>
         <article class="doc-entry" id="doc-core-library-arrays-16">
@@ -2560,192 +2574,216 @@ min(array $values): mixed</code></pre>
         </article>
         <article class="doc-entry" id="doc-strings-2">
           <h3><a class="doc-anchor" href="#doc-strings-2">#</a> <code>substr_replace</code></h3>
-          <pre><code class="lang-php">substr_replace(string $string, string $replace, int $offset, ?int $length = null): string</code></pre>
-          <p>Splices the replacement over the byte range starting at `$offset`. DIVERGENCE: only the all-scalar form exists — PHP also accepts arrays for every argument and returns an array. The result is rebuilt lossily, so splicing at a non-character boundary yields U+FFFD.</p>
+          <pre><code class="lang-php">substr_replace(array|string $string, array|string $replace, array|int $offset, array|int|null $length = null): string|array</code></pre>
+          <p>Splices the replacement over the byte range starting at `$offset`. An array `$string` returns an array spliced element-wise, with `$replace`, `$offset` and `$length` consumed positionally and falling back to `""` / `0` / to-the-end once exhausted. The result is rebuilt lossily, so splicing at a non-character boundary yields U+FFFD.</p>
           <pre><code class="lang-php">echo substr_replace("Hello", "XY", 1, 3);   // =&gt; HXYo</code></pre>
         </article>
         <article class="doc-entry" id="doc-strings-3">
-          <h3><a class="doc-anchor" href="#doc-strings-3">#</a> <code>strtr</code></h3>
+          <h3><a class="doc-anchor" href="#doc-strings-3">#</a> <code>addcslashes</code></h3>
+          <pre><code class="lang-php">addcslashes(string $string, string $characters): string</code></pre>
+          <p>Backslash-escapes every byte listed in `$characters`, which may use `a..z` inclusive ranges. Outside printable ASCII the escape is the C mnemonic (`\n`, `\t`, `\r`, `\a`, `\v`, `\b`, `\f`) or a three-digit octal. A malformed range warns `addcslashes(): Invalid '..'-range, …` and contributes nothing.</p>
+          <pre><code class="lang-php">echo addcslashes("foo[bar]", "A..z");   // =&gt; \f\o\o\[\b\a\r\]</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-strings-4">
+          <h3><a class="doc-anchor" href="#doc-strings-4">#</a> <code>stripcslashes</code></h3>
+          <pre><code class="lang-php">stripcslashes(string $string): string</code></pre>
+          <p>The inverse of `addcslashes`: understands the C mnemonics plus `\xHH` (one or two hex digits) and `\NNN` (up to three octal digits). An unrecognized escape yields the escaped character itself, so `\z` is `z`.</p>
+          <pre><code class="lang-php">echo stripcslashes('\101\x42');   // =&gt; AB</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-strings-5">
+          <h3><a class="doc-anchor" href="#doc-strings-5">#</a> <code>count_chars</code></h3>
+          <pre><code class="lang-php">count_chars(string $string, int $mode = 0): array|string</code></pre>
+          <p>Per-byte histogram. Mode 0 reports all 256 counters, 1 only the non-zero ones, 2 only the zero ones; modes 3 and 4 return a STRING of the bytes that did / did not occur. A `$mode` outside 0-4 throws `ValueError`. DIVERGENCE: modes 3 and 4 can name bytes above 0x7F, which this engine's UTF-8 strings widen to two bytes each (see BUGS.md).</p>
+          <pre><code class="lang-php">print_r(count_chars("aab", 3));   // =&gt; ab</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-strings-6">
+          <h3><a class="doc-anchor" href="#doc-strings-6">#</a> <code>strtok</code></h3>
+          <pre><code class="lang-php">strtok(string $string, ?string $token = null): string|false</code></pre>
+          <p>Stateful tokenizer. Two arguments install a new subject and answer its first token; one argument continues the saved subject with a (possibly different) delimiter set. Running out of tokens answers `false` AND discards the subject, so a further one-argument call keeps answering `false` rather than restarting.</p>
+          <pre><code class="lang-php">echo strtok("a b", " "), strtok(" ");   // =&gt; ab</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-strings-7">
+          <h3><a class="doc-anchor" href="#doc-strings-7">#</a> <code>strtr</code></h3>
           <pre><code class="lang-php">strtr(string $string, array $pairs): string
 strtr(string $string, string $from, string $to): string</code></pre>
           <p>Two-argument form: longest-key-first, non-overlapping substring replacement in a single left-to-right pass, dropping empty keys. Three-argument form: byte-wise translation with both sets truncated to the shorter length. DIVERGENCE: in the two-argument form an unmatched byte at or above 0x80 is re-encoded as its Latin-1 codepoint, so untouched non-ASCII text is mangled.</p>
           <pre><code class="lang-php">echo strtr("hi all", ["hi" =&gt; "bye"]);   // =&gt; bye all</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-4">
-          <h3><a class="doc-anchor" href="#doc-strings-4">#</a> <code>strstr</code></h3>
+        <article class="doc-entry" id="doc-strings-8">
+          <h3><a class="doc-anchor" href="#doc-strings-8">#</a> <code>strstr</code></h3>
           <pre><code class="lang-php">strstr(string $haystack, string $needle, bool $before_needle = false): string|false</code></pre>
           <p>The part of the haystack from the first match onward, or the part before it when `$before_needle` is truthy; `false` when absent. An empty needle matches at offset 0 (PHP 8 semantics).</p>
           <pre><code class="lang-php">echo strstr("user@example.com", "@");   // =&gt; @example.com</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-5">
-          <h3><a class="doc-anchor" href="#doc-strings-5">#</a> <code>strchr</code></h3>
+        <article class="doc-entry" id="doc-strings-9">
+          <h3><a class="doc-anchor" href="#doc-strings-9">#</a> <code>strchr</code></h3>
           <pre><code class="lang-php">strchr(string $haystack, string $needle, bool $before_needle = false): string|false</code></pre>
           <p>The alias of `strstr`, sharing its match arm — the same alias relationship PHP has.</p>
         </article>
-        <article class="doc-entry" id="doc-strings-6">
-          <h3><a class="doc-anchor" href="#doc-strings-6">#</a> <code>stristr</code></h3>
+        <article class="doc-entry" id="doc-strings-10">
+          <h3><a class="doc-anchor" href="#doc-strings-10">#</a> <code>stristr</code></h3>
           <pre><code class="lang-php">stristr(string $haystack, string $needle, bool $before_needle = false): string|false</code></pre>
           <p>Case-insensitive `strstr`. DIVERGENCE: the folding is ASCII-only, so non-ASCII letters never match case-insensitively.</p>
           <pre><code class="lang-php">echo stristr("HELLO", "ell");   // =&gt; ELLO</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-7">
-          <h3><a class="doc-anchor" href="#doc-strings-7">#</a> <code>strrchr</code></h3>
+        <article class="doc-entry" id="doc-strings-11">
+          <h3><a class="doc-anchor" href="#doc-strings-11">#</a> <code>strrchr</code></h3>
           <pre><code class="lang-php">strrchr(string $haystack, string $needle): string|false</code></pre>
           <p>The substring from the LAST occurrence of the needle's FIRST BYTE through the end; `false` when absent or the needle is empty. DIVERGENCE: PHP 8.3's `$before_needle` parameter is not read.</p>
           <pre><code class="lang-php">echo strrchr("a/b/c", "/");   // =&gt; /c</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-8">
-          <h3><a class="doc-anchor" href="#doc-strings-8">#</a> <code>strpbrk</code></h3>
+        <article class="doc-entry" id="doc-strings-12">
+          <h3><a class="doc-anchor" href="#doc-strings-12">#</a> <code>strpbrk</code></h3>
           <pre><code class="lang-php">strpbrk(string $string, string $characters): string|false</code></pre>
           <p>The substring beginning at the first byte that belongs to the character set, through the end; `false` when no byte matches.</p>
           <pre><code class="lang-php">echo strpbrk("This is a test", "st");   // =&gt; s is a test</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-9">
-          <h3><a class="doc-anchor" href="#doc-strings-9">#</a> <code>strspn</code></h3>
+        <article class="doc-entry" id="doc-strings-13">
+          <h3><a class="doc-anchor" href="#doc-strings-13">#</a> <code>strspn</code></h3>
           <pre><code class="lang-php">strspn(string $string, string $characters, int $offset = 0, ?int $length = null): int</code></pre>
           <p>Length in bytes of the initial run within the window whose bytes all belong to the set. Set membership is byte-oriented, so a multibyte mask character is matched byte by byte.</p>
           <pre><code class="lang-php">echo strspn("42 apples", "0123456789");   // =&gt; 2</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-10">
-          <h3><a class="doc-anchor" href="#doc-strings-10">#</a> <code>strcspn</code></h3>
+        <article class="doc-entry" id="doc-strings-14">
+          <h3><a class="doc-anchor" href="#doc-strings-14">#</a> <code>strcspn</code></h3>
           <pre><code class="lang-php">strcspn(string $string, string $characters, int $offset = 0, ?int $length = null): int</code></pre>
           <p>The complement of `strspn`: the length of the initial run of bytes NOT in the set. It shares the same match arm with the membership test inverted.</p>
           <pre><code class="lang-php">echo strcspn("abc123", "0123456789");   // =&gt; 3</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-11">
-          <h3><a class="doc-anchor" href="#doc-strings-11">#</a> <code>stripos</code></h3>
+        <article class="doc-entry" id="doc-strings-15">
+          <h3><a class="doc-anchor" href="#doc-strings-15">#</a> <code>stripos</code></h3>
           <pre><code class="lang-php">stripos(string $haystack, string $needle, int $offset = 0): int|false</code></pre>
           <p>Byte offset of the first ASCII-case-insensitive match at or after the offset, or `false`. A negative offset counts from the end and an empty needle returns the offset. DIVERGENCE: folding is ASCII-only.</p>
           <pre><code class="lang-php">echo stripos("Hello", "L");   // =&gt; 2</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-12">
-          <h3><a class="doc-anchor" href="#doc-strings-12">#</a> <code>strrpos</code></h3>
+        <article class="doc-entry" id="doc-strings-16">
+          <h3><a class="doc-anchor" href="#doc-strings-16">#</a> <code>strrpos</code></h3>
           <pre><code class="lang-php">strrpos(string $haystack, string $needle, int $offset = 0): int|false</code></pre>
           <p>Byte offset of the LAST match. A non-negative offset requires the match to start at or after it; a negative one caps how late it may start. An empty needle returns the string length (PHP 8 semantics).</p>
           <pre><code class="lang-php">echo strrpos("hello", "l");   // =&gt; 3</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-13">
-          <h3><a class="doc-anchor" href="#doc-strings-13">#</a> <code>strripos</code></h3>
+        <article class="doc-entry" id="doc-strings-17">
+          <h3><a class="doc-anchor" href="#doc-strings-17">#</a> <code>strripos</code></h3>
           <pre><code class="lang-php">strripos(string $haystack, string $needle, int $offset = 0): int|false</code></pre>
           <p>`strrpos` with ASCII case-insensitive comparison; it shares the same match arm. DIVERGENCE: folding is ASCII-only.</p>
           <pre><code class="lang-php">echo strripos("HELLO", "l");   // =&gt; 3</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-14">
-          <h3><a class="doc-anchor" href="#doc-strings-14">#</a> <code>strncasecmp</code></h3>
+        <article class="doc-entry" id="doc-strings-18">
+          <h3><a class="doc-anchor" href="#doc-strings-18">#</a> <code>strncasecmp</code></h3>
           <pre><code class="lang-php">strncasecmp(string $string1, string $string2, int $length): int</code></pre>
           <p>Compares the first `$length` bytes after ASCII-lowercasing, returning `-1`, `0`, or `1`. A negative length raises `strncasecmp(): Argument #3 ($length) must be greater than or equal to 0`.</p>
           <pre><code class="lang-php">echo strncasecmp("Hello", "HELLO world", 5);   // =&gt; 0</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-15">
-          <h3><a class="doc-anchor" href="#doc-strings-15">#</a> <code>str_ireplace</code></h3>
+        <article class="doc-entry" id="doc-strings-19">
+          <h3><a class="doc-anchor" href="#doc-strings-19">#</a> <code>str_ireplace</code></h3>
           <pre><code class="lang-php">str_ireplace(array|string $search, array|string $replace, string $subject): string</code></pre>
           <p>ASCII-case-insensitive `str_replace`. An array `$search` is applied in sequence, index-matched against an array `$replace` (missing entries become `""`) or with one scalar for all. DIVERGENCE: an array `$subject` is string-cast rather than mapped, and there is no `$count` out-parameter.</p>
           <pre><code class="lang-php">echo str_ireplace("WORLD", "there", "Hello world");   // =&gt; Hello there</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-16">
-          <h3><a class="doc-anchor" href="#doc-strings-16">#</a> <code>nl2br</code></h3>
+        <article class="doc-entry" id="doc-strings-20">
+          <h3><a class="doc-anchor" href="#doc-strings-20">#</a> <code>nl2br</code></h3>
           <pre><code class="lang-php">nl2br(string $string): string</code></pre>
           <p>Inserts a `&lt;br /&gt;` before each `\r\n`, `\n\r`, `\r`, or `\n`, keeping the original break. DIVERGENCE: the `$use_xhtml` argument is not read, so the output is always the XHTML `&lt;br /&gt;`.</p>
           <pre><code class="lang-php">echo nl2br("a\nb");   // =&gt; a&lt;br /&gt;\nb</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-17">
-          <h3><a class="doc-anchor" href="#doc-strings-17">#</a> <code>chunk_split</code></h3>
+        <article class="doc-entry" id="doc-strings-21">
+          <h3><a class="doc-anchor" href="#doc-strings-21">#</a> <code>chunk_split</code></h3>
           <pre><code class="lang-php">chunk_split(string $string, int $length = 76, string $separator = "\r\n"): string</code></pre>
           <p>Appends the separator after every `$length` units. DIVERGENCE: chunking counts CODEPOINTS, not bytes as PHP does, so multibyte input chunks differently. A non-positive length throws `ValueError: chunk_split(): Argument #2 ($length) must be greater than 0`.</p>
           <pre><code class="lang-php">echo chunk_split("abcdef", 2, "-");   // =&gt; ab-cd-ef-</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-18">
-          <h3><a class="doc-anchor" href="#doc-strings-18">#</a> <code>quotemeta</code></h3>
+        <article class="doc-entry" id="doc-strings-22">
+          <h3><a class="doc-anchor" href="#doc-strings-22">#</a> <code>quotemeta</code></h3>
           <pre><code class="lang-php">quotemeta(string $string): string</code></pre>
           <p>Backslash-escapes each of `. \ + * ? [ ^ ] $ ( )`. The escape set is ASCII, so the result matches PHP's byte behaviour.</p>
           <pre><code class="lang-php">echo quotemeta("1+1=2");   // =&gt; 1\+1=2</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-19">
-          <h3><a class="doc-anchor" href="#doc-strings-19">#</a> <code>addslashes</code></h3>
+        <article class="doc-entry" id="doc-strings-23">
+          <h3><a class="doc-anchor" href="#doc-strings-23">#</a> <code>addslashes</code></h3>
           <pre><code class="lang-php">addslashes(string $string): string</code></pre>
           <p>Backslash-escapes `'`, `"`, and `\`, and maps a NUL byte to the two-character sequence `\0`.</p>
           <pre><code class="lang-php">echo addslashes("O'Reilly");   // =&gt; O\'Reilly</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-20">
-          <h3><a class="doc-anchor" href="#doc-strings-20">#</a> <code>stripslashes</code></h3>
+        <article class="doc-entry" id="doc-strings-24">
+          <h3><a class="doc-anchor" href="#doc-strings-24">#</a> <code>stripslashes</code></h3>
           <pre><code class="lang-php">stripslashes(string $string): string</code></pre>
           <p>Removes one level of backslashes, keeping the escaped character — except `\0`, which becomes a real NUL. A trailing lone backslash is dropped.</p>
           <pre><code class="lang-php">echo stripslashes("O\\'Reilly");   // =&gt; O'Reilly</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-21">
-          <h3><a class="doc-anchor" href="#doc-strings-21">#</a> <code>str_rot13</code></h3>
+        <article class="doc-entry" id="doc-strings-25">
+          <h3><a class="doc-anchor" href="#doc-strings-25">#</a> <code>str_rot13</code></h3>
           <pre><code class="lang-php">str_rot13(string $string): string</code></pre>
           <p>Rotates ASCII letters by 13 places. Every other character, including all non-ASCII, passes through untouched. Applying it twice restores the input.</p>
           <pre><code class="lang-php">echo str_rot13("abc");   // =&gt; nop</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-22">
-          <h3><a class="doc-anchor" href="#doc-strings-22">#</a> <code>similar_text</code></h3>
+        <article class="doc-entry" id="doc-strings-26">
+          <h3><a class="doc-anchor" href="#doc-strings-26">#</a> <code>similar_text</code></h3>
           <pre><code class="lang-php">similar_text(string $string1, string $string2): int</code></pre>
           <p>The number of matching characters, using PHP's own recursive longest-common-substring algorithm. DIVERGENCE: the by-reference `$percent` out-parameter does not exist, so only the count is available.</p>
           <pre><code class="lang-php">echo similar_text("World", "word");   // =&gt; 3</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-23">
-          <h3><a class="doc-anchor" href="#doc-strings-23">#</a> <code>levenshtein</code></h3>
+        <article class="doc-entry" id="doc-strings-27">
+          <h3><a class="doc-anchor" href="#doc-strings-27">#</a> <code>levenshtein</code></h3>
           <pre><code class="lang-php">levenshtein(string $string1, string $string2, int $insertion_cost = 1, int $replacement_cost = 1, int $deletion_cost = 1): int</code></pre>
           <p>Weighted edit distance over BYTES, so a multibyte character counts as several edits. Note the cost defaults apply only when the argument is absent — passing an explicit null coerces that cost to 0.</p>
           <pre><code class="lang-php">echo levenshtein("kitten", "sitting");   // =&gt; 3</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-24">
-          <h3><a class="doc-anchor" href="#doc-strings-24">#</a> <code>vsprintf</code></h3>
+        <article class="doc-entry" id="doc-strings-28">
+          <h3><a class="doc-anchor" href="#doc-strings-28">#</a> <code>vsprintf</code></h3>
           <pre><code class="lang-php">vsprintf(string $format, array $values): string</code></pre>
           <p>`sprintf` with the arguments supplied as one array, spread in iteration order with keys discarded.</p>
           <pre><code class="lang-php">echo vsprintf("%d-%s", [1, "x"]);   // =&gt; 1-x</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-25">
-          <h3><a class="doc-anchor" href="#doc-strings-25">#</a> <code>vprintf</code></h3>
+        <article class="doc-entry" id="doc-strings-29">
+          <h3><a class="doc-anchor" href="#doc-strings-29">#</a> <code>vprintf</code></h3>
           <pre><code class="lang-php">vprintf(string $format, array $values): int</code></pre>
           <p>Writes a `vsprintf` result to output and returns its length in BYTES.</p>
           <pre><code class="lang-php">vprintf("%d", [7]);   // =&gt; 7</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-26">
-          <h3><a class="doc-anchor" href="#doc-strings-26">#</a> <code>sscanf</code></h3>
-          <pre><code class="lang-php">sscanf(string $string, string $format): array</code></pre>
-          <p>Parses the string against the format and returns the parsed values. Supports `%d %i %f %e %g %s %c %%`, literal text, and whitespace runs; a field width applies to `%s` only. DIVERGENCE: the by-reference extra-argument form does not exist, and a mismatch silently returns the partial list rather than PHP's `-1`.</p>
+        <article class="doc-entry" id="doc-strings-30">
+          <h3><a class="doc-anchor" href="#doc-strings-30">#</a> <code>sscanf</code></h3>
+          <pre><code class="lang-php">sscanf(string $string, string $format, mixed &amp;...$vars): array|int|null</code></pre>
+          <p>Parses the string against the format. With two arguments the result is an array of the converted values, padded with nulls to one entry per non-suppressed specifier; with by-reference arguments it is the number of specifiers processed, and a variable no conversion reached is left untouched. Supports `%d %D %i %o %x %X %u %f %e %E %g %s %c %n %[…] %%`, `*` suppression, field widths, the ignored `l`/`L`/`h` size modifiers, literal text and whitespace runs. When the input runs out before any conversion the answer is `null` (two-argument) or `-1` (by-reference). DIVERGENCE: the `%n$` positional form is not implemented, and no format is rejected up front the way PHP's `ValidateFormat` does.</p>
           <pre><code class="lang-php">print_r(sscanf("age:42", "age:%d"));   // =&gt; Array\n(\n    [0] =&gt; 42\n)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-27">
-          <h3><a class="doc-anchor" href="#doc-strings-27">#</a> <code>htmlspecialchars_decode</code></h3>
+        <article class="doc-entry" id="doc-strings-31">
+          <h3><a class="doc-anchor" href="#doc-strings-31">#</a> <code>htmlspecialchars_decode</code></h3>
           <pre><code class="lang-php">htmlspecialchars_decode(string $string): string</code></pre>
           <p>Decodes only what `htmlspecialchars` can produce — `&amp;lt;`, `&amp;gt;`, `&amp;amp;`, `&amp;quot;` and the numeric single quote — and `$flags` gates the two quote entities. A named entity like `&amp;eacute;` and any other numeric reference are left standing, which is what separates it from `html_entity_decode`.</p>
           <pre><code class="lang-php">echo htmlspecialchars_decode("a&amp;lt;b");   // =&gt; a&lt;b</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-28">
-          <h3><a class="doc-anchor" href="#doc-strings-28">#</a> <code>html_entity_decode</code></h3>
+        <article class="doc-entry" id="doc-strings-32">
+          <h3><a class="doc-anchor" href="#doc-strings-32">#</a> <code>html_entity_decode</code></h3>
           <pre><code class="lang-php">html_entity_decode(string $string): string</code></pre>
           <p>Decodes the full HTML 4.01 named-entity table plus decimal (`&amp;#233;`) and hexadecimal (`&amp;#xE9;`) references; an unknown entity, and an `&amp;` with no terminating `;`, are copied through verbatim. `$flags` gates the quote entities. DIVERGENCE: `$encoding` is not read (input is treated as UTF-8).</p>
           <pre><code class="lang-php">echo html_entity_decode("caf&amp;eacute;");   // =&gt; café</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-29">
-          <h3><a class="doc-anchor" href="#doc-strings-29">#</a> <code>strip_tags</code></h3>
+        <article class="doc-entry" id="doc-strings-33">
+          <h3><a class="doc-anchor" href="#doc-strings-33">#</a> <code>strip_tags</code></h3>
           <pre><code class="lang-php">strip_tags(string $string): string</code></pre>
           <p>A port of `php_strip_tags_ex`, so its five-state scanner — HTML tag, `&lt;? … ?&gt;`, `&lt;! … &gt;`, `&lt;!-- … --&gt;`, and the `&lt;?xml` / `&lt;!DOCTYPE` re-entries — matches the reference on quoted attributes containing `&gt;`, nested `&lt;`, and unterminated tags. `$allowed_tags` is honoured in both spellings, the string `"&lt;b&gt;&lt;i&gt;"` and the array `["b", "i"]`; an allowed tag is re-emitted verbatim, attributes included.</p>
           <pre><code class="lang-php">echo strip_tags("&lt;p&gt;hi&lt;/p&gt;");   // =&gt; hi</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-30">
-          <h3><a class="doc-anchor" href="#doc-strings-30">#</a> <code>mb_strlen</code></h3>
+        <article class="doc-entry" id="doc-strings-34">
+          <h3><a class="doc-anchor" href="#doc-strings-34">#</a> <code>mb_strlen</code></h3>
           <pre><code class="lang-php">mb_strlen(string $string): int</code></pre>
           <p>The number of Unicode CODEPOINTS, the multibyte counterpart of `strlen`. The `$encoding` argument is accepted and ignored — phplang strings are always UTF-8.</p>
           <pre><code class="lang-php">echo mb_strlen("héllo");   // =&gt; 5</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-31">
-          <h3><a class="doc-anchor" href="#doc-strings-31">#</a> <code>mb_strtoupper</code></h3>
+        <article class="doc-entry" id="doc-strings-35">
+          <h3><a class="doc-anchor" href="#doc-strings-35">#</a> <code>mb_strtoupper</code></h3>
           <pre><code class="lang-php">mb_strtoupper(string $string): string</code></pre>
           <p>Full Unicode uppercase, which can change the string's length (German sharp s becomes `SS`). The `$encoding` argument is ignored.</p>
           <pre><code class="lang-php">echo mb_strtoupper("héllo");   // =&gt; HÉLLO</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-32">
-          <h3><a class="doc-anchor" href="#doc-strings-32">#</a> <code>mb_strtolower</code></h3>
+        <article class="doc-entry" id="doc-strings-36">
+          <h3><a class="doc-anchor" href="#doc-strings-36">#</a> <code>mb_strtolower</code></h3>
           <pre><code class="lang-php">mb_strtolower(string $string): string</code></pre>
           <p>Full Unicode lowercase. The `$encoding` argument is ignored.</p>
           <pre><code class="lang-php">echo mb_strtolower("HÉLLO");   // =&gt; héllo</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-33">
-          <h3><a class="doc-anchor" href="#doc-strings-33">#</a> <code>mb_substr</code></h3>
+        <article class="doc-entry" id="doc-strings-37">
+          <h3><a class="doc-anchor" href="#doc-strings-37">#</a> <code>mb_substr</code></h3>
           <pre><code class="lang-php">mb_substr(string $string, int $start, ?int $length = null): string</code></pre>
           <p>Codepoint-aware substring. A negative start counts from the end, a negative length omits that many trailing codepoints, and the end is clamped. The `$encoding` argument is ignored.</p>
           <pre><code class="lang-php">echo mb_substr("héllo", 1, 3);   // =&gt; éll</code></pre>
@@ -2895,7 +2933,7 @@ strtr(string $string, string $from, string $to): string</code></pre>
         <article class="doc-entry" id="doc-text-formatting-3">
           <h3><a class="doc-anchor" href="#doc-text-formatting-3">#</a> <code>fscanf</code></h3>
           <pre><code class="lang-php">fscanf(resource $stream, string $format): array|false</code></pre>
-          <p>Reads one line from the stream and parses it with `sscanf`. DIVERGENCE: at end of file it returns `false`, not PHP's `-1`, deliberately so that `while ($r = fscanf(…))` terminates. The by-reference extra-argument form does not exist.</p>
+          <p>Reads one line from the stream and parses it with `sscanf`. DIVERGENCE: at end of file it returns `false`, not PHP's `-1`, deliberately so that `while ($r = fscanf(…))` terminates. The by-reference extra-argument form does not exist — unlike `sscanf`, which does implement it.</p>
         </article>
         <article class="doc-entry" id="doc-text-formatting-4">
           <h3><a class="doc-anchor" href="#doc-text-formatting-4">#</a> <code>array_change_key_case</code></h3>
@@ -2990,107 +3028,113 @@ strtr(string $string, string $from, string $to): string</code></pre>
           <pre><code class="lang-php">print_r(array_replace(["a" =&gt; 1], ["a" =&gt; 2]));   // =&gt; Array\n(\n    [a] =&gt; 2\n)</code></pre>
         </article>
         <article class="doc-entry" id="doc-arrays-14">
-          <h3><a class="doc-anchor" href="#doc-arrays-14">#</a> <code>array_count_values</code></h3>
+          <h3><a class="doc-anchor" href="#doc-arrays-14">#</a> <code>array_replace_recursive</code></h3>
+          <pre><code class="lang-php">array_replace_recursive(array $base, array ...$rest): array</code></pre>
+          <p>As `array_replace`, except that when both sides hold an array under the same key the two are merged recursively instead of the later one replacing the earlier wholesale. Any other type pairing, or a key present on only one side, replaces.</p>
+          <pre><code class="lang-php">print_r(array_replace_recursive(["a" =&gt; ["b" =&gt; 1, "c" =&gt; 2]], ["a" =&gt; ["b" =&gt; 9]]));   // =&gt; Array\n(\n    [a] =&gt; Array\n        (\n            [b] =&gt; 9\n            [c] =&gt; 2\n        )\n\n)</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-arrays-15">
+          <h3><a class="doc-anchor" href="#doc-arrays-15">#</a> <code>array_count_values</code></h3>
           <pre><code class="lang-php">array_count_values(array $array): array</code></pre>
           <p>Tallies how often each value occurs. Only integer and string values are counted; every other value type is skipped, matching PHP.</p>
           <pre><code class="lang-php">print_r(array_count_values(["a", "a", "b"]));   // =&gt; Array\n(\n    [a] =&gt; 2\n    [b] =&gt; 1\n)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-arrays-15">
-          <h3><a class="doc-anchor" href="#doc-arrays-15">#</a> <code>usort</code></h3>
+        <article class="doc-entry" id="doc-arrays-16">
+          <h3><a class="doc-anchor" href="#doc-arrays-16">#</a> <code>usort</code></h3>
           <pre><code class="lang-php">usort(array $array, callable $callback): bool</code></pre>
           <p>Sorts by value with a user comparator, then reindexes from 0. The sort is stable, as PHP's is, and tolerates a comparator that contradicts itself (`fn() =&gt; random_int(-1, 1)`) by answering with some permutation rather than failing. The comparator runs the VM, so an exception it throws stops the sort.</p>
           <pre><code class="lang-php">$a = [3, 1, 2]; usort($a, fn($x, $y) =&gt; $x &lt;=&gt; $y); echo implode(",", $a);   // =&gt; 1,2,3</code></pre>
         </article>
-        <article class="doc-entry" id="doc-arrays-16">
-          <h3><a class="doc-anchor" href="#doc-arrays-16">#</a> <code>uasort</code></h3>
+        <article class="doc-entry" id="doc-arrays-17">
+          <h3><a class="doc-anchor" href="#doc-arrays-17">#</a> <code>uasort</code></h3>
           <pre><code class="lang-php">uasort(array $array, callable $callback): bool</code></pre>
           <p>Sorts by value with a user comparator while preserving the key association.</p>
           <pre><code class="lang-php">$a = ["b" =&gt; 2, "a" =&gt; 1]; uasort($a, fn($x, $y) =&gt; $x &lt;=&gt; $y);
 echo implode(",", array_keys($a));   // =&gt; a,b</code></pre>
         </article>
-        <article class="doc-entry" id="doc-arrays-17">
-          <h3><a class="doc-anchor" href="#doc-arrays-17">#</a> <code>uksort</code></h3>
+        <article class="doc-entry" id="doc-arrays-18">
+          <h3><a class="doc-anchor" href="#doc-arrays-18">#</a> <code>uksort</code></h3>
           <pre><code class="lang-php">uksort(array $array, callable $callback): bool</code></pre>
           <p>Sorts by KEY with a user comparator while preserving the key association.</p>
           <pre><code class="lang-php">$a = ["b" =&gt; 1, "a" =&gt; 2]; uksort($a, fn($x, $y) =&gt; strcmp($x, $y));
 echo implode(",", array_keys($a));   // =&gt; a,b</code></pre>
         </article>
-        <article class="doc-entry" id="doc-arrays-18">
-          <h3><a class="doc-anchor" href="#doc-arrays-18">#</a> <code>natsort</code></h3>
+        <article class="doc-entry" id="doc-arrays-19">
+          <h3><a class="doc-anchor" href="#doc-arrays-19">#</a> <code>natsort</code></h3>
           <pre><code class="lang-php">natsort(array $array): bool</code></pre>
           <p>Natural-order sort by value, preserving keys. Digit runs compare numerically, so `img12` sorts after `img2`. A run with a leading zero compares left-aligned, matching PHP's `strnatcmp`.</p>
           <pre><code class="lang-php">$a = ["img12", "img2"]; natsort($a); echo implode(",", $a);   // =&gt; img2,img12</code></pre>
         </article>
-        <article class="doc-entry" id="doc-arrays-19">
-          <h3><a class="doc-anchor" href="#doc-arrays-19">#</a> <code>natcasesort</code></h3>
+        <article class="doc-entry" id="doc-arrays-20">
+          <h3><a class="doc-anchor" href="#doc-arrays-20">#</a> <code>natcasesort</code></h3>
           <pre><code class="lang-php">natcasesort(array $array): bool</code></pre>
           <p>`natsort` with case folded before comparison.</p>
         </article>
-        <article class="doc-entry" id="doc-arrays-20">
-          <h3><a class="doc-anchor" href="#doc-arrays-20">#</a> <code>shuffle</code></h3>
+        <article class="doc-entry" id="doc-arrays-21">
+          <h3><a class="doc-anchor" href="#doc-arrays-21">#</a> <code>shuffle</code></h3>
           <pre><code class="lang-php">shuffle(array $array): bool</code></pre>
           <p>Randomizes the order in place with Fisher-Yates and reindexes from 0. DIVERGENCE: the generator is a thread-local xorshift64 seeded lazily from the wall clock, not PHP's Mt19937, so `mt_srand()` does not make the order reproducible.</p>
         </article>
-        <article class="doc-entry" id="doc-arrays-21">
-          <h3><a class="doc-anchor" href="#doc-arrays-21">#</a> <code>array_rand</code></h3>
+        <article class="doc-entry" id="doc-arrays-22">
+          <h3><a class="doc-anchor" href="#doc-arrays-22">#</a> <code>array_rand</code></h3>
           <pre><code class="lang-php">array_rand(array $array, int $num = 1): mixed</code></pre>
           <p>One random key, or an array of `$num` distinct keys in their original order. An EMPTY array raises `ValueError: array_rand(): Argument #1 ($array) must not be empty` — there is no `$num` that would work — while a `$num` outside `1..count($array)` on a non-empty array names argument #2 instead. Uses the same non-reproducible xorshift64 generator as `shuffle`.</p>
         </article>
-        <article class="doc-entry" id="doc-arrays-22">
-          <h3><a class="doc-anchor" href="#doc-arrays-22">#</a> <code>array_walk</code></h3>
+        <article class="doc-entry" id="doc-arrays-23">
+          <h3><a class="doc-anchor" href="#doc-arrays-23">#</a> <code>array_walk</code></h3>
           <pre><code class="lang-php">array_walk(array $array, callable $callback, mixed $extra = null): bool</code></pre>
           <p>Calls `$callback($value, $key[, $extra])` for every element and returns true. The value is passed through a reference cell, so a `function (&amp;$v)` callback writes back into the array, scalars included.</p>
           <pre><code class="lang-php">$a = [1, 2]; array_walk($a, function ($v, $k) { echo $k . $v; });   // =&gt; 0112</code></pre>
         </article>
-        <article class="doc-entry" id="doc-arrays-23">
-          <h3><a class="doc-anchor" href="#doc-arrays-23">#</a> <code>compact</code></h3>
+        <article class="doc-entry" id="doc-arrays-24">
+          <h3><a class="doc-anchor" href="#doc-arrays-24">#</a> <code>compact</code></h3>
           <pre><code class="lang-php">compact(string|array ...$names): array</code></pre>
           <p>Builds an array from the named variables, pulling each bound value out of the current scope. A name may itself be an array of names, recursively. A name that is not BOUND is skipped with `Warning: compact(): Undefined variable $x` — a variable holding null is bound, so it is captured with no warning — and an argument that is neither a string nor an array is skipped with `Warning: compact(): Argument #N must be string or array of strings, &lt;type&gt; given`, numbered by the top-level argument even when it is nested inside an array of names.</p>
           <pre><code class="lang-php">$x = 1; $y = 2; print_r(compact("x", "y"));   // =&gt; Array\n(\n    [x] =&gt; 1\n    [y] =&gt; 2\n)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-arrays-24">
-          <h3><a class="doc-anchor" href="#doc-arrays-24">#</a> <code>extract</code></h3>
+        <article class="doc-entry" id="doc-arrays-25">
+          <h3><a class="doc-anchor" href="#doc-arrays-25">#</a> <code>extract</code></h3>
           <pre><code class="lang-php">extract(array $array): int</code></pre>
           <p>Imports each string-keyed entry as a variable in the current scope and returns how many were set. Integer keys are skipped because they are not valid variable names. DIVERGENCE: the `$flags` and `$prefix` arguments do not exist.</p>
           <pre><code class="lang-php">extract(["n" =&gt; 7]); echo $n;   // =&gt; 7</code></pre>
         </article>
-        <article class="doc-entry" id="doc-arrays-25">
-          <h3><a class="doc-anchor" href="#doc-arrays-25">#</a> <code>end</code></h3>
+        <article class="doc-entry" id="doc-arrays-26">
+          <h3><a class="doc-anchor" href="#doc-arrays-26">#</a> <code>end</code></h3>
           <pre><code class="lang-php">end(array $array): mixed</code></pre>
           <p>Moves the array's internal pointer to the last element and returns its value; `false` for an empty array. The cursor lives in a side table keyed by the array handle with an append-invariant fingerprint, so appending does not rewind it — matching PHP.</p>
           <pre><code class="lang-php">$a = [1, 2, 3]; echo end($a);   // =&gt; 3</code></pre>
         </article>
-        <article class="doc-entry" id="doc-arrays-26">
-          <h3><a class="doc-anchor" href="#doc-arrays-26">#</a> <code>reset</code></h3>
+        <article class="doc-entry" id="doc-arrays-27">
+          <h3><a class="doc-anchor" href="#doc-arrays-27">#</a> <code>reset</code></h3>
           <pre><code class="lang-php">reset(array $array): mixed</code></pre>
           <p>Moves the internal pointer to the first element and returns its value; `false` for an empty array.</p>
           <pre><code class="lang-php">$a = [1, 2, 3]; end($a); echo reset($a);   // =&gt; 1</code></pre>
         </article>
-        <article class="doc-entry" id="doc-arrays-27">
-          <h3><a class="doc-anchor" href="#doc-arrays-27">#</a> <code>current</code></h3>
+        <article class="doc-entry" id="doc-arrays-28">
+          <h3><a class="doc-anchor" href="#doc-arrays-28">#</a> <code>current</code></h3>
           <pre><code class="lang-php">current(array $array): mixed</code></pre>
           <p>The value at the internal pointer without moving it, or `false` once the pointer has fallen off either end.</p>
           <pre><code class="lang-php">$a = [1, 2]; echo current($a);   // =&gt; 1</code></pre>
         </article>
-        <article class="doc-entry" id="doc-arrays-28">
-          <h3><a class="doc-anchor" href="#doc-arrays-28">#</a> <code>pos</code></h3>
+        <article class="doc-entry" id="doc-arrays-29">
+          <h3><a class="doc-anchor" href="#doc-arrays-29">#</a> <code>pos</code></h3>
           <pre><code class="lang-php">pos(array $array): mixed</code></pre>
           <p>The alias of `current`, sharing its match arm.</p>
         </article>
-        <article class="doc-entry" id="doc-arrays-29">
-          <h3><a class="doc-anchor" href="#doc-arrays-29">#</a> <code>key</code></h3>
+        <article class="doc-entry" id="doc-arrays-30">
+          <h3><a class="doc-anchor" href="#doc-arrays-30">#</a> <code>key</code></h3>
           <pre><code class="lang-php">key(array $array): mixed</code></pre>
           <p>The key at the internal pointer, or null once the pointer is off the end.</p>
           <pre><code class="lang-php">$a = ["a" =&gt; 1]; echo key($a);   // =&gt; a</code></pre>
         </article>
-        <article class="doc-entry" id="doc-arrays-30">
-          <h3><a class="doc-anchor" href="#doc-arrays-30">#</a> <code>next</code></h3>
+        <article class="doc-entry" id="doc-arrays-31">
+          <h3><a class="doc-anchor" href="#doc-arrays-31">#</a> <code>next</code></h3>
           <pre><code class="lang-php">next(array $array): mixed</code></pre>
           <p>Advances the internal pointer and returns the new element's value, or `false` once it runs past the end. The off-the-end state is sticky, as in PHP: further `next`/`prev` calls stay invalid until `reset` or `end`.</p>
           <pre><code class="lang-php">$a = [1, 2]; echo next($a);   // =&gt; 2</code></pre>
         </article>
-        <article class="doc-entry" id="doc-arrays-31">
-          <h3><a class="doc-anchor" href="#doc-arrays-31">#</a> <code>prev</code></h3>
+        <article class="doc-entry" id="doc-arrays-32">
+          <h3><a class="doc-anchor" href="#doc-arrays-32">#</a> <code>prev</code></h3>
           <pre><code class="lang-php">prev(array $array): mixed</code></pre>
           <p>Steps the internal pointer back one element and returns its value, or `false` once it runs past the start, entering the same sticky invalid state.</p>
           <pre><code class="lang-php">$a = [1, 2]; end($a); echo prev($a);   // =&gt; 1</code></pre>
@@ -4556,7 +4600,7 @@ echo implode(",", $a), "|", implode(",", $b);   // =&gt; 1,2,3|a,b,c</code></pre
         <article class="doc-entry" id="doc-misc-10">
           <h3><a class="doc-anchor" href="#doc-misc-10">#</a> <code>array_walk_recursive</code></h3>
           <pre><code class="lang-php">array_walk_recursive(array $array, callable $callback, mixed $arg = null): bool</code></pre>
-          <p>Descends nested arrays and invokes `$callback($value, $key[, $arg])` on non-array LEAVES only — a nested array is recursed into but never passed to the callback. It carries the same limitation as `array_walk`: with no by-reference parameters, mutating a scalar leaf inside the callback does not write back.</p>
+          <p>Descends nested arrays and invokes `$callback($value, $key[, $arg])` on non-array LEAVES only — a nested array is recursed into but never passed to the callback. The leaf goes in through a reference cell, so a `function (&amp;$v)` callback rewrites it in place, exactly as with `array_walk`.</p>
           <pre><code class="lang-php">$a = [1, [2, 3]]; array_walk_recursive($a, function ($v, $k) { echo $v; });   // =&gt; 123</code></pre>
         </article>
         <article class="doc-entry" id="doc-misc-11">
@@ -4592,7 +4636,7 @@ echo implode(",", $a), "|", implode(",", $b);   // =&gt; 1,2,3|a,b,c</code></pre
         <article class="doc-entry" id="doc-misc-16">
           <h3><a class="doc-anchor" href="#doc-misc-16">#</a> <code>str_getcsv</code></h3>
           <pre><code class="lang-php">str_getcsv(string $string, string $separator = ",", string $enclosure = "\"", string $escape = "\\"): array</code></pre>
-          <p>Parses ONE line. Doubled enclosures inside a quoted field are literals, and unenclosed fields keep their blanks. DIVERGENCE: the escape character keeps BOTH itself and the following character — it is not stripped; an embedded newline is an ordinary field character, so multi-line records are never reassembled; an empty input returns a one-element array holding null; and an empty `$separator` or `$enclosure` falls back to the DEFAULT rather than disabling it.</p>
+          <p>Parses ONE line. Doubled enclosures inside a quoted field are literals, and unenclosed fields keep their blanks. DIVERGENCE: the escape character keeps BOTH itself and the following character — it is not stripped; an embedded newline is an ordinary field character, so multi-line records are never reassembled; an empty input returns a one-element array holding null; and an empty `$separator` or `$enclosure` falls back to the DEFAULT rather than disabling it. Omitting `$escape` raises PHP 8.4's deprecation notice.</p>
           <pre><code class="lang-php">print_r(str_getcsv("a,b"));   // =&gt; Array\n(\n    [0] =&gt; a\n    [1] =&gt; b\n)</code></pre>
         </article>
         <article class="doc-entry" id="doc-misc-17">

@@ -275,8 +275,8 @@ pub const CORPUS: &[Entry] = &[
         "static",
         "Keyword",
         "static $var [= expr];\nstatic function m() { … }\nstatic public $prop;\nstatic::member",
-        "Four roles, told apart by what follows. Before a `$variable` in a function body it declares a static local that survives between calls; before a member it marks it static; as a `::` qualifier it is late static binding. DIVERGENCE: `static function () { … }` as a closure modifier is NOT parsed and is a syntax error.",
-        "class A { static $n = 4; } echo A::$n;   // => 4",
+        "Four roles, told apart by what follows. Before a `$variable` in a function body it declares a static local that survives between calls; before a member it marks it static; as a `::` qualifier it is late static binding; and before `function`/`fn` it makes a CLOSURE static, so it is not bound to the `$this` of the method it was written in and `Closure::bind` refuses to give it one afterwards (warning `Cannot bind an instance to a static closure, this will be an error in PHP 9` and answering null). It keeps that method's class scope, so a private static stays reachable.",
+        "class A { static $n = 4; } echo A::$n;   // => 4\n$f = static fn($x) => $x + 1; echo $f(1);   // => 2",
     ),
     (
         "public",
@@ -446,6 +446,20 @@ pub const CORPUS: &[Entry] = &[
         "empty($var): bool",
         "True when the argument is falsey or unset, raising no notice for an undefined name, so `empty(\"0\")`, `empty([])`, and `empty(null)` are all true. On an OBJECT PROPERTY it sits between `isset` and `??`: it wants a value, but will not read one through `__get` unless `__isset` vouched for the property first. A class with `__get` and no `__isset` is therefore `empty()` without `__get` ever being called, while `$o->p ?? \"d\"` on that same class does call it.",
         "echo empty(0) ? \"y\" : \"n\";   // => y",
+    ),
+    (
+        "global",
+        "Keyword",
+        "global $var[, $var …];",
+        "Binds each name to the GLOBAL variable of that name for the rest of the function. It is a reference, not a copy: a write through either side is seen by the other, and a global that does not exist yet is created by the binding. `unset()` on the local breaks the alias and leaves the global alone. Without the declaration the name is an ordinary, unrelated local. At global scope there is no second frame to bind to and the statement does nothing.",
+        "$g = 1; function f() { global $g; $g = 2; } f(); echo $g;   // => 2",
+    ),
+    (
+        "$$",
+        "Operator",
+        "$$name\n${expr}",
+        "A variable VARIABLE: the operand is evaluated and its string value names the variable to read or write, so the name is not known until it runs. `$$x` nests, so `$$$x` is two lookups, and `${expr}` takes any expression. What it names is an ordinary variable — assignable, unsettable, and acceptable where a by-reference parameter wants a location. A quiet context reads through it without the undefined-variable warning.",
+        "$a = 5; $n = 'a'; echo $$n, ' ', ${'a'};   // => 5 5",
     ),
     (
         "unset",

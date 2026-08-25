@@ -191,6 +191,11 @@ pub enum Expr {
         body: Vec<Stmt>,
         /// The declared return type (`function (): int { … }`), or `None`.
         ret: Option<TypeHint>,
+        /// `static function (…)` — the closure is NOT bound to the `$this` of
+        /// the method it was written in. It keeps that method's class SCOPE, so
+        /// a private static is still reachable; only the instance is withheld,
+        /// and `Closure::bind` refuses to supply one later.
+        is_static: bool,
     },
     /// An arrow function `fn(params) => expr` — its body is a single expression
     /// and every free variable is captured by value automatically.

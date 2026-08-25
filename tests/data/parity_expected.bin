@@ -1031,3 +1031,27 @@ PHP Deprecated:  sqrt(): Passing null to parameter #1 ($num) of type float is de
 Parse error: Unclosed '[' in Command line code on line 5
 PHP Parse error:  Unclosed '[' in Command line code on line 5
 
+#REC 40 exit=0 out=168 err=122
+int(7)
+string(4) "none"
+int(2)
+int(6)
+
+Warning: Cannot bind an instance to a static closure, this will be an error in PHP 9 in Command line code on line 13
+NULL
+int(7)
+PHP Warning:  Cannot bind an instance to a static closure, this will be an error in PHP 9 in Command line code on line 13
+
+#REC 41 exit=0 out=42 err=0
+int(5)
+int(0)
+int(3)
+int(4)
+int(1)
+int(9)
+
+#REC 42 exit=0 out=84 err=0
+Exception: Cannot get return value of a generator that hasn't returned
+int(99)
+NULL
+

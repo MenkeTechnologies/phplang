@@ -340,6 +340,13 @@ pub mod ops {
     pub const GLOBAL_BIND: u16 = 123;
 }
 
+/// The capture name a `static` closure carries from its creation site.
+///
+/// `$` cannot begin a PHP variable name, so this can never collide with one the
+/// program wrote, and it travels through the ordinary capture list rather than
+/// needing an operand of its own.
+pub const STATIC_CLOSURE_CAPTURE: &str = "@static-closure";
+
 /// The key operand of an array-literal element that has NO key — `[1, 2]`
 /// rather than `[0 => 1, 1 => 2]`.
 ///
@@ -534,6 +541,9 @@ pub enum PhpObj {
         is_generator: bool,
         /// The declared return type, checked on the way out of a call.
         ret: Option<TypeHint>,
+        /// Declared `static`, so no instance may ever be bound to it — at
+        /// creation, and by `Closure::bind`/`bindTo` afterwards.
+        is_static: bool,
     },
     /// A live generator: an index into `PhpHost::generators`, where the suspended
     /// stackful coroutine and its execution context live. Built by calling a
@@ -2808,15 +2818,27 @@ impl PhpHost {
     /// (`def_name`, a synthetic name in the function table) plus the values
     /// captured at creation time. Returns the new handle, or `Undef` if the
     /// definition is missing (should never happen for compiler-emitted names).
-    pub fn make_closure(&mut self, def_name: &str, captured: Vec<(String, Value)>) -> Value {
+    pub fn make_closure(&mut self, def_name: &str, mut captured: Vec<(String, Value)>) -> Value {
         let Some(def) = self.functions.get(def_name).cloned() else {
             return Value::Undef;
+        };
+        // `static function (…)` arrives with the marker capture the compiler
+        // added. It is not a variable, so it is taken back out before the rest
+        // become the closure's bindings.
+        let is_static = {
+            let n = captured.len();
+            captured.retain(|(k, _)| k != STATIC_CLOSURE_CAPTURE);
+            captured.len() != n
         };
         // A closure defined inside a method auto-binds the current `$this` and its
         // class scope (PHP semantics), so `$this` and private member access work
         // without an explicit `bindTo`. `None`/`None` at the top level or in a free
         // function keeps the previous behavior exactly.
         let bound_this = match self.get_var("this") {
+            // A static closure is never bound to the instance it was written
+            // inside, so `$this` is unset in its body and `Closure::bind`
+            // refuses to supply one later.
+            _ if is_static => None,
             t @ Value::Obj(_) => Some(t),
             _ => None,
         };
@@ -2829,6 +2851,7 @@ impl PhpHost {
             scope,
             is_generator: def.is_generator,
             ret: def.ret,
+            is_static,
         });
         Value::Obj((self.objs.len() - 1) as u32)
     }
@@ -2846,6 +2869,7 @@ impl PhpHost {
                 scope,
                 is_generator,
                 ret,
+                ..
             }) => Some(ClosureCall {
                 params: params.clone(),
                 chunk: (**chunk).clone(),
@@ -2868,13 +2892,14 @@ impl PhpHost {
         this: Option<Value>,
         scope: Option<String>,
     ) -> Option<Value> {
-        let (params, chunk, captured, is_generator, ret) = match self.as_array(v) {
+        let (params, chunk, captured, is_generator, ret, is_static) = match self.as_array(v) {
             Some(PhpObj::Closure {
                 params,
                 chunk,
                 captured,
                 is_generator,
                 ret,
+                is_static,
                 ..
             }) => (
                 params.clone(),
@@ -2882,9 +2907,20 @@ impl PhpHost {
                 captured.clone(),
                 *is_generator,
                 ret.clone(),
+                *is_static,
             ),
             _ => return None,
         };
+        // A `static` closure has no instance and may not be given one. The
+        // reference warns and answers null rather than binding.
+        if is_static && this.is_some() {
+            self.warn(
+                "Cannot bind an instance to a static closure, this will be an error in PHP 9",
+            );
+            // The reference answers NULL here — a refusal, not "that was not a
+            // closure", which is what `None` means to the caller.
+            return Some(Value::Undef);
+        }
         self.objs.push(PhpObj::Closure {
             params,
             chunk,
@@ -2893,6 +2929,7 @@ impl PhpHost {
             scope,
             is_generator,
             ret,
+            is_static,
         });
         Some(Value::Obj((self.objs.len() - 1) as u32))
     }
@@ -5570,10 +5607,29 @@ pub fn gen_throw(gen: &Value, e: Value) -> Result<Value, String> {
     Ok(with_host(|h| h.generators[id as usize].cur_val.clone()))
 }
 
-/// `->getReturn()` — the value the body `return`ed (null if none / not finished).
+/// `->getReturn()` — the value the body `return`ed.
+///
+/// Asking BEFORE the body has returned is an error rather than a null: the
+/// reference cannot distinguish "returned nothing" from "has not returned yet"
+/// by value, so it refuses the question instead of answering it wrongly. A
+/// generator that ran to completion without a `return` answers null.
 pub fn gen_get_return(gen: &Value) -> Result<Value, String> {
     let id = with_host(|h| h.gen_id(gen)).ok_or("not a generator")?;
-    Ok(with_host(|h| h.generators[id as usize].ret.clone()))
+    let (done, ret) = with_host(|h| {
+        let g = &h.generators[id as usize];
+        (g.done, g.ret.clone())
+    });
+    if !done {
+        // Raised through the internal-throw path so the trace carries the
+        // `Generator->getReturn()` frame the reference prints for it.
+        return throw_from_internal(
+            "Generator->getReturn",
+            &[],
+            "Exception",
+            "Cannot get return value of a generator that hasn't returned",
+        );
+    }
+    Ok(ret)
 }
 
 /// Dispatch a `$gen->method(...)` call on a Generator object.
