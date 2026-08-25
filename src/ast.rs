@@ -476,6 +476,12 @@ pub enum StmtKind {
     /// per-declaration slot whose value survives across calls; the optional
     /// initializer runs only on the first entry.
     StaticLocal(Vec<(String, Option<Expr>)>),
+    /// `global $a, $b;` inside a function — each name becomes an ALIAS of the
+    /// global variable of that name, so a write through it is visible outside
+    /// and a later write to the global is visible here. It is a reference
+    /// binding, not a copy: `unset()` on the local breaks the alias and leaves
+    /// the global alone.
+    Global(Vec<String>),
     /// `const NAME = expr, NAME2 = expr2;` at statement level — the declaration
     /// spelling of a global constant, as opposed to the `define()` call.
     ///

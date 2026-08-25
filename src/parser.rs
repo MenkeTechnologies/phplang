@@ -748,6 +748,21 @@ impl Parser {
                 self.expect_punct(";")?;
                 StmtKind::StaticLocal(decls)
             }
+            // `global $a, $b;` — bind each name to the global variable of that
+            // name. Unlike `static`, there is no initializer form: PHP's grammar
+            // takes a bare variable list.
+            _ if self.at_kw("global") => {
+                self.pos += 1; // global
+                let mut names = Vec::new();
+                loop {
+                    names.push(self.expect_var()?);
+                    if !self.eat_punct(",") {
+                        break;
+                    }
+                }
+                self.expect_punct(";")?;
+                StmtKind::Global(names)
+            }
             _ if self.at_kw("class")
                 || self.at_kw("interface")
                 || self.at_kw("trait")

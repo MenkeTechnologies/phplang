@@ -26,6 +26,7 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::CALL, b_call);
     vm.register_builtin(ops::MINMAX_FLF2, b_minmax_flf2);
     vm.register_builtin(ops::BYREF_ARG_DIAG, b_byref_arg_diag);
+    vm.register_builtin(ops::GLOBAL_BIND, b_global_bind);
     vm.register_builtin(ops::CALL_SPREAD, b_call_spread);
     vm.register_builtin(ops::MKARRAY, b_mkarray);
     vm.register_builtin(ops::MKARRAY_ADD, b_mkarray_add);
@@ -1315,6 +1316,14 @@ fn b_minmax_flf2(vm: &mut VM, argc: u8) -> Value {
     let want_max = name.eq_ignore_ascii_case("max");
     let v = with_host(|h| minmax_frameless(h, &args[0], &args[1], want_max));
     bubbled(vm, v)
+}
+
+/// `GLOBAL_BIND`: `global $name;`. Stack `[name]`.
+fn b_global_bind(vm: &mut VM, argc: u8) -> Value {
+    let args = pop_args(vm, argc as usize);
+    let name = with_host(|h| h.to_str(&args[0]));
+    with_host(|h| h.bind_global(&name));
+    Value::Undef
 }
 
 /// `BYREF_ARG_DIAG`: report an argument that cannot supply a by-reference

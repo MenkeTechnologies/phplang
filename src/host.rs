@@ -331,6 +331,13 @@ pub mod ops {
     /// argument is evaluated for its side effects first, and the arguments AFTER
     /// it are never evaluated at all.
     pub const BYREF_ARG_DIAG: u16 = 122;
+    /// `[name] -> null` — `global $name;`.
+    ///
+    /// Binds the running frame's `name` as an ALIAS of the global variable of
+    /// that name, which is what the reference does: `global $x` is defined as
+    /// `$x = &$GLOBALS['x']`, so the two share one cell and each sees the
+    /// other's writes. One op per name keeps `global $a, $b;` a plain sequence.
+    pub const GLOBAL_BIND: u16 = 123;
 }
 
 /// The key operand of an array-literal element that has NO key — `[1, 2]`
@@ -2532,6 +2539,50 @@ impl PhpHost {
                 self.ref_cells.push(fallback);
                 self.ref_cells.len() - 1
             }
+        }
+    }
+
+    /// `global $name;` — make the running frame's `name` an alias of the GLOBAL
+    /// variable of that name.
+    ///
+    /// The reference defines this as `$name = &$GLOBALS['name']`, and it is a
+    /// real reference on both ends: the global is promoted to a shared cell if
+    /// it was a plain value, and the local is bound to that same cell. So a
+    /// write through either side is seen by the other, and a global that did not
+    /// exist yet is CREATED by the binding rather than read as null once.
+    ///
+    /// At global scope the two frames are the same frame, and the reference
+    /// treats `global $x` there as a no-op rather than aliasing a name to
+    /// itself.
+    pub fn bind_global(&mut self, name: &str) {
+        const GLOBAL_FRAME: usize = 0;
+        let cur = self.scopes.len().saturating_sub(1);
+        if cur == GLOBAL_FRAME {
+            return;
+        }
+        let slot = match self.scopes.get(GLOBAL_FRAME).map(|s| s.vars.get(name)) {
+            Some(Slot::Ref(c)) => *c,
+            _ => {
+                // Promote the global into a cell, carrying whatever it already
+                // held so `global $x` does not clear an existing value.
+                let cur_val = self
+                    .scopes
+                    .get(GLOBAL_FRAME)
+                    .map(|s| s.vars.get(name).clone())
+                    .map(|s| self.read_slot(&s))
+                    .unwrap_or(Value::Undef);
+                self.ref_cells.push(cur_val);
+                let slot = self.ref_cells.len() - 1;
+                if let Some(scope) = self.scopes.get_mut(GLOBAL_FRAME) {
+                    let i = scope.vars.ensure_slot(name);
+                    scope.vars.put(i, Slot::Ref(slot));
+                }
+                slot
+            }
+        };
+        if let Some(scope) = self.scopes.get_mut(cur) {
+            let i = scope.vars.ensure_slot(name);
+            scope.vars.put(i, Slot::Ref(slot));
         }
     }
 

@@ -888,3 +888,15 @@ DivisionByZeroError: Modulo by zero
 #0 Command line code(8): opm()
 #1 {main}
 
+#REC 34 exit=0 out=92 err=0
+int(1)
+int(10)
+int(12)
+int(7)
+bool(false)
+int(10)
+string(5) "unset"
+int(10)
+int(10)
+int(10)
+

@@ -584,6 +584,14 @@ impl Compiler {
                 b.emit(Op::Pop, line);
             }
             StmtKind::Block(body) => self.compile_seq(b, body)?,
+            StmtKind::Global(names) => {
+                for name in names {
+                    let nidx = b.add_constant(Value::str(name.clone()));
+                    b.emit(Op::LoadConst(nidx), line);
+                    b.emit(Op::CallBuiltin(ops::GLOBAL_BIND, 1), line);
+                    b.emit(Op::Pop, 0);
+                }
+            }
             StmtKind::StaticLocal(decls) => {
                 for (name, default) in decls {
                     // A unique, stable key per declaration — baked into the chunk
@@ -4302,6 +4310,13 @@ impl SlotScan {
                 }
             }
             StmtKind::Block(b) => self.stmts(b),
+            // The name is bound in THIS frame (as an alias), so it needs a slot
+            // here just as an ordinary local would.
+            StmtKind::Global(names) => {
+                for n in names {
+                    self.push(n);
+                }
+            }
             StmtKind::StaticLocal(decls) => {
                 for (n, init) in decls {
                     self.push(n);

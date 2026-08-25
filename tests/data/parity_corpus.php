@@ -328,3 +328,29 @@ foreach (['idz', 'idm', 'opd', 'opm'] as $f) {
         echo get_class($e), ": ", $e->getMessage(), "\n", $e->getTraceAsString(), "\n";
     }
 }
+#==#
+// `global $x` is a reference binding, not a copy: the local and the global share
+// one cell, so each sees the other's writes, and a global that did not exist yet
+// is created by the binding.
+$g1 = 1; $g2 = 2;
+function g_read() { global $g1; return $g1; }
+function g_write() { global $g1; $g1 = 10; }
+function g_multi() { global $g1, $g2; return $g1 + $g2; }
+function g_fresh() { global $g3; $g3 = 7; }
+function g_unset() { global $g1; unset($g1); return isset($g1); }
+function g_none() { return isset($g1) ? "set" : "unset"; }
+var_dump(g_read());
+g_write(); var_dump($g1);
+var_dump(g_multi());
+g_fresh(); var_dump($g3);
+// unset() breaks the ALIAS and leaves the global alone.
+var_dump(g_unset(), $g1);
+// Without the declaration the name is an ordinary, unrelated local.
+var_dump(g_none());
+// Closures and methods bind the same way.
+function g_closure() { $f = function () { global $g1; return $g1; }; return $f(); }
+class GHolder { public function m() { global $g1; return $g1; } }
+var_dump(g_closure(), (new GHolder())->m());
+// At global scope the declaration has no second frame to bind to.
+global $g1;
+var_dump($g1);
