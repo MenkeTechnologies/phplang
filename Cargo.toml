@@ -1,6 +1,6 @@
 [package]
 name = "phplang"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 rust-version = "1.80"
 description = "PHP as a fusevm frontend: lexer, parser, and compiler to fusevm::Chunk on a PhpHost heap — the first compiled standalone PHP runtime"
