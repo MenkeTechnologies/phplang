@@ -88,6 +88,15 @@ struct Run {
 
 fn run(bin: &Path, src: &str) -> Run {
     let out = Command::new(bin)
+        // xdebug REPLACES `var_dump`: it prefixes every dump with
+        // `Command line code:<line>:` and prints array keys as `[0] =>` rather
+        // than `[0]=>`. The ubuntu runner's php has it loaded and this machine's
+        // does not, so the same corpus produced two different references and the
+        // snapshot could only ever match one of them. Turning its develop mode
+        // off restores stock `var_dump`. phplang accepts and ignores `-d`, so
+        // both sides can take the same flag.
+        .arg("-d")
+        .arg("xdebug.mode=off")
         .arg("-r")
         .arg(src)
         .env("TZ", "UTC")
@@ -160,25 +169,25 @@ fn decode(mut buf: &[u8]) -> Vec<Run> {
 }
 
 /// Render a difference between two runs, or `None` when they agree.
-fn diff(want: &Run, got: &Run) -> Option<String> {
+fn diff_named(want: &Run, got: &Run, want_label: &str, got_label: &str) -> Option<String> {
     let mut parts = Vec::new();
     if want.out != got.out {
         parts.push(format!(
-            "  stdout\n    php    : {:?}\n    phplang: {:?}",
+            "  stdout\n    {want_label:<8}: {:?}\n    {got_label:<8}: {:?}",
             String::from_utf8_lossy(&want.out),
             String::from_utf8_lossy(&got.out)
         ));
     }
     if want.err != got.err {
         parts.push(format!(
-            "  stderr\n    php    : {:?}\n    phplang: {:?}",
+            "  stderr\n    {want_label:<8}: {:?}\n    {got_label:<8}: {:?}",
             String::from_utf8_lossy(&want.err),
             String::from_utf8_lossy(&got.err)
         ));
     }
     if want.exit != got.exit {
         parts.push(format!(
-            "  exit status\n    php    : {}\n    phplang: {}",
+            "  exit status\n    {want_label:<8}: {}\n    {got_label:<8}: {}",
             want.exit, got.exit
         ));
     }
@@ -229,7 +238,7 @@ fn corpus_matches_frozen_php() {
     let mut failures = Vec::new();
     for (i, (src, want)) in blocks.iter().zip(&expected).enumerate() {
         let got = run(&bin, src);
-        if let Some(d) = diff(want, &got) {
+        if let Some(d) = diff_named(want, &got, "snapshot", "phplang") {
             failures.push(format!("──── block #{i}: {}\n{d}", label(src)));
         }
     }
@@ -279,7 +288,7 @@ fn frozen_snapshot_still_matches_live_php() {
     for (i, l) in live.iter().enumerate() {
         match stored.get(i) {
             Some(s) => {
-                if let Some(d) = diff(s, l) {
+                if let Some(d) = diff_named(s, l, "snapshot", "live php") {
                     drift.push(format!("──── block #{i}: {}\n{d}", label(&blocks[i])));
                 }
             }
