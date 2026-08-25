@@ -707,3 +707,102 @@ Stack trace:
 #0 {main}
   thrown in Command line code on line 5
 
+#REC 25 exit=0 out=255 err=0
+float(NAN)
+int(1)
+float(NAN)
+int(1)
+float(1)
+int(1)
+int(1)
+float(1)
+int(2)
+int(2)
+int(1)
+float(NAN)
+float(NAN)
+int(2)
+int(1)
+int(2)
+float(NAN)
+float(NAN)
+int(1)
+int(1)
+int(1)
+int(1)
+int(1)
+float(1)
+int(9223372036854775807)
+float(1)
+int(2)
+float(1)
+int(2)
+
+#REC 26 exit=0 out=69 err=0
+bool(false)
+int(1)
+int(1)
+int(1)
+bool(false)
+bool(false)
+bool(false)
+
+#REC 27 exit=0 out=221 err=0
+TypeError: min(): Argument #1 ($value) must be of type array, int given
+TypeError: max(): Argument #1 ($value) must be of type array, string given
+ValueError: min(): Argument #1 ($value) must contain at least one element
+
+#REC 28 exit=0 out=744 err=178
+
+Notice: Only variables should be passed by reference in Command line code on line 6
+
+Notice: Only variables should be passed by reference in Command line code on line 7
+int(4)
+Error: sort(): Argument #1 ($array) could not be passed by reference
+Error: array_push(): Argument #1 ($array) could not be passed by reference
+Error: usort(): Argument #1 ($array) could not be passed by reference
+Error: end(): Argument #1 ($array) could not be passed by reference
+Error: settype(): Argument #1 ($var) could not be passed by reference
+Error: preg_match(): Argument #3 ($matches) could not be passed by reference
+Error: str_replace(): Argument #4 ($count) could not be passed by reference
+Error: sscanf(): Argument #3 could not be passed by reference
+PHP Notice:  Only variables should be passed by reference in Command line code on line 6
+PHP Notice:  Only variables should be passed by reference in Command line code on line 7
+
+#REC 29 exit=0 out=362 err=0
+EVALUATED
+Error: sort(): Argument #1 ($array) could not be passed by reference
+bool(true)
+bool(true)
+bool(true)
+Error: sort(): Argument #1 ($array) could not be passed by reference
+Error: sort(): Argument #1 ($array) could not be passed by reference
+Error: sort(): Argument #1 ($array) could not be passed by reference
+bool(true)
+bool(true)
+int(1)
+int(1)
+int(0)
+
+#REC 30 exit=0 out=151 err=0
+int(3)
+array(2) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+}
+int(4)
+array(1) {
+  [0]=>
+  int(5)
+}
+array(1) {
+  [0]=>
+  int(1)
+}
+array(1) {
+  [0]=>
+  int(2)
+}
+

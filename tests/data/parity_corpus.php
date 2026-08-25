@@ -231,3 +231,65 @@ try { echo 1 % 0; } catch (\Throwable $e) { echo get_class($e), ": ", $e->getMes
 try { "g" + 1; } catch (\Throwable $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
 var_dump(@("5g" + 1));
 echo 1/0;
+#==#
+// min/max: three implementations, and which one runs depends on the SHAPE of
+// the call. A direct two-argument call is the frameless one, a spread or a
+// dynamic name is the variadic one, and a lone array is zend_hash_minmax.
+var_dump(min(1, NAN), min(NAN, 1), max(1, NAN), max(NAN, 1));
+var_dump(min(1, 1.0), max(1, 1.0), min(1.0, 1), max(1.0, 1));
+var_dump(min([1, NAN, 2]), max([1, NAN, 2]), min([NAN, 1, 2]), max([NAN, 1, 2]));
+var_dump(min([1, 2, NAN]), max([1, 2, NAN]));
+var_dump(min(1, NAN, 2), max(1, NAN, 2), min(NAN, 1, 2), max(NAN, 1, 2));
+var_dump(call_user_func('min', 1, NAN), call_user_func('max', 1, NAN));
+$f = 'min'; var_dump($f(1, NAN));
+var_dump(min(...[1, NAN]), max(...[1, NAN]));
+var_dump(min(PHP_INT_MAX, 1.0), max(PHP_INT_MAX, 1.0));
+var_dump(min(2, 1.0), max(2, 1.0), min(1.0, 2), max(1.0, 2));
+#==#
+// A NaN is unordered against a string, and zend_compare answers 1 whichever
+// side it is on — so the comparison is not merely "not less", it is 1 both ways.
+var_dump(NAN == "NAN", NAN <=> "1", "1" <=> NAN, NAN <=> "abc");
+var_dump(NAN < 1, NAN > 1, NAN == NAN);
+#==#
+// min/max reject a lone non-array, and an empty array has no answer.
+try { min(1); } catch (\Throwable $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+try { max("x"); } catch (\Throwable $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+try { min([]); } catch (\Throwable $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+#==#
+// A by-reference parameter needs somewhere to write back to. A call result is
+// bound to a temporary after a notice; a literal is an error and the arguments
+// after it are never evaluated.
+function mk() { return [3, 1, 2]; }
+function side() { echo "SIDE\n"; return 1; }
+sort(mk());
+var_dump(array_push(mk(), 9));
+try { sort([3, 1, 2]); } catch (\Throwable $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+try { array_push([1], side()); } catch (\Throwable $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+try { usort([3,1,2], fn($a, $b) => $a <=> $b); } catch (\Throwable $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+try { end([1, 2]); } catch (\Throwable $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+try { settype([1], "array"); } catch (\Throwable $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+try { preg_match('/a/', 'a', []); } catch (\Throwable $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+try { str_replace('a', 'b', 'aa', 0); } catch (\Throwable $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+try { sscanf("1 2", "%d %d", 0, 0); } catch (\Throwable $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+#==#
+// The argument itself is still evaluated before it is rejected.
+function boom() { echo "EVALUATED\n"; return 1; }
+try { sort([boom()]); } catch (\Throwable $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+// Which expressions count as a location is not guessable from the syntax.
+$a = [3, 1, 2]; $n = [[3, 1, 2]];
+var_dump(sort($a), sort($n[0]), sort(($a)));
+try { sort(@$a); } catch (\Throwable $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+try { sort($a ?? []); } catch (\Throwable $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+try { sort(array: [3, 1, 2]); } catch (\Throwable $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+var_dump(sort(array: $a));
+// PREFER_REF parameters bind a value when no reference is available, silently.
+var_dump(array_multisort([3, 1, 2]), extract(['zz' => 1]), current([1, 2]), key([1, 2]));
+#==#
+// An array mutator on a property must reach the property, and must leave the
+// enclosing call's own operands alone while doing it.
+class Stack { public $s = [1, 2, 3]; public static $t = [4, 5]; }
+$o = new Stack();
+var_dump(array_pop($o->s));
+var_dump($o->s);
+var_dump(array_shift(Stack::$t), Stack::$t);
+var_dump(array_splice($o->s, 0, 1), $o->s);

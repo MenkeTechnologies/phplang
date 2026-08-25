@@ -74,6 +74,123 @@ fn array_mutator_subop(name: &str) -> Option<i64> {
     }
 }
 
+/// How an argument in a by-reference position can supply the location the
+/// parameter writes back to.
+///
+/// The reference draws this line by the OPCODE that produced the operand, not by
+/// its type: an `IS_VAR` result can be bound, an `IS_TMP_VAR` or `IS_CONST`
+/// cannot. `Lvalue` is the group that binds silently, `VarTemp` the group that
+/// binds to a temporary after a notice, and `TmpConst` the group that is an
+/// error.
+#[derive(Clone, Copy, PartialEq)]
+enum ByRefArg {
+    Lvalue,
+    VarTemp,
+    TmpConst,
+}
+
+/// Which group a by-reference argument falls into. See [`ByRefArg`].
+///
+/// The groups are not guessable from the shape of the syntax, so each was read
+/// off the reference:
+///
+/// * `$$name` is a real location and binds silently, but `@$name` does NOT —
+///   the suppression operator makes the result a temporary;
+/// * `$o->p` binds, `$o?->p` is an error, because the nullsafe operator is
+///   rejected outright in a write context;
+/// * `new C` and `new class {}` bind to a temporary with a notice, while
+///   `clone $o` — which also yields a fresh object — is an error;
+/// * a subscript binds however its BASE was produced, so `mk()[0]` is silent
+///   even though `mk()` alone would warn.
+fn byref_arg_class(e: &Expr) -> ByRefArg {
+    match e {
+        // A named argument is judged by the value it carries.
+        Expr::NamedArg(_, inner) => byref_arg_class(inner),
+        // Real locations.
+        Expr::Var(_) | Expr::Index(..) | Expr::PropGet(..) | Expr::StaticProp(..) => {
+            ByRefArg::Lvalue
+        }
+        // Calls and instantiations leave a temporary the engine can still bind.
+        Expr::Call(..)
+        | Expr::CallValue(..)
+        | Expr::MethodCall(..)
+        | Expr::NullsafeMethodCall(..)
+        | Expr::StaticCall(..)
+        | Expr::New(..)
+        | Expr::NewAnon { .. } => ByRefArg::VarTemp,
+        _ => ByRefArg::TmpConst,
+    }
+}
+
+/// The by-reference positions that RAISE a diagnostic, as
+/// `(name, 1-based argument number, parameter name)`.
+///
+/// Being by-reference is not enough to be listed here. `array_multisort`,
+/// `extract`, `current` and `key` all take their array by reference and still
+/// accept a literal in silence, because their parameters are declared
+/// `PREFER_REF` — the engine binds a reference when one is available and falls
+/// back to the value when it is not, with nothing to report either way. Adding
+/// them would invent diagnostics the reference does not emit.
+const BYREF_ARG_DIAG: &[(&str, u32, &str)] = &[
+    ("sort", 1, "array"),
+    ("rsort", 1, "array"),
+    ("asort", 1, "array"),
+    ("arsort", 1, "array"),
+    ("ksort", 1, "array"),
+    ("krsort", 1, "array"),
+    ("usort", 1, "array"),
+    ("uasort", 1, "array"),
+    ("uksort", 1, "array"),
+    ("natsort", 1, "array"),
+    ("natcasesort", 1, "array"),
+    ("shuffle", 1, "array"),
+    ("array_push", 1, "array"),
+    ("array_pop", 1, "array"),
+    ("array_shift", 1, "array"),
+    ("array_unshift", 1, "array"),
+    ("array_splice", 1, "array"),
+    ("array_walk", 1, "array"),
+    ("array_walk_recursive", 1, "array"),
+    ("end", 1, "array"),
+    ("reset", 1, "array"),
+    ("next", 1, "array"),
+    ("prev", 1, "array"),
+    ("settype", 1, "var"),
+    ("parse_str", 2, "result"),
+    ("similar_text", 3, "percent"),
+    ("preg_match", 3, "matches"),
+    ("preg_match_all", 3, "matches"),
+    ("str_replace", 4, "count"),
+    ("str_ireplace", 4, "count"),
+    ("preg_replace", 5, "count"),
+    ("preg_replace_callback", 5, "count"),
+];
+
+/// The highest argument number [`BYREF_ARG_DIAG`] describes. A named argument
+/// can reach a slot far past the number of arguments actually written —
+/// `preg_replace(count: [])` fills argument 5 with one argument — so the
+/// name-keyed lookup asks for every slot rather than only the reachable ones.
+const BYREF_MAX_ARGNO: usize = 5;
+
+/// The by-reference position of `name` that a call with `nargs` arguments
+/// actually fills, as `(0-based index, 1-based argument number, parameter name)`.
+///
+/// `sscanf` takes every argument from the third on by reference, and its
+/// message names no parameter at all — the variadic tail has no name to print,
+/// so the reference writes `Argument #3 could not be passed by reference`
+/// without the usual `($name)`.
+fn byref_diag_slots(name: &str, nargs: usize) -> Vec<(usize, u32, &'static str)> {
+    let lname = name.rsplit('\\').next().unwrap_or(name).to_ascii_lowercase();
+    if lname == "sscanf" {
+        return (2..nargs).map(|i| (i, i as u32 + 1, "")).collect();
+    }
+    BYREF_ARG_DIAG
+        .iter()
+        .filter(|(n, argno, _)| *n == lname && (*argno as usize) <= nargs)
+        .map(|&(_, argno, param)| (argno as usize - 1, argno, param))
+        .collect()
+}
+
 /// Whether this call is a literal two-argument `min()`/`max()` — the ONE shape
 /// the reference compiles to its frameless implementation of those functions
 /// (`ZEND_FRAMELESS_FUNCTION(min, 2)`, `ext/standard/array.c:1282`).
@@ -233,6 +350,35 @@ impl Compiler {
     /// each write-back test [`ops::BYREF_LIVE`] first. An unguarded write-back at
     /// such a site would store a null into a variable a by-value call never
     /// touched.
+    /// Emit the diagnostic for an argument that cannot supply a by-reference
+    /// binding, or nothing at all when it can.
+    ///
+    /// Called with the argument's value already on the stack, so the reference's
+    /// ordering is preserved: the argument is evaluated, then judged, and the
+    /// arguments after it are only compiled if the judgement let the call live.
+    fn emit_byref_arg_diag(
+        &mut self,
+        b: &mut ChunkBuilder,
+        callee: &str,
+        argno: u32,
+        param: &str,
+        class: ByRefArg,
+    ) {
+        let kind = match class {
+            ByRefArg::Lvalue => return,
+            ByRefArg::VarTemp => 0,
+            ByRefArg::TmpConst => 1,
+        };
+        b.emit(Op::LoadInt(kind), 0);
+        let c = b.add_constant(Value::str(callee.to_string()));
+        b.emit(Op::LoadConst(c), 0);
+        b.emit(Op::LoadInt(i64::from(argno)), 0);
+        let c = b.add_constant(Value::str(param.to_string()));
+        b.emit(Op::LoadConst(c), 0);
+        b.emit(Op::CallBuiltin(ops::BYREF_ARG_DIAG, 4), self.cur_line);
+        b.emit(Op::Pop, 0);
+    }
+
     fn emit_byref_writeback(
         &mut self,
         b: &mut ChunkBuilder,
@@ -1813,7 +1959,7 @@ impl Compiler {
                 // then a `(name, value)` pair per argument for the host to rebind.
                 let idx = b.add_constant(Value::str(name.clone()));
                 b.emit(Op::LoadConst(idx), 0);
-                self.compile_arg_pairs(b, args)?;
+                self.compile_arg_pairs_for(b, name, args)?;
                 b.emit(
                     Op::CallBuiltin(ops::CALL_NAMED, (args.len() * 2 + 1) as u8),
                     self.cur_line,
@@ -1824,22 +1970,39 @@ impl Compiler {
                 // The by-reference array mutators take their array by variable
                 // name so the host can rewrite (and auto-vivify) it in place. A
                 // spread among the arguments falls through to the normal dispatch.
+                // Every argument slot these take by reference is the FIRST, and
+                // the diagnostic for one that cannot be bound is the same as for
+                // any other by-reference builtin.
+                let mut_diag = args.first().map(byref_arg_class);
                 let mutator_target = match (has_spread, array_mutator_subop(name), args.first()) {
                     (false, Some(sub), Some(Expr::Var(vname))) => Some((sub, vname.clone())),
-                    // `array_pop($this->stack)` and friends: the property's array
-                    // reaches the mutator through a temporary holding the handle
-                    // itself — a plain `SETVAR`, which does not copy — so the
-                    // mutation lands on the property.
-                    (false, Some(sub), Some(root @ (Expr::PropGet(..) | Expr::StaticProp(..)))) => {
+                    // Anything that is not a plain variable reaches the mutator
+                    // through a temporary holding the array HANDLE itself — a
+                    // plain `SETVAR`, which does not copy — so a mutation through
+                    // it still lands on the original.
+                    //
+                    // For `$this->stack` that is the point: the property must
+                    // see the change. For a value that has no home, such as a
+                    // call result, the temporary is where the reference writes
+                    // too, and the mutation is simply discarded with it.
+                    (false, Some(sub), Some(root)) => {
                         let tmp = self.tmp_name("mut");
                         let root = root.clone();
+                        // `emit_set_var` already discards the assignment's own
+                        // result, so nothing is left to pop here. Popping again
+                        // took the operand BELOW it — the enclosing call's
+                        // function name — which is why `var_dump(array_pop(
+                        // $o->prop))` used to die as `Call to undefined
+                        // function ()`.
                         self.emit_set_var(b, &tmp, |c, b| c.compile_expr(b, &root))?;
-                        b.emit(Op::Pop, 0);
                         Some((sub, tmp))
                     }
                     _ => None,
                 };
                 if let Some((sub, vname)) = mutator_target {
+                    if let Some(class) = mut_diag {
+                        self.emit_byref_arg_diag(b, name, 1, "array", class);
+                    }
                     let nidx = b.add_constant(Value::str(vname.clone()));
                     b.emit(Op::LoadConst(nidx), 0);
                     b.emit(Op::LoadInt(sub), 0);
@@ -1886,6 +2049,7 @@ impl Compiler {
                     let idx = b.add_constant(Value::str(name.clone()));
                     b.emit(Op::LoadConst(idx), 0);
                     let byref = self.byref_positions(name, args.len());
+                    let diag = byref_diag_slots(name, args.len());
                     for (i, a) in args.iter().enumerate() {
                         // An argument in a by-reference position is an output
                         // location, not a value the call reads, so an unset one is
@@ -1894,6 +2058,14 @@ impl Compiler {
                         match &byref {
                             Some((p, _)) if p.contains(&i) => self.compile_quiet(b, a)?,
                             _ => self.compile_expr(b, a)?,
+                        }
+                        // Whether that position can actually be WRITTEN back to is
+                        // a separate question from whether reading it is quiet,
+                        // and it is settled here, between this argument and the
+                        // next — the reference never evaluates the arguments after
+                        // one it is about to reject.
+                        if let Some(&(_, argno, param)) = diag.iter().find(|(p, ..)| *p == i) {
+                            self.emit_byref_arg_diag(b, name, argno, param, byref_arg_class(a));
                         }
                     }
                     b.emit(
@@ -3401,17 +3573,43 @@ impl Compiler {
     /// named argument contributes its name as a string constant, a positional
     /// argument contributes `Undef`. Consumed by the host's named-argument binding.
     fn compile_arg_pairs(&mut self, b: &mut ChunkBuilder, args: &[Expr]) -> Result<(), String> {
-        for a in args {
-            match a {
+        self.compile_arg_pairs_for(b, "", args)
+    }
+
+    /// [`Compiler::compile_arg_pairs`], plus the by-reference argument check for
+    /// a call whose callee is known by name.
+    ///
+    /// A named argument reaches a by-reference parameter just as a positional
+    /// one does, so `sort(array: [1, 2])` is the same error as `sort([1, 2])`.
+    /// Which slot it lands in is found by NAME rather than by position, which is
+    /// the whole point of the syntax.
+    fn compile_arg_pairs_for(
+        &mut self,
+        b: &mut ChunkBuilder,
+        callee: &str,
+        args: &[Expr],
+    ) -> Result<(), String> {
+        let diag = byref_diag_slots(callee, args.len().max(BYREF_MAX_ARGNO));
+        for (i, a) in args.iter().enumerate() {
+            let slot = match a {
                 Expr::NamedArg(n, v) => {
                     let idx = b.add_constant(Value::str(n.clone()));
                     b.emit(Op::LoadConst(idx), 0);
                     self.compile_expr(b, v)?;
+                    diag.iter().find(|(_, _, param)| param == n).copied()
                 }
                 _ => {
                     b.emit(Op::LoadUndef, 0);
                     self.compile_expr(b, a)?;
+                    diag.iter().find(|(p, ..)| *p == i).copied()
                 }
+            };
+            if let Some((_, argno, param)) = slot {
+                let inner = match a {
+                    Expr::NamedArg(_, v) => v,
+                    _ => a,
+                };
+                self.emit_byref_arg_diag(b, callee, argno, param, byref_arg_class(inner));
             }
         }
         Ok(())

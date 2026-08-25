@@ -306,6 +306,31 @@ pub mod ops {
     /// The name still travels with it so a user-declared `min`/`max` is found
     /// first, exactly as [`CALL`] would.
     pub const MINMAX_FLF2: u16 = 121;
+    /// `[kind, callee, argno, param] -> null` — the by-reference ARGUMENT check.
+    ///
+    /// A by-reference parameter needs somewhere to write back to, and not every
+    /// expression can supply one. The reference sorts them into three groups and
+    /// treats each differently, so the compiler classifies the argument and emits
+    /// this op to carry the verdict into the run:
+    ///
+    /// * a variable, a subscript, a property or a static property is a real
+    ///   location and no diagnostic is emitted at all — this op is not emitted;
+    /// * a function/method call or a `new` produces a fresh temporary the engine
+    ///   CAN bind, so `kind` 0 raises `Notice: Only variables should be passed by
+    ///   reference` and the call proceeds against that temporary;
+    /// * anything else — a literal, a ternary, an assignment, a cast, `clone`,
+    ///   `@expr`, `?->`, `??` — has no location even in principle, so `kind` 1
+    ///   throws `Error: {callee}(): Argument #{argno} (${param}) could not be
+    ///   passed by reference` and the call never runs.
+    ///
+    /// `param` is empty for a VARIADIC by-reference position (`sscanf`), whose
+    /// message names no parameter.
+    ///
+    /// The op sits between the argument it judges and the rest of the argument
+    /// list, because that is where the reference performs the check: the failing
+    /// argument is evaluated for its side effects first, and the arguments AFTER
+    /// it are never evaluated at all.
+    pub const BYREF_ARG_DIAG: u16 = 122;
 }
 
 /// The key operand of an array-literal element that has NO key — `[1, 2]`

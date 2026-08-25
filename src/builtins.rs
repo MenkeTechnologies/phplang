@@ -25,6 +25,7 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::TRUTHY, b_truthy);
     vm.register_builtin(ops::CALL, b_call);
     vm.register_builtin(ops::MINMAX_FLF2, b_minmax_flf2);
+    vm.register_builtin(ops::BYREF_ARG_DIAG, b_byref_arg_diag);
     vm.register_builtin(ops::CALL_SPREAD, b_call_spread);
     vm.register_builtin(ops::MKARRAY, b_mkarray);
     vm.register_builtin(ops::MKARRAY_ADD, b_mkarray_add);
@@ -1314,6 +1315,41 @@ fn b_minmax_flf2(vm: &mut VM, argc: u8) -> Value {
     let want_max = name.eq_ignore_ascii_case("max");
     let v = with_host(|h| minmax_frameless(h, &args[0], &args[1], want_max));
     bubbled(vm, v)
+}
+
+/// `BYREF_ARG_DIAG`: report an argument that cannot supply a by-reference
+/// binding. Stack `[kind, callee, argno, param]`.
+///
+/// The compiler decides WHICH of the three groups the argument fell into (see
+/// [`crate::host::ops::BYREF_ARG_DIAG`]); this only renders the verdict, because
+/// only the run has an output stream and an exception to raise.
+fn b_byref_arg_diag(vm: &mut VM, argc: u8) -> Value {
+    let args = pop_args(vm, argc as usize);
+    let (kind, callee, argno, param) = (
+        args[0].to_int(),
+        with_host(|h| h.to_str(&args[1])),
+        args[2].to_int(),
+        with_host(|h| h.to_str(&args[3])),
+    );
+    mark_frame_line(vm);
+    if kind == 0 {
+        with_host(|h| h.notice("Only variables should be passed by reference"));
+        return Value::Undef;
+    }
+    // A variadic by-reference position has no parameter to name, and the
+    // reference leaves the parenthesis out entirely rather than writing `($)`.
+    let named = if param.is_empty() {
+        String::new()
+    } else {
+        format!(" (${param})")
+    };
+    fail_or_throw(
+        vm,
+        throws_bare(
+            "Error",
+            format!("{callee}(): Argument #{argno}{named} could not be passed by reference"),
+        ),
+    )
 }
 
 /// Return the call result, or `Undef` if a throw raised inside the callee is now
