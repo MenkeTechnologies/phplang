@@ -327,6 +327,31 @@ mod tests {
         assert!(report.reaches_native(), "{report}");
     }
 
+    /// The unlock, end to end: a counted loop whose bound is a literal is
+    /// compiled from PHP source, traced, and reaches native code.
+    ///
+    /// This is the case that was impossible before locals could live in frame
+    /// slots — every phplang loop carried a `CallBuiltin` for its variable
+    /// reads, and the tracing tier refuses those outright. It is deliberately
+    /// separate from the hand-built chunk above: that one proves the REPORT can
+    /// say yes, this one proves the COMPILER can produce a loop it says yes to.
+    #[test]
+    fn a_counted_loop_over_a_literal_reaches_native_code() {
+        // `%` is still a `CallBuiltin`, and one is enough to be refused, so the
+        // body uses only the operators fusevm lowers natively.
+        const LITERAL_BOUND: &str = "<?php\nfunction f() {\n    $t = 0;\n    \
+             for ($i = 0; $i < 200000; $i++) { $t += $i * 2 - 1; }\n    return $t;\n}\nf();\n";
+        let report = report(LITERAL_BOUND).expect("runs");
+        let looped = report
+            .chunks
+            .iter()
+            .find(|c| !c.loops.is_empty())
+            .unwrap_or_else(|| panic!("a chunk with a loop: {report}"));
+        assert!(looped.loops[0].trace_eligible, "{report}");
+        assert!(looped.loops[0].traced, "{report}");
+        assert!(report.reaches_native(), "{report}");
+    }
+
     /// The top level is not where the loop is — the report has to walk every
     /// chunk to find it. This pins the multi-chunk walk itself: reporting only
     /// `main` would say "no loops" for a program that plainly has one.
@@ -344,13 +369,18 @@ mod tests {
         );
     }
 
-    /// The loop is refused by the tracing tier before branch shape is even
-    /// reached: its body dispatches through ops the trace compiler cannot
-    /// lower, so `is_trace_eligible` says no. The report names them under
-    /// `block-ineligible ops`, which is what makes it a diagnosis rather than
-    /// a verdict — this is the list to shrink to reach native code.
+    /// This loop is still refused, and for ONE remaining reason: it compares
+    /// against `$n`, a PARAMETER.
+    ///
+    /// A parameter is bound by NAME when the frame is built, so it cannot be
+    /// held in a frame slot, so reading it is a `CallBuiltin` — and a single one
+    /// of those in a body makes `is_trace_eligible` say no before branch shape
+    /// is even looked at. Change `$n` to a literal and the same loop traces,
+    /// which is what [`a_counted_loop_over_a_literal_reaches_native_code`]
+    /// pins. The report names the offending ops under `block-ineligible ops`,
+    /// which is what makes it a diagnosis rather than a verdict.
     #[test]
-    fn the_counted_loop_is_refused_by_the_tracing_tier() {
+    fn a_loop_that_reads_a_parameter_is_still_refused() {
         let report = report(PROGRAM).expect("runs");
         let looped = report
             .chunks
