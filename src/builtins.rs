@@ -27,6 +27,7 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::MINMAX_FLF2, b_minmax_flf2);
     vm.register_builtin(ops::BYREF_ARG_DIAG, b_byref_arg_diag);
     vm.register_builtin(ops::GLOBAL_BIND, b_global_bind);
+    vm.register_builtin(ops::INCDEC_STEP, b_incdec_step);
     vm.register_builtin(ops::CALL_SPREAD, b_call_spread);
     vm.register_builtin(ops::MKARRAY, b_mkarray);
     vm.register_builtin(ops::MKARRAY_ADD, b_mkarray_add);
@@ -1178,6 +1179,11 @@ fn pending_php_throw(class: &str, message: &str) -> Result<Value, String> {
 
 fn b_echo(vm: &mut VM, argc: u8) -> Value {
     let args = pop_args(vm, argc as usize);
+    // The conversion below can warn (`Array to string conversion`, and the NaN
+    // one), and the line it belongs to is THIS statement's. It used to arrive
+    // here as a side effect of the variable read that fed the operand, which
+    // stopped being a builtin once locals moved into frame slots.
+    mark_warn_site(vm);
     for a in &args {
         // Conversion first, *outside* the host borrow: an object with
         // `__toString` runs PHP code to produce its string.
@@ -1279,6 +1285,8 @@ fn b_copy(vm: &mut VM, _: u8) -> Value {
 fn b_concat(vm: &mut VM, _: u8) -> Value {
     let b = vm.pop();
     let a = vm.pop();
+    // As in `b_echo`: the conversion warns against the concatenation's own line.
+    mark_warn_site(vm);
     // Both conversions happen outside the host borrow so an operand with
     // `__toString` can run it. String interpolation lowers to this op too.
     let (a, b) = (host::to_str_ext(&a), host::to_str_ext(&b));
@@ -1320,6 +1328,24 @@ fn b_minmax_flf2(vm: &mut VM, argc: u8) -> Value {
     let want_max = name.eq_ignore_ascii_case("max");
     let v = with_host(|h| minmax_frameless(h, &args[0], &args[1], want_max));
     bubbled(vm, v)
+}
+
+/// `INCDEC_STEP`: step a value for `++`/`--`. Stack `[old, inc]`.
+///
+/// Used only by a local held in a fusevm frame slot, which the surrounding ops
+/// read and write themselves. The refusal for an array or object operand is the
+/// same one the slot and by-name forms make.
+fn b_incdec_step(vm: &mut VM, argc: u8) -> Value {
+    let args = pop_args(vm, argc as usize);
+    let inc = args[1].to_int() != 0;
+    let old = args[0].clone();
+    // The step warns for a null decrement and for a bool, so it needs the line
+    // of the operator — the same site the slot and by-name forms record.
+    mark_warn_site(vm);
+    if incdec_refused(vm, &old, inc) {
+        return Value::Undef;
+    }
+    with_host(|h| h.incdec_value(&old, inc))
 }
 
 /// `GLOBAL_BIND`: `global $name;`. Stack `[name]`.
@@ -2847,6 +2873,21 @@ pub fn numeric_hook_sited(call: NumericCall<'_>, lines: &[u32]) -> Result<Value,
         return Ok(array_union(a, b));
     }
     host::set_warn_line(lines.get(call.ip).copied().unwrap_or(0));
+    // A relational operator is NOT arithmetic: PHP orders strings as strings,
+    // arrays by size then element-wise, and a bool against anything by
+    // truthiness. fusevm only asks about the pairs it will not answer itself —
+    // an `Int`/`Int` pair never reaches here — so this is PHP's own comparison
+    // over exactly the operands the native path declined.
+    if let Some(want) = relational(op) {
+        // An UNORDERED pair answers false to all four, which is not the same as
+        // the three-way comparison's answer: `NAN <=> 1` is 1, while `NAN > 1`
+        // is false. This is the guard `cmp_bool` makes for the same reason.
+        if is_unordered(a, b) {
+            return Ok(Value::bool(false));
+        }
+        let ord = with_host(|h| php_compare(h, a, b));
+        return Ok(Value::bool(want(ord)));
+    }
     let sym = op_symbol(op);
     if op == NumOp::Neg {
         // Unary minus is `$x * -1`, so the reported right-hand type is `int`.
@@ -2862,6 +2903,18 @@ pub fn numeric_hook_sited(call: NumericCall<'_>, lines: &[u32]) -> Result<Value,
     }
     let (an, bn) = coerce_arith_pair(sym, a, b)?;
     Ok(arith(op, an, bn))
+}
+
+/// The test a relational [`NumOp`] applies to a three-way comparison, or `None`
+/// for an op that is arithmetic rather than relational.
+fn relational(op: NumOp) -> Option<fn(i32) -> bool> {
+    Some(match op {
+        NumOp::Lt => |o: i32| o < 0,
+        NumOp::Gt => |o: i32| o > 0,
+        NumOp::Le => |o: i32| o <= 0,
+        NumOp::Ge => |o: i32| o >= 0,
+        _ => return None,
+    })
 }
 
 /// PHP's `+` on two arrays: the left operand's entries win, and the right

@@ -218,6 +218,15 @@ fn is_direct_minmax2(name: &str, args: &[Expr]) -> bool {
     bare.eq_ignore_ascii_case("min") || bare.eq_ignore_ascii_case("max")
 }
 
+/// What [`Compiler::enter_scope`] hands back so the enclosing scope can be
+/// restored: its host slot map, its slot order, and its promoted-local map.
+type SavedScope = (
+    FxHashMap<String, u32>,
+    Vec<String>,
+    FxHashMap<String, u16>,
+    FxHashSet<String>,
+);
+
 #[derive(Default)]
 pub struct Compiler {
     functions: Vec<(String, FuncDef)>,
@@ -276,6 +285,19 @@ pub struct Compiler {
     /// The same names in slot order, handed to the runtime so the frame reserves
     /// its slots in exactly the order the chunk addresses them.
     slot_order: Vec<String>,
+    /// The locals of the scope being lowered that live in a fusevm FRAME SLOT
+    /// rather than in the host scope, and their slot numbers.
+    ///
+    /// Chosen by `crate::promote`, which only offers a name it can prove needs
+    /// none of the three things the host storage provides — an unset state to
+    /// warn about, a shared reference cell, or a lookup by name. Consulted
+    /// before [`Compiler::slots`] everywhere a variable is read or written; a
+    /// name that is not here keeps the by-name/host-slot path unchanged.
+    fslots: FxHashMap<String, u16>,
+    /// Of [`Compiler::fslots`], the names every write to is provably numeric, so
+    /// `++` may be lowered as `+ 1` on the native `Add` rather than through the
+    /// host step.
+    fnumeric: FxHashSet<String>,
 }
 
 /// Compile a parsed program. `debug` enables per-statement DAP line markers.
@@ -289,7 +311,19 @@ pub fn compile(stmts: &[Stmt], debug: bool) -> Result<Program, String> {
     c.seed_builtin_byref();
     c.collect_byref(stmts);
     let mut b = ChunkBuilder::new();
-    let saved = c.enter_scope(scope_slots(&[], stmts));
+    // The top level is a frame like any other, and it is where a script's hot
+    // loop usually is, so its locals are offered for promotion too — but a
+    // top-level local is also a PHP GLOBAL, which `global $x` and `$GLOBALS`
+    // reach from inside any function, by name, through the host scope. Whatever
+    // they can reach has to stay there.
+    let mut promoted = c.promotable_locals(&[], stmts, false);
+    match crate::promote::globals_reached(stmts) {
+        Some(reached) => promoted.names.retain(|n| !reached.contains(n)),
+        // `$GLOBALS` is mentioned and its subscript may be computed, so no
+        // top-level name can be shown to be out of reach.
+        None => promoted.names.clear(),
+    }
+    let saved = c.enter_scope_promoting(scope_slots(&[], stmts), promoted);
     c.compile_seq(&mut b, stmts)?;
     let main_locals = c.leave_scope(saved);
     Ok(Program {
@@ -710,7 +744,8 @@ impl Compiler {
                 // The body addresses its own frame, so its variables get slots.
                 // A parameter default is NOT compiled here — it runs as its own
                 // chunk and keeps the by-name path, which reaches the same slots.
-                let locals = self.enter_scope(scope_slots(params, body));
+                let promoted = self.promotable_locals(params, body, body_has_yield(body));
+                let locals = self.enter_scope_promoting(scope_slots(params, body), promoted);
                 self.compile_seq(&mut fb, body)?;
                 let locals = self.leave_scope(locals);
                 self.ret_by_ref = saved_ref;
@@ -791,23 +826,33 @@ impl Compiler {
         cond: &Expr,
         body: &[Stmt],
     ) -> Result<(), String> {
-        let top = b.current_pos();
-        self.compile_truthy(b, cond)?;
-        let exit = b.emit(Op::JumpIfFalse(0), 0);
+        // Rotated: the test is emitted once as an entry guard and once at the
+        // BOTTOM, where it becomes a conditional backward branch. fusevm's
+        // tracing JIT closes a trace only on such a branch, so a top-test loop
+        // ending in an unconditional `Jump` is recorded and then declined —
+        // which is what kept every `while` in the interpreter.
+        //
+        // The test still runs n + 1 times for n iterations, in the same place
+        // in the evaluation order; rotation costs one copy of the condition's
+        // code and saves one jump per iteration.
+        let enter = b.emit(Op::Jump(0), 0);
+        let body_pos = b.current_pos();
         self.loops.push(LoopCtx {
             breaks: vec![],
             continues: vec![],
         });
         self.compile_seq(b, body)?;
         let ctx = self.loops.pop().unwrap();
-        b.emit(Op::Jump(top), 0);
+        let cond_pos = b.current_pos();
+        b.patch_jump(enter, cond_pos);
+        self.compile_truthy(b, cond)?;
+        b.emit(Op::JumpIfTrue(body_pos), 0);
         let end = b.current_pos();
-        b.patch_jump(exit, end);
         for j in ctx.breaks {
             b.patch_jump(j, end);
         }
         for j in ctx.continues {
-            b.patch_jump(j, top);
+            b.patch_jump(j, cond_pos);
         }
         Ok(())
     }
@@ -914,14 +959,11 @@ impl Compiler {
             self.compile_expr(b, e)?;
             b.emit(Op::Pop, 0);
         }
-        let top = b.current_pos();
-        let exit = match cond {
-            Some(c) => {
-                self.compile_truthy(b, c)?;
-                Some(b.emit(Op::JumpIfFalse(0), 0))
-            }
-            None => None,
-        };
+        // Rotated, as `while` is: the condition is emitted at the BOTTOM so the
+        // back edge is conditional and the loop can be traced. `for (;;)` has no
+        // condition to branch on and keeps its unconditional edge.
+        let enter = cond.map(|_| b.emit(Op::Jump(0), 0));
+        let body_pos = b.current_pos();
         self.loops.push(LoopCtx {
             breaks: vec![],
             continues: vec![],
@@ -934,11 +976,20 @@ impl Compiler {
             self.compile_expr(b, e)?;
             b.emit(Op::Pop, 0);
         }
-        b.emit(Op::Jump(top), 0);
-        let end = b.current_pos();
-        if let Some(exit) = exit {
-            b.patch_jump(exit, end);
+        match cond {
+            Some(c) => {
+                let cond_pos = b.current_pos();
+                if let Some(enter) = enter {
+                    b.patch_jump(enter, cond_pos);
+                }
+                self.compile_truthy(b, c)?;
+                b.emit(Op::JumpIfTrue(body_pos), 0);
+            }
+            None => {
+                b.emit(Op::Jump(body_pos), 0);
+            }
         }
+        let end = b.current_pos();
         for j in ctx.breaks {
             b.patch_jump(j, end);
         }
@@ -2522,7 +2573,11 @@ impl Compiler {
         match e {
             Expr::Quiet(inner) => self.compile_quiet(b, inner)?,
             Expr::Var(name) => {
-                if let Some(&i) = self.slots.get(name) {
+                // A promoted local is written before it is ever read, so the
+                // quiet read and the loud one cannot differ for it.
+                if let Some(&i) = self.fslots.get(name) {
+                    b.emit(Op::GetSlot(i), line);
+                } else if let Some(&i) = self.slots.get(name) {
                     b.emit(Op::LoadInt(i as i64), line);
                     b.emit(Op::CallBuiltin(ops::GETSLOT_Q, 1), line);
                 } else {
@@ -2860,7 +2915,8 @@ impl Compiler {
                 }
                 InterpPart::Expr(e) => self.compile_expr(b, e)?,
             }
-            b.emit(Op::CallBuiltin(ops::CONCAT, 2), 0);
+            // Interpolation converts too, so it carries its line as well.
+            b.emit(Op::CallBuiltin(ops::CONCAT, 2), self.cur_line);
         }
         Ok(())
     }
@@ -2938,7 +2994,9 @@ impl Compiler {
                 b.emit(Op::CallBuiltin(ops::POW, 2), self.cur_line);
             }
             BinOp::Concat => {
-                b.emit(Op::CallBuiltin(ops::CONCAT, 2), 0);
+                // The line matters: concatenation CONVERTS, and a conversion can
+                // warn (`Array to string conversion`, and the NaN one).
+                b.emit(Op::CallBuiltin(ops::CONCAT, 2), self.cur_line);
             }
             BinOp::LooseEq => {
                 b.emit(Op::CallBuiltin(ops::LOOSE_EQ, 2), 0);
@@ -2952,17 +3010,24 @@ impl Compiler {
             BinOp::StrictNe => {
                 b.emit(Op::CallBuiltin(ops::STRICT_NE, 2), 0);
             }
+            // The four relational operators are lowered NATIVELY, the way `+`
+            // already is. fusevm answers an `Int`/`Int` or exact `Float` pair
+            // itself and hands every other pair — a string, a bool, null, an
+            // array — to the numeric hook, which applies PHP's own comparison.
+            // The native answer and PHP's agree on exactly the pairs fusevm
+            // keeps, so this changes no result; it removes the `CallBuiltin`
+            // that made every loop condition untraceable.
             BinOp::Lt => {
-                b.emit(Op::CallBuiltin(ops::LT, 2), 0);
+                b.emit(Op::NumLt, self.cur_line);
             }
             BinOp::Gt => {
-                b.emit(Op::CallBuiltin(ops::GT, 2), 0);
+                b.emit(Op::NumGt, self.cur_line);
             }
             BinOp::Le => {
-                b.emit(Op::CallBuiltin(ops::LE, 2), 0);
+                b.emit(Op::NumLe, self.cur_line);
             }
             BinOp::Ge => {
-                b.emit(Op::CallBuiltin(ops::GE, 2), 0);
+                b.emit(Op::NumGe, self.cur_line);
             }
             BinOp::Spaceship => {
                 b.emit(Op::CallBuiltin(ops::SPACESHIP, 2), 0);
@@ -2994,7 +3059,13 @@ impl Compiler {
     /// on every write of a variable. See `ops::COPY`.
     fn compile_rhs(&mut self, b: &mut ChunkBuilder, rhs: &Expr) -> Result<(), String> {
         self.compile_expr(b, rhs)?;
-        b.emit(Op::CallBuiltin(ops::COPY, 1), 0);
+        // The copy exists so `$b = $a` gives the two names separate ARRAYS. A
+        // value that cannot be an array has nothing to copy, and the call is
+        // both a wasted round trip through the host and — because it is a
+        // `CallBuiltin` — the one op that stops a loop being traced.
+        if !never_array(rhs) {
+            b.emit(Op::CallBuiltin(ops::COPY, 1), 0);
+        }
         Ok(())
     }
 
@@ -3492,6 +3563,44 @@ impl Compiler {
         // code: bit0 = increment, bit1 = prefix.
         let code = (inc as i64) | ((prefix as i64) << 1);
         match target {
+            // A promoted local does its own read and write, and asks the host
+            // only for the step. `$x++` yields the OLD value and `++$x` the new,
+            // which is the only thing the two orderings below differ in.
+            // A promoted local that only ever holds a number: `++` is exactly
+            // `+ 1` for it, and `+` is a native op. This is what lets the
+            // ordinary `for ($i = 0; $i < n; $i++)` be traced — the host step
+            // below is a `CallBuiltin`, and one of those anywhere in a loop
+            // body is enough for fusevm to decline the whole loop.
+            Expr::Var(name) if self.fslots.contains_key(name) && self.fnumeric.contains(name) => {
+                let i = self.fslots[name];
+                b.emit(Op::GetSlot(i), self.cur_line);
+                if prefix {
+                    b.emit(Op::LoadInt(1), 0);
+                    b.emit(if inc { Op::Add } else { Op::Sub }, self.cur_line);
+                    b.emit(Op::Dup, 0);
+                    b.emit(Op::SetSlot(i), self.cur_line);
+                } else {
+                    b.emit(Op::Dup, 0);
+                    b.emit(Op::LoadInt(1), 0);
+                    b.emit(if inc { Op::Add } else { Op::Sub }, self.cur_line);
+                    b.emit(Op::SetSlot(i), self.cur_line);
+                }
+            }
+            Expr::Var(name) if self.fslots.contains_key(name) => {
+                let i = self.fslots[name];
+                b.emit(Op::GetSlot(i), self.cur_line);
+                if prefix {
+                    b.emit(Op::LoadInt(i64::from(inc)), 0);
+                    b.emit(Op::CallBuiltin(ops::INCDEC_STEP, 2), self.cur_line);
+                    b.emit(Op::Dup, 0);
+                    b.emit(Op::SetSlot(i), self.cur_line);
+                } else {
+                    b.emit(Op::Dup, 0);
+                    b.emit(Op::LoadInt(i64::from(inc)), 0);
+                    b.emit(Op::CallBuiltin(ops::INCDEC_STEP, 2), self.cur_line);
+                    b.emit(Op::SetSlot(i), self.cur_line);
+                }
+            }
             Expr::Var(name) => match self.slots.get(name) {
                 Some(&i) => {
                     b.emit(Op::LoadInt(i as i64), 0);
@@ -3591,7 +3700,9 @@ impl Compiler {
                 b.emit(Op::CallBuiltin(ops::POW, 2), self.cur_line);
             }
             BinOp::Concat => {
-                b.emit(Op::CallBuiltin(ops::CONCAT, 2), 0);
+                // The line matters: concatenation CONVERTS, and a conversion can
+                // warn (`Array to string conversion`, and the NaN one).
+                b.emit(Op::CallBuiltin(ops::CONCAT, 2), self.cur_line);
             }
             BinOp::BitAnd => {
                 b.emit(Op::CallBuiltin(ops::BITAND, 2), self.cur_line);
@@ -3716,7 +3827,61 @@ impl Compiler {
     /// previous scope's state, to be handed back to [`Compiler::leave_scope`] —
     /// a nested `function` declaration inside a function body must not inherit
     /// the outer frame's numbering.
-    fn enter_scope(&mut self, names: Vec<String>) -> (FxHashMap<String, u32>, Vec<String>) {
+    /// The locals of a scope that may be held in a fusevm frame slot.
+    ///
+    /// The by-reference table is handed to the analysis rather than rebuilt
+    /// there: `collect_byref` has already recorded every user function's
+    /// by-reference positions, and `seed_builtin_byref` the builtins', so the
+    /// question "does this call take argument N by reference" already has one
+    /// answer in this compiler.
+    fn promotable_locals(
+        &self,
+        params: &[Param],
+        body: &[Stmt],
+        is_generator: bool,
+    ) -> crate::promote::Promoted {
+        crate::promote::promotable(params, body, is_generator, &|name, idx| {
+            // Two tables, because a by-reference position can come from either.
+            // `byref_positions` covers user functions and the builtins whose
+            // out-parameters are written back; `byref_diag_slots` covers the
+            // ones that take their argument by reference to MUTATE it — the
+            // sort family, `array_push` and the rest of the array mutators,
+            // which reach the variable by name and so must never be promoted.
+            let written_back = self
+                .byref_positions(name, idx + 1)
+                .is_some_and(|(p, _)| p.contains(&idx));
+            let mutated = byref_diag_slots(name, idx + 1)
+                .iter()
+                .any(|&(pos, ..)| pos == idx);
+            // The array mutators are dispatched by name before either table is
+            // consulted, so they are named here as well.
+            let arrmut = array_mutator_subop(name).is_some() && idx == 0;
+            written_back || mutated || arrmut
+        })
+    }
+
+    fn enter_scope(&mut self, names: Vec<String>) -> SavedScope {
+        self.enter_scope_promoting(
+            names,
+            crate::promote::Promoted {
+                names: Vec::new(),
+                numeric: FxHashSet::default(),
+            },
+        )
+    }
+
+    /// [`Compiler::enter_scope`], with the locals `promoted` held in frame slots
+    /// instead of the host scope. They are removed from the host numbering, so
+    /// each name lives in exactly one of the two spaces.
+    fn enter_scope_promoting(
+        &mut self,
+        names: Vec<String>,
+        promoted: crate::promote::Promoted,
+    ) -> SavedScope {
+        let names: Vec<String> = names
+            .into_iter()
+            .filter(|n| !promoted.names.iter().any(|p| p == n))
+            .collect();
         let map = names
             .iter()
             .enumerate()
@@ -3725,17 +3890,27 @@ impl Compiler {
         (
             std::mem::replace(&mut self.slots, map),
             std::mem::replace(&mut self.slot_order, names),
+            std::mem::replace(&mut self.fslots, crate::promote::slot_map(&promoted.names)),
+            std::mem::replace(&mut self.fnumeric, promoted.numeric),
         )
     }
 
     /// Finish the scope, restore the enclosing one, and yield the slot order the
     /// finished scope settled on.
-    fn leave_scope(&mut self, saved: (FxHashMap<String, u32>, Vec<String>)) -> Vec<String> {
+    fn leave_scope(&mut self, saved: SavedScope) -> Vec<String> {
         self.slots = saved.0;
+        self.fslots = saved.2;
+        self.fnumeric = saved.3;
         std::mem::replace(&mut self.slot_order, saved.1)
     }
 
     fn emit_get_var(&mut self, b: &mut ChunkBuilder, name: &str) {
+        // A promoted local is the frame's own storage: one op, and one fusevm
+        // can compile, where the host path needs a `CallBuiltin` it cannot.
+        if let Some(&i) = self.fslots.get(name) {
+            b.emit(Op::GetSlot(i), self.cur_line);
+            return;
+        }
         if let Some(&i) = self.slots.get(name) {
             b.emit(Op::LoadInt(i as i64), 0);
             b.emit(Op::CallBuiltin(ops::GETSLOT, 1), self.cur_line);
@@ -3749,6 +3924,11 @@ impl Compiler {
     /// Push the operand a variable write consumes: the slot index, or the name.
     /// Paired with [`Compiler::emit_store_var`], which must see the same choice.
     fn emit_var_target(&mut self, b: &mut ChunkBuilder, name: &str) {
+        // `Op::SetSlot` carries its index in the op, so a promoted local needs
+        // no target operand at all.
+        if self.fslots.contains_key(name) {
+            return;
+        }
         match self.slots.get(name) {
             Some(&i) => b.emit(Op::LoadInt(i as i64), 0),
             None => {
@@ -3761,6 +3941,14 @@ impl Compiler {
     /// Store into the variable whose target [`Compiler::emit_var_target`]
     /// pushed, leaving the assigned value on the stack.
     fn emit_store_var(&mut self, b: &mut ChunkBuilder, name: &str) {
+        // `Op::SetSlot` consumes the value and leaves nothing, while the two
+        // builtins leave it — and every caller of this pair expects the value to
+        // survive. Duplicating first keeps the stack effect identical.
+        if let Some(&i) = self.fslots.get(name) {
+            b.emit(Op::Dup, 0);
+            b.emit(Op::SetSlot(i), self.cur_line);
+            return;
+        }
         let op = match self.slots.contains_key(name) {
             true => ops::SETSLOT,
             false => ops::SETVAR,
@@ -3795,7 +3983,7 @@ fn has_named(args: &[Expr]) -> bool {
     args.iter().any(|a| matches!(a, Expr::NamedArg(..)))
 }
 
-fn collect_free_vars(e: &Expr, out: &mut Vec<String>) {
+pub(crate) fn collect_free_vars(e: &Expr, out: &mut Vec<String>) {
     fn push(name: &str, out: &mut Vec<String>) {
         if !out.iter().any(|n| n == name) {
             out.push(name.to_string());
@@ -4262,6 +4450,53 @@ fn is_fully_numeric(s: &str) -> bool {
 /// A superglobal resolves to the global frame from wherever it is read, so a
 /// slot number in the current frame would address the wrong storage. `this` is
 /// bound by the call machinery, not by the body.
+/// Whether `e` can be proved, from its shape alone, never to evaluate to an
+/// array — in which case an assignment of it needs no copy.
+///
+/// Only `+` among the operators can produce one, and only when BOTH operands
+/// are arrays (`[1] + [2]` is array union). Every other arithmetic operator on
+/// two arrays is a `TypeError` rather than an array, so its result is a scalar
+/// whenever it is a value at all. Saying "no" is always safe: it just keeps the
+/// copy.
+fn never_array(e: &Expr) -> bool {
+    match e {
+        Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::Null => true,
+        // An interpolated string is a string, and a comparison is a bool.
+        Expr::Interp(_) => true,
+        Expr::Binary(op, l, r) => match op {
+            BinOp::Add => never_array(l) || never_array(r),
+            BinOp::Sub
+            | BinOp::Mul
+            | BinOp::Div
+            | BinOp::Mod
+            | BinOp::Pow
+            | BinOp::Concat
+            | BinOp::BitAnd
+            | BinOp::BitOr
+            | BinOp::BitXor
+            | BinOp::Shl
+            | BinOp::Shr
+            | BinOp::Lt
+            | BinOp::Gt
+            | BinOp::Le
+            | BinOp::Ge
+            | BinOp::LooseEq
+            | BinOp::LooseNe
+            | BinOp::StrictEq
+            | BinOp::StrictNe
+            | BinOp::Spaceship => true,
+            _ => false,
+        },
+        Expr::IncDec { .. } | Expr::InstanceOf(..) | Expr::IssetOf(_) | Expr::EmptyOf(_) => true,
+        Expr::Unary(op, x) => match op {
+            // `!` is a bool; `-`/`+` are numbers; `~` is an int or string.
+            UnOp::Not => true,
+            UnOp::Neg | UnOp::Pos | UnOp::BitNot => never_array(x),
+        },
+        _ => false,
+    }
+}
+
 fn slottable_name(name: &str) -> bool {
     !crate::host::is_superglobal(name) && name != "this" && !name.starts_with('@')
 }

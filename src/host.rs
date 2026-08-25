@@ -338,6 +338,14 @@ pub mod ops {
     /// `$x = &$GLOBALS['x']`, so the two share one cell and each sees the
     /// other's writes. One op per name keeps `global $a, $b;` a plain sequence.
     pub const GLOBAL_BIND: u16 = 123;
+    /// `[old, inc] -> new` — one step of `++`/`--` on a VALUE.
+    ///
+    /// The slot and by-name forms of `++` read the variable, step it and write
+    /// it back in one builtin, because they are the only ones that know where
+    /// the variable lives. A local promoted to a fusevm frame slot is read and
+    /// written by the ops themselves, so all it needs from the host is the step
+    /// — which is not arithmetic: `"Az"++` is `"Ba"` and `null--` is a no-op.
+    pub const INCDEC_STEP: u16 = 124;
 }
 
 /// The capture name a `static` closure carries from its creation site.
