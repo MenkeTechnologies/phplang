@@ -138,6 +138,83 @@ string, which is an engine-wide change, not a library one.
 Divergences this round measured but did not have room to close. Each is a
 concrete next task, not a note.
 
+## `min`/`max` with a NaN operand pick the wrong one
+
+```text
+$ php -r 'var_dump(min(1, NAN), max(1, NAN), min([1, NAN, 2]));'
+float(NAN)
+float(NAN)
+int(2)
+$ target/debug/php -r '… same …'
+int(1)
+float(NAN)
+int(1)
+```
+
+`<=>`, `<`, `>`, `<=` and `>=` all agree with the reference on NaN now
+(`is_unordered` / `cmp_f64` in `src/builtins.rs`), and two of the four
+`min`/`max` cases came right with them. The remaining two do not follow from
+any single three-way answer: the reference's own results are mutually
+inconsistent (`min([1, NAN, 2])` is 2 while `min(1, NAN)` is NAN), so closing
+this needs `php_min`/`php_max` read out of `ext/standard/array.c` rather than
+derived from the comparison rules.
+
+## `array_walk` accepts a first argument that cannot be passed by reference
+
+```text
+$ php -r 'var_dump(array_walk($a = [1,2], function (&$v, $k) { $v = $k; }));'
+PHP Fatal error:  Uncaught Error: array_walk(): Argument #1 ($array) could not be passed by reference
+$ target/debug/php -r '… same …'
+bool(true)
+```
+
+The by-reference array mutators take their array by variable NAME
+(`ops::ARR_MUT`), so a first argument that is an expression rather than a
+variable has no name to bind and is silently walked as a value.
+
+## A parse error does not say what was expected
+
+```text
+$ php -r '$s = "hello"; var_dump($s{0});'
+PHP Parse error:  syntax error, unexpected token "{", expecting ")"
+$ target/debug/php -r '… same …'
+Parse error: syntax error, unexpected token "{"
+```
+
+The token that was found is right; the `, expecting <token>` tail is missing
+everywhere. The parser knows what it was about to accept at each of these
+sites, so this is threading that through the error, not new analysis.
+
+## A backtrace omits the internal function that threw
+
+```text
+$ php -r 'try { intdiv(1, 0); } catch (\Throwable $e) { echo $e->getTraceAsString(); }'
+#0 Command line code(1): intdiv(1, 0)
+#1 {main}
+$ target/debug/php -r '… same …'
+#0 {main}
+```
+
+A library function that throws records no frame of its own, so every trace
+through one is one frame short and never names the call or its arguments.
+User function frames ARE recorded.
+
+## Two coercion warnings are not raised
+
+```text
+$ php -r 'var_dump(array_unique([1, "1", [1]]));'
+PHP Warning:  Array to string conversion
+… (the array is otherwise identical)
+
+$ php -r 'echo NAN;'
+PHP Warning:  unexpected NAN value was coerced to string
+NAN
+```
+
+Both values are right and both warnings are missing. `Array to string
+conversion` is the general one — every implicit array-to-string reaches it,
+not just `array_unique`'s comparison key.
+
 ## Visibility is not enforced on constants or static properties
 
 ```text
