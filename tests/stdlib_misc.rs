@@ -155,8 +155,15 @@ fn array_walk_recursive_visits_all_leaves() {
 
 #[test]
 fn array_walk_recursive_returns_true() {
+    // The array has to be a VARIABLE. This test used to pass the literal
+    // `[1,[2]]` directly and expect `true`, which no PHP returns: an array
+    // literal cannot supply the by-reference binding the first parameter needs,
+    // so `php -r` answers the same snippet with
+    // `Error: array_walk_recursive(): Argument #1 ($array) could not be passed
+    // by reference`. The return value is what this test is about, so it now
+    // asks for it through an argument the reference accepts.
     assert_eq!(
-        run("<?php echo var_export(array_walk_recursive([1,[2]], function($v){}), true);"),
+        run("<?php $a=[1,[2]]; echo var_export(array_walk_recursive($a, function($v){}), true);"),
         "true"
     );
 }
