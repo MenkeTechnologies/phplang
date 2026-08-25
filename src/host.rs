@@ -2553,7 +2553,7 @@ impl PhpHost {
     /// Two callers, one meaning. Under `--dap` the per-statement line hook drives
     /// it; on every path the ops that can enter a frame or raise a throw record
     /// the op's own line, which is what a backtrace reads back as the call site.
-    /// Distinct from [`set_warn_line`](Self::set_warn_line), which is the line of
+    /// Distinct from [`crate::host::set_warn_line`], which is the line of
     /// the op that is warning *now* and need not survive a nested call returning.
     pub fn set_cur_line(&mut self, line: u32) {
         if let Some(s) = self.scopes.last_mut() {

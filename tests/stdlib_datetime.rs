@@ -379,7 +379,10 @@ fn strtotime_honours_a_trailing_timezone_it_can_apply_exactly() {
     // The absolute formats are exact, so a string carrying a zone matched none
     // of them and the call answered `false`. Values cross-checked against
     // reference PHP 8.5 with TZ=UTC.
-    assert_eq!(run(r#"<?php var_dump(strtotime('1970-01-02 UTC'));"#), "int(86400)\n");
+    assert_eq!(
+        run(r#"<?php var_dump(strtotime('1970-01-02 UTC'));"#),
+        "int(86400)\n"
+    );
     assert_eq!(
         run(r#"<?php var_dump(strtotime('2020-01-01 12:00:00 UTC'));"#),
         "int(1577880000)\n"
@@ -401,13 +404,22 @@ fn strtotime_honours_a_trailing_timezone_it_can_apply_exactly() {
         run(r#"<?php var_dump(strtotime('2020-01-01 12:00:00 -05:00'));"#),
         "int(1577898000)\n"
     );
-    assert_eq!(run(r#"<?php var_dump(strtotime('2020-01-01 +03'));"#), "int(1577826000)\n");
+    assert_eq!(
+        run(r#"<?php var_dump(strtotime('2020-01-01 +03'));"#),
+        "int(1577826000)\n"
+    );
     // No zone, and the relative/`@` forms, are untouched.
     assert_eq!(
         run(r#"<?php var_dump(strtotime('2020-01-01 12:00:00'));"#),
         "int(1577880000)\n"
     );
-    assert_eq!(run(r#"<?php var_dump(strtotime('+1 day', 0));"#), "int(86400)\n");
+    assert_eq!(
+        run(r#"<?php var_dump(strtotime('+1 day', 0));"#),
+        "int(86400)\n"
+    );
     assert_eq!(run(r#"<?php var_dump(strtotime('@500'));"#), "int(500)\n");
-    assert_eq!(run(r#"<?php var_dump(strtotime('garbage'));"#), "bool(false)\n");
+    assert_eq!(
+        run(r#"<?php var_dump(strtotime('garbage'));"#),
+        "bool(false)\n"
+    );
 }
