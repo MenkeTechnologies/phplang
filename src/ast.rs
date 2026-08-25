@@ -143,6 +143,10 @@ pub enum Expr {
     Interp(Vec<InterpPart>),
     /// A `$name` variable read.
     Var(String),
+    /// A variable VARIABLE — `$$name` or `${expr}`. The inner expression is
+    /// evaluated and its string value is the name of the variable to read or
+    /// write, so the name is not known until the expression runs.
+    VarVar(Box<Expr>),
     /// An array literal: `[k => v, v, ...]` / `array(...)`. Also every
     /// destructuring pattern — see [`ArrayElem`].
     Array(Vec<ArrayElem>),

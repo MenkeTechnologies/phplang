@@ -352,3 +352,46 @@ introduced by this round's work:
 Both need a measured check and one of the two statements corrected. They are
 listed here rather than edited blind, because guessing which side is right is
 how a false claim gets published.
+
+---
+
+## An array read and mutated in the SAME call sees only its final state
+
+phplang carries a PHP array as a HANDLE, so a by-value argument and a later
+by-reference argument in one call end up naming the same array. The reference
+copies the value at the moment the argument is evaluated, so it renders the
+array as it was BEFORE the mutation that follows it in the same call.
+
+```text
+$ php -r '$b=[3,1,2]; var_dump(sort($b), $b, array_pop($b), $b);'
+bool(true)
+array(3) { [0]=> int(1) [1]=> int(2) [2]=> int(3) }
+int(3)
+array(2) { [0]=> int(1) [1]=> int(2) }
+
+$ target/debug/php -r '$b=[3,1,2]; var_dump(sort($b), $b, array_pop($b), $b);'
+bool(true)
+array(2) { [0]=> int(1) [1]=> int(2) }
+int(3)
+array(2) { [0]=> int(1) [1]=> int(2) }
+```
+
+The second `var_dump` argument is the one that differs: the reference shows the
+three-element array `sort` had just produced, phplang shows the two-element one
+`array_pop` had not yet produced when that argument was evaluated.
+
+Splitting the call fixes it, which is what pins the cause to argument
+evaluation rather than to `sort` or `array_pop`:
+
+```text
+$ target/debug/php -r '$b=[3,1,2]; var_dump(sort($b)); var_dump($b); var_dump(array_pop($b)); var_dump($b);'
+bool(true)
+array(3) { [0]=> int(1) [1]=> int(2) [2]=> int(3) }
+int(3)
+array(2) { [0]=> int(1) [1]=> int(2) }
+```
+
+Closing it means giving a by-value array argument copy-on-write at the point it
+is bound, which is the array value-semantics work rather than a fix to any one
+function. Nothing here is specific to `$$name`; a plain variable shows it
+identically.

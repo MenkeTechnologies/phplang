@@ -276,8 +276,8 @@ try { sscanf("1 2", "%d %d", 0, 0); } catch (\Throwable $e) { echo get_class($e)
 function boom() { echo "EVALUATED\n"; return 1; }
 try { sort([boom()]); } catch (\Throwable $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
 // Which expressions count as a location is not guessable from the syntax.
-$a = [3, 1, 2]; $n = [[3, 1, 2]];
-var_dump(sort($a), sort($n[0]), sort(($a)));
+$a = [3, 1, 2]; $vv = 'a'; $n = [[3, 1, 2]];
+var_dump(sort($a), sort($$vv), sort($n[0]), sort(($a)));
 try { sort(@$a); } catch (\Throwable $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
 try { sort($a ?? []); } catch (\Throwable $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
 try { sort(array: [3, 1, 2]); } catch (\Throwable $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
@@ -354,3 +354,39 @@ var_dump(g_closure(), (new GHolder())->m());
 // At global scope the declaration has no second frame to bind to.
 global $g1;
 var_dump($g1);
+#==#
+// Variable variables: the operand's string value names the variable, so the
+// name is not known until it runs. `$$x` nests, `${expr}` takes any expression,
+// and what it names is an ordinary variable -- assignable, unsettable, and
+// acceptable where a by-reference parameter wants a location.
+$a = [3, 1, 2]; $vv = 'a'; $name = 'dyn'; $x = 5; $k = 'vv';
+var_dump($$vv, ${$vv}, ${'a'}, $$$k);
+$$name = 7; var_dump($dyn);
+${'q'} = 8; var_dump($q);
+var_dump($$vv[0]);
+$c = 'x'; $$c += 10; var_dump($x);
+function vv_local() { $loc = 'inner'; $$loc = 42; return $inner; }
+var_dump(vv_local());
+// A quiet context reads through without the undefined-variable warning.
+$miss = 'nope';
+var_dump(isset($$vv), isset($$miss), empty($$vv), $$miss ?? "dflt");
+unset($$vv); var_dump(isset($a));
+// A by-reference parameter binds one silently, and a mutator reaches the real
+// variable through it.
+$b = [3, 1, 2]; $bn = 'b';
+var_dump(sort($$bn)); var_dump($b);
+var_dump(array_pop($$bn)); var_dump($b);
+var_dump(array_push($$bn, 9)); var_dump($b);
+// A closure captures the operand, not the name it computes.
+$z = [1]; $zn = 'z';
+$f = function () use ($zn, $z) { return $$zn; };
+var_dump($f());
+#==#
+// A closure is an expression, and PHP accepts one as a statement on its own.
+// A DECLARATION still needs a name, and `function &g()` is still a declaration.
+function () { echo "never\n"; };
+fn() => 1;
+(function () { echo "invoked\n"; })();
+function &byref_ret() { static $v = 1; return $v; }
+function named_fn() { return 3; }
+var_dump(byref_ret(), named_fn());

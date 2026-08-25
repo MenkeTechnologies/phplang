@@ -236,6 +236,13 @@ impl<'a> Lexer<'a> {
             self.pos += 1;
         }
         let name = String::from_utf8_lossy(&self.src[start..self.pos]).into_owned();
+        // `$$x` and `${expr}`: a `$` with no name after it is the
+        // variable-variable sigil, not a variable called "". The parser reads
+        // the operand that follows and looks the name up at run time.
+        if name.is_empty() {
+            self.push(Tok::Punct("$"));
+            return;
+        }
         self.push(Tok::Var(name));
     }
 

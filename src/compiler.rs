@@ -106,10 +106,14 @@ fn byref_arg_class(e: &Expr) -> ByRefArg {
     match e {
         // A named argument is judged by the value it carries.
         Expr::NamedArg(_, inner) => byref_arg_class(inner),
-        // Real locations.
-        Expr::Var(_) | Expr::Index(..) | Expr::PropGet(..) | Expr::StaticProp(..) => {
-            ByRefArg::Lvalue
-        }
+        // Real locations. `$$name` is one of them: the name is computed, but
+        // what it names is a variable like any other, and the reference binds it
+        // silently.
+        Expr::Var(_)
+        | Expr::VarVar(_)
+        | Expr::Index(..)
+        | Expr::PropGet(..)
+        | Expr::StaticProp(..) => ByRefArg::Lvalue,
         // Calls and instantiations leave a temporary the engine can still bind.
         Expr::Call(..)
         | Expr::CallValue(..)
@@ -1859,6 +1863,13 @@ impl Compiler {
 
     fn compile_expr(&mut self, b: &mut ChunkBuilder, e: &Expr) -> Result<(), String> {
         match e {
+            // `$$x` / `${expr}`: the operand's STRING value is the variable's
+            // name, so the lookup is by name rather than through a compiled
+            // slot — the name is not known until this runs.
+            Expr::VarVar(inner) => {
+                self.compile_expr(b, inner)?;
+                b.emit(Op::CallBuiltin(ops::GETVAR, 1), self.cur_line);
+            }
             Expr::Null => {
                 b.emit(Op::LoadUndef, 0);
             }
@@ -2508,6 +2519,13 @@ impl Compiler {
                     b.emit(Op::CallBuiltin(ops::GETVAR_Q, 1), line);
                 }
             }
+            // The NAME is still computed the ordinary way — it is the read of
+            // the variable it names that has to stay quiet, so `isset($$x)` on
+            // an unbound name answers false instead of warning.
+            Expr::VarVar(inner) => {
+                self.compile_expr(b, inner)?;
+                b.emit(Op::CallBuiltin(ops::GETVAR_Q, 1), line);
+            }
             Expr::Index(recv, idx) => {
                 self.compile_quiet(b, recv)?;
                 self.compile_expr(b, idx)?;
@@ -2696,6 +2714,13 @@ impl Compiler {
             Expr::Var(name) => {
                 let idx = b.add_constant(Value::str(name.clone()));
                 b.emit(Op::LoadConst(idx), 0);
+                b.emit(Op::CallBuiltin(ops::UNSET_VAR, 1), 0);
+                b.emit(Op::Pop, 0);
+            }
+            // `unset($$x)` — same op, with the name computed rather than baked
+            // into the chunk.
+            Expr::VarVar(inner) => {
+                self.compile_expr(b, inner)?;
                 b.emit(Op::CallBuiltin(ops::UNSET_VAR, 1), 0);
                 b.emit(Op::Pop, 0);
             }
@@ -3087,6 +3112,23 @@ impl Compiler {
                 self.compile_list_targets(b, elems, &src, ref_root)?;
                 // The whole `[...] = rhs` expression evaluates to the RHS value.
                 self.emit_get_var(b, &src);
+            }
+            // `$$x = v` / `${expr} = v`: push the computed NAME, then the value.
+            Expr::VarVar(inner) => {
+                self.compile_expr(b, inner)?;
+                match op {
+                    None => self.compile_rhs(b, rhs)?,
+                    Some(cop) => {
+                        // The name expression is evaluated once and reused for
+                        // the read and the write, so a side-effecting operand
+                        // runs once, as it does for every other compound target.
+                        b.emit(Op::Dup, 0);
+                        b.emit(Op::CallBuiltin(ops::GETVAR, 1), self.cur_line);
+                        self.compile_expr(b, rhs)?;
+                        self.emit_binop(b, cop);
+                    }
+                }
+                b.emit(Op::CallBuiltin(ops::SETVAR, 2), self.cur_line);
             }
             _ => return Err("invalid assignment target".into()),
         }
@@ -3736,6 +3778,10 @@ fn collect_free_vars(e: &Expr, out: &mut Vec<String>) {
     }
     match e {
         Expr::Var(n) => push(n, out),
+        // The name a variable variable reads is only known at run time, so
+        // there is no name to capture here — but the operand that computes it
+        // is an ordinary expression whose own free variables must be.
+        Expr::VarVar(inner) => collect_free_vars(inner, out),
         Expr::Interp(parts) => {
             for p in parts {
                 match p {

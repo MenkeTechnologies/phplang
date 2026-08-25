@@ -769,9 +769,10 @@ Error: sscanf(): Argument #3 could not be passed by reference
 PHP Notice:  Only variables should be passed by reference in Command line code on line 6
 PHP Notice:  Only variables should be passed by reference in Command line code on line 7
 
-#REC 29 exit=0 out=362 err=0
+#REC 29 exit=0 out=373 err=0
 EVALUATED
 Error: sort(): Argument #1 ($array) could not be passed by reference
+bool(true)
 bool(true)
 bool(true)
 bool(true)
@@ -899,4 +900,82 @@ string(5) "unset"
 int(10)
 int(10)
 int(10)
+
+#REC 35 exit=0 out=587 err=0
+array(3) {
+  [0]=>
+  int(3)
+  [1]=>
+  int(1)
+  [2]=>
+  int(2)
+}
+array(3) {
+  [0]=>
+  int(3)
+  [1]=>
+  int(1)
+  [2]=>
+  int(2)
+}
+array(3) {
+  [0]=>
+  int(3)
+  [1]=>
+  int(1)
+  [2]=>
+  int(2)
+}
+array(3) {
+  [0]=>
+  int(3)
+  [1]=>
+  int(1)
+  [2]=>
+  int(2)
+}
+int(7)
+int(8)
+int(3)
+int(15)
+int(42)
+bool(true)
+bool(false)
+bool(false)
+string(4) "dflt"
+bool(false)
+bool(true)
+array(3) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+  [2]=>
+  int(3)
+}
+int(3)
+array(2) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+}
+int(3)
+array(3) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+  [2]=>
+  int(9)
+}
+array(1) {
+  [0]=>
+  int(1)
+}
+
+#REC 36 exit=0 out=22 err=0
+invoked
+int(1)
+int(3)
 

@@ -721,7 +721,16 @@ impl Parser {
             _ if self.at_kw("switch") => self.switch_stmt()?,
             _ if self.at_kw("for") => self.for_stmt()?,
             _ if self.at_kw("foreach") => self.foreach_stmt()?,
-            _ if self.at_kw("function") => self.function_stmt()?,
+            // A DECLARATION needs a name. `function (` (or `function &(`) is a
+            // closure, which is an expression, and PHP accepts one as a
+            // statement of its own -- so it falls through to the expression
+            // arm rather than being read as a nameless declaration.
+            _ if self.at_kw("function")
+                && !self.nth_is_punct(1, "(")
+                && !(self.nth_is_punct(1, "&") && self.nth_is_punct(2, "(")) =>
+            {
+                self.function_stmt()?
+            }
             // `static $a = 1, $b;` — a static local declaration, distinguished
             // from a `static::` late-static-binding expression or a `static
             // function`/`static fn` closure by the `$variable` that follows.
@@ -2362,6 +2371,19 @@ impl Parser {
             Some(Tok::Str(s)) => Ok(Expr::Str(s)),
             Some(Tok::Interp(parts)) => Ok(Expr::Interp(resolve_interp_parts(parts)?)),
             Some(Tok::Var(n)) => Ok(Expr::Var(n)),
+            // `$$x`, `$$$x`, `${expr}` — the sigil takes either a braced
+            // expression or another variable, and nests, so `$$$x` is two
+            // lookups.
+            Some(Tok::Punct("$")) => {
+                let inner = if self.eat_punct("{") {
+                    let e = self.expression()?;
+                    self.expect_punct("}")?;
+                    e
+                } else {
+                    self.primary()?
+                };
+                Ok(Expr::VarVar(Box::new(inner)))
+            }
             Some(Tok::Punct("(")) => {
                 let e = self.expression()?;
                 self.expect_punct(")")?;
