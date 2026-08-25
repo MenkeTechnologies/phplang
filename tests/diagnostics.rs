@@ -626,3 +626,64 @@ fn ini_set_refuses_a_setting_that_is_not_runtime_changeable() {
         assert_eq!(run(&src), "bool(false)\nbool(true)\n", "{name}");
     }
 }
+
+// ── unterminated constructs ──────────────────────────────────────────────────
+//
+// An unterminated bracket is NOT reported as a syntax error. The reference names
+// the bracket and the line it was opened on, and drops the `on line N` clause
+// when that is the line being reported anyway. Each expectation below is the
+// verbatim message of the same source under `php` 8.5.9.
+
+/// The message half of a parse failure, without the severity or the trace.
+fn parse_error(src: &str) -> String {
+    let e = eval_capture(src).expect_err("expected a parse failure");
+    e.lines()
+        .find(|l| l.contains("in Command line code"))
+        .unwrap_or(&e)
+        .trim()
+        .to_string()
+}
+
+#[test]
+fn an_unclosed_bracket_names_the_bracket_not_the_end_of_file() {
+    for (src, want) in [
+        ("<?php function f($a", "Unclosed '('"),
+        ("<?php $a = [1", "Unclosed '['"),
+        ("<?php if (1) { echo 1;", "Unclosed '{'"),
+    ] {
+        assert_eq!(
+            parse_error(src),
+            format!("{want} in Command line code on line 1"),
+            "for {src:?}"
+        );
+    }
+}
+
+#[test]
+fn the_innermost_unclosed_bracket_is_the_one_named() {
+    // Two are open; the reference names the inner `(`, not the outer `[`.
+    assert_eq!(
+        parse_error("<?php foo([1, (2"),
+        "Unclosed '(' in Command line code on line 1"
+    );
+}
+
+#[test]
+fn a_balanced_but_incomplete_source_is_still_a_syntax_error() {
+    // Nothing is open, so the end of file is reported the ordinary way. This is
+    // the control for the three above.
+    assert_eq!(
+        parse_error("<?php $a = [1,2]"),
+        "syntax error, unexpected end of file in Command line code on line 1"
+    );
+}
+
+#[test]
+fn an_unterminated_comment_names_the_line_it_opened_on() {
+    // The line the scan gave up on is the LAST line; the reference reports the
+    // first, so a comment opened on line 1 says 1 however far it ran.
+    assert_eq!(
+        parse_error("<?php /* x"),
+        "Unterminated comment starting line 1 in Command line code on line 1"
+    );
+}

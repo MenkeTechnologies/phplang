@@ -1026,3 +1026,8 @@ TypeError: array_keys(): Argument #1 ($array) must be of type array, float given
 PHP Deprecated:  strlen(): Passing null to parameter #1 ($string) of type string is deprecated in Command line code on line 24
 PHP Deprecated:  sqrt(): Passing null to parameter #1 ($num) of type float is deprecated in Command line code on line 25
 
+#REC 39 exit=255 out=58 err=62
+
+Parse error: Unclosed '[' in Command line code on line 5
+PHP Parse error:  Unclosed '[' in Command line code on line 5
+

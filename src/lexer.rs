@@ -107,6 +107,16 @@ struct Lexer<'a> {
     out: Vec<Spanned>,
 }
 
+/// Render a lexer failure the way the CLI prints one: the message, the script it
+/// came from and the line it names.
+///
+/// A parse failure gets this from `Parser::syntax_error`; a LEXER failure never
+/// reached that code, so without this it printed bare and lost the ` in <file>
+/// on line N` half every other diagnostic carries.
+fn located(msg: String, line: u32) -> String {
+    crate::host::with_host(|h| format!("{msg} in {} on line {line}", h.script_name()))
+}
+
 /// Tokenize a PHP source string.
 pub fn lex(src: &str) -> Result<Vec<Spanned>, String> {
     let mut lx = Lexer {
@@ -215,6 +225,9 @@ impl<'a> Lexer<'a> {
     }
 
     fn skip_block_comment(&mut self) -> Result<(), String> {
+        // The reference names the line the comment OPENED on, not the line the
+        // scan gave up on, so it is captured before the walk moves `self.line`.
+        let opened = self.line;
         self.advance(2);
         while self.pos < self.src.len() {
             if self.starts_with("*/") {
@@ -226,7 +239,10 @@ impl<'a> Lexer<'a> {
             }
             self.pos += 1;
         }
-        Err(format!("unterminated block comment (line {})", self.line))
+        Err(located(
+            format!("Unterminated comment starting line {opened}"),
+            opened,
+        ))
     }
 
     fn lex_variable(&mut self) {

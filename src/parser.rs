@@ -216,9 +216,11 @@ pub fn parse_meta(src: &str) -> Result<(Vec<Stmt>, ParseMeta), ParseFail> {
         severity: "Parse error",
         message: e,
     })?;
+    let eof_line = src.bytes().filter(|b| *b == b'\n').count() as u32 + 1;
     let mut p = Parser {
         toks,
         pos: 0,
+        eof_line,
         pending_attrs: Vec::new(),
         top_level: true,
         only_declares_so_far: true,
@@ -264,6 +266,9 @@ fn resolve_interp_parts(parts: Vec<StrPart>) -> Result<Vec<InterpPart>, String> 
                 let mut inner = Parser {
                     toks,
                     pos: 0,
+                    // A one-line synthetic source: the interpolated expression
+                    // is spliced onto a single line, so end of input is line 1.
+                    eof_line: 1,
                     pending_attrs: Vec::new(),
                     // An interpolation is a bare expression, never a statement,
                     // so no declaration can appear in it and the value is moot.
@@ -289,6 +294,13 @@ fn resolve_interp_parts(parts: Vec<StrPart>) -> Result<Vec<InterpPart>, String> 
 struct Parser {
     toks: Vec<Spanned>,
     pos: usize,
+    /// The line END OF INPUT falls on: one past the last newline in the source.
+    ///
+    /// This is NOT the last token's line, which is where a diagnostic about the
+    /// end of the file used to be reported. The reference counts the file's
+    /// lines, so a source whose final statement sits on line 2 and ends with a
+    /// newline reports `unexpected end of file` on line 3.
+    eof_line: u32,
     /// Attribute names read at the head of the statement being parsed, waiting
     /// for the declaration that follows to claim them. Cleared by whoever takes
     /// them, so a `#[Attr] class A {} class B {}` cannot leak onto `B`.
@@ -406,6 +418,30 @@ impl Parser {
 
     fn peek(&self) -> Option<&Tok> {
         self.toks.get(self.pos).map(|s| &s.tok)
+    }
+
+    /// The INNERMOST bracket still open at end of input, and the line it was
+    /// opened on.
+    ///
+    /// The reference reports an unterminated construct as `Unclosed '(' on line
+    /// N` rather than as a syntax error, and it names the innermost one: for a
+    /// function whose body opens a further `{`, the line reported is the inner
+    /// brace's. Reading it off the token stream needs no lexer state — a `${`
+    /// or `{$` inside a string never reaches the stream as punctuation, so the
+    /// only braces seen here are real ones.
+    fn unclosed_delim(&self) -> Option<(char, u32)> {
+        let mut open: Vec<(char, u32)> = Vec::new();
+        for sp in &self.toks {
+            let Tok::Punct(p) = &sp.tok else { continue };
+            match *p {
+                "(" | "[" | "{" => open.push((p.chars().next().unwrap_or('('), sp.line)),
+                ")" | "]" | "}" => {
+                    open.pop();
+                }
+                _ => {}
+            }
+        }
+        open.pop()
     }
 
     /// The line of the token at the cursor. Past the end there is no such token,
@@ -553,6 +589,19 @@ impl Parser {
     /// property of PHP's generated parser tables, not of the grammar as written
     /// here, so it is omitted rather than guessed at — an invented list would be
     /// wrong more often than no list.
+    ///
+    /// Observed rather than assumed: whether a list appears at all is table-
+    /// dependent, not a property of how specific the expectation looks.
+    /// `for ($i=0; $i<3 {` says `expecting ";"`, but `if ($a {` — the same shape
+    /// of mistake, one token from a closing delimiter — says nothing at all.
+    /// Emitting the token THIS parser was about to demand would print a suffix
+    /// in the second case, where the reference prints none.
+    ///
+    /// What does NOT depend on those tables is handled, in
+    /// [`syntax_error_at`](Self::syntax_error_at): an unterminated bracket is
+    /// reported as `Unclosed '(' on line N`, naming the innermost one still
+    /// open, and end of input is reported against the file's last line rather
+    /// than the last token's.
     fn syntax_error(&self) -> String {
         self.syntax_error_at(self.pos)
     }
@@ -586,12 +635,39 @@ impl Parser {
     /// consumed — a `match self.next()` arm reports `self.pos - 1`, the token it
     /// just took, not the one after it.
     fn syntax_error_at(&self, idx: usize) -> String {
+        // At END OF INPUT the reference says something else entirely when a
+        // bracket is still open: `Unclosed '{' on line N`, naming where the
+        // construct began rather than where the file stopped.
+        if idx >= self.toks.len() {
+            if let Some((c, line)) = self.unclosed_delim() {
+                // The `on line N` clause names where the construct OPENED, and
+                // the reference drops it when that is the line being reported
+                // anyway — a one-line `php -r 'function f($a'` says just
+                // `Unclosed '('`.
+                let opened = if line == self.eof_line {
+                    String::new()
+                } else {
+                    format!(" on line {line}")
+                };
+                return crate::host::with_host(|h| {
+                    format!(
+                        "Unclosed '{c}'{opened} in {} on line {}",
+                        h.script_name(),
+                        self.eof_line
+                    )
+                });
+            }
+        }
         crate::host::with_host(|h| {
             format!(
                 "syntax error, unexpected {} in {} on line {}",
                 self.tok_desc_at(idx),
                 h.script_name(),
-                self.line_at(idx)
+                if idx >= self.toks.len() {
+                    self.eof_line
+                } else {
+                    self.line_at(idx)
+                }
             )
         })
     }

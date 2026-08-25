@@ -391,7 +391,29 @@ int(3)
 array(2) { [0]=> int(1) [1]=> int(2) }
 ```
 
-Closing it means giving a by-value array argument copy-on-write at the point it
-is bound, which is the array value-semantics work rather than a fix to any one
-function. Nothing here is specific to `$$name`; a plain variable shows it
-identically.
+The gap is NARROWER than "phplang does not copy arrays". Everything else in the
+value model already matches the reference — assignment copies, a by-value
+parameter copies, a nested array copies with its parent, `&$x` aliases, and
+`foreach` does not disturb the subject:
+
+```text
+$ target/debug/php -r '$a=[1,2]; $b=$a; $b[]=3; var_dump(count($a), count($b));'
+int(2)
+int(3)
+$ target/debug/php -r 'function f($x){ $x[]=9; return count($x); } $c=[1]; var_dump(f($c), count($c));'
+int(2)
+int(1)
+```
+
+What is missing is only the case above: an array that is already on the operand
+stack as an ARGUMENT when a later argument mutates it. phplang copies eagerly at
+the points that bind a name, and a call argument binds no name, so the handle
+travels unguarded.
+
+Closing it means refcounting `PhpObj::Array` and copying on write when the count
+is above one — the reference's own model — rather than adding another eager copy
+at argument-push time, which would cost a copy on every call that passes an
+array and would still be wrong for a by-reference parameter, which needs the
+real handle. That is a change to the object model and every mutation site, not a
+fix to any one function. Nothing here is specific to `$$name`; a plain variable
+shows it identically.

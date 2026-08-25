@@ -443,3 +443,9 @@ ty2(fn() => array_keys(null));
 ty2(fn() => array_keys(true));
 ty2(fn() => array_keys(false));
 ty2(fn() => array_keys(1.5));
+#==#
+// An unterminated construct is not reported as a syntax error at all: the
+// reference names the bracket and the line it was OPENED on. The `on line N`
+// clause is dropped when that is the line being reported anyway.
+var_dump(1);
+$a = [1
