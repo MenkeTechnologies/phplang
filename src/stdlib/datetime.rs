@@ -373,17 +373,71 @@ fn parse_strtotime(input: &str, base: i64) -> Option<i64> {
     if let Some(rest) = input.strip_prefix('@') {
         return rest.trim().parse::<i64>().ok();
     }
+    // A trailing timezone is taken off first and applied to the result. The
+    // absolute formats below are exact, so `"1970-01-02 UTC"` did not match any
+    // of them and the whole call answered `false`.
+    let (input, offset) = match split_timezone(input) {
+        Some(split) => split,
+        None => (input, 0),
+    };
     // Absolute "YYYY-MM-DD HH:MM:SS" then "YYYY-MM-DD".
     if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(input, "%Y-%m-%d %H:%M:%S") {
-        return Some(Utc.from_utc_datetime(&dt).timestamp());
+        return Some(Utc.from_utc_datetime(&dt).timestamp() - offset);
     }
     if let Some(dt) = NaiveDate::parse_from_str(input, "%Y-%m-%d")
         .ok()
         .and_then(|d| d.and_hms_opt(0, 0, 0))
     {
-        return Some(Utc.from_utc_datetime(&dt).timestamp());
+        return Some(Utc.from_utc_datetime(&dt).timestamp() - offset);
     }
     parse_relative(&low, base)
+}
+
+/// Split a trailing timezone off an absolute date string: the remainder, and
+/// the zone's offset in seconds EAST of UTC.
+///
+/// Only the zones this module can honour EXACTLY are accepted — `UTC`, `GMT`,
+/// `UT`, `Z`, and a numeric `+HH:MM` / `+HHMM` / `+HH` offset. A named zone from
+/// the tz database (`America/New_York`, `EST`) is left alone and the parse
+/// fails as before: without `chrono-tz` there is no offset to apply, and
+/// answering with UTC's would be a wrong timestamp rather than a refusal.
+fn split_timezone(s: &str) -> Option<(&str, i64)> {
+    // A bare trailing `Z` is written with no separator (`…T12:00:00Z`).
+    if let Some(head) = s.strip_suffix(['Z', 'z']) {
+        if !head.is_empty() {
+            return Some((head.trim_end(), 0));
+        }
+    }
+    // Split on WHITESPACE only. Splitting on `T` as well — the ISO 8601 date
+    // separator — cut `"1970-01-02 UTC"` inside the zone name itself.
+    let (head, tail) = s.rsplit_once(char::is_whitespace)?;
+    let head = head.trim_end();
+    if head.is_empty() {
+        return None;
+    }
+    if tail.eq_ignore_ascii_case("utc")
+        || tail.eq_ignore_ascii_case("gmt")
+        || tail.eq_ignore_ascii_case("ut")
+        || tail.eq_ignore_ascii_case("z")
+    {
+        return Some((head, 0));
+    }
+    // `+HH:MM`, `+HHMM`, `+HH` — and the same with `-`.
+    let sign = match tail.as_bytes().first()? {
+        b'+' => 1,
+        b'-' => -1,
+        _ => return None,
+    };
+    let digits: String = tail[1..].chars().filter(|c| *c != ':').collect();
+    if !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let (h, m) = match digits.len() {
+        2 => (digits.parse::<i64>().ok()?, 0),
+        4 => (digits[..2].parse().ok()?, digits[2..].parse().ok()?),
+        _ => return None,
+    };
+    (h < 24 && m < 60).then_some((head, sign * (h * 3600 + m * 60)))
 }
 
 /// Midnight (UTC) of the day containing `ts`.
