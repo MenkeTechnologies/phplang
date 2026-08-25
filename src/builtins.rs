@@ -24,6 +24,7 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::CONCAT, b_concat);
     vm.register_builtin(ops::TRUTHY, b_truthy);
     vm.register_builtin(ops::CALL, b_call);
+    vm.register_builtin(ops::MINMAX_FLF2, b_minmax_flf2);
     vm.register_builtin(ops::CALL_SPREAD, b_call_spread);
     vm.register_builtin(ops::MKARRAY, b_mkarray);
     vm.register_builtin(ops::MKARRAY_ADD, b_mkarray_add);
@@ -1293,6 +1294,28 @@ fn b_call(vm: &mut VM, argc: u8) -> Value {
     }
 }
 
+/// `MINMAX_FLF2`: a direct two-argument `min()`/`max()`. Stack `[name, lhs, rhs]`.
+///
+/// The reference picks its FRAMELESS implementation for this call shape at
+/// compile time, and that implementation disagrees with the variadic one on an
+/// unordered pair — so the shape has to survive to here rather than being folded
+/// into the ordinary dispatch. A user-declared function of the same name still
+/// wins, which is why the name travels with the operands.
+fn b_minmax_flf2(vm: &mut VM, argc: u8) -> Value {
+    let args = pop_args(vm, argc as usize - 1);
+    let name = pop_name(vm);
+    mark_frame_line(vm);
+    if with_host(|h| h.function_defined(&name)) {
+        return match host::call_function(&name, args) {
+            Ok(v) => bubbled(vm, v),
+            Err(e) => fail(vm, e),
+        };
+    }
+    let want_max = name.eq_ignore_ascii_case("max");
+    let v = with_host(|h| minmax_frameless(h, &args[0], &args[1], want_max));
+    bubbled(vm, v)
+}
+
 /// Return the call result, or `Undef` if a throw raised inside the callee is now
 /// unwinding the caller too (see `bubble_throw`).
 fn bubbled(vm: &mut VM, v: Value) -> Value {
@@ -2442,6 +2465,12 @@ fn loose_eq(h: &host::PhpHost, a: &Value, b: &Value) -> bool {
         }
         (Obj(_), Obj(_)) => arrays_loose_eq(h, a, b),
         (Obj(_), _) | (_, Obj(_)) => false,
+        // `==` is `zend_compare(...) == 0` (`Zend/zend_operators.c:2524`), and a
+        // NaN double against a string is answered 1 there before the string is
+        // read at all (`:2359`, `:2366`). So `NAN == "NAN"` is FALSE, even
+        // though the two render as the same text and the string comparison the
+        // arm below would fall into makes them equal.
+        (Float(f), Str(_)) | (Str(_), Float(f)) if f.is_nan() => false,
         // number vs number, or number vs string.
         _ => {
             // A non-numeric string vs a number compares as strings in PHP 8.
@@ -2557,6 +2586,12 @@ fn php_compare(h: &host::PhpHost, a: &Value, b: &Value) -> i32 {
         // 4. An array outranks every non-array, non-bool, non-null operand.
         (Obj(_), _) => 1,
         (_, Obj(_)) => -1,
+        // A NaN double against a STRING is unordered, and `zend_compare` answers
+        // 1 whichever side it is on — the test is made before the string is read
+        // as a number, so `NAN <=> "1"` is 1 too, not the numeric -1
+        // (`Zend/zend_operators.c:2359` and `:2366`; the numeric path itself
+        // asserts the double is not a NaN at `:2288`).
+        (Float(f), Str(_)) | (Str(_), Float(f)) if f.is_nan() => 1,
         (Str(x), Str(y)) => {
             if host::is_numeric_string(x) && host::is_numeric_string(y) {
                 cmp_php_num(&as_php_number(h, a), &as_php_number(h, b))
@@ -3493,6 +3528,106 @@ fn ucfirst(s: &str) -> String {
     }
 }
 
+/// `zend_dval_to_lval_silent((double) n) == n` — whether an integer survives a
+/// round trip through a double.
+///
+/// `min`/`max` use this to decide whether an int operand may be compared as a
+/// double instead of going to the generic three-way comparison
+/// (`ext/standard/array.c:1238`, `:1258`, `:1296`, `:1309`). The predicate is
+/// `ZEND_DOUBLE_FITS_LONG` (`Zend/zend_operators.h:115`, the 64-bit arm:
+/// `!((d) >= (double)ZEND_LONG_MAX || (d) < (double)ZEND_LONG_MIN)`) followed by
+/// the plain cast in `zend_dval_to_lval_silent` (`Zend/zend_operators.h:138`).
+///
+/// Rust's `as` saturates where C's cast is undefined, so the range test cannot
+/// be folded into the round trip: `i64::MAX as f64 as i64` saturates back to
+/// `i64::MAX` and would claim it fits, while the reference's `>= (double)
+/// ZEND_LONG_MAX` rejects it.
+fn long_fits_double(n: i64) -> bool {
+    let d = n as f64;
+    // 2^63 exactly — `(double)ZEND_LONG_MAX` and `-(double)ZEND_LONG_MIN`.
+    const TWO_POW_63: f64 = 9_223_372_036_854_775_808.0;
+    d >= -TWO_POW_63 && d < TWO_POW_63 && d as i64 == n
+}
+
+/// `min`/`max` for a DIRECT two-argument call —
+/// `ZEND_FRAMELESS_FUNCTION(min, 2)` at `ext/standard/array.c:1282` and
+/// `(max, 2)` at `:1410`.
+///
+/// This is a genuinely different algorithm from the variadic function, not an
+/// unrolling of it, and the difference is visible: it compares the two operands
+/// ONCE and keeps the left only when that single test says so. `1.0 < NAN` is
+/// false, so `min(1, NAN)` answers NAN here (`:1308`) while the variadic form
+/// answers 1.
+///
+/// The tie rule differs between the two by design: `min` keeps the RIGHT operand
+/// on a tie (`lhs < rhs ? lhs : rhs`, `:1295`) and `max` keeps the LEFT
+/// (`lhs >= rhs ? lhs : rhs`, `:1423`), which is how `min(1, 1.0)` is a float and
+/// `max(1, 1.0)` an int.
+pub(crate) fn minmax_frameless(
+    h: &host::PhpHost,
+    lhs: &Value,
+    rhs: &Value,
+    want_max: bool,
+) -> Value {
+    // `RETURN_COPY_VALUE(<test> ? lhs : rhs)` — the shared tail of every arm.
+    let pick = |keep_lhs: bool| if keep_lhs { lhs.clone() } else { rhs.clone() };
+    // `lhs <op> rhs` with the operator each function uses: `<` for min, `>=`
+    // for max.
+    let keep = |a: f64, b: f64| if want_max { a >= b } else { a < b };
+    match (lhs, rhs) {
+        // array.c:1295 / :1423 — both operands are integers.
+        (Value::Int(l), Value::Int(r)) => {
+            return pick(if want_max { l >= r } else { l < r });
+        }
+        // array.c:1296 / :1424 — int against double, only when the int is
+        // exactly representable; otherwise fall through to generic_compare.
+        (Value::Int(l), Value::Float(r)) if long_fits_double(*l) => {
+            return pick(keep(*l as f64, *r));
+        }
+        // array.c:1308 / :1436 — the double_compare label.
+        (Value::Float(l), Value::Float(r)) => return pick(keep(*l, *r)),
+        // array.c:1309 / :1437 — double against int, same representability test.
+        (Value::Float(l), Value::Int(r)) if long_fits_double(*r) => {
+            return pick(keep(*l, *r as f64));
+        }
+        _ => {}
+    }
+    // array.c:1317 / :1445 — generic_compare.
+    let ord = php_compare(h, lhs, rhs);
+    pick(if want_max { ord >= 0 } else { ord < 0 })
+}
+
+/// Which of the two operands a fold replaces its running winner with, once the
+/// variadic loop has decided how to read them.
+///
+/// Mirrors the three code paths `PHP_FUNCTION(min)` runs between with `goto`
+/// (`ext/standard/array.c:1229`-`:1275`): an all-integer loop, an all-double
+/// loop, and the generic `zend_compare` loop. A `goto` there jumps INTO the next
+/// loop's body without re-running its `for` initializer, so the argument index
+/// is deliberately not reset when the mode changes here either.
+#[derive(Clone, Copy, PartialEq)]
+enum FoldMode {
+    Long,
+    Double,
+    Generic,
+}
+
+/// `min`/`max` reached any way OTHER than a direct two-argument call —
+/// `PHP_FUNCTION(min)` at `ext/standard/array.c:1197` and `(max)` at `:1325`.
+///
+/// Three answers to the same question live here, and which one a program gets
+/// depends on the SHAPE of the call, not on the values:
+///
+/// * one array argument → `zend_hash_minmax` (`array.c:1212`, `:1340`), which
+///   compares `(winner, candidate)` and so ADOPTS an unordered candidate;
+/// * two or more arguments → the loop below, which compares
+///   `(candidate, winner)` and so REJECTS one;
+/// * a direct two-argument call → [`minmax_frameless`], which never reaches
+///   this function at all.
+///
+/// That is why the reference answers `min(1, NAN)` with NAN, `min([1, NAN, 2])`
+/// with 2, and `call_user_func('min', 1, NAN)` with 1. The three are not
+/// reconcilable into one comparison rule, so all three are ported.
 fn fold_cmp(h: &host::PhpHost, args: &[Value], want_max: bool) -> Result<Value, String> {
     let who = if want_max { "max" } else { "min" };
     // Called with nothing at all, these are an arity error rather than a value
@@ -3503,41 +3638,137 @@ fn fold_cmp(h: &host::PhpHost, args: &[Value], want_max: bool) -> Result<Value, 
             format!("{who}() expects at least 1 argument, 0 given"),
         ));
     }
-    // max/min accept either a single array or a variadic list.
-    let single_array = args.len() == 1 && h.is_array(&args[0]);
-    let items: Vec<Value> = if single_array {
-        h.array_pairs(&args[0])
+    if args.len() == 1 {
+        // array.c:1208 / :1336 — a lone argument MUST be an array. A scalar is a
+        // TypeError, not a one-element fold that answers itself.
+        if !h.is_array(&args[0]) {
+            let given = h.type_name_for_error(&args[0]);
+            return Err(throws(
+                "TypeError",
+                format!("{who}(): Argument #1 ($value) must be of type array, {given} given"),
+            ));
+        }
+        let items: Vec<Value> = h
+            .array_pairs(&args[0])
             .unwrap_or_default()
             .into_iter()
             .map(|(_, v)| v)
-            .collect()
-    } else {
-        args.to_vec()
-    };
-    // An EMPTY array has no answer, and the reference says so rather than
-    // returning null — the one-argument form is the only way to reach this,
-    // since the variadic form always carries at least one value.
-    if single_array && items.is_empty() {
-        return Err(throws(
-            "ValueError",
-            format!("{who}(): Argument #1 ($value) must contain at least one element"),
-        ));
+            .collect();
+        // array.c:1216 / :1344 — `zend_hash_minmax` answers NULL for an empty
+        // table and the caller turns that into a value error.
+        let Some(first) = items.first() else {
+            return Err(throws(
+                "ValueError",
+                format!("{who}(): Argument #1 ($value) must contain at least one element"),
+            ));
+        };
+        // zend_hash.c:3272 (min) / :3294 (max): `compar(res, zv)` — the WINNER is
+        // the left operand. `zend_compare` answers 1 for an unordered pair either
+        // way round, so `> 0` is true whenever the winner is a NaN and the fold
+        // walks off it, while `< 0` is false and `max` stays stuck on it.
+        //
+        // The reference's loop starts at the element it took `res` from and so
+        // compares it with itself first; that test can only answer 0 or 1 and
+        // neither replaces anything, so the walk starts past it here.
+        let mut best = first.clone();
+        for v in &items[1..] {
+            let ord = php_compare(h, &best, v);
+            if (want_max && ord < 0) || (!want_max && ord > 0) {
+                best = v.clone();
+            }
+        }
+        return Ok(best);
     }
-    let mut best: Option<Value> = None;
-    for v in items {
-        best = Some(match best {
-            None => v,
-            Some(cur) => {
-                let ord = php_compare(h, &v, &cur);
-                if (want_max && ord > 0) || (!want_max && ord < 0) {
-                    v
-                } else {
-                    cur
+
+    // array.c:1220-:1277 — the variadic fold. `best` is the reference's `min` /
+    // `max` POINTER: the running `lval`/`dval` are only how the loop compares,
+    // and the value that comes back is always the argument itself, with the type
+    // it was passed as.
+    let mut best = 0usize;
+    let mut i = 1usize;
+    let mut lval = 0i64;
+    let mut dval = 0f64;
+    let mut mode = match &args[0] {
+        Value::Int(n) => {
+            lval = *n;
+            FoldMode::Long
+        }
+        Value::Float(d) => {
+            dval = *d;
+            FoldMode::Double
+        }
+        _ => FoldMode::Generic,
+    };
+    loop {
+        match mode {
+            // array.c:1232-:1245 — every argument so far has been an integer.
+            FoldMode::Long => {
+                let Some(v) = args.get(i) else {
+                    // array.c:1247 / :1375 — `RETURN_LONG(min_lval)`.
+                    return Ok(Value::int(lval));
+                };
+                match v {
+                    Value::Int(r) => {
+                        if if want_max { lval < *r } else { lval > *r } {
+                            lval = *r;
+                            best = i;
+                        }
+                        i += 1;
+                    }
+                    // array.c:1238 — `goto double_compare`, which lands inside the
+                    // double loop's body on the SAME argument.
+                    Value::Float(_) if long_fits_double(lval) => {
+                        dval = lval as f64;
+                        mode = FoldMode::Double;
+                    }
+                    // array.c:1243 — `goto generic_compare`, likewise.
+                    _ => mode = FoldMode::Generic,
                 }
             }
-        });
+            // array.c:1251-:1267.
+            FoldMode::Double => {
+                let Some(v) = args.get(i) else { break };
+                match v {
+                    Value::Float(r) => {
+                        if if want_max { dval < *r } else { dval > *r } {
+                            dval = *r;
+                            best = i;
+                        }
+                        i += 1;
+                    }
+                    // array.c:1258 — an integer joins the double loop only when it
+                    // is exactly representable.
+                    Value::Int(r) if long_fits_double(*r) => {
+                        let r = *r as f64;
+                        if if want_max { dval < r } else { dval > r } {
+                            dval = r;
+                            best = i;
+                        }
+                        i += 1;
+                    }
+                    _ => mode = FoldMode::Generic,
+                }
+            }
+            // array.c:1269-:1274 — `zend_compare(&args[i], min)`: the CANDIDATE is
+            // the left operand, the opposite way round from the array form. An
+            // unordered pair answers 1, so `< 0` is false and `min` keeps what it
+            // has rather than taking the NaN.
+            //
+            // The comparison reads the winning ARGUMENT, not the running
+            // `lval`/`dval`, so a fold that passed through one of the numeric
+            // loops still compares against the original operand here.
+            FoldMode::Generic => {
+                let Some(v) = args.get(i) else { break };
+                let ord = php_compare(h, v, &args[best]);
+                if (want_max && ord > 0) || (!want_max && ord < 0) {
+                    best = i;
+                }
+                i += 1;
+            }
+        }
     }
-    Ok(best.unwrap_or(Value::Undef))
+    // array.c:1277 / :1405 — `RETURN_COPY(min)`.
+    Ok(args[best].clone())
 }
 
 fn php_substr(s: &str, args: &[Value]) -> String {

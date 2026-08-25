@@ -293,6 +293,19 @@ pub mod ops {
     /// is what a 200-element literal used to do (`400 as u8` == 144, so the
     /// builtin popped 144 of its 400 operands and left the rest on the stack).
     pub const MKARRAY_ADD: u16 = 120;
+    /// `[name, lhs, rhs] -> value` — a DIRECT two-argument `min()`/`max()`.
+    ///
+    /// The reference compiles that exact call shape to a different C function
+    /// than every other way of reaching `min`, and the two do not agree once a
+    /// NaN is involved (see [`crate::builtins::minmax_frameless`]). Selecting
+    /// between them is a compile-time fact there, so it is one here too: the
+    /// compiler emits this op only for a literal two-argument call, and
+    /// everything else — a dynamic name, `call_user_func`, a spread, a named
+    /// argument, any other arity — keeps [`CALL`] and the ordinary function.
+    ///
+    /// The name still travels with it so a user-declared `min`/`max` is found
+    /// first, exactly as [`CALL`] would.
+    pub const MINMAX_FLF2: u16 = 121;
 }
 
 /// The key operand of an array-literal element that has NO key — `[1, 2]`

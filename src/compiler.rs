@@ -74,6 +74,25 @@ fn array_mutator_subop(name: &str) -> Option<i64> {
     }
 }
 
+/// Whether this call is a literal two-argument `min()`/`max()` — the ONE shape
+/// the reference compiles to its frameless implementation of those functions
+/// (`ZEND_FRAMELESS_FUNCTION(min, 2)`, `ext/standard/array.c:1282`).
+///
+/// The distinction is observable: `min(1, NAN)` written out is NAN, while
+/// `call_user_func('min', 1, NAN)`, `$f = 'min'; $f(1, NAN)`, `min(...[1, NAN])`
+/// and `(min(...))(1, NAN)` are all 1, because none of those reaches the
+/// frameless form. Every one of those goes through `Expr::CallValue` or the
+/// spread/named arms, so testing the direct arm's name and arity is enough.
+fn is_direct_minmax2(name: &str, args: &[Expr]) -> bool {
+    if args.len() != 2 {
+        return false;
+    }
+    // `\min(…)` is the same function; phplang folds a qualified name to its last
+    // segment, so a leading separator is all that can remain.
+    let bare = name.rsplit('\\').next().unwrap_or(name);
+    bare.eq_ignore_ascii_case("min") || bare.eq_ignore_ascii_case("max")
+}
+
 #[derive(Default)]
 pub struct Compiler {
     functions: Vec<(String, FuncDef)>,
@@ -1851,6 +1870,18 @@ impl Compiler {
                         Op::CallBuiltin(ops::CALL_SPREAD, (args.len() * 2 + 1) as u8),
                         self.cur_line,
                     );
+                } else if is_direct_minmax2(name, args) {
+                    // A literal two-argument `min`/`max`. The reference compiles
+                    // exactly this shape to its FRAMELESS implementation, which
+                    // answers differently from the variadic one when an operand
+                    // is a NaN, so the shape is recorded in the opcode rather
+                    // than lost in a uniform call.
+                    let idx = b.add_constant(Value::str(name.clone()));
+                    b.emit(Op::LoadConst(idx), 0);
+                    for a in args {
+                        self.compile_expr(b, a)?;
+                    }
+                    b.emit(Op::CallBuiltin(ops::MINMAX_FLF2, 3), self.cur_line);
                 } else {
                     let idx = b.add_constant(Value::str(name.clone()));
                     b.emit(Op::LoadConst(idx), 0);
