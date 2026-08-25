@@ -65,6 +65,22 @@ fn corpus_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/parity_corpus.php")
 }
 
+/// Where the blessing interpreter's `major.minor` is recorded, so a later run
+/// can tell "the snapshot is stale" from "this is a different PHP".
+fn reference_version_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/parity_reference_version.txt")
+}
+
+/// `major.minor` of `php`, from the first line of `php --version`
+/// (`PHP 8.5.9 (cli) …`). `None` when it cannot be parsed.
+fn php_major_minor(php: &Path) -> Option<String> {
+    let out = Command::new(php).arg("--version").output().ok()?;
+    let banner = String::from_utf8_lossy(&out.stdout);
+    let ver = banner.strip_prefix("PHP ")?.split_whitespace().next()?;
+    let mut it = ver.split('.');
+    Some(format!("{}.{}", it.next()?, it.next()?))
+}
+
 fn snapshot_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/parity_expected.bin")
 }
@@ -267,6 +283,10 @@ fn frozen_snapshot_still_matches_live_php() {
 
     if std::env::var_os("PHPLANG_PARITY_BLESS").is_some() {
         std::fs::write(snapshot_path(), &encoded).expect("write snapshot");
+        if let Some(v) = php_major_minor(&php) {
+            std::fs::write(reference_version_path(), format!("{v}\n"))
+                .expect("write reference version");
+        }
         eprintln!(
             "blessed {} records into {} from {}",
             live.len(),
@@ -274,6 +294,30 @@ fn frozen_snapshot_still_matches_live_php() {
             php.display()
         );
         return;
+    }
+
+    // A snapshot records ONE interpreter's behaviour, and PHP changes it between
+    // releases: 8.4 added the "float is not representable as an int" warning
+    // that 8.3 does not emit, so a snapshot blessed on one reports every such
+    // block as drift against the other. Compare only when the reference is the
+    // same major.minor that blessed it; otherwise say so and stop, the way the
+    // no-reference path above does. The frozen replay
+    // (corpus_matches_frozen_php) still runs either way, so phplang is still
+    // held to the recorded behaviour — what is skipped is only the
+    // re-derivation that proves the recording is honest.
+    let blessed_with = std::fs::read_to_string(reference_version_path())
+        .ok()
+        .map(|s| s.trim().to_string());
+    let local = php_major_minor(&php);
+    if let (Some(b), Some(l)) = (&blessed_with, &local) {
+        if b != l {
+            eprintln!(
+                "snapshot was blessed with PHP {b}, this reference is PHP {l} — \
+                 skipping live re-derivation. Re-bless on {b} (or update the \
+                 pin) with PHPLANG_PARITY_BLESS=1 cargo test --test parity"
+            );
+            return;
+        }
     }
 
     let frozen = std::fs::read(snapshot_path()).expect("read snapshot");
