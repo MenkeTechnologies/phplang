@@ -8,6 +8,7 @@
 
 pub mod ast;
 pub mod banner;
+pub mod argtypes;
 pub mod builtins;
 pub mod cli;
 pub mod compiler;

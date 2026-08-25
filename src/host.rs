@@ -5789,7 +5789,23 @@ pub fn call_function(name: &str, args: Vec<Value>) -> Result<Value, String> {
 /// This wrapper is the caller rather than part of `call_library` itself because
 /// it needs the argument list AFTER the call, to render the trace frame —
 /// `call_library` borrows it, so the owner has to be the one that reacts.
+/// Raise a tagged library error through the ordinary internal-throw path, so it
+/// carries the same trace frame a failure inside the function would.
+fn throw_from_internal_typed(name: &str, args: &[Value], e: String) -> Result<Value, String> {
+    match crate::builtins::untag_throw(&e) {
+        Some((class, message)) => throw_from_internal(name, args, class, message),
+        None => Err(e),
+    }
+}
+
 fn call_library_throwing(name: &str, args: Vec<Value>) -> Result<Value, String> {
+    // PHP 8 refuses an argument whose type the parameter does not accept, before
+    // the function runs. The check is by DECLARED TYPE rather than per function
+    // (see `crate::argtypes`), and it goes through the same error path as any
+    // other library failure so the refusal carries the call's trace frame.
+    if let Err(e) = crate::argtypes::check_call(name, &args) {
+        return throw_from_internal_typed(name, &args, e);
+    }
     match crate::builtins::call_library(name, &args) {
         Err(e) => {
             // A frameless throw is raised from the caller's own frame: no scope

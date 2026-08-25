@@ -979,3 +979,50 @@ invoked
 int(1)
 int(3)
 
+#REC 37 exit=0 out=1276 err=0
+TypeError: strlen(): Argument #1 ($string) must be of type string, array given
+TypeError: strtoupper(): Argument #1 ($string) must be of type string, array given
+TypeError: substr(): Argument #1 ($string) must be of type string, array given
+TypeError: abs(): Argument #1 ($num) must be of type int|float, array given
+TypeError: sqrt(): Argument #1 ($num) must be of type float, array given
+TypeError: trim(): Argument #1 ($string) must be of type string, array given
+TypeError: ucfirst(): Argument #1 ($string) must be of type string, array given
+TypeError: str_repeat(): Argument #1 ($string) must be of type string, array given
+TypeError: explode(): Argument #2 ($string) must be of type string, array given
+TypeError: strpos(): Argument #1 ($haystack) must be of type string, array given
+TypeError: number_format(): Argument #1 ($num) must be of type int|float, array given
+TypeError: round(): Argument #1 ($num) must be of type int|float, array given
+TypeError: array_keys(): Argument #1 ($array) must be of type array, string given
+TypeError: in_array(): Argument #2 ($haystack) must be of type array, int given
+TypeError: implode(): Argument #2 ($array) must be of type ?array, int given
+TypeError: json_decode(): Argument #1 ($json) must be of type string, array given
+
+#REC 38 exit=0 out=1052 err=248
+int(3)
+int(3)
+int(1)
+int(5)
+int(5)
+int(5)
+int(5)
+float(1.4142135623730951)
+string(1) "b"
+TypeError: intdiv(): Argument #1 ($num1) must be of type int, string given
+TypeError: intdiv(): Argument #1 ($num1) must be of type int, string given
+TypeError: intdiv(): Argument #1 ($num1) must be of type int, string given
+int(1)
+TypeError: strlen(): Argument #1 ($string) must be of type string, Plain given
+TypeError: intdiv(): Argument #1 ($num1) must be of type int, Plain given
+
+Deprecated: strlen(): Passing null to parameter #1 ($string) of type string is deprecated in Command line code on line 24
+int(0)
+
+Deprecated: sqrt(): Passing null to parameter #1 ($num) of type float is deprecated in Command line code on line 25
+float(0)
+TypeError: array_keys(): Argument #1 ($array) must be of type array, null given
+TypeError: array_keys(): Argument #1 ($array) must be of type array, true given
+TypeError: array_keys(): Argument #1 ($array) must be of type array, false given
+TypeError: array_keys(): Argument #1 ($array) must be of type array, float given
+PHP Deprecated:  strlen(): Passing null to parameter #1 ($string) of type string is deprecated in Command line code on line 24
+PHP Deprecated:  sqrt(): Passing null to parameter #1 ($num) of type float is deprecated in Command line code on line 25
+

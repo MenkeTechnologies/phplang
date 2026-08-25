@@ -390,3 +390,56 @@ fn() => 1;
 function &byref_ret() { static $v = 1; return $v; }
 function named_fn() { return 3; }
 var_dump(byref_ret(), named_fn());
+#==#
+// PHP 8 refuses an argument whose type the parameter does not accept. The line
+// is drawn per TYPE, not per function: an array is never a string, but a float
+// is.
+function ty($f) { try { var_dump($f()); } catch (\Throwable $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; } }
+$a = [1, 2];
+ty(fn() => strlen($a));
+ty(fn() => strtoupper($a));
+ty(fn() => substr($a, 0, 1));
+ty(fn() => abs($a));
+ty(fn() => sqrt($a));
+ty(fn() => trim($a));
+ty(fn() => ucfirst($a));
+ty(fn() => str_repeat($a, 2));
+ty(fn() => explode(",", $a));
+ty(fn() => strpos($a, "a"));
+ty(fn() => number_format($a));
+ty(fn() => round($a));
+ty(fn() => array_keys("ab"));
+ty(fn() => in_array(1, 5));
+ty(fn() => implode(",", 5));
+ty(fn() => json_decode($a));
+#==#
+// The types that DO convert still convert, so the check narrows nothing that
+// used to work.
+function ty2($f) { try { var_dump($f()); } catch (\Throwable $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; } }
+ty2(fn() => strlen(123));
+ty2(fn() => strlen(1.5));
+ty2(fn() => strlen(true));
+ty2(fn() => intdiv("5", 1));
+ty2(fn() => intdiv("5.0", 1));
+ty2(fn() => intdiv(" 5 ", 1));
+ty2(fn() => intdiv(5.0, 1));
+ty2(fn() => sqrt("2"));
+ty2(fn() => str_replace(5, "a", "b"));
+// A non-numeric string is not an int, and neither is a hex spelling.
+ty2(fn() => intdiv("5abc", 1));
+ty2(fn() => intdiv("abc", 1));
+ty2(fn() => intdiv("0x1A", 1));
+// An object stands in for a string only through __toString.
+class Str { public function __toString(): string { return "s"; } }
+class Plain {}
+ty2(fn() => strlen(new Str()));
+ty2(fn() => strlen(new Plain()));
+ty2(fn() => intdiv(new Plain(), 1));
+// null is a deprecation in a scalar parameter and a type error in an array one.
+ty2(fn() => strlen(null));
+ty2(fn() => sqrt(null));
+ty2(fn() => array_keys(null));
+// A boolean is named in the message by its VALUE.
+ty2(fn() => array_keys(true));
+ty2(fn() => array_keys(false));
+ty2(fn() => array_keys(1.5));
