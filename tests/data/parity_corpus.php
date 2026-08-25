@@ -293,3 +293,38 @@ var_dump(array_pop($o->s));
 var_dump($o->s);
 var_dump(array_shift(Stack::$t), Stack::$t);
 var_dump(array_splice($o->s, 0, 1), $o->s);
+#==#
+// Converting an array to a string has no answer, so the reference substitutes
+// the text `Array` and warns wherever the conversion happens.
+$a = [1, 2];
+echo $a, "\n";
+echo "p" . $a, "\n";
+var_dump((string) $a, strval($a));
+echo "v$a\n";
+echo sprintf("%s", $a), "\n";
+echo implode(",", [[1], [2]]), "\n";
+// Reading the array without converting it says nothing.
+var_dump($a == "Array", in_array("Array", [$a]), json_encode($a));
+#==#
+// A NaN has a string form and still warns, because the text does not read back
+// as a number. The infinities are the control: they convert silently.
+$n = fdiv(0, 0);
+echo $n, "\n";
+echo "x" . $n, "\n";
+var_dump((string) $n, strval($n));
+echo sprintf("%s", $n), "\n";
+var_dump(implode(",", [$n, 1]));
+echo fdiv(1, 0), " ", fdiv(-1, 0), "\n";
+var_dump((string) INF, (string) -INF, is_nan($n));
+#==#
+// An internal function that throws is named in the trace as its own frame; a
+// zero-divisor OPERATOR is not, because no function is being called.
+function idz() { return intdiv(1, 0); }
+function idm() { return intdiv(PHP_INT_MIN, -1); }
+function opd() { return 1 / 0; }
+function opm() { return 1 % 0; }
+foreach (['idz', 'idm', 'opd', 'opm'] as $f) {
+    try { $f(); } catch (\Throwable $e) {
+        echo get_class($e), ": ", $e->getMessage(), "\n", $e->getTraceAsString(), "\n";
+    }
+}

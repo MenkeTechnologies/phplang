@@ -4661,6 +4661,32 @@ impl PhpHost {
     }
 
     /// PHP string cast (`(string)` / echo / interpolation).
+    /// [`PhpHost::to_str`] for a conversion the PROGRAM asked for, with the two
+    /// diagnostics such a conversion raises.
+    ///
+    /// Both are properties of the conversion, not of the value, so they belong
+    /// at the one point every PHP-visible string coercion passes through rather
+    /// than at each of its callers: `echo`, `.`, `"$x"`, `(string)`, `strval`,
+    /// `implode` and `%s` all raise them, while `var_dump`, `json_encode`,
+    /// `in_array` and a loose comparison against a string raise neither, because
+    /// none of those converts anything.
+    ///
+    /// An array has no string form, so the reference substitutes the literal
+    /// text `Array` and warns. A NaN has a string form — `"NAN"` — and warns
+    /// anyway, because the text does not read back as a number. The infinities
+    /// are the control that shows this is about NaN specifically and not about
+    /// non-finite doubles: `(string) INF` is `"INF"` and says nothing.
+    pub fn to_str_diag(&mut self, v: &Value) -> String {
+        match v {
+            Value::Obj(_) if self.is_array(v) => self.warn("Array to string conversion"),
+            Value::Float(f) if f.is_nan() => {
+                self.warn("unexpected NAN value was coerced to string");
+            }
+            _ => {}
+        }
+        self.to_str(v)
+    }
+
     pub fn to_str(&self, v: &Value) -> String {
         match v {
             Value::Undef => String::new(),
@@ -5661,7 +5687,7 @@ pub fn to_str_ext(v: &Value) -> String {
             .filter(|c| h.class_has_method(c, "__tostring"))
     });
     let Some(class) = class else {
-        return with_host(|h| h.to_str(v));
+        return with_host(|h| h.to_str_diag(v));
     };
     match call_method(&class, "__toString", Some(v.clone()), Vec::new()) {
         Ok(r) => with_host(|h| h.to_str(&r)),

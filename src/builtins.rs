@@ -4072,15 +4072,8 @@ fn php_implode(args: &[Value]) -> Value {
     // An element that is itself an ARRAY has no string form: the reference warns
     // `Array to string conversion` (once per such element) and joins the literal
     // text `Array`.
-    let parts: Vec<String> = vals
-        .iter()
-        .map(|v| {
-            if with_host(|h| h.is_array(v)) {
-                with_host(|h| h.warn("Array to string conversion"));
-            }
-            host::to_str_ext(v)
-        })
-        .collect();
+    // `to_str_ext` raises the conversion's own warning, once per element.
+    let parts: Vec<String> = vals.iter().map(host::to_str_ext).collect();
     Value::str(parts.join(&glue))
 }
 
@@ -4931,7 +4924,7 @@ fn render_spec(h: &mut host::PhpHost, s: &FmtSpec, v: &Value) -> String {
             (if lower { g.to_lowercase() } else { g }, true)
         }
         's' => {
-            let mut txt = h.to_str(v);
+            let mut txt = h.to_str_diag(v);
             if let Some(p) = s.precision {
                 txt = txt.chars().take(p).collect();
             }
@@ -5596,18 +5589,28 @@ fn php_intdiv(args: &[Value]) -> Result<Value, String> {
     let (a, b) = (arg(args, 0), arg(args, 1));
     let (an, bn) = with_host(|h| (h.to_number(&a), h.to_number(&b)));
     let (x, y) = (int_operand(&a, &an), int_operand(&b, &bn));
+    // Both of these are tagged rather than thrown directly, so the call goes out
+    // through `call_builtin`'s error path and picks up the trace frame for the
+    // call itself. `intdiv(1, 0)` inside `f()` is reported by the reference as
+    //
+    //   #0 t.php(2): intdiv(1, 0)
+    //   #1 t.php(3): f()
+    //
+    // and throwing here without the tag dropped frame #0. The zero-divisor
+    // OPERATORS (`1/0`, `1%0`) are the contrast: no function is being called, so
+    // the reference shows no such frame and they still throw directly.
     if y == 0 {
-        return pending_php_throw("DivisionByZeroError", "Division by zero");
+        return Err(throws("DivisionByZeroError", "Division by zero"));
     }
     // `intdiv` has to answer an int, so the one quotient that does not fit is an
     // error rather than the float `/` widens to. It is an `ArithmeticError`, the
     // parent of `DivisionByZeroError` — a `catch (DivisionByZeroError)` does NOT
     // see it, so the two cannot share an arm.
     if x == i64::MIN && y == -1 {
-        return pending_php_throw(
+        return Err(throws(
             "ArithmeticError",
             "Division of PHP_INT_MIN by -1 is not an integer",
-        );
+        ));
     }
     Ok(Value::int(x / y))
 }

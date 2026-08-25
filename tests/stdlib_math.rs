@@ -75,8 +75,21 @@ fn fdiv_ieee_edges() {
     assert_eq!(run("<?php echo fdiv(10, 4);"), "2.5");
     assert_eq!(run("<?php echo fdiv(1, 0);"), "INF");
     assert_eq!(run("<?php echo fdiv(-1, 0);"), "-INF");
-    assert_eq!(run("<?php echo fdiv(0, 0);"), "NAN");
+    // Echoing the NaN CONVERTS it, and the reference warns when it does:
+    //   php -r 'echo fdiv(0, 0);'
+    //   Warning: unexpected NAN value was coerced to string in Command line code on line 1
+    //   NAN
+    // This used to assert the bare "NAN", which no PHP has printed for this
+    // snippet. The infinities above are the control — they convert silently.
+    assert_eq!(run("<?php echo fdiv(0, 0);"), format!("{NAN_COERCED}NAN"));
+    // The VALUE is unaffected by the diagnostic; `is_nan` reads it without
+    // converting and so says nothing.
+    assert_eq!(run("<?php var_dump(is_nan(fdiv(0, 0)));"), "bool(true)\n");
 }
+
+/// The reference's warning for a NaN that reaches a string conversion.
+const NAN_COERCED: &str =
+    "\nWarning: unexpected NAN value was coerced to string in Command line code on line 1\n";
 
 // ── IEEE predicates ──────────────────────────────────────────────────────────
 
