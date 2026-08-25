@@ -297,7 +297,7 @@ pub mod ops {
     ///
     /// The reference compiles that exact call shape to a different C function
     /// than every other way of reaching `min`, and the two do not agree once a
-    /// NaN is involved (see [`crate::builtins::minmax_frameless`]). Selecting
+    /// NaN is involved (see `minmax_frameless`). Selecting
     /// between them is a compile-time fact there, so it is one here too: the
     /// compiler emits this op only for a literal two-argument call, and
     /// everything else — a dynamic name, `call_user_func`, a spread, a named

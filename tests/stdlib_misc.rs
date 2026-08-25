@@ -171,10 +171,9 @@ fn array_walk_recursive_returns_true() {
 #[test]
 fn array_walk_recursive_rejects_an_array_literal() {
     // The behaviour the old form of the test above was actually exercising.
-    let err = eval_capture(
-        "<?php echo var_export(array_walk_recursive([1,[2]], function($v){}), true);",
-    )
-    .unwrap_err();
+    let err =
+        eval_capture("<?php echo var_export(array_walk_recursive([1,[2]], function($v){}), true);")
+            .unwrap_err();
     assert!(
         err.contains(
             "array_walk_recursive(): Argument #1 ($array) could not be passed by reference"

@@ -180,7 +180,11 @@ const BYREF_MAX_ARGNO: usize = 5;
 /// so the reference writes `Argument #3 could not be passed by reference`
 /// without the usual `($name)`.
 fn byref_diag_slots(name: &str, nargs: usize) -> Vec<(usize, u32, &'static str)> {
-    let lname = name.rsplit('\\').next().unwrap_or(name).to_ascii_lowercase();
+    let lname = name
+        .rsplit('\\')
+        .next()
+        .unwrap_or(name)
+        .to_ascii_lowercase();
     if lname == "sscanf" {
         return (2..nargs).map(|i| (i, i as u32 + 1, "")).collect();
     }

@@ -3591,7 +3591,7 @@ fn long_fits_double(n: i64) -> bool {
     let d = n as f64;
     // 2^63 exactly — `(double)ZEND_LONG_MAX` and `-(double)ZEND_LONG_MIN`.
     const TWO_POW_63: f64 = 9_223_372_036_854_775_808.0;
-    d >= -TWO_POW_63 && d < TWO_POW_63 && d as i64 == n
+    (-TWO_POW_63..TWO_POW_63).contains(&d) && d as i64 == n
 }
 
 /// `min`/`max` for a DIRECT two-argument call —
