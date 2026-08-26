@@ -408,7 +408,11 @@ impl Scan<'_> {
                 self.expr(b);
             }
             Expr::Call(name, args) => {
-                let bare = name.rsplit('\\').next().unwrap_or(name).to_ascii_lowercase();
+                let bare = name
+                    .rsplit('\\')
+                    .next()
+                    .unwrap_or(name)
+                    .to_ascii_lowercase();
                 // These read or write the caller's variables BY NAME. A local
                 // held in a frame slot is invisible to them, so the scope keeps
                 // its host storage rather than diverging.

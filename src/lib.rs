@@ -6,9 +6,9 @@
 //! numeric hook) for every PHP-specific operation. There is no bespoke VM or
 //! JIT here — execution and codegen live in fusevm.
 
+pub mod argtypes;
 pub mod ast;
 pub mod banner;
-pub mod argtypes;
 pub mod builtins;
 pub mod cli;
 pub mod compiler;
@@ -19,8 +19,8 @@ pub mod host;
 pub mod intercepts;
 pub mod lexer;
 pub mod lsp;
-pub mod promote;
 pub mod parser;
+pub mod promote;
 pub mod repl;
 pub mod rust_ffi;
 pub mod stdlib;
