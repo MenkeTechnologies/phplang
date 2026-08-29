@@ -40,6 +40,30 @@ fn reference_php() -> Option<PathBuf> {
     None
 }
 
+/// `(major, minor)` of `php`, from the first line of `php --version`
+/// (`PHP 8.5.9 (cli) …`). `None` when it cannot be parsed.
+fn php_major_minor(php: &PathBuf) -> Option<(u32, u32)> {
+    let out = Command::new(php).arg("--version").output().ok()?;
+    let banner = String::from_utf8_lossy(&out.stdout);
+    let ver = banner.strip_prefix("PHP ")?.split_whitespace().next()?;
+    let mut it = ver.split('.');
+    Some((it.next()?.parse().ok()?, it.next()?.parse().ok()?))
+}
+
+/// The `{closure:file:line}` frame name these tests compare is PHP 8.4's; 8.3
+/// and earlier print a bare `{closure}` with no site in it. Against such a
+/// reference there is nothing to compare — the assertion that the reference
+/// printed a `{closure:` frame is what says so — so the case skips the way a
+/// missing `php` does.
+fn reference_names_closure_sites(php: &PathBuf) -> bool {
+    match php_major_minor(php) {
+        Some(v) => v >= (8, 4),
+        // Unparsable banner: let the run proceed and fail loudly rather than
+        // skipping on a guess.
+        None => true,
+    }
+}
+
 /// Just the `#N …` trace lines a run printed, which is what these programs are
 /// written to produce and the only part being compared.
 fn frames(bin: &PathBuf, path: &std::path::Path) -> String {
@@ -64,6 +88,13 @@ fn a_closure_frame_names_where_the_literal_was_written() {
         eprintln!("skipping: no reference php on PATH");
         return;
     };
+    if !reference_names_closure_sites(&php) {
+        eprintln!(
+            "skipping: reference php predates 8.4, which is where `{{closure:file:line}}` \
+             frame names arrive — this case has nothing to compare against"
+        );
+        return;
+    }
     let ours = PathBuf::from(env!("CARGO_BIN_EXE_php"));
     let dir = std::env::temp_dir().join(format!("phplang-closure-frames-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("create temp dir");
@@ -160,6 +191,13 @@ fn a_library_callback_frame_reports_an_internal_call_site() {
         eprintln!("skipping: no reference php on PATH");
         return;
     };
+    if !reference_names_closure_sites(&php) {
+        eprintln!(
+            "skipping: reference php predates 8.4, which is where `{{closure:file:line}}` \
+             frame names arrive — this case has nothing to compare against"
+        );
+        return;
+    }
     let ours = PathBuf::from(env!("CARGO_BIN_EXE_php"));
     let dir = std::env::temp_dir().join(format!("phplang-internal-frames-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("create temp dir");
