@@ -135,8 +135,16 @@ string, which is an engine-wide change, not a library one.
 
 # Found, reproduced, not yet fixed
 
-Divergences this round measured but did not have room to close. Each is a
-concrete next task, not a note.
+Divergences measured but not closed. Each is a concrete next task, not a note.
+
+Entries here accumulate across rounds, so an entry can go stale silently when a
+later round fixes what it describes — which is how a page whose whole point is
+honesty starts lying. Round 9 re-ran every transcript below against a pristine
+build and found four that had already been fixed and were still listed as open
+(`min`/`max` with a NaN operand, `array_walk`'s by-reference first argument, the
+missing `intdiv` trace frame, and `echo NAN`'s coercion warning). All four are
+gone, and the entries they were half of say so. Re-run this section before
+trusting it.
 
 ## A parse error does not say what was expected
 
