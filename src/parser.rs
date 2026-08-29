@@ -1689,6 +1689,9 @@ impl Parser {
             params: vec![param],
             body: Box::new(body),
             ret: None,
+            // The closure PHP synthesizes for `f(...)` is written where the
+            // call is, so that is the line its frame names.
+            line: self.line(),
         }))
     }
 
@@ -2579,6 +2582,7 @@ impl Parser {
                         uses,
                         body,
                         ret,
+                        line,
                         ..
                     } => Expr::Closure {
                         params,
@@ -2586,6 +2590,7 @@ impl Parser {
                         body,
                         ret,
                         is_static: true,
+                        line,
                     },
                     // `static fn (…)`: an arrow function captures by value and
                     // reads no `$this` it was not given, so the keyword changes
@@ -2597,7 +2602,8 @@ impl Parser {
             // (A *named* function is a statement, caught in `statement()`; only
             // the expression form — `function (` — reaches here.)
             Some(Tok::Ident(kw)) if kw.eq_ignore_ascii_case("function") && self.at_punct("(") => {
-                let saved = self.enter_closure(self.line_at(self.pos - 1));
+                let line = self.line_at(self.pos - 1);
+                let saved = self.enter_closure(line);
                 let params = self.param_list()?;
                 let mut uses = Vec::new();
                 if self.eat_kw("use") {
@@ -2625,11 +2631,13 @@ impl Parser {
                     body,
                     ret,
                     is_static: false,
+                    line,
                 })
             }
             // An arrow function `fn (params) => expr` — implicit by-value capture.
             Some(Tok::Ident(kw)) if kw.eq_ignore_ascii_case("fn") && self.at_punct("(") => {
-                let saved = self.enter_closure(self.line_at(self.pos - 1));
+                let line = self.line_at(self.pos - 1);
+                let saved = self.enter_closure(line);
                 let params = self.param_list()?;
                 let ret = self.return_type()?;
                 self.expect_punct("=>")?;
@@ -2639,6 +2647,7 @@ impl Parser {
                     params,
                     body: Box::new(body),
                     ret,
+                    line,
                 })
             }
             // A magic constant. PHP resolves these where they are WRITTEN, so the

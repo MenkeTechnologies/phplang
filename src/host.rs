@@ -423,6 +423,46 @@ pub struct FuncDef {
     pub is_generator: bool,
     /// The declared return type, checked on the way out of the call.
     pub ret: Option<TypeHint>,
+    /// Set only for a closure body: the site of the literal that declared it,
+    /// which is what names its stack frames. `None` for a named function or
+    /// method, whose frame is named by the function itself.
+    pub closure_site: Option<DeclSite>,
+}
+
+/// Where a closure literal was WRITTEN, which is what PHP 8.4 names a closure
+/// frame by: `{closure:<where>:<line>}`.
+///
+/// `<where>` is the enclosing declaration — `K::m()` for a method, `outer()` for
+/// a function, the script path at the top level — and it nests, so a closure
+/// inside a closure reads `{closure:{closure:f.php:2}:3}`. The path is only
+/// known once the script is running, so the top level stays a marker until then.
+/// `Closure::bind` changes none of it: the site is the literal's, not the call's.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum DeclSite {
+    /// Written at the top level of the script; PHP prints the file path. This is
+    /// the default because it is where lowering starts.
+    #[default]
+    Script,
+    /// Written inside a named function or method, spelled as PHP spells it in
+    /// this position: `outer()`, `K::m()`.
+    Named(String),
+    /// Written inside another closure literal, itself declared at that site and
+    /// on that line.
+    Closure(Box<DeclSite>, u32),
+}
+
+impl DeclSite {
+    /// The `<where>` half of a `{closure:<where>:<line>}` name, with `script`
+    /// standing in for the top level.
+    pub fn render(&self, script: &str) -> String {
+        match self {
+            DeclSite::Script => script.to_string(),
+            DeclSite::Named(name) => name.clone(),
+            DeclSite::Closure(site, line) => {
+                format!("{{closure:{}:{line}}}", site.render(script))
+            }
+        }
+    }
 }
 
 /// A closure unpacked for a call: its parameters, body chunk, captured bindings,
@@ -436,6 +476,9 @@ pub struct ClosureCall {
     pub is_generator: bool,
     /// The declared return type, checked on the way out of the call.
     pub ret: Option<TypeHint>,
+    /// The site of the closure literal, carried through so the frame it opens
+    /// can be named the way PHP names it. See `DeclSite`.
+    pub site: Option<DeclSite>,
 }
 
 /// A compiled class: its parent (for single-inheritance resolution), constant and
@@ -552,6 +595,9 @@ pub enum PhpObj {
         /// Declared `static`, so no instance may ever be bound to it — at
         /// creation, and by `Closure::bind`/`bindTo` afterwards.
         is_static: bool,
+        /// Where the literal was written, which names the frames it opens. It
+        /// travels with the closure VALUE, so `Closure::bind` cannot move it.
+        site: Option<DeclSite>,
     },
     /// A live generator: an index into `PhpHost::generators`, where the suspended
     /// stackful coroutine and its execution context live. Built by calling a
@@ -717,6 +763,10 @@ struct Scope {
     /// The late-static-binding class of this frame — the class the call named,
     /// which `static::` resolves to. `None` outside a method call.
     static_class: Option<String>,
+    /// Set only for a closure frame: where the literal was written, which is
+    /// what PHP 8.4 names the frame by. Kept apart from `name`, which encodes
+    /// the private-access scope and is parsed back for visibility checks.
+    closure_site: Option<DeclSite>,
 }
 
 /// The PHP runtime state for one thread.
@@ -792,6 +842,10 @@ pub struct PhpHost {
     /// the called class name, or — for a forwarding call (`self::`, `parent::`,
     /// `static::`) — from the caller's own, and taken when the frame is pushed.
     pending_lsb: Option<String>,
+    /// The closure-literal site the next pushed frame takes, set just before a
+    /// closure body is entered. A one-shot like `pending_lsb`, because the frame
+    /// is built inside `invoke_with_locals`, which every kind of call shares.
+    pending_closure_site: Option<DeclSite>,
     /// The reference cell the most recent `function &f()` return published, for
     /// the caller's `$r = &f()` to bind. Taken (not just read) by the binding so a
     /// stale slot can never be picked up by a later plain call.
@@ -1145,6 +1199,7 @@ impl PhpHost {
             script_name: "Command line code".to_string(),
             suppress: 0,
             pending_lsb: None,
+            pending_closure_site: None,
             ret_ref_slot: None,
             generators: Vec::new(),
             fatal_reported: false,
@@ -1971,6 +2026,38 @@ impl PhpHost {
         let Some(name) = &scope.name else {
             return String::new();
         };
+        // A closure frame is named for where the LITERAL was written, not for
+        // anything about the call: `{closure:K::m():4}`, `{closure:outer():16}`,
+        // `{closure:/path/to/script.php:14}` at the top level. The bound-scope
+        // prefix (`K->` / `K::`) is still the frame name's own, so the two are
+        // assembled here rather than baked into one string — `name` is parsed
+        // back for visibility checks and must stay `Scope::{closure}`.
+        if let Some(site) = &scope.closure_site {
+            let rendered = match site {
+                DeclSite::Closure(inner, line) => {
+                    format!("{{closure:{}:{line}}}", inner.render(&self.script_name))
+                }
+                // A closure body always carries a `Closure` site; anything else
+                // is a frame that was handed one it should not have.
+                other => other.render(&self.script_name),
+            };
+            return match name.split_once("::") {
+                Some((class, _)) => {
+                    let class = self
+                        .classes
+                        .get(class)
+                        .map(|d| d.name.as_str())
+                        .unwrap_or(class);
+                    let sep = if !matches!(scope.vars.get("this"), Slot::Unset) {
+                        "->"
+                    } else {
+                        "::"
+                    };
+                    format!("{class}{sep}{rendered}")
+                }
+                None => rendered,
+            };
+        }
         let Some((class, method)) = name.split_once("::") else {
             return name.clone();
         };
@@ -1997,8 +2084,9 @@ impl PhpHost {
     ///
     /// DIVERGENCE: a frame entered from inside a library function (an `array_map`
     /// callback, say) prints that call site rather than PHP's `[internal
-    /// function]`, and a closure frame prints `{closure}` rather than PHP 8.4's
-    /// `{closure:file:line}`.
+    /// function]`, and the library function's own frame is missing from the
+    /// trace. A closure frame is named the way PHP 8.4 names it — see
+    /// `trace_frame_name`.
     pub fn backtrace(&self) -> String {
         let mut out = String::new();
         let mut n = 0;
@@ -2542,6 +2630,17 @@ impl PhpHost {
         self.pending_lsb.take()
     }
 
+    /// Hand the next pushed frame the site of the closure literal being entered.
+    pub fn closure_site_for_next_call(&mut self, site: Option<DeclSite>) {
+        self.pending_closure_site = site;
+    }
+
+    /// Take it. A non-closure call leaves it `None`, which is what a named
+    /// function's frame wants.
+    fn closure_site_take(&mut self) -> Option<DeclSite> {
+        self.pending_closure_site.take()
+    }
+
     /// Publish `slot` as the reference the running `function &f()` returns.
     pub fn set_ret_ref_slot(&mut self, slot: usize) {
         self.ret_ref_slot = Some(slot);
@@ -2860,6 +2959,7 @@ impl PhpHost {
             is_generator: def.is_generator,
             ret: def.ret,
             is_static,
+            site: def.closure_site,
         });
         Value::Obj((self.objs.len() - 1) as u32)
     }
@@ -2877,6 +2977,7 @@ impl PhpHost {
                 scope,
                 is_generator,
                 ret,
+                site,
                 ..
             }) => Some(ClosureCall {
                 params: params.clone(),
@@ -2886,6 +2987,7 @@ impl PhpHost {
                 scope: scope.clone(),
                 is_generator: *is_generator,
                 ret: ret.clone(),
+                site: site.clone(),
             }),
             _ => None,
         }
@@ -2900,7 +3002,8 @@ impl PhpHost {
         this: Option<Value>,
         scope: Option<String>,
     ) -> Option<Value> {
-        let (params, chunk, captured, is_generator, ret, is_static) = match self.as_array(v) {
+        let (params, chunk, captured, is_generator, ret, is_static, site) = match self.as_array(v)
+        {
             Some(PhpObj::Closure {
                 params,
                 chunk,
@@ -2908,6 +3011,7 @@ impl PhpHost {
                 is_generator,
                 ret,
                 is_static,
+                site,
                 ..
             }) => (
                 params.clone(),
@@ -2916,6 +3020,7 @@ impl PhpHost {
                 *is_generator,
                 ret.clone(),
                 *is_static,
+                site.clone(),
             ),
             _ => return None,
         };
@@ -2938,6 +3043,9 @@ impl PhpHost {
             is_generator,
             ret,
             is_static,
+            // The rebound closure is the same literal, so it keeps the site the
+            // original was written at — which is what PHP reports.
+            site,
         });
         Some(Value::Obj((self.objs.len() - 1) as u32))
     }
@@ -6176,6 +6284,7 @@ fn invoke_with_locals(
         let scope = Scope {
             name: Some(frame.to_string()),
             static_class: h.lsb_take(),
+            closure_site: h.closure_site_take(),
             ..Scope::default()
         };
         h.scopes.push(scope);
@@ -6364,6 +6473,9 @@ fn invoke_closure(
         pre.retain(|(k, _)| k != "this");
         pre.push(("this".to_string(), t));
     }
+    // The frame is built inside `invoke`, so the site is handed over the same
+    // way the late-static-binding class is.
+    with_host(|h| h.closure_site_for_next_call(cc.site));
     invoke(
         &frame,
         Signature {

@@ -260,6 +260,12 @@ pub struct Compiler {
     /// Set while lowering the body of a `function &f()`, so a `return` naming an
     /// lvalue publishes that storage cell instead of copying its value.
     ret_by_ref: bool,
+    /// Where the code currently being lowered was WRITTEN, which is what names
+    /// a closure literal's stack frames (`{closure:<here>:<line>}`). It follows
+    /// the declaration nesting rather than the call nesting: `Script` at the top
+    /// level, `Named("K::m()")` inside a method, and a `Closure` link for each
+    /// closure literal entered. Saved and restored around every body lowered.
+    decl_site: host::DeclSite,
     /// The line of the statement currently being lowered, stamped onto the ops
     /// that can raise a diagnostic so `Warning: … on line N` names it. Expression
     /// granularity would need a line on every AST node; a statement that spans
@@ -741,6 +747,13 @@ impl Compiler {
                 // not target a loop at the call site.
                 let saved = std::mem::take(&mut self.loops);
                 let saved_ref = std::mem::replace(&mut self.ret_by_ref, *by_ref_return);
+                // A closure written in this body is `{closure:name():LINE}`. PHP
+                // spells the enclosing function with its parentheses and in its
+                // DECLARED casing, not the lowercased lookup key.
+                let saved_site = std::mem::replace(
+                    &mut self.decl_site,
+                    host::DeclSite::Named(format!("{name}()")),
+                );
                 // The body addresses its own frame, so its variables get slots.
                 // A parameter default is NOT compiled here — it runs as its own
                 // chunk and keeps the by-name path, which reaches the same slots.
@@ -748,6 +761,7 @@ impl Compiler {
                 let locals = self.enter_scope_promoting(scope_slots(params, body), promoted);
                 self.compile_seq(&mut fb, body)?;
                 let locals = self.leave_scope(locals);
+                self.decl_site = saved_site;
                 self.ret_by_ref = saved_ref;
                 self.loops = saved;
                 self.functions.push((
@@ -758,6 +772,8 @@ impl Compiler {
                         is_generator: body_has_yield(body),
                         ret: ret.clone(),
                         locals,
+                        // A named function's frame is named by the function.
+                        closure_site: None,
                     },
                 ));
             }
@@ -1399,6 +1415,14 @@ impl Compiler {
                 }
             }
             let saved_ref = std::mem::replace(&mut self.ret_by_ref, m.by_ref_return);
+            // A closure written in a method body is `{closure:Class::method():LINE}`
+            // whether the method is static or not — PHP always spells the
+            // enclosing method with `::` here, even though the FRAME above it
+            // uses `->` for an instance call.
+            let saved_site = std::mem::replace(
+                &mut self.decl_site,
+                host::DeclSite::Named(format!("{}::{}()", decl.name, m.name)),
+            );
             // The promotions run in the CONSTRUCTOR's frame, so they are lowered
             // inside it. Compiled outside, `$x` on the right-hand side was
             // numbered against the ENCLOSING scope's slots — so a top-level
@@ -1412,12 +1436,15 @@ impl Compiler {
                 }
                 c.compile_seq(&mut mb, &m.body)
             })?;
+            self.decl_site = saved_site;
             self.ret_by_ref = saved_ref;
             self.loops = saved;
             methods.insert(
                 m.name.to_ascii_lowercase(),
                 FuncDef {
                     params: cparams,
+                    // A method's frame is named by the method.
+                    closure_site: None,
                     chunk: mb.build(),
                     is_generator: body_has_yield(&m.body),
                     ret: m.ret.clone(),
@@ -2195,13 +2222,15 @@ impl Compiler {
                 body,
                 ret,
                 is_static,
+                line,
             } => {
-                self.compile_closure(b, params, uses, body, ret.as_ref(), *is_static)?;
+                self.compile_closure(b, params, uses, body, ret.as_ref(), *is_static, *line)?;
             }
             Expr::ArrowFn {
                 params,
                 body,
                 ret: ret_ty,
+                line,
             } => {
                 // An arrow fn desugars to a closure whose single-statement body
                 // returns the expression; it captures every free variable of the
@@ -2222,7 +2251,7 @@ impl Compiler {
                         by_ref: false,
                     })
                     .collect();
-                self.compile_closure(b, params, &captures, &ret, ret_ty.as_ref(), false)?;
+                self.compile_closure(b, params, &captures, &ret, ret_ty.as_ref(), false, *line)?;
             }
             // The declaration is compiled here, once, and the expression becomes
             // an ordinary `new` on the name it was given — so re-evaluating it
@@ -3488,13 +3517,20 @@ impl Compiler {
         body: &[Stmt],
         ret: Option<&TypeHint>,
         is_static: bool,
+        line: u32,
     ) -> Result<(), String> {
         let cparams = self.compile_params(params)?;
         let mut fb = ChunkBuilder::new();
         // Like a named function, the body gets its own loop scope so a `break`
         // inside it cannot target a loop at the creation site.
         let saved = std::mem::take(&mut self.loops);
+        // This literal's own site, which names its frames — and which a closure
+        // written INSIDE it nests under, so `{closure:{closure:f.php:2}:3}`
+        // falls out of the same rule rather than being a second case.
+        let site = host::DeclSite::Closure(Box::new(self.decl_site.clone()), line);
+        let saved_site = std::mem::replace(&mut self.decl_site, site.clone());
         self.in_other_frame(|c| c.compile_seq(&mut fb, body))?;
+        self.decl_site = saved_site;
         self.loops = saved;
         let def_name = self.tmp_name("closure");
         self.functions.push((
@@ -3507,6 +3543,7 @@ impl Compiler {
                 // A closure frame is seeded from its captures, not from a
                 // compiled local list, so its body stays by-name.
                 locals: Vec::new(),
+                closure_site: Some(site),
             },
         ));
 

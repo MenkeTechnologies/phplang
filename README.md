@@ -400,9 +400,6 @@ documented in-code:
   where the reference names the function's DEFINITION — `in file:9` rather than
   ` and defined in file:2` — because no definition line is recorded for a
   function. `getMessage()` itself is byte-exact, which is what a `catch` sees.
-- A closure's frame reads `{closure}` where PHP 8.4+ writes
-  `{closure:file:line}`, so a `TypeError` from a typed closure parameter differs
-  in that name alone.
 - Default parameter values are not restricted to constant expressions, and a
   default is not checked against the parameter's declared type (upstream checks
   it once, at declaration).
@@ -432,8 +429,8 @@ documented in-code:
   throw inside an `array_map` callback — `#0 [internal function]: {closure:…}`,
   `#1 …: array_map(Object(Closure), Array)`, `#2 {main}` — this engine prints
   two, naming the callback's call site and omitting the `array_map` frame
-  entirely. A closure frame also prints `{closure}` rather than PHP 8.4's
-  `{closure:file:line}`.
+  entirely. The closure's NAME in that frame is exact; what differs is the FILE
+  half of the frame it appears in and the missing library frame itself.
 - A **syntax error** reproduces PHP's `unexpected <token>` text but not the
   `, expecting "X" or "Y"` clause that often follows it: the expected set comes
   out of PHP's generated LALR tables, not the grammar as written here.

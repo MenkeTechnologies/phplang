@@ -297,8 +297,12 @@ $ target/debug/php -r '… same …'
 `Enum::from` is a real call and the reference names it. The framed path
 (`throw_from_internal`) is only reachable from `call_library`.
 
-Related: a closure frame prints `{closure}` where the reference prints
-`{closure:Command line code:1}`.
+The closure NAME in such a frame is no longer part of this: a closure frame is
+`{closure:<where>:<line>}` — `{closure:K::m():4}`, `{closure:outer():16}`,
+`{closure:{closure:f.php:2}:3}`, the script path at the top level — exactly as
+PHP 8.4 spells it, and `Closure::bind` keeps the literal's own site. What is
+left here is the FILE half of the frame above (`[internal function]`) and the
+missing library frame itself.
 
 ## Argument type checks are missing on a broad set of library functions
 

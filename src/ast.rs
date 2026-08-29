@@ -196,6 +196,11 @@ pub enum Expr {
         /// a private static is still reachable; only the instance is withheld,
         /// and `Closure::bind` refuses to supply one later.
         is_static: bool,
+        /// The line the `function` keyword is on — which is what PHP 8.4 puts in
+        /// a stack frame's `{closure:<where>:<line>}` name, NOT the line the
+        /// enclosing statement started on. `$f =\n    function () {…}` is line 2
+        /// there.
+        line: u32,
     },
     /// An arrow function `fn(params) => expr` — its body is a single expression
     /// and every free variable is captured by value automatically.
@@ -204,6 +209,8 @@ pub enum Expr {
         body: Box<Expr>,
         /// The declared return type (`fn (): int => …`), or `None`.
         ret: Option<TypeHint>,
+        /// The line the `fn` keyword is on — see `Closure::line`.
+        line: u32,
     },
     /// `new Class(args)` — instantiate an object (class name literal, or the
     /// `self`/`parent`/`static` keyword resolved at compile time).
