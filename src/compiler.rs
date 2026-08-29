@@ -3509,6 +3509,12 @@ impl Compiler {
     /// name in the function table, with its parameters so defaults/variadics bind),
     /// then emit `MKCLOSURE` with the captured `(name, value)` pairs read from the
     /// current scope.
+    ///
+    /// Eight parameters because a closure literal carries eight independent
+    /// facts from the parser — params, captures, body, return hint, `static`,
+    /// and the line that names its frames — and bundling them into a struct
+    /// would only move the same list one level out.
+    #[allow(clippy::too_many_arguments)]
     fn compile_closure(
         &mut self,
         b: &mut ChunkBuilder,
