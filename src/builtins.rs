@@ -3246,7 +3246,9 @@ pub fn call_library(name: &str, args: &[Value]) -> Result<Value, String> {
             if mode != 0 && mode != 1 {
                 return Err(throws(
                     "ValueError",
-                    "count(): Argument #2 ($mode) must be either COUNT_NORMAL or COUNT_RECURSIVE",
+                    format!(
+                        "{name}(): Argument #2 ($mode) must be either COUNT_NORMAL or COUNT_RECURSIVE"
+                    ),
                 ));
             }
             if with_host(|h| h.is_array(&a)) {
@@ -3268,7 +3270,7 @@ pub fn call_library(name: &str, args: &[Value]) -> Result<Value, String> {
                 return Err(throws(
                     "TypeError",
                     format!(
-                        "count(): Argument #1 ($value) must be of type Countable|array, {t} given"
+                        "{name}(): Argument #1 ($value) must be of type Countable|array, {t} given"
                     ),
                 ));
             }

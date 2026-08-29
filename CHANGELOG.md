@@ -26,6 +26,100 @@ comment above it.
 
 ---
 
+## Round 9 — the frames a library call occupies
+
+Measured under `PHP 8.5.10 (cli) (built: Aug 25 2026 21:09:32) (NTS)`, a point
+release past the 8.5.9 in the oracle table above; ini state and environment are
+otherwise as recorded there.
+
+`parity-fuzz --seed 60417 --count 25000` reported six divergences across two gap
+classes, both of them the same mechanism: a trace captured inside an `array_map`
+callback was two lines short of the reference's. Chasing that mechanism to its
+edges turned up two further frame divergences that the fuzzer's generators do not
+reach.
+
+### A library function that runs a callback is a frame
+
+PHP gives every internal function that invokes PHP code a frame of its own, and
+the callback's frame reports `[internal function]` as its call site because there
+is no PHP line to name:
+
+```text
+$ php -r 'array_map(function ($x) { throw new Exception("b"); }, [1]);'
+#0 [internal function]: {closure:Command line code:1}(1)
+#1 Command line code(1): array_map(Object(Closure), Array)
+#2 {main}
+```
+
+phplang recorded neither line: the callback's frame carried the caller's own
+site, and `array_map` was absent. Both halves now exist. A `Scope` can be marked
+`internal`, `backtrace` renders the site of the frame above such a frame as
+`[internal function]`, and `call_library_throwing` pushes one around the sixteen
+library functions that can call back.
+
+The set is a list rather than a rule because the reference is not uniform:
+`call_user_func` and `call_user_func_array` invoke their callee from the CALLER's
+frame, so neither appears in a trace and the callee reports the call site. Both
+were measured and are deliberately excluded. Every other name was measured by
+throwing out of its callback and reading the trace back — `array_map`,
+`array_filter`, `array_reduce`, `array_walk`, `array_walk_recursive`,
+`array_find`, `array_find_key`, `array_any`, `array_all`, `array_udiff`,
+`array_uintersect`, `usort`, `uasort`, `uksort`, `preg_replace_callback` and
+`iterator_apply`.
+
+The rule is local: only the frame DIRECTLY above an internal one takes
+`[internal function]`, so a user function called from the callback, and an inner
+`array_map` called from it, both still report a real line. Pinned in
+`tests/closure_frame_names.rs` against the reference, line for line.
+
+### `Enum::from()` names its own call, in the declared spelling
+
+```text
+$ php -r 'enum MyLevel: int { case Low = 1; } MYLEVEL::FROM(99);'
+Uncaught ValueError: 99 is not a valid backing value for enum MyLevel
+#0 Command line code(1): MyLevel::from(99)
+#1 {main}
+```
+
+phplang raised the `ValueError` from the caller's frame (`#0 {main}`) and echoed
+the caller's casing back in the message (`enum MYLEVEL`). Class names are
+case-insensitive and keyed lowercase, so a diagnostic that repeats the caller's
+spelling reads wrong wherever the two differ; the reference always prints the
+declaration's. `PhpHost::declared_class_name` recovers it, and the throw now goes
+through `throw_from_internal`, which is what gives it the frame.
+
+### A call the reference compiles to an OPCODE has no frame
+
+The compiler turns a handful of calls into opcodes, so their argument errors are
+raised where the call was written and no frame is pushed:
+
+```text
+$ php -r 'try { strlen([1]); } catch (Throwable $e) { echo $e->getTraceAsString(); }'
+#0 {main}
+$ php -r 'try { count([1], "x"); } catch (Throwable $e) { echo $e->getTraceAsString(); }'
+#0 Command line code(1): count(Array, 'x')
+#1 {main}
+```
+
+The specialisation is arity-exact AND name-exact, which is what pins the rule
+rather than the guess: `count($x)` is an opcode but `count($x, $mode)` is a call,
+and `key_exists` is never specialised even though `array_key_exists` always is.
+Both edges were measured for every name. `strlen`, `count`, `sizeof` and
+`get_class` at one argument and `array_key_exists` at two now raise frameless;
+everything else is unchanged, including the seven names PHP specialises only for
+a LITERAL argument (`chr`, `ord`, `defined`, `in_array`, `array_slice`,
+`sprintf`, `intval`), all of which were measured framed.
+
+### `sizeof()` blamed a function the program never called
+
+`count` and `sizeof` share one implementation, which hardcoded `count()` into
+both of its own error messages, so every `sizeof()` failure named the wrong
+function. Both now blame the name the caller wrote — the reference's rule for
+every alias, and one `argtypes` was already following for `key_exists` and
+`chop`.
+
+---
+
 ## Round 8 — the scanner, the charmask, and the array-shaped arguments
 
 Chosen by the same method that found round 7's gaps: cross-referencing the 62

@@ -143,3 +143,101 @@ fn a_closure_frame_names_where_the_literal_was_written() {
     let _ = std::fs::remove_dir_all(&dir);
     assert!(failures.is_empty(), "{}", failures.join("\n\n"));
 }
+
+/// A frame entered from inside a LIBRARY function.
+///
+/// PHP gives every internal function that runs a callback a frame of its own,
+/// and the callback's frame reports `[internal function]` as its call site
+/// because there is no PHP line to name. `call_user_func` and
+/// `call_user_func_array` are the measured exception: the reference invokes
+/// their callee from the caller's own frame, so neither shows up.
+///
+/// Each program prints `getTraceAsString()` for a throw raised inside the
+/// callback, and the two engines must agree line for line.
+#[test]
+fn a_library_callback_frame_reports_an_internal_call_site() {
+    let Some(php) = reference_php() else {
+        eprintln!("skipping: no reference php on PATH");
+        return;
+    };
+    let ours = PathBuf::from(env!("CARGO_BIN_EXE_php"));
+    let dir = std::env::temp_dir().join(format!("phplang-internal-frames-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+
+    // A `catch` around each call, so one program contributes several traces.
+    const PRELUDE: &str = "<?php\n\
+        function boom($a = null, $b = null) { throw new Exception('x'); }\n\
+        function t(callable $c) { try { $c(); } catch (Throwable $e) { echo $e->getTraceAsString(), \"\\n\"; } }\n";
+
+    // (name, body, whether the reference renders an `[internal function]` site).
+    let cases: &[(&str, &str, bool)] = &[
+        (
+            "map filter reduce",
+            "t(fn() => array_map(fn($x) => boom($x), [1]));\n\
+             t(fn() => array_map('boom', [1]));\n\
+             t(fn() => array_map(fn($x, $y) => boom($x, $y), [1], [2]));\n\
+             t(fn() => array_filter([1], fn($x) => boom($x)));\n\
+             t(fn() => array_reduce([1], fn($c, $x) => boom($c, $x)));\n",
+            true,
+        ),
+        (
+            "user comparator sorts",
+            "t(function () { $a = [2, 1]; usort($a, fn($x, $y) => boom($x, $y)); });\n\
+             t(function () { $a = [2, 1]; uasort($a, fn($x, $y) => boom($x, $y)); });\n\
+             t(function () { $a = [2, 1]; uksort($a, fn($x, $y) => boom($x, $y)); });\n\
+             t(function () { $a = [1]; array_udiff($a, [2], fn($x, $y) => boom()); });\n",
+            true,
+        ),
+        (
+            "walks and predicates",
+            "t(function () { $a = [1]; array_walk($a, fn($v, $k) => boom($v, $k)); });\n\
+             t(function () { $a = [[1]]; array_walk_recursive($a, fn($v, $k) => boom($v, $k)); });\n\
+             t(fn() => array_find([1], fn($v, $k) => boom($v, $k)));\n\
+             t(fn() => array_find_key([1], fn($v, $k) => boom($v, $k)));\n\
+             t(fn() => array_any([1], fn($v, $k) => boom($v, $k)));\n\
+             t(fn() => array_all([1], fn($v, $k) => boom($v, $k)));\n",
+            true,
+        ),
+        (
+            "preg and iterator",
+            "t(fn() => preg_replace_callback('/a/', fn($m) => boom(), 'a'));\n\
+             t(fn() => iterator_apply(new ArrayIterator([1]), fn() => boom()));\n",
+            true,
+        ),
+        // The rule is local: only the frame DIRECTLY above an internal one takes
+        // `[internal function]`. A user function called from the callback, and
+        // an inner `array_map` called from it, both report a real line.
+        (
+            "one level only",
+            "t(fn() => array_map(function ($x) { boom($x); }, [1]));\n\
+             t(fn() => array_map(function ($x) { array_map(fn($y) => boom($y), [9]); }, [1]));\n",
+            true,
+        ),
+        // The trampolines: no frame of their own, and the callee reports the
+        // caller's line rather than `[internal function]`.
+        (
+            "call_user_func is not a frame",
+            "t(fn() => call_user_func(fn($x) => boom($x), 1));\n\
+             t(fn() => call_user_func_array(fn($x) => boom($x), [1]));\n",
+            false,
+        ),
+    ];
+
+    let mut failures = Vec::new();
+    for (name, body, wants_internal) in cases {
+        let path = dir.join(format!("{}.php", name.replace(' ', "_")));
+        std::fs::write(&path, format!("{PRELUDE}{body}")).expect("write case");
+        let want = frames(&php, &path);
+        let got = frames(&ours, &path);
+        assert_eq!(
+            want.contains("[internal function]"),
+            *wants_internal,
+            "{name}: the reference did not render the call site this case is about:\n{want}"
+        );
+        if want != got {
+            failures.push(format!("{name}:\n  php:\n{want}\n  phplang:\n{got}"));
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(failures.is_empty(), "{}", failures.join("\n\n"));
+}

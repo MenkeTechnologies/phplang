@@ -445,3 +445,63 @@ fn trace_arguments_are_escaped_and_truncated() {
         "#0 Command line code(2): f(NAN)\n#1 {main}"
     );
 }
+
+/// A call the reference COMPILES to an opcode never becomes a frame, so the
+/// argument error it raises leaves the trace starting at the caller. The
+/// specialisation is arity-exact and name-exact: `count($x)` is `ZEND_COUNT` but
+/// `count($x, $mode)` is a call, and the `key_exists` alias is never specialised
+/// even though `array_key_exists` always is.
+#[test]
+fn an_opcode_call_raises_its_argument_error_without_a_frame() {
+    let trace = |call: &str| {
+        run(&format!(
+            r#"<?php try {{ {call} }} catch (\Throwable $e) {{ echo $e->getTraceAsString(); }}"#
+        ))
+    };
+    for call in [
+        "strlen([1]);",
+        "count(1);",
+        "sizeof(1);",
+        "get_class(1);",
+        r#"array_key_exists(1, "x");"#,
+    ] {
+        assert_eq!(trace(call), "#0 {main}", "{call} should carry no frame");
+    }
+    // The same names one argument wider, and the alias, are ordinary calls.
+    assert_eq!(
+        trace(r#"count([1], "x");"#),
+        "#0 Command line code(1): count(Array, 'x')\n#1 {main}"
+    );
+    assert_eq!(
+        trace(r#"key_exists(1, "x");"#),
+        "#0 Command line code(1): key_exists(1, 'x')\n#1 {main}"
+    );
+    // A failure inside the body of an ordinary library function still frames.
+    assert_eq!(
+        trace("intdiv(1, 0);"),
+        "#0 Command line code(1): intdiv(1, 0)\n#1 {main}"
+    );
+}
+
+/// `count` and its `sizeof` alias each blame the name the CALLER wrote, for both
+/// the subject type and the `$mode` domain. phplang hardcoded `count()` into
+/// both, so every `sizeof()` failure named a function the program never called.
+#[test]
+fn count_and_sizeof_each_blame_the_name_that_was_called() {
+    assert_eq!(
+        shape("sizeof(1);"),
+        "TypeError|sizeof(): Argument #1 ($value) must be of type Countable|array, int given"
+    );
+    assert_eq!(
+        shape("count(1);"),
+        "TypeError|count(): Argument #1 ($value) must be of type Countable|array, int given"
+    );
+    assert_eq!(
+        shape("sizeof([1], 99);"),
+        "ValueError|sizeof(): Argument #2 ($mode) must be either COUNT_NORMAL or COUNT_RECURSIVE"
+    );
+    assert_eq!(
+        shape("count([1], 99);"),
+        "ValueError|count(): Argument #2 ($mode) must be either COUNT_NORMAL or COUNT_RECURSIVE"
+    );
+}

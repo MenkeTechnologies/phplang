@@ -132,3 +132,28 @@ fn enum_constant() {
         echo Suit::Hearts->name;"#;
     assert_eq!(run(src), "joker|Hearts");
 }
+
+/// `Enum::from()` with no matching case is a real call in the reference's trace
+/// — `#0 <file>(<line>): E::from(99)` — and both halves of that name are the
+/// DECLARED spelling however the call was written, as is the class the message
+/// blames. phplang used to raise the ValueError from the caller's own frame, so
+/// the trace was one frame short and echoed the caller's casing back.
+#[test]
+fn backed_enum_from_miss_names_the_call_in_its_trace() {
+    let src = r#"<?php
+        enum MyLevel: int { case Low = 1; }
+        enum Status: string { case Active = 'active'; }
+        try { MYLEVEL::FROM(99); } catch (\ValueError $e) {
+            echo $e->getMessage(), "\n", $e->getTraceAsString(), "\n";
+        }
+        try { Status::from('zz'); } catch (\ValueError $e) {
+            echo $e->getMessage(), "\n", $e->getTraceAsString(), "\n";
+        }"#;
+    assert_eq!(
+        run(src),
+        "99 is not a valid backing value for enum MyLevel\n\
+         #0 Command line code(4): MyLevel::from(99)\n#1 {main}\n\
+         \"zz\" is not a valid backing value for enum Status\n\
+         #0 Command line code(7): Status::from('zz')\n#1 {main}\n"
+    );
+}

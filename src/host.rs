@@ -767,6 +767,10 @@ struct Scope {
     /// what PHP 8.4 names the frame by. Kept apart from `name`, which encodes
     /// the private-access scope and is parsed back for visibility checks.
     closure_site: Option<DeclSite>,
+    /// Set for a frame that stands in for a LIBRARY function rather than PHP
+    /// source. A trace prints the call site of the frame ABOVE such a frame as
+    /// `[internal function]`, because there is no PHP line to name.
+    internal: bool,
 }
 
 /// The PHP runtime state for one thread.
@@ -2082,10 +2086,10 @@ impl PhpHost {
     /// call that entered it, so its call site is the *caller's* current line. The
     /// global scope is not a frame: it closes the list as `#N {main}`.
     ///
-    /// DIVERGENCE: a frame entered from inside a library function (an `array_map`
-    /// callback, say) prints that call site rather than PHP's `[internal
-    /// function]`, and the library function's own frame is missing from the
-    /// trace. A closure frame is named the way PHP 8.4 names it — see
+    /// A frame entered from inside a library function (an `array_map` callback,
+    /// say) has no PHP call site, so its `file(line)` half is the literal
+    /// `[internal function]` — the library frame below it carries the real one.
+    /// A closure frame is named the way PHP 8.4 names it — see
     /// `trace_frame_name`.
     pub fn backtrace(&self) -> String {
         let mut out = String::new();
@@ -2099,10 +2103,13 @@ impl PhpHost {
                 .map(|(_, v)| self.trace_arg(v))
                 .collect::<Vec<_>>()
                 .join(", ");
+            let site = if self.scopes[i - 1].internal {
+                "[internal function]".to_string()
+            } else {
+                format!("{}({})", self.script_name, self.scopes[i - 1].line)
+            };
             out.push_str(&format!(
-                "#{n} {}({}): {}({args})\n",
-                self.script_name,
-                self.scopes[i - 1].line,
+                "#{n} {site}: {}({args})\n",
                 self.trace_frame_name(scope)
             ));
             n += 1;
@@ -2120,6 +2127,7 @@ impl PhpHost {
         self.scopes.push(Scope {
             name: Some(func.to_string()),
             line,
+            internal: true,
             ..Scope::default()
         });
         self.set_var("@args", args);
@@ -4037,6 +4045,16 @@ impl PhpHost {
     // ── enums (PHP 8.1) ──────────────────────────────────────────────────────
 
     /// Whether `class` is an `enum` (case-insensitive).
+    /// A class name as it was DECLARED, from any spelling of it. Class names are
+    /// case-insensitive and keyed lowercase, so a diagnostic that echoes back the
+    /// caller's spelling reads wrong; the reference always prints the declaration's.
+    /// An undeclared name is handed back unchanged.
+    pub fn declared_class_name(&self, class: &str) -> String {
+        self.classes
+            .get(&class.to_ascii_lowercase())
+            .map_or_else(|| class.to_string(), |d| d.name.clone())
+    }
+
     pub fn is_enum_class(&self, class: &str) -> bool {
         self.classes
             .get(&class.to_ascii_lowercase())
@@ -5969,15 +5987,119 @@ fn throw_from_internal_typed(name: &str, args: &[Value], e: String) -> Result<Va
     }
 }
 
+/// Whether the reference COMPILES this call to an opcode instead of a call, so
+/// the argument error it raises has no frame of its own and the trace starts at
+/// the caller.
+///
+/// The specialisation is arity-exact: `strlen($s)` becomes `ZEND_STRLEN`, but
+/// `strlen($s, 1)` is an ordinary call whose `ArgumentCountError` IS framed, so
+/// the count is part of the test. Measured for each name at both arities:
+///
+/// ```text
+/// $ php -r 'try { strlen([1]); }   catch (Throwable $e) { echo $e->getTraceAsString(); }'
+/// #0 {main}
+/// $ php -r 'try { count([1], "x"); } catch (Throwable $e) { echo $e->getTraceAsString(); }'
+/// #0 Command line code(1): count(Array, 'x')
+/// #1 {main}
+/// ```
+///
+/// The rest of PHP's special-cased names (`chr`, `ord`, `defined`, `in_array`,
+/// `array_slice`, `sprintf`, `intval`) specialise only for a literal argument,
+/// so a runtime call to one is compiled normally and frames its error; all seven
+/// were measured framed and are deliberately absent.
+fn compiles_to_an_opcode(name: &str, argc: usize) -> bool {
+    match name {
+        "strlen" | "count" | "sizeof" | "get_class" => argc == 1,
+        "array_key_exists" => argc == 2,
+        _ => false,
+    }
+}
+
+/// Raise a tagged library error from the CALLER's frame: the exception is built
+/// and left pending without pushing a frame for the library function, which is
+/// what the reference produces for a call it compiled to an opcode.
+fn throw_frameless_typed(e: &str) -> Result<Value, String> {
+    match crate::builtins::untag_throw(e) {
+        Some((class, message)) => {
+            let exc = new_object(class, vec![Value::str(message.to_string())])?;
+            set_pending_throw(exc);
+            Ok(Value::Undef)
+        }
+        None => Err(e.to_string()),
+    }
+}
+
+/// Whether a library function runs a PHP callback, and so occupies a frame of its
+/// own in a trace captured from inside that callback.
+///
+/// Every name here was measured against the reference by throwing out of the
+/// callback and reading the trace back. `call_user_func` and
+/// `call_user_func_array` are deliberately ABSENT: the reference invokes their
+/// callee from the caller's own frame, so neither appears in the trace and the
+/// callee reports the call site rather than `[internal function]`.
+///
+/// The list is the set of callback-taking functions this engine implements —
+/// every `host::call_value` reached from `builtins::call_library` — so a new one
+/// has to be added here along with its dispatch arm.
+fn calls_back(name: &str) -> bool {
+    matches!(
+        name,
+        "array_map"
+            | "array_filter"
+            | "array_reduce"
+            | "array_walk"
+            | "array_walk_recursive"
+            | "array_find"
+            | "array_find_key"
+            | "array_any"
+            | "array_all"
+            | "array_udiff"
+            | "array_uintersect"
+            | "usort"
+            | "uasort"
+            | "uksort"
+            | "preg_replace_callback"
+            | "iterator_apply"
+    )
+}
+
 fn call_library_throwing(name: &str, args: Vec<Value>) -> Result<Value, String> {
     // PHP 8 refuses an argument whose type the parameter does not accept, before
     // the function runs. The check is by DECLARED TYPE rather than per function
     // (see `crate::argtypes`), and it goes through the same error path as any
     // other library failure so the refusal carries the call's trace frame.
+    // A call the reference compiles to an opcode raises its argument error from
+    // the CALLER's frame, because no call was ever made (see
+    // `compiles_to_an_opcode`).
+    let opcode = compiles_to_an_opcode(name, args.len());
     if let Err(e) = crate::argtypes::check_call(name, &args) {
-        return throw_from_internal_typed(name, &args, e);
+        return if opcode {
+            throw_frameless_typed(&e)
+        } else {
+            throw_from_internal_typed(name, &args, e)
+        };
     }
-    match crate::builtins::call_library(name, &args) {
+    // A library function that runs a PHP callback IS a frame in the reference's
+    // trace, and the callback's own frame reports `[internal function]` as its
+    // call site. Pushed only for the functions that can call back, so the frame
+    // stack — and everything that resolves a variable through it — is untouched
+    // for the rest of the library.
+    let framed = calls_back(name);
+    if framed {
+        with_host(|h| {
+            let line = h.cur_frame_line();
+            let argsarr = h.new_array();
+            for a in &args {
+                h.arr_push_auto(&argsarr, a.clone());
+            }
+            h.push_internal_frame(name, line, argsarr);
+        });
+    }
+    let out = crate::builtins::call_library(name, &args);
+    if framed {
+        with_host(PhpHost::pop_internal_frame);
+    }
+    match out {
         Err(e) => {
             // A frameless throw is raised from the caller's own frame: no scope
             // is pushed, so the trace starts where the call was written.
@@ -5999,6 +6121,9 @@ fn call_library_throwing(name: &str, args: Vec<Value>) -> Result<Value, String> 
                     class,
                     vec![Value::str(message.to_string()), Value::int(code)],
                 );
+            }
+            if opcode {
+                return throw_frameless_typed(&e);
             }
             match crate::builtins::untag_throw(&e) {
                 Some((class, message)) => throw_from_internal(name, &args, class, message),
@@ -6753,6 +6878,7 @@ pub fn fatal_from_internal(func: &str, args: &[Value], message: &str) -> String 
         h.scopes.push(Scope {
             name: Some(func.to_string()),
             line,
+            internal: true,
             ..Scope::default()
         });
         let argsarr = h.new_array();
@@ -6786,6 +6912,7 @@ pub fn throw_from_internal_args(
         h.scopes.push(Scope {
             name: Some(func.to_string()),
             line,
+            internal: true,
             ..Scope::default()
         });
         let argsarr = h.new_array();
@@ -7273,10 +7400,16 @@ pub fn enum_from(class: &str, needle: Value, is_try: bool) -> Result<Value, Stri
         _ if matches!(needle, Value::Int(_)) => needle_s.clone(),
         _ => format!("\"{needle_s}\""),
     };
-    Err(crate::builtins::throws_bare(
+    // `from` is a real call in the reference's trace — `#0 file(1): E::from(99)`
+    // — and both halves of the name are the DECLARED spelling however the call
+    // was written, so `MYENUM::FROM(99)` still reports `MyEnum::from(99)`.
+    let spelled = with_host(|h| h.declared_class_name(class));
+    throw_from_internal(
+        &format!("{spelled}::from"),
+        &[needle],
         "ValueError",
-        format!("{shown} is not a valid backing value for enum {class}"),
-    ))
+        &format!("{shown} is not a valid backing value for enum {spelled}"),
+    )
 }
 
 /// `Class::$prop` read. On first access the (constant) initializer runs once and

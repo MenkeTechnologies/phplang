@@ -138,40 +138,6 @@ string, which is an engine-wide change, not a library one.
 Divergences this round measured but did not have room to close. Each is a
 concrete next task, not a note.
 
-## `min`/`max` with a NaN operand pick the wrong one
-
-```text
-$ php -r 'var_dump(min(1, NAN), max(1, NAN), min([1, NAN, 2]));'
-float(NAN)
-float(NAN)
-int(2)
-$ target/debug/php -r '… same …'
-int(1)
-float(NAN)
-int(1)
-```
-
-`<=>`, `<`, `>`, `<=` and `>=` all agree with the reference on NaN now
-(`is_unordered` / `cmp_f64` in `src/builtins.rs`), and two of the four
-`min`/`max` cases came right with them. The remaining two do not follow from
-any single three-way answer: the reference's own results are mutually
-inconsistent (`min([1, NAN, 2])` is 2 while `min(1, NAN)` is NAN), so closing
-this needs `php_min`/`php_max` read out of `ext/standard/array.c` rather than
-derived from the comparison rules.
-
-## `array_walk` accepts a first argument that cannot be passed by reference
-
-```text
-$ php -r 'var_dump(array_walk($a = [1,2], function (&$v, $k) { $v = $k; }));'
-PHP Fatal error:  Uncaught Error: array_walk(): Argument #1 ($array) could not be passed by reference
-$ target/debug/php -r '… same …'
-bool(true)
-```
-
-The by-reference array mutators take their array by variable NAME
-(`ops::ARR_MUT`), so a first argument that is an expression rather than a
-variable has no name to bind and is silently walked as a value.
-
 ## A parse error does not say what was expected
 
 ```text
@@ -185,35 +151,24 @@ The token that was found is right; the `, expecting <token>` tail is missing
 everywhere. The parser knows what it was about to accept at each of these
 sites, so this is threading that through the error, not new analysis.
 
-## A backtrace omits the internal function that threw
-
-```text
-$ php -r 'try { intdiv(1, 0); } catch (\Throwable $e) { echo $e->getTraceAsString(); }'
-#0 Command line code(1): intdiv(1, 0)
-#1 {main}
-$ target/debug/php -r '… same …'
-#0 {main}
-```
-
-A library function that throws records no frame of its own, so every trace
-through one is one frame short and never names the call or its arguments.
-User function frames ARE recorded.
-
-## Two coercion warnings are not raised
+## `Array to string conversion` is not raised where an array is a KEY
 
 ```text
 $ php -r 'var_dump(array_unique([1, "1", [1]]));'
 PHP Warning:  Array to string conversion
 … (the array is otherwise identical)
-
-$ php -r 'echo NAN;'
-PHP Warning:  unexpected NAN value was coerced to string
-NAN
+$ target/debug/php -r '… same …'
+… no warning
 ```
 
-Both values are right and both warnings are missing. `Array to string
-conversion` is the general one — every implicit array-to-string reaches it,
-not just `array_unique`'s comparison key.
+The value is right and the warning is missing. The warning IS raised for the
+ordinary coercions — `"x" . [1]`, `"val: $a"`, `(string)[1]` all agree with the
+reference — so what is left is the paths that stringify an array to use it as a
+comparison or array KEY rather than as a value.
+
+CORRECTED: this entry used to read "Two coercion warnings are not raised" and
+listed `echo NAN` alongside. `echo NAN` agrees with the reference and did so
+before this round's work; the claim was stale, not fixed here.
 
 ## Visibility is not enforced on constants or static properties
 
@@ -279,30 +234,32 @@ observable from PHP, which is the strongest available test for the level work
 done this round — currently that level can only be probed indirectly, by masking
 the bit with `error_reporting()`.
 
-## A library throw's stack frame is missing on some paths
+## A user comparator is called in a different ORDER, and a different number of times
+
+`array_udiff` and `array_uintersect` agree with the reference on the result, and
+disagree on the sequence of comparator calls that produced it — visible to any
+comparator with a side effect.
 
 ```text
-$ php -r 'enum E: int { case A = 1; } E::from(99);'
-Fatal error: Uncaught ValueError: 99 is not a valid backing value for enum E in Command line code:1
-Stack trace:
-#0 Command line code(1): E::from(99)
-#1 {main}
+$ P='$log=[]; $c=function($x,$y) use (&$log){ $log[]="$x<=>$y"; return $x <=> $y; };
+     $r=array_udiff([3,1,2,5],[2,4],$c); print_r($r); echo count($log),"\n",implode(",",$log);'
 
-$ target/debug/php -r '… same …'
-… identical, except:
-#0 {main}
+$ php -r "$P"
+Array ( [0] => 3 [1] => 1 [3] => 5 )
+12
+3<=>1,2<=>1,3<=>2,3<=>5,2<=>4,1<=>2,1<=>2,2<=>2,2<=>3,3<=>4,3<=>5,5<=>4
+
+$ target/debug/php -r "$P"
+Array ( [0] => 3 [1] => 1 [3] => 5 )
+7
+3<=>2,3<=>4,1<=>2,1<=>4,2<=>2,5<=>2,5<=>4
 ```
 
-`throws_bare` deliberately omits the frame (that is what it is for), but
-`Enum::from` is a real call and the reference names it. The framed path
-(`throw_from_internal`) is only reachable from `call_library`.
-
-The closure NAME in such a frame is no longer part of this: a closure frame is
-`{closure:<where>:<line>}` — `{closure:K::m():4}`, `{closure:outer():16}`,
-`{closure:{closure:f.php:2}:3}`, the script path at the top level — exactly as
-PHP 8.4 spells it, and `Closure::bind` keeps the literal's own site. What is
-left here is the FILE half of the frame above (`[internal function]`) and the
-missing library frame itself.
+The reference sorts both operands with the comparator and then walks them in
+step; phplang scans the pool linearly for each probe. The results agree for any
+consistent comparator, so closing this is a faithful port of `php_array_diff` /
+`php_array_intersect` from `ext/standard/array.c`, not a repair — nothing but the
+call log observes it.
 
 ## Argument type checks are missing on a broad set of library functions
 
@@ -310,7 +267,6 @@ Sampled, all reproduced; the reference throws and phplang continues:
 
 | call | reference | phplang |
 |---|---|---|
-| `strlen([])` | `TypeError: strlen(): Argument #1 ($string) must be of type string, array given` | `int(5)` — the array stringified to `"Array"` |
 | `iterator_to_array(1)` | `TypeError: … must be of type Traversable\|array, int given` | `array(0) {}` |
 | `call_user_func_array("strlen", ["a","b"])` | `ArgumentCountError: strlen() expects exactly 1 argument, 2 given` | `int(1)` — the extra argument is dropped |
 | `call_user_func("nope")` | `TypeError: … must be a valid callback, function "nope" not found or invalid function name` | `Error: Call to undefined function nope()` — right failure, wrong class |
@@ -319,9 +275,22 @@ Sampled, all reproduced; the reference throws and phplang continues:
 | `array_splice($undefined, 0)` | `TypeError: array_splice(): Argument #1 ($array) must be of type array, null given` | no diagnostic |
 | `new ArrayObject(1)` | `TypeError: ArrayObject::__construct(): Argument #1 ($array) must be of type array, int given` | accepted |
 
-This is a systematic gap — there is no shared parameter-declaration layer to
-check against — rather than a handful of sites, so it is left for a round that
-can build one.
+This is a systematic gap — `crate::argtypes` covers the names it has entries for
+and nothing else — rather than a handful of sites, so it is left for a round that
+can widen the table.
+
+CORRECTED: this table used to open with `strlen([])` answering `int(5)`. It now
+raises the reference's `TypeError` with the reference's message, and (since this
+round) with the reference's frameless trace; the row was stale and has been
+removed rather than left to imply the check is missing.
+
+The `call_user_func("nope")` row is not confined to `call_user_func`: every
+library function that takes a callback reports an unresolvable one the same wrong
+way, `Error: Call to undefined function nope()` where the reference raises a
+`TypeError` naming the parameter. `array_map("nosuchfn", [1])` and
+`preg_replace_callback("/a/", "nope", "a")` were both measured. Only the CLASS
+and message differ — since this round the trace frame is the reference's on all
+three.
 
 ## Other measured gaps
 
