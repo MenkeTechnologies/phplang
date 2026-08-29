@@ -1,6 +1,6 @@
 [package]
 name = "phplang"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2021"
 rust-version = "1.80"
 description = "PHP as a fusevm frontend: lexer, parser, and compiler to fusevm::Chunk on a PhpHost heap — the first compiled standalone PHP runtime"
@@ -81,7 +81,7 @@ path = "src/bin/gen_docs.rs"
 # enables the ahead-of-time object emitter. The strict numeric hook
 # (src/builtins.rs) supplies PHP coercion semantics for non-numeric operands.
 # `php --tiers` reports which of those tiers a script actually reaches.
-fusevm = { version = "0.25.0", features = ["jit", "jit-disk-cache", "aot", "ffi"] }
+fusevm = { version = "0.26.0", features = ["jit", "jit-disk-cache", "aot", "ffi"] }
 
 # Standard-library support crates. PHP-facing behavior is implemented in
 # `src/stdlib/*`; these provide the vetted primitives (regex engine, date math,
