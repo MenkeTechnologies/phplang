@@ -209,11 +209,58 @@ fn spl_autoload_register_returns_true() {
 
 // ── get_defined_vars ─────────────────────────────────────────────────────────
 
+/// Inside a function the answer is the frame's own bound variables, in binding
+/// order — every expectation here is what php 8.5 prints for the same source.
+/// This used to be a stub returning an empty array.
 #[test]
-fn get_defined_vars_is_empty_array() {
+fn get_defined_vars_lists_the_frames_bound_variables() {
+    // Parameters first, then locals at first mention. An unset name is gone; a
+    // name bound to null stays, which is the whole reason unset and null are
+    // stored differently.
     assert_eq!(
-        run("<?php $x = 1; $v = get_defined_vars(); echo is_array($v) ? 'arr' : 'no', ':', count($v);"),
+        run("<?php function f($p) { $a = 1; $b = null; unset($a); print_r(array_keys(get_defined_vars())); } f(7);"),
+        "Array\n(\n    [0] => p\n    [1] => b\n)\n"
+    );
+    assert_eq!(
+        run("<?php function f() { $v = null; var_dump(array_key_exists('v', get_defined_vars())); } f();"),
+        "bool(true)\n"
+    );
+    assert_eq!(
+        run("<?php function f() { $v = 1; unset($v); var_dump(array_key_exists('v', get_defined_vars())); } f();"),
+        "bool(false)\n"
+    );
+    // A function that binds nothing answers an empty array — the old stub's
+    // answer, now for the right reason.
+    assert_eq!(
+        run("<?php function f() { $v = get_defined_vars(); echo is_array($v) ? 'arr' : 'no', ':', count($v); } f();"),
         "arr:0"
+    );
+    // `extract` and a closure's `use` bind through the same table.
+    assert_eq!(
+        run("<?php function f() { extract(['e' => 5]); print_r(get_defined_vars()); } f();"),
+        "Array\n(\n    [e] => 5\n)\n"
+    );
+    assert_eq!(
+        run("<?php function f() { $x = 1; $c = function () use ($x) { print_r(get_defined_vars()); }; $c(); } f();"),
+        "Array\n(\n    [x] => 1\n)\n"
+    );
+    // `$this` is not one of the method's variables.
+    assert_eq!(
+        run("<?php class C { function m() { $z = 1; print_r(array_keys(get_defined_vars())); } } (new C)->m();"),
+        "Array\n(\n    [0] => z\n)\n"
+    );
+}
+
+/// At GLOBAL scope the answer still differs from the reference — it lists the
+/// superglobals its `variables_order` populated, in its own fixed order and
+/// ahead of the script's variables. What holds either way is that the script's
+/// own variable is there and `$GLOBALS` is not, so that is what this pins
+/// rather than a count that would freeze the divergence in place.
+#[test]
+fn get_defined_vars_at_global_scope_holds_the_scripts_own_variables() {
+    assert_eq!(
+        run("<?php $x = 1; $k = get_defined_vars(); var_dump(array_key_exists('x', $k), array_key_exists('GLOBALS', $k), $k['x']);"),
+        "bool(true)\nbool(false)\nint(1)\n"
     );
 }
 

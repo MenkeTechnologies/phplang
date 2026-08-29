@@ -5979,8 +5979,8 @@ pub const CORPUS: &[Entry] = &[
         "get_defined_vars",
         "Runtime and diagnostics",
         "get_defined_vars(): array",
-        "DIVERGENCE: a stub that always returns an empty array — no scope enumerator is exposed to the standard library. Use `compact()` with explicit names instead.",
-        "$x = 1; echo count(get_defined_vars());   // => 0",
+        "The current frame's bound variables, in the order they were first bound. An unset name is absent; a name bound to `null` is present. `$this` and `$GLOBALS` are not included. PARTIAL DIVERGENCE at GLOBAL scope only: the reference lists the superglobals its `variables_order` actually populated, in ITS fixed order and ahead of the script's own variables, where this lists every superglobal the frame holds in binding order. Inside a function — where the answer is the user's own variables — it matches.",
+        "function f($p) { $a = 1; unset($a); return get_defined_vars(); } print_r(f(7));   // => [p => 7]",
     ),
     (
         "class_alias",

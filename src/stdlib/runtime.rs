@@ -112,9 +112,17 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         // spl_autoload_unregister(): bool — nothing registered; report success.
         "spl_autoload_unregister" => Value::bool(true),
 
-        // get_defined_vars(): array — no scope enumerator is exposed to the
-        // stdlib, so this returns an empty array (documented deviation).
-        "get_defined_vars" => make_list(vec![]),
+        // get_defined_vars(): array — the current frame's bound variables, in
+        // the order they were first bound. This used to return an empty array
+        // because no scope enumerator was exposed; the frame now stores its
+        // variables as ordered slots, so one is.
+        "get_defined_vars" => with_host(|h| {
+            let out = h.new_array();
+            for (name, val) in h.defined_vars() {
+                h.arr_set_key(&out, &Value::str(name), val);
+            }
+            out
+        }),
 
         // class_alias($original, $alias, $autoload = true): bool
         // Best-effort no-op: true when the original class exists, else false.

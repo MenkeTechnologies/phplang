@@ -489,3 +489,45 @@ function genr2() { yield 1; }
 $h = genr2();
 foreach ($h as $_) {}
 var_dump($h->getReturn());
+
+#==#
+
+// ── get_defined_vars: the frame's own bound variables, in binding order ──
+function f($p) { $a = 1; $b = null; unset($a); return get_defined_vars(); }
+print_r(f(7));
+function g() { return get_defined_vars(); }
+var_dump(count(g()));
+function h(...$rest) { return array_keys(get_defined_vars()); }
+print_r(h(1, 2));
+function k() { extract(["e" => 5]); return get_defined_vars(); }
+print_r(k());
+function m() { $x = 1; $c = function () use ($x) { return get_defined_vars(); }; return $c(); }
+print_r(m());
+class C { public function meth() { $z = 1; return array_keys(get_defined_vars()); } }
+print_r((new C)->meth());
+function n() { $v = null; return [array_key_exists("v", get_defined_vars()), isset($v)]; }
+var_dump(n());
+function o() { $v = 1; unset($v); return array_key_exists("v", get_defined_vars()); }
+var_dump(o());
+
+#==#
+
+// ── static locals, by-reference binding, and closure capture ────────────────
+function counter() { static $n = 0; $n++; return $n; }
+echo counter(), counter(), counter(), "\n";
+function byref(&$x) { $x .= "!"; }
+$a = "a"; byref($a); echo $a, "\n";
+$b = 1; $c = &$b; $c = 5; echo $b, " ", $c, "\n";
+unset($c); $c = 9; echo $b, " ", $c, "\n";
+$arr = [1, 2, 3];
+foreach ($arr as &$v) { $v *= 2; }
+unset($v);
+print_r($arr);
+$q = 1;
+$byref = function () use (&$q) { $q++; };
+$byref(); $byref(); echo $q, "\n";
+$byval = function () use ($q) { return $q; };
+$q = 99; echo $byval(), "\n";
+$name = "dyn"; $$name = 42; echo $dyn, "\n";
+print_r(compact("dyn"));
+$s = 5; extract(["s" => 9, "t" => 2]); echo $s + $t, "\n";

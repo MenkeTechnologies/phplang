@@ -2317,6 +2317,42 @@ impl PhpHost {
         }
     }
 
+    /// The current frame's bound variables, in the order they were first
+    /// bound — what `get_defined_vars()` answers.
+    ///
+    /// Slot order IS binding order: the compiler numbers a scope's parameters
+    /// first and then each local at its first mention, and a name reserved
+    /// later only ever appends. Iterating the name index instead would answer
+    /// in hash order, which PHP's output is not.
+    ///
+    /// An unset name is absent while a name bound to `null` is present — the
+    /// distinction `Slot::Unset` exists for. `$this` and the compiler's own
+    /// `@`-prefixed entries are not the user's variables and are left out.
+    pub fn defined_vars(&self) -> Vec<(String, Value)> {
+        let Some(scope) = self.scopes.last() else {
+            return Vec::new();
+        };
+        let mut by_slot: Vec<(u32, &String)> = scope
+            .vars
+            .index
+            .iter()
+            .map(|(name, &i)| (i, name))
+            .collect();
+        by_slot.sort_unstable_by_key(|(i, _)| *i);
+        by_slot
+            .into_iter()
+            // `$GLOBALS` is a view of the global frame rather than a variable
+            // in it, and PHP never lists it here.
+            .filter(|(_, name)| {
+                !name.starts_with('@') && !matches!(name.as_str(), "this" | "GLOBALS")
+            })
+            .filter_map(|(i, name)| match scope.vars.at(i) {
+                Slot::Unset => None,
+                slot => Some((name.clone(), self.read_slot(slot))),
+            })
+            .collect()
+    }
+
     /// Read the current frame's slot `i`. The compiler resolved the name to this
     /// index, so there is no name to test against the superglobals or to hash.
     pub fn slot_get(&mut self, i: u32) -> Value {

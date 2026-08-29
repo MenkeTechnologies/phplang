@@ -1055,3 +1055,54 @@ Exception: Cannot get return value of a generator that hasn't returned
 int(99)
 NULL
 
+#REC 43 exit=0 out=205 err=0
+Array
+(
+    [p] => 7
+    [b] => 
+)
+int(0)
+Array
+(
+    [0] => rest
+)
+Array
+(
+    [e] => 5
+)
+Array
+(
+    [x] => 1
+)
+Array
+(
+    [0] => z
+)
+array(2) {
+  [0]=>
+  bool(true)
+  [1]=>
+  bool(false)
+}
+bool(false)
+
+#REC 44 exit=0 out=100 err=0
+123
+a!
+5 5
+5 9
+Array
+(
+    [0] => 2
+    [1] => 4
+    [2] => 6
+)
+3
+3
+42
+Array
+(
+    [dyn] => 42
+)
+11
+
