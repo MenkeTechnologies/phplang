@@ -424,13 +424,6 @@ documented in-code:
   set, because that engine works over `&str`: `.` is one codepoint rather than
   one byte. This is visible only for a NON-ASCII subject, and only for a pattern
   the byte engine already refused.
-- A **stack trace** taken inside a library callback is SHORTER than PHP's, not
-  merely differently spelled. Where the reference prints three frames for a
-  throw inside an `array_map` callback — `#0 [internal function]: {closure:…}`,
-  `#1 …: array_map(Object(Closure), Array)`, `#2 {main}` — this engine prints
-  two, naming the callback's call site and omitting the `array_map` frame
-  entirely. The closure's NAME in that frame is exact; what differs is the FILE
-  half of the frame it appears in and the missing library frame itself.
 - A **syntax error** reproduces PHP's `unexpected <token>` text but not the
   `, expecting "X" or "Y"` clause that often follows it: the expected set comes
   out of PHP's generated LALR tables, not the grammar as written here.

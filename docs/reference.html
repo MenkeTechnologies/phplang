@@ -957,12 +957,12 @@ $o = new C; unset($o-&gt;zz);   // =&gt; unset:zz</code></pre>
         <article class="doc-entry" id="doc-predefined-constant-22">
           <h3><a class="doc-anchor" href="#doc-predefined-constant-22">#</a> <code>PHP_ROUND_HALF_EVEN</code></h3>
           <pre><code class="lang-php">PHP_ROUND_HALF_EVEN: int = 3</code></pre>
-          <p>Rounding mode: halves to the nearest even value. Defined but not honoured by `round()`.</p>
+          <p>Rounding mode: halves to the nearest even value. Honoured: `round(2.5, 0, PHP_ROUND_HALF_EVEN)` is `2` and `round(3.5, 0, PHP_ROUND_HALF_EVEN)` is `4`.</p>
         </article>
         <article class="doc-entry" id="doc-predefined-constant-23">
           <h3><a class="doc-anchor" href="#doc-predefined-constant-23">#</a> <code>PHP_ROUND_HALF_ODD</code></h3>
           <pre><code class="lang-php">PHP_ROUND_HALF_ODD: int = 4</code></pre>
-          <p>Rounding mode: halves to the nearest odd value. Defined but not honoured by `round()`.</p>
+          <p>Rounding mode: halves to the nearest odd value. Honoured: `round(2.5, 0, PHP_ROUND_HALF_ODD)` is `3` and `round(3.5, 0, PHP_ROUND_HALF_ODD)` is `3`.</p>
         </article>
         <article class="doc-entry" id="doc-predefined-constant-24">
           <h3><a class="doc-anchor" href="#doc-predefined-constant-24">#</a> <code>E_ERROR</code></h3>
@@ -1058,7 +1058,7 @@ $o = new C; unset($o-&gt;zz);   // =&gt; unset:zz</code></pre>
         <article class="doc-entry" id="doc-predefined-constant-42">
           <h3><a class="doc-anchor" href="#doc-predefined-constant-42">#</a> <code>SORT_FLAG_CASE</code></h3>
           <pre><code class="lang-php">SORT_FLAG_CASE: int = 8</code></pre>
-          <p>Bit combined with `SORT_STRING` or `SORT_NATURAL` to fold case. Defined but not honoured.</p>
+          <p>Bit combined with `SORT_STRING` or `SORT_NATURAL` to fold case. Honoured: `sort($a, SORT_STRING|SORT_FLAG_CASE)` orders `["B", "a"]` as `["a", "B"]`.</p>
         </article>
         <article class="doc-entry" id="doc-predefined-constant-43">
           <h3><a class="doc-anchor" href="#doc-predefined-constant-43">#</a> <code>COUNT_NORMAL</code></h3>
@@ -1135,22 +1135,22 @@ $o = new C; unset($o-&gt;zz);   // =&gt; unset:zz</code></pre>
         <article class="doc-entry" id="doc-predefined-constant-57">
           <h3><a class="doc-anchor" href="#doc-predefined-constant-57">#</a> <code>JSON_HEX_TAG</code></h3>
           <pre><code class="lang-php">JSON_HEX_TAG: int = 1</code></pre>
-          <p>`json_encode()` flag escaping `&lt;` and `&gt;`. DIVERGENCE: the core `json_encode` arm reads no flags, so this has no effect.</p>
+          <p>`json_encode()` flag escaping `&lt;` and `&gt;` as `\u003C` and `\u003E`. The hex digits are UPPER case, where the control and unicode escapes spell theirs in lower.</p>
         </article>
         <article class="doc-entry" id="doc-predefined-constant-58">
           <h3><a class="doc-anchor" href="#doc-predefined-constant-58">#</a> <code>JSON_HEX_AMP</code></h3>
           <pre><code class="lang-php">JSON_HEX_AMP: int = 2</code></pre>
-          <p>`json_encode()` flag escaping `&amp;`. Defined but not honoured.</p>
+          <p>`json_encode()` flag escaping `&amp;` as `\u0026`.</p>
         </article>
         <article class="doc-entry" id="doc-predefined-constant-59">
           <h3><a class="doc-anchor" href="#doc-predefined-constant-59">#</a> <code>JSON_HEX_APOS</code></h3>
           <pre><code class="lang-php">JSON_HEX_APOS: int = 4</code></pre>
-          <p>`json_encode()` flag escaping `'`. Defined but not honoured.</p>
+          <p>`json_encode()` flag escaping `'` as `\u0027`.</p>
         </article>
         <article class="doc-entry" id="doc-predefined-constant-60">
           <h3><a class="doc-anchor" href="#doc-predefined-constant-60">#</a> <code>JSON_HEX_QUOT</code></h3>
           <pre><code class="lang-php">JSON_HEX_QUOT: int = 8</code></pre>
-          <p>`json_encode()` flag escaping `"` as `\u0022`. Defined but not honoured.</p>
+          <p>`json_encode()` flag escaping `"` as `\u0022` instead of `\"`.</p>
         </article>
         <article class="doc-entry" id="doc-predefined-constant-61">
           <h3><a class="doc-anchor" href="#doc-predefined-constant-61">#</a> <code>JSON_FORCE_OBJECT</code></h3>
@@ -1160,23 +1160,25 @@ $o = new C; unset($o-&gt;zz);   // =&gt; unset:zz</code></pre>
         <article class="doc-entry" id="doc-predefined-constant-62">
           <h3><a class="doc-anchor" href="#doc-predefined-constant-62">#</a> <code>JSON_NUMERIC_CHECK</code></h3>
           <pre><code class="lang-php">JSON_NUMERIC_CHECK: int = 32</code></pre>
-          <p>`json_encode()` flag encoding numeric strings as numbers. Defined but not honoured.</p>
+          <p>`json_encode()` flag encoding a numeric string as the number it reads as, by PHP's own `is_numeric_string` — so `" 5"` and `"5 "` convert while `"0x1A"` does not. An integral result loses its fractional part (`"1e3"` encodes as `1000`), and a string that reads as a non-finite double (`"1e999"`) stays a string. Array KEYS are unaffected; JSON has no non-string key.</p>
         </article>
         <article class="doc-entry" id="doc-predefined-constant-63">
           <h3><a class="doc-anchor" href="#doc-predefined-constant-63">#</a> <code>JSON_UNESCAPED_SLASHES</code></h3>
           <pre><code class="lang-php">JSON_UNESCAPED_SLASHES: int = 64</code></pre>
-          <p>`json_encode()` flag leaving `/` unescaped. Defined but not honoured.</p>
+          <p>`json_encode()` flag leaving `/` unescaped, where the default writes `\/`.</p>
         </article>
         <article class="doc-entry" id="doc-predefined-constant-64">
           <h3><a class="doc-anchor" href="#doc-predefined-constant-64">#</a> <code>JSON_PRETTY_PRINT</code></h3>
           <pre><code class="lang-php">JSON_PRETTY_PRINT: int = 128</code></pre>
-          <p>`json_encode()` flag requesting indented output. DIVERGENCE: not honoured — the encoder always emits the compact form.</p>
-          <pre><code class="lang-php">echo json_encode(["a" =&gt; 1], JSON_PRETTY_PRINT);   // =&gt; {"a":1}</code></pre>
+          <p>`json_encode()` flag requesting indented output: four spaces per level, and `": "` rather than `":"` after a key.</p>
+          <pre><code class="lang-php">echo json_encode(["a" =&gt; 1], JSON_PRETTY_PRINT);   // =&gt; {
+    "a": 1
+}</code></pre>
         </article>
         <article class="doc-entry" id="doc-predefined-constant-65">
           <h3><a class="doc-anchor" href="#doc-predefined-constant-65">#</a> <code>JSON_UNESCAPED_UNICODE</code></h3>
           <pre><code class="lang-php">JSON_UNESCAPED_UNICODE: int = 256</code></pre>
-          <p>`json_encode()` flag emitting literal UTF-8 instead of `\uXXXX`. Defined but not honoured.</p>
+          <p>`json_encode()` flag emitting literal UTF-8 instead of `\uXXXX`.</p>
         </article>
         <article class="doc-entry" id="doc-predefined-constant-66">
           <h3><a class="doc-anchor" href="#doc-predefined-constant-66">#</a> <code>JSON_THROW_ON_ERROR</code></h3>
@@ -2329,7 +2331,7 @@ implode(array $array): string</code></pre>
         <article class="doc-entry" id="doc-core-library-math-4">
           <h3><a class="doc-anchor" href="#doc-core-library-math-4">#</a> <code>round</code></h3>
           <pre><code class="lang-php">round(int|float $num, int $precision = 0): float</code></pre>
-          <p>Rounds to `$precision` decimal places, halves away from zero. DIVERGENCE: the PHP 8.4 `$mode` argument is not read, so the `PHP_ROUND_HALF_*` constants have no effect.</p>
+          <p>Rounds to `$precision` decimal places, halves away from zero unless the PHP 8.4 `$mode` selects another rule; all four `PHP_ROUND_HALF_*` constants are honoured.</p>
           <pre><code class="lang-php">echo round(3.14159, 2);   // =&gt; 3.14</code></pre>
         </article>
         <article class="doc-entry" id="doc-core-library-math-5">
