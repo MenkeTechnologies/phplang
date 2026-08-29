@@ -3002,8 +3002,7 @@ impl PhpHost {
         this: Option<Value>,
         scope: Option<String>,
     ) -> Option<Value> {
-        let (params, chunk, captured, is_generator, ret, is_static, site) = match self.as_array(v)
-        {
+        let (params, chunk, captured, is_generator, ret, is_static, site) = match self.as_array(v) {
             Some(PhpObj::Closure {
                 params,
                 chunk,
