@@ -307,24 +307,9 @@ three.
 | `goto end; …; end: echo "done";` | `done` | `Parse error: syntax error, unexpected identifier "end"` |
 | `$o->{"x y"} = 2;` | property `x y` is written | `Parse error: syntax error, unexpected token "{"` |
 | `iconv_strlen("héllo")` | `int(5)` | `Call to undefined function iconv_strlen()` |
+| `json_encode([1.0], JSON_PRESERVE_ZERO_FRACTION)` | `[1.0]` | `Undefined constant` — the flag is not defined |
+| `json_decode("12345678901234567890123", false, 512, JSON_BIGINT_AS_STRING)` | `string(23)` | `float(1.2345678901234568E+22)` — the flag is defined but not read |
 | `usort($x, ["C", "m"])` for a non-static `C::m` | `TypeError: usort(): Argument #2 ($callback) must be a valid callback, non-static method C::m() cannot be called statically` | the call succeeds |
-
----
-
-# Pre-existing documentation inconsistencies
-
-Not behaviour — two corpus entries that contradict each other and were not
-introduced by this round's work:
-
-- `JSON_PRETTY_PRINT` is described as "not honoured — the encoder always emits
-  the compact form" in its own entry, while the `json_encode` entry lists it
-  among the flags that ARE honoured.
-- `round()`'s entry says "the PHP 8.4 `$mode` argument is not read", which the
-  commit `7b639caea8` ("round()'s `$mode` was decorative") set out to fix.
-
-Both need a measured check and one of the two statements corrected. They are
-listed here rather than edited blind, because guessing which side is right is
-how a false claim gets published.
 
 ---
 

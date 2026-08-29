@@ -110,6 +110,48 @@ everything else is unchanged, including the seven names PHP specialises only for
 a LITERAL argument (`chr`, `ord`, `defined`, `in_array`, `array_slice`,
 `sprintf`, `intval`), all of which were measured framed.
 
+### Five `json_encode` flags were accepted and discarded
+
+BUGS.md carried a standing task: `JSON_PRETTY_PRINT` was documented twice, once
+as honoured and once as "not honoured — the encoder always emits the compact
+form", and neither statement had been checked. Checking it turned up eleven
+constants whose corpus text was wrong in one direction or the other, and five
+flags that really did nothing.
+
+`JSON_HEX_TAG`, `JSON_HEX_AMP`, `JSON_HEX_APOS` and `JSON_HEX_QUOT` now escape
+their character. All four spell their hex digits in UPPER case where the control
+and unicode escapes in the same string spell theirs in lower, which is why they
+cannot share the general escape path — in the transcript below `<` becomes
+`\u003C` while the `é` beside it becomes `\u00e9`:
+
+```text
+$ php -r 'echo json_encode(["<x", "é"], JSON_HEX_TAG);'
+["\u003Cx","\u00e9"]
+```
+
+`JSON_NUMERIC_CHECK` now encodes a numeric string as its number. The test is
+PHP's own `is_numeric_string`, so leading and trailing whitespace are allowed
+(`" 5"`, `"5 "`) while `"0x1A"`, `"0b1"` and `"1_0"` are not numeric. The number
+goes through the same rendering a real float takes, which drops an integral
+value's fractional part — `["1e3"]` encodes as `[1000]`, the way `[1000.0]`
+already did — and a string that reads as a non-finite double (`"1e999"`) has no
+JSON spelling and stays a string. Array KEYS are untouched; JSON has no
+non-string key.
+
+### Eleven constants were documented as not working when they work
+
+Measured one at a time against the reference, and corrected in `src/corpus.rs`,
+which is what `docs/reference.html` and the reference manual are generated from:
+`PHP_ROUND_HALF_EVEN`, `PHP_ROUND_HALF_ODD` and `round()`'s own `$mode` note;
+`SORT_FLAG_CASE`; `JSON_UNESCAPED_SLASHES`, `JSON_PRETTY_PRINT` and
+`JSON_UNESCAPED_UNICODE`; and the five flags above, whose entries were right
+before this commit and are wrong after it. `JSON_PRETTY_PRINT`'s worked EXAMPLE
+claimed a compact `{"a":1}` for a call that indents.
+
+The two remaining "not honoured" claims were re-measured and left standing:
+`JSON_BIGINT_AS_STRING` is genuinely not read, and `FILE_USE_INCLUDE_PATH` has
+no include path to search.
+
 ### `sizeof()` blamed a function the program never called
 
 `count` and `sizeof` share one implementation, which hardcoded `count()` into

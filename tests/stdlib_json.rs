@@ -412,3 +412,60 @@ fn round_trip_encode_decode() {
         "caf\u{00e9} \u{1F600}"
     );
 }
+
+/// The four HTML-safety flags each escape one character that is legal in JSON
+/// but hostile inside a `<script>` block or an HTML attribute. All four spell
+/// their hex digits in UPPER case, where the control and unicode escapes in the
+/// same string spell theirs in lower — which is why they cannot share the
+/// general escape path, and why every case below carries a 0x1F byte and a
+/// non-ASCII character no flag touches.
+#[test]
+fn the_hex_flags_escape_one_character_each_in_upper_case_hex() {
+    let enc = |flags: &str| {
+        run(&format!(
+            r#"<?php echo json_encode(["<>&'\"", "\x1f", "\u{{e9}}"], {flags});"#
+        ))
+    };
+    assert_eq!(
+        enc("JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT"),
+        r#"["\u003C\u003E\u0026\u0027\u0022","\u001f","\u00e9"]"#
+    );
+    assert_eq!(
+        enc("JSON_HEX_TAG"),
+        r#"["\u003C\u003E&'\"","\u001f","\u00e9"]"#
+    );
+    assert_eq!(enc("JSON_HEX_AMP"), r#"["<>\u0026'\"","\u001f","\u00e9"]"#);
+    assert_eq!(enc("JSON_HEX_APOS"), r#"["<>&\u0027\"","\u001f","\u00e9"]"#);
+    assert_eq!(enc("JSON_HEX_QUOT"), r#"["<>&'\u0022","\u001f","\u00e9"]"#);
+    assert_eq!(enc("0"), r#"["<>&'\"","\u001f","\u00e9"]"#);
+}
+
+/// `JSON_NUMERIC_CHECK` converts a string that is numeric by PHP's own
+/// `is_numeric_string`, so surrounding whitespace is allowed while `0x`, `0b`
+/// and `_` separators are not. The number is rendered the way a real float is,
+/// which drops an integral value's fractional part (`"1e3"` becomes `1000`, as
+/// `json_encode([1000.0])` does); a string that reads as a non-finite double has
+/// no JSON spelling and stays a string.
+#[test]
+fn numeric_check_converts_exactly_the_numeric_strings() {
+    let src = r#"<?php echo json_encode(
+        ["5", "5.5", " 5", "5 ", "\n5", "05", "-0", "+7", ".5", "5.",
+         "1e3", "1.0", "9223372036854775808",
+         "0x1A", "0b1", "1_0", "INF", "1e999", "abc", ""],
+        JSON_NUMERIC_CHECK);"#;
+    assert_eq!(
+        run(src),
+        "[5,5.5,5,5,5,5,0,7,0.5,5,1000,1,9.223372036854776e+18,\
+         \"0x1A\",\"0b1\",\"1_0\",\"INF\",\"1e999\",\"abc\",\"\"]"
+    );
+    // A KEY is never converted: JSON has no non-string key.
+    assert_eq!(
+        run(r#"<?php echo json_encode(["5" => "7", "a" => "8"], JSON_NUMERIC_CHECK);"#),
+        r#"{"5":7,"a":8}"#
+    );
+    // Without the flag every one of them stays a string.
+    assert_eq!(
+        run(r#"<?php echo json_encode(["5", "1e3"]);"#),
+        r#"["5","1e3"]"#
+    );
+}

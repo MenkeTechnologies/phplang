@@ -6488,6 +6488,36 @@ const JSON_UNESCAPED_SLASHES: i64 = 64;
 const JSON_FORCE_OBJECT: i64 = 16;
 const JSON_PRETTY_PRINT: i64 = 128;
 const JSON_UNESCAPED_UNICODE: i64 = 256;
+/// The four HTML-safety flags, each escaping one character that is legal in JSON
+/// but hostile inside a `<script>` block or an HTML attribute.
+const JSON_HEX_TAG: i64 = 1;
+const JSON_HEX_AMP: i64 = 2;
+const JSON_HEX_APOS: i64 = 4;
+const JSON_HEX_QUOT: i64 = 8;
+/// Encode a NUMERIC STRING as the number it reads as.
+const JSON_NUMERIC_CHECK: i64 = 32;
+
+/// `JSON_NUMERIC_CHECK`'s rendering of `s`, or `None` when the string is not
+/// numeric and must be encoded as a string after all.
+///
+/// The test is PHP's own `is_numeric_string`, so leading AND trailing whitespace
+/// are allowed (`" 5"`, `"5 "`, `"\n5"`) while `"0x1A"`, `"0b1"` and `"1_0"` are
+/// not numeric. A string that reads as a non-finite double (`"1e999"`) has no
+/// JSON spelling and stays a string, which is the reference's own guard.
+///
+/// The number is rendered by the same path a real float takes, so an integral
+/// value loses its fractional part exactly as PHP's `smart_str_append_double`
+/// does with `zero_frac` off: `json_encode(["1e3"], JSON_NUMERIC_CHECK)` is
+/// `[1000]`, matching `json_encode([1000.0])`.
+fn json_numeric_check(s: &str) -> Option<String> {
+    match host::parse_php_number_full(s)? {
+        Value::Int(n) => Some(n.to_string()),
+        Value::Float(f) if f.is_finite() => {
+            Some(crate::stdlib::types::serialize_float(f).replace('E', "e"))
+        }
+        _ => None,
+    }
+}
 
 /// Encode `v` as JSON. `depth` is the current nesting level, used only for
 /// `JSON_PRETTY_PRINT` indentation (four spaces per level, as PHP emits).
@@ -6500,7 +6530,13 @@ fn php_json_encode(h: &host::PhpHost, v: &Value, flags: i64, depth: usize) -> St
         // JSON uses serialize_precision too, but spells the exponent lowercase
         // (`1.0e+100`, where var_dump/serialize print `1.0E+100`).
         Value::Float(f) => crate::stdlib::types::serialize_float(*f).replace('E', "e"),
-        Value::Str(s) => json_string(s, flags),
+        Value::Str(s) => match (flags & JSON_NUMERIC_CHECK != 0)
+            .then(|| json_numeric_check(s))
+            .flatten()
+        {
+            Some(n) => n,
+            None => json_string(s, flags),
+        },
         Value::Obj(_) => {
             let pairs = if h.is_object(v) {
                 h.object_props(v)
@@ -6548,6 +6584,11 @@ fn php_json_encode(h: &host::PhpHost, v: &Value, flags: i64, depth: usize) -> St
 /// JSON-escape `s`. By default PHP escapes `/` as `\/` and every non-ASCII
 /// character as a `\uXXXX` sequence (surrogate pairs above the BMP);
 /// `JSON_UNESCAPED_SLASHES` and `JSON_UNESCAPED_UNICODE` turn those off.
+///
+/// The four `JSON_HEX_*` flags each escape one more character, and they spell
+/// their hex digits in UPPER case where the control and unicode escapes spell
+/// theirs in lower — `json_encode(["<é\x1f"], JSON_HEX_TAG)` is
+/// `["\u003C\u00e9\u001f"]`, verified against the reference.
 fn json_string(s: &str, flags: i64) -> String {
     let escape_slashes = flags & JSON_UNESCAPED_SLASHES == 0;
     let escape_unicode = flags & JSON_UNESCAPED_UNICODE == 0;
@@ -6555,6 +6596,11 @@ fn json_string(s: &str, flags: i64) -> String {
     out.push('"');
     for c in s.chars() {
         match c {
+            '<' if flags & JSON_HEX_TAG != 0 => out.push_str("\\u003C"),
+            '>' if flags & JSON_HEX_TAG != 0 => out.push_str("\\u003E"),
+            '&' if flags & JSON_HEX_AMP != 0 => out.push_str("\\u0026"),
+            '\'' if flags & JSON_HEX_APOS != 0 => out.push_str("\\u0027"),
+            '"' if flags & JSON_HEX_QUOT != 0 => out.push_str("\\u0022"),
             '"' => out.push_str("\\\""),
             '\\' => out.push_str("\\\\"),
             '\n' => out.push_str("\\n"),
