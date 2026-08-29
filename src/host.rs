@@ -5938,6 +5938,34 @@ pub fn to_str_ext(v: &Value) -> String {
 }
 
 pub fn call_function(name: &str, args: Vec<Value>) -> Result<Value, String> {
+    call_function_dispatched(name, args, Dispatch::Compiled)
+}
+
+/// Whether a call was written where the COMPILER could see it, or reached the
+/// function through a value at run time.
+///
+/// The distinction exists for the handful of names the reference compiles to an
+/// opcode (see `compiles_to_an_opcode`). The compiler can only specialise a call
+/// it can see: dispatched through a callback, a `$f(…)`, or `call_user_func`,
+/// the same name is an ordinary internal call and its argument error carries a
+/// frame like any other.
+///
+/// ```text
+/// $ php -r 'try { strlen([1]); }                catch (Throwable $e) { echo $e->getTraceAsString(); }'
+/// #0 {main}
+/// $ php -r 'try { call_user_func("strlen", [1]); } catch (Throwable $e) { echo $e->getTraceAsString(); }'
+/// #0 Command line code(1): strlen(Array)
+/// #1 {main}
+/// ```
+#[derive(Clone, Copy, PartialEq)]
+pub enum Dispatch {
+    /// Written as a call in the source.
+    Compiled,
+    /// Reached through a value: `$f(…)`, a callback, `call_user_func`.
+    Indirect,
+}
+
+fn call_function_dispatched(name: &str, args: Vec<Value>, how: Dispatch) -> Result<Value, String> {
     // Inline Rust FFI: the `rust { ... }` desugar emits `__rust_compile(b64,
     // line)`; compile + register the block's exported functions.
     if name == "__rust_compile" {
@@ -5969,7 +5997,7 @@ pub fn call_function(name: &str, args: Vec<Value>) -> Result<Value, String> {
             &def.locals,
         );
     }
-    call_library_throwing(name, args)
+    call_library_throwing(name, args, how)
 }
 
 /// Call a standard-library function, turning a tagged argument error into the
@@ -6063,7 +6091,7 @@ fn calls_back(name: &str) -> bool {
     )
 }
 
-fn call_library_throwing(name: &str, args: Vec<Value>) -> Result<Value, String> {
+fn call_library_throwing(name: &str, args: Vec<Value>, how: Dispatch) -> Result<Value, String> {
     // PHP 8 refuses an argument whose type the parameter does not accept, before
     // the function runs. The check is by DECLARED TYPE rather than per function
     // (see `crate::argtypes`), and it goes through the same error path as any
@@ -6071,7 +6099,7 @@ fn call_library_throwing(name: &str, args: Vec<Value>) -> Result<Value, String> 
     // A call the reference compiles to an opcode raises its argument error from
     // the CALLER's frame, because no call was ever made (see
     // `compiles_to_an_opcode`).
-    let opcode = compiles_to_an_opcode(name, args.len());
+    let opcode = how == Dispatch::Compiled && compiles_to_an_opcode(name, args.len());
     if let Err(e) = crate::argtypes::check_call(name, &args) {
         return if opcode {
             throw_frameless_typed(&e)
@@ -6699,7 +6727,7 @@ pub fn call_value(callee: Value, args: Vec<Value>) -> Result<Value, String> {
         return call_method(&class, &method, this, args);
     }
     match callee {
-        Value::Str(s) => call_function(&s, args),
+        Value::Str(s) => call_function_dispatched(&s, args, Dispatch::Indirect),
         other => Err(not_callable(&other)),
     }
 }

@@ -483,6 +483,39 @@ fn an_opcode_call_raises_its_argument_error_without_a_frame() {
     );
 }
 
+/// The compiler can only specialise a call it can SEE. Reached through a value —
+/// a callback, a `$f(...)`, `call_user_func` — the very same name is an ordinary
+/// internal call, and its argument error carries a frame like any other.
+#[test]
+fn an_opcode_name_dispatched_through_a_value_is_an_ordinary_call() {
+    let trace = |call: &str| {
+        run(&format!(
+            r#"<?php try {{ {call} }} catch (\Throwable $e) {{ echo $e->getTraceAsString(); }}"#
+        ))
+    };
+    // `call_user_func` is not itself a frame, so its callee reports the call site.
+    assert_eq!(
+        trace(r#"call_user_func("strlen", [1]);"#),
+        "#0 Command line code(1): strlen(Array)\n#1 {main}"
+    );
+    assert_eq!(
+        trace(r#"$f = "strlen"; $f([1]);"#),
+        "#0 Command line code(1): strlen(Array)\n#1 {main}"
+    );
+    // As an `array_map` callback there are three frames: the callee, the
+    // library function that dispatched it, and `{main}`.
+    assert_eq!(
+        trace(r#"array_map("strlen", [[1]]);"#),
+        "#0 [internal function]: strlen(Array)\n#1 Command line code(1): array_map('strlen', Array)\n#2 {main}"
+    );
+    assert_eq!(
+        trace(r#"array_map("count", [1]);"#),
+        "#0 [internal function]: count(1)\n#1 Command line code(1): array_map('count', Array)\n#2 {main}"
+    );
+    // Written as a call on the same line, it is frameless again.
+    assert_eq!(trace("strlen([1]);"), "#0 {main}");
+}
+
 /// `count` and its `sizeof` alias each blame the name the CALLER wrote, for both
 /// the subject type and the `$mode` domain. phplang hardcoded `count()` into
 /// both, so every `sizeof()` failure named a function the program never called.

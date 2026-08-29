@@ -110,6 +110,26 @@ everything else is unchanged, including the seven names PHP specialises only for
 a LITERAL argument (`chr`, `ord`, `defined`, `in_array`, `array_slice`,
 `sprintf`, `intval`), all of which were measured framed.
 
+The specialisation also depends on HOW the call was reached, which the first
+cut of this missed. The compiler can only specialise a call it can see, so the
+same name dispatched through a value is an ordinary internal call:
+
+```text
+$ php -r 'try { strlen([1]); }                   catch (Throwable $e) { echo $e->getTraceAsString(); }'
+#0 {main}
+$ php -r 'try { call_user_func("strlen", [1]); } catch (Throwable $e) { echo $e->getTraceAsString(); }'
+#0 Command line code(1): strlen(Array)
+#1 {main}
+$ php -r 'try { array_map("strlen", [[1]]); }    catch (Throwable $e) { echo $e->getTraceAsString(); }'
+#0 [internal function]: strlen(Array)
+#1 Command line code(1): array_map('strlen', Array)
+#2 {main}
+```
+
+`call_function` therefore carries a `Dispatch`, which `call_value` — the single
+entry point for `$f(…)`, every callback, and `call_user_func` — sets to
+`Indirect`. All three transcripts above now match.
+
 ### Five `json_encode` flags were accepted and discarded
 
 BUGS.md carried a standing task: `JSON_PRETTY_PRINT` was documented twice, once
