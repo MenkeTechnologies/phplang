@@ -1404,26 +1404,28 @@ fn bubbled(vm: &mut VM, v: Value) -> Value {
 /// A call with `...$arr` argument unpacking. The stack holds the callee name then
 /// one `(is_spread, value)` pair per source argument; a spread pair's value is an
 /// array whose elements are flattened, in order, into the positional arguments.
-/// Unpacking a non-array is a silent no-op here — real PHP 8 raises a `TypeError`;
-/// the scaffold drops it rather than erroring. Spread arrays are flattened
-/// positionally (string keys are not turned into named arguments, which the
-/// scaffold does not support).
+/// A Generator or `Traversable` operand is driven for its values, and one that
+/// is neither raises the reference's `TypeError`. Spread arrays are flattened
+/// POSITIONALLY: a string key names an argument in the reference and does not
+/// here, so `f(...["b" => 2, "a" => 1])` binds by position rather than by name —
+/// see BUGS.md.
 fn b_call_spread(vm: &mut VM, argc: u8) -> Value {
     let pairs = pop_args(vm, argc as usize - 1);
     let name = pop_name(vm);
     let mut args = Vec::with_capacity(pairs.len() / 2);
-    with_host(|h| {
-        let mut it = pairs.into_iter();
-        while let (Some(flag), Some(val)) = (it.next(), it.next()) {
-            if h.is_truthy(&flag) {
-                if let Some(entries) = h.array_pairs(&val) {
-                    args.extend(entries.into_iter().map(|(_, v)| v));
-                }
-            } else {
-                args.push(val);
-            }
+    let mut it = pairs.into_iter();
+    while let (Some(flag), Some(val)) = (it.next(), it.next()) {
+        if !with_host(|h| h.is_truthy(&flag)) {
+            args.push(val);
+            continue;
         }
-    });
+        // Outside a `with_host` borrow: unpacking a Generator runs its body.
+        match spread_entries(&val) {
+            Ok(entries) => args.extend(entries.into_iter().map(|(_, v)| v)),
+            // An argument list raises `TypeError` whatever the operand was.
+            Err((_, e)) => return throw_php(vm, "TypeError", &e),
+        }
+    }
     mark_frame_line(vm);
     match host::call_function(&name, args) {
         Ok(v) => bubbled(vm, v),
@@ -1463,14 +1465,47 @@ fn b_call_value(vm: &mut VM, argc: u8) -> Value {
     }
 }
 
+/// The entries a `...` spread contributes, in order.
+///
+/// An array yields its own; a Generator or a `Traversable` object is
+/// materialized the way `foreach` takes it. Anything else — a scalar, `null`, a
+/// plain object — is the reference's "Only arrays and Traversables can be
+/// unpacked" error.
+///
+/// The message is one; the CLASS is not. In an array literal an object operand
+/// raises `TypeError` and a scalar or `null` raises `Error`; in an argument list
+/// every operand raises `TypeError`. The distinction travels with the value, so
+/// it is decided here and the argument-list caller overrides it.
+fn spread_entries(v: &Value) -> Result<Vec<(Value, Value)>, (&'static str, String)> {
+    if !host::is_unpackable(v) {
+        let what = with_host(|h| h.type_name_for_error(v));
+        let class = if with_host(|h| matches!(v, Value::Obj(_)) && !h.is_array(v)) {
+            "TypeError"
+        } else {
+            "Error"
+        };
+        return Err((
+            class,
+            format!("Only arrays and Traversables can be unpacked, {what} given"),
+        ));
+    }
+    if let Some(pairs) = with_host(|h| h.array_pairs(v)) {
+        return Ok(pairs);
+    }
+    // A Generator or Traversable: driving it is what produces the entries, and
+    // it CONSUMES the generator, exactly as the reference does.
+    let arr = host::foreach_prep(v.clone()).map_err(|e| ("Error", e))?;
+    Ok(with_host(|h| h.array_pairs(&arr)).unwrap_or_default())
+}
+
 fn b_mkarray(vm: &mut VM, argc: u8) -> Value {
     let raw = pop_args(vm, argc as usize);
     mark_warn_site(vm);
-    with_host(|h| {
-        let arr = h.new_array();
-        fill_array(h, &arr, raw.into_iter());
-        arr
-    })
+    let arr = with_host(|h| h.new_array());
+    match fill_array_spreading(&arr, raw.into_iter()) {
+        Ok(()) => arr,
+        Err((class, e)) => throw_php(vm, class, &e),
+    }
 }
 
 /// `MKARRAY_ADD`: the continuation chunks of a literal too long for one
@@ -1483,8 +1518,10 @@ fn b_mkarray_add(vm: &mut VM, argc: u8) -> Value {
     let Some(arr) = it.next() else {
         return Value::Undef;
     };
-    with_host(|h| fill_array(h, &arr, it));
-    arr
+    match fill_array_spreading(&arr, it) {
+        Ok(()) => arr,
+        Err((class, e)) => throw_php(vm, class, &e),
+    }
 }
 
 /// Write a flat `key, value, key, value, …` operand run into `arr`.
@@ -1492,13 +1529,50 @@ fn b_mkarray_add(vm: &mut VM, argc: u8) -> Value {
 /// A key equal to [`host::AUTO_INDEX`] means the element was written WITHOUT a
 /// key and takes the next integer index. `Value::Undef` is a real PHP `null`
 /// key here, which becomes the empty-string key — it is not a "no key" marker.
-fn fill_array(h: &mut host::PhpHost, arr: &Value, mut it: impl Iterator<Item = Value>) {
+fn fill_array(
+    h: &mut host::PhpHost,
+    arr: &Value,
+    mut it: impl Iterator<Item = Value>,
+) -> Option<Value> {
     while let Some(k) = it.next() {
         let Some(v) = it.next() else { break };
+        if host::is_spread_key(&k) {
+            // Deferred: unpacking drives user code (a Generator body, an
+            // `Iterator::current`), which re-enters the host, so it cannot run
+            // under this borrow. The operand is handed back for the caller to
+            // unpack a level up.
+            return Some(v);
+        }
         if host::is_auto_index(&k) {
             h.arr_push_auto(arr, v);
         } else {
             h.arr_set_key(arr, &k, v);
+        }
+    }
+    None
+}
+
+/// Write a literal's operand run into `arr`, unpacking any `...` element.
+///
+/// An integer key from a spread is RENUMBERED — `[...[5 => "a"]]` is
+/// `[0 => "a"]` — while a string key is kept and a later one overwrites an
+/// earlier, which is what `[...["x" => 1], ...["x" => 2]]` being `["x" => 2]`
+/// means. Returns the error text when an operand cannot be unpacked.
+fn fill_array_spreading(
+    arr: &Value,
+    mut it: impl Iterator<Item = Value>,
+) -> Result<(), (&'static str, String)> {
+    loop {
+        // `fill_array` consumes operands until it meets a spread, then hands it
+        // back so the unpacking happens outside the host borrow.
+        let Some(spread) = with_host(|h| fill_array(h, arr, &mut it)) else {
+            return Ok(());
+        };
+        for (k, v) in spread_entries(&spread)? {
+            with_host(|h| match k {
+                Value::Int(_) => h.arr_push_auto(arr, v),
+                other => h.arr_set_key(arr, &other, v),
+            });
         }
     }
 }

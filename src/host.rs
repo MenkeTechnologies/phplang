@@ -364,6 +364,14 @@ pub const STATIC_CLOSURE_CAPTURE: &str = "@static-closure";
 /// `Value::Status` carries no PHP value at all, so no expression can forge it.
 pub const AUTO_INDEX: Value = Value::Status(i32::MIN);
 
+/// The key operand marking a `...` SPREAD element in an array literal.
+///
+/// A spread contributes a whole array's worth of entries rather than one, so it
+/// cannot ride as a `key => value` pair. Like [`AUTO_INDEX`] it is a
+/// `Value::Status`, which carries no PHP value, so no expression can forge it —
+/// and it is a DIFFERENT status, so `[...$a]` and `[$a]` stay distinguishable.
+pub const SPREAD_KEY: Value = Value::Status(i32::MIN + 1);
+
 /// `array_filter()` `$mode`: the callback is handed the KEY alone.
 pub const ARRAY_FILTER_USE_KEY: i64 = 2;
 /// `array_filter()` `$mode`: the callback is handed the VALUE and the key.
@@ -372,6 +380,11 @@ pub const ARRAY_FILTER_USE_BOTH: i64 = 1;
 /// Whether a key operand is the [`AUTO_INDEX`] marker rather than a real key.
 pub fn is_auto_index(v: &Value) -> bool {
     matches!(v, Value::Status(n) if *n == i32::MIN)
+}
+
+/// Whether a key operand is the [`SPREAD_KEY`] marker.
+pub fn is_spread_key(v: &Value) -> bool {
+    matches!(v, Value::Status(n) if *n == i32::MIN + 1)
 }
 
 /// The largest number of `key => value` pairs one `MKARRAY`/`MKARRAY_ADD` can
@@ -7511,6 +7524,23 @@ pub fn static_prop_set(class: &str, name: &str, val: Value) -> Result<Value, Str
 /// `key`/`next`), or — as a fallthrough — its public properties. Eager
 /// materialization is fine for the finite iterators phplang supports; an infinite
 /// iterator would not terminate (documented). A non-iterable yields an empty array.
+/// Whether `v` is something `...` may unpack: an array, a Generator, or an
+/// object following the `Traversable` protocols — the same shapes
+/// [`foreach_prep`] drives. A PLAIN object is NOT one: `foreach` walks its
+/// public properties, but a spread rejects it, so the two part ways here.
+pub fn is_unpackable(v: &Value) -> bool {
+    if with_host(|h| h.is_array(v) || h.is_generator_val(v)) {
+        return true;
+    }
+    let Some(class) = with_host(|h| h.object_class(v)) else {
+        return false;
+    };
+    with_host(|h| {
+        h.class_has_method(&class, "getIterator")
+            || (h.class_has_method(&class, "valid") && h.class_has_method(&class, "current"))
+    })
+}
+
 pub fn foreach_prep(v: Value) -> Result<Value, String> {
     if with_host(|h| h.is_array(&v)) {
         return Ok(v);

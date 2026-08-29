@@ -319,6 +319,32 @@ three.
 | `json_decode("12345678901234567890123", false, 512, JSON_BIGINT_AS_STRING)` | `string(23)` | `float(1.2345678901234568E+22)` — the flag is defined but not read |
 | `usort($x, ["C", "m"])` for a non-static `C::m` | `TypeError: usort(): Argument #2 ($callback) must be a valid callback, non-static method C::m() cannot be called statically` | the call succeeds |
 
+## `...` unpacking: what is modelled and what is not
+
+Unpacking works in an array literal and at a call site, over arrays, Generators
+and Traversables, and raises the reference's "Only arrays and Traversables can
+be unpacked" for anything else — with the class the reference picks, which is
+not one class: an array literal says `TypeError` for an object and `Error` for a
+scalar or `null`, while an argument list says `TypeError` for both. Three edges
+remain:
+
+- **A string-keyed array unpacked at a CALL binds by position, not by name.**
+  `f(...["b" => 2, "a" => 1])` is `f(2, 1)` here and `f(a: 1, b: 2)` in the
+  reference, so it is wrong exactly when the keys are out of parameter order.
+  Named arguments themselves work when written as `f(a: 1, b: 2)`; what is
+  missing is the array-to-name path, which needs the unpacker to reach the
+  callee's parameter list rather than append positionally.
+- **A non-unpackable LITERAL is diagnosed at run time, not at compile time.**
+  `[..."str"]` written with a literal is a compile-time fatal in the reference —
+  uncatchable, no `Uncaught` in the banner — because the operand is constant.
+  Here it is the ordinary runtime throw, so a `try` around it catches what the
+  reference would never let run.
+- **`[...$a] = $b` reports the wrong text.** The reference refuses a spread in a
+  destructuring target with "Spread operator is not supported in assignments";
+  this rejects it as "invalid assignment target", through the host-level
+  `php: <message>` path that no `catch` intercepts — the general compile-time
+  diagnostic divergence recorded above, not a spread-specific one.
+
 ---
 
 ## An array read and mutated in the SAME call sees only its final state

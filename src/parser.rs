@@ -2761,6 +2761,17 @@ impl Parser {
             // `$x` as an alias of `$a[0]`. It may also precede the VALUE of a
             // keyed entry (`['k' => &$v]`), which is why it is read in both
             // places rather than only at the head of the element.
+            // `[...$a]` — array unpacking (7.4; string keys 8.1). It carries no
+            // key of its own, so it rides as a `Spread` VALUE and the compiler
+            // marks it with `host::SPREAD_KEY` where a key would go.
+            if self.eat_punct("...") {
+                let inner = self.expression()?;
+                elems.push(ArrayElem::new(None, Expr::Spread(Box::new(inner))));
+                if !self.eat_punct(",") {
+                    break;
+                }
+                continue;
+            }
             let by_ref = self.eat_punct("&");
             let first = self.expression()?;
             if !by_ref && self.eat_punct("=>") {

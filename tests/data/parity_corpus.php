@@ -531,3 +531,50 @@ $q = 99; echo $byval(), "\n";
 $name = "dyn"; $$name = 42; echo $dyn, "\n";
 print_r(compact("dyn"));
 $s = 5; extract(["s" => 9, "t" => 2]); echo $s + $t, "\n";
+#==#
+// ── `...` unpacking: array literals, argument lists, and what cannot unpack ──
+// An integer key from a spread is RENUMBERED; a string key is kept, and a later
+// one overwrites an earlier.
+var_dump([...[1, 2], ...[3, 4]]);
+var_dump([...[5 => "a", 9 => "b"]]);
+var_dump([...["x" => 1], ...["x" => 2]]);
+var_dump([...["a" => 1], ...[7 => 2]]);
+var_dump([1, ...[2, 3], 4]);
+var_dump([...[1, 2], "k" => 9, ...[3]]);
+var_dump([...[]]);
+// A literal key written after a spread still wins over the spread's.
+$a = ["x" => 1];
+var_dump([...$a, "x" => 2]);
+// A Generator unpacks by being DRIVEN, in both positions.
+function g2() { yield 1; yield 2; }
+var_dump([...g2()]);
+function sum2(...$n) { return array_sum($n); }
+echo sum2(...g2()), "\n";
+// So does anything following the Traversable protocols.
+class Agg implements IteratorAggregate {
+    public function getIterator(): Iterator { return new ArrayIterator([1, 2]); }
+}
+var_dump([...new Agg]);
+// Unpacking something that is neither is an error, and the CLASS depends on
+// where it is written and what it is: an array literal says `TypeError` for an
+// object and `Error` for a scalar, an argument list says `TypeError` for both.
+$obj = new stdClass;
+$str = "s";
+$nul = null;
+$int = 5;
+foreach ([$obj, $str, $nul, $int] as $bad) {
+    try { $x = [...$bad]; } catch (Throwable $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+}
+foreach ([$obj, $str, $nul, $int] as $bad) {
+    try { sum2(...$bad); } catch (Throwable $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+}
+// Variadics collect positionally, and a typed variadic checks each element.
+function head2($first, ...$rest) { return $first . ":" . implode(",", $rest); }
+echo head2(1, 2, 3), "\n";
+echo head2(...[1, 2, 3]), "\n";
+function ints2(int ...$n) { return count($n); }
+echo ints2(1, 2, 3), "\n";
+// Named arguments bind by name, in any order.
+function three($a, $b, $c) { return "$a|$b|$c"; }
+echo three(1, c: 3, b: 2), "\n";
+echo three(a: 1, b: 2, c: 3), "\n";

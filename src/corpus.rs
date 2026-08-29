@@ -754,7 +754,7 @@ pub const CORPUS: &[Entry] = &[
         "...",
         "Operator",
         "f(...$array)   function f(...$rest)   strlen(...)",
-        "Three roles for one token: argument unpacking at a call site, a variadic parameter that collects the trailing arguments into an array, and — as the sole argument — PHP 8.1 first-class callable syntax, which builds a real `Closure`.",
+        "Four roles for one token: argument unpacking at a call site, unpacking inside an array literal (`[...$a, ...$b]`), a variadic parameter that collects the trailing arguments into an array, and — as the sole argument — PHP 8.1 first-class callable syntax, which builds a real `Closure`. Unpacking drives a Generator or a Traversable as well as an array; anything else raises \"Only arrays and Traversables can be unpacked\". DIVERGENCE: a string-keyed array unpacked at a CALL binds by position rather than by name.",
         "function sum(...$n) { return array_sum($n); }\necho sum(...[1, 2, 3]);   // => 6\n$f = strlen(...); echo $f(\"abcd\");   // => 4",
     ),
     (
@@ -6001,7 +6001,7 @@ pub const CORPUS: &[Entry] = &[
         "call_user_func_array",
         "Callables",
         "call_user_func_array(callable $callback, array $args): mixed",
-        "Spreads the array's VALUES in order, discarding keys — so named-argument spreading is not modelled. A non-array second argument passes no arguments rather than raising. This is also what first-class callable syntax `f(...)` desugars to.",
+        "Spreads the array's VALUES in order, discarding keys — so named-argument spreading is not modelled. A non-array second argument raises the reference's `Argument #2 ($args) must be of type array` TypeError. This is also what first-class callable syntax `f(...)` desugars to.",
         "echo call_user_func_array(\"max\", [1, 5, 3]);   // => 5",
     ),
     (

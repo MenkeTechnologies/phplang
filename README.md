@@ -138,7 +138,10 @@ end-to-end (see `tests/basic.rs`):
   `continue`, `return`; `match` expressions (a no-arm/no-`default` match throws
   `\UnhandledMatchError`, as PHP 8 does).
 - User `function`s with positional, default (`$x = 1`) and variadic (`...$rest`)
-  parameters, recursion, call-site argument unpacking (`f(...$args)`), and
+  parameters, recursion, argument unpacking at a call site (`f(...$args)`)
+  and inside an array literal (`[...$a, ...$b]`, keys renumbered for integers
+  and kept for strings), either of which also drives a Generator or a
+  Traversable, and
   **named arguments** (`f(name: 1, other: 2)`, mixable with positional, order
   independent, extra names collected into a variadic); anonymous
   `function () use (...) { … }` closures — by value, and by reference with

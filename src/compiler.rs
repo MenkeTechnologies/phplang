@@ -1994,6 +1994,15 @@ impl Compiler {
                 // chunk extends it through `MKARRAY_ADD`.
                 for (chunk, es) in elems.chunks(host::MKARRAY_CHUNK_PAIRS).enumerate() {
                     for e in es {
+                        // A `...` element contributes a whole array's entries,
+                        // so it takes the spread marker where a key would go
+                        // and the compiler emits the operand it unpacks.
+                        if let Expr::Spread(inner) = &e.value {
+                            let sk = b.add_constant(host::SPREAD_KEY);
+                            b.emit(Op::LoadConst(sk), 0);
+                            self.compile_expr(b, inner)?;
+                            continue;
+                        }
                         match &e.key {
                             Some(k) => self.compile_expr(b, k)?,
                             // NOT `LoadUndef`: that is PHP `null`, and a

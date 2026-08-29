@@ -1106,3 +1106,83 @@ Array
 )
 11
 
+#REC 45 exit=0 out=1096 err=0
+array(4) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+  [2]=>
+  int(3)
+  [3]=>
+  int(4)
+}
+array(2) {
+  [0]=>
+  string(1) "a"
+  [1]=>
+  string(1) "b"
+}
+array(1) {
+  ["x"]=>
+  int(2)
+}
+array(2) {
+  ["a"]=>
+  int(1)
+  [0]=>
+  int(2)
+}
+array(4) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+  [2]=>
+  int(3)
+  [3]=>
+  int(4)
+}
+array(4) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+  ["k"]=>
+  int(9)
+  [2]=>
+  int(3)
+}
+array(0) {
+}
+array(1) {
+  ["x"]=>
+  int(2)
+}
+array(2) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+}
+3
+array(2) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+}
+TypeError: Only arrays and Traversables can be unpacked, stdClass given
+Error: Only arrays and Traversables can be unpacked, string given
+Error: Only arrays and Traversables can be unpacked, null given
+Error: Only arrays and Traversables can be unpacked, int given
+TypeError: Only arrays and Traversables can be unpacked, stdClass given
+TypeError: Only arrays and Traversables can be unpacked, string given
+TypeError: Only arrays and Traversables can be unpacked, null given
+TypeError: Only arrays and Traversables can be unpacked, int given
+1:2,3
+1:2,3
+3
+1|2|3
+1|2|3
+

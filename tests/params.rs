@@ -147,13 +147,39 @@ fn spread_into_variadic() {
 }
 
 #[test]
-fn spread_of_non_array_is_a_scaffold_noop() {
-    // SCAFFOLD DEVIATION: unpacking a non-array contributes no arguments here.
-    // Real PHP 8 raises a TypeError. This pins phplang's silent-drop behavior.
+fn spread_of_non_array_raises_a_type_error() {
+    // Unpacking something that is neither an array nor a Traversable is a
+    // catchable `TypeError` in an argument list, message included. It used to
+    // contribute no arguments and answer 0 — a silent wrong count.
     let src = r#"<?php
         function cnt(...$xs) {
             return count($xs);
         }
-        echo cnt(...5);"#;
-    assert_eq!(run(src), "0");
+        $n = 5;
+        try {
+            echo cnt(...$n);
+        } catch (TypeError $e) {
+            echo get_class($e), ": ", $e->getMessage();
+        }"#;
+    assert_eq!(
+        run(src),
+        "TypeError: Only arrays and Traversables can be unpacked, int given"
+    );
+}
+
+#[test]
+fn spread_drives_a_generator_into_a_variadic() {
+    // A Generator unpacks by being driven, so its values arrive as arguments
+    // rather than as nothing.
+    let src = r#"<?php
+        function total(...$xs) {
+            return array_sum($xs);
+        }
+        function gen() {
+            yield 1;
+            yield 2;
+            yield 3;
+        }
+        echo total(...gen());"#;
+    assert_eq!(run(src), "6");
 }
