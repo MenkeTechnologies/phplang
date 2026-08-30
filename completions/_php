@@ -4,9 +4,14 @@ _php() {
   _arguments -s \
     '(-r --run)'{-r,--run}'[run PHP code from the argument]:code' \
     '(-a --interactive)'{-a,--interactive}'[start the interactive REPL]' \
+    '(-d --define)'{-d,--define}'[define an INI entry: NAME[=VALUE]]:ini entry' \
     '--lsp[speak LSP over stdio]' \
     '--dap[speak DAP over stdio]' \
     '--dump-bytecode[print lowered fusevm bytecode]' \
+    '--dump-tokens[print the lexer token stream and exit]' \
+    '--dump-ast[print the parsed AST and exit]' \
+    '--disasm[print a fusevm bytecode disassembly and exit]' \
+    '--tiers[run it, then report which fusevm tiers took its chunks]' \
     '(-h --help)'{-h,--help}'[show help]' \
     '(-V --version)'{-V,--version}'[show version]' \
     '*:PHP file:_files -g "*.php"'
