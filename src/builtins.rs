@@ -1405,14 +1405,15 @@ fn bubbled(vm: &mut VM, v: Value) -> Value {
 /// one `(is_spread, value)` pair per source argument; a spread pair's value is an
 /// array whose elements are flattened, in order, into the positional arguments.
 /// A Generator or `Traversable` operand is driven for its values, and one that
-/// is neither raises the reference's `TypeError`. Spread arrays are flattened
-/// POSITIONALLY: a string key names an argument in the reference and does not
-/// here, so `f(...["b" => 2, "a" => 1])` binds by position rather than by name —
-/// see BUGS.md.
+/// is neither raises the reference's `TypeError`. A spread's INTEGER keys are
+/// positional and its STRING keys are named arguments — `f(...["b" => 2,
+/// "a" => 1])` binds by name, so the two are bound to `$a` and `$b` rather than
+/// in the order the array happened to list them.
 fn b_call_spread(vm: &mut VM, argc: u8) -> Value {
     let pairs = pop_args(vm, argc as usize - 1);
     let name = pop_name(vm);
     let mut args = Vec::with_capacity(pairs.len() / 2);
+    let mut named: Vec<(String, Value)> = Vec::new();
     let mut it = pairs.into_iter();
     while let (Some(flag), Some(val)) = (it.next(), it.next()) {
         if !with_host(|h| h.is_truthy(&flag)) {
@@ -1421,13 +1422,28 @@ fn b_call_spread(vm: &mut VM, argc: u8) -> Value {
         }
         // Outside a `with_host` borrow: unpacking a Generator runs its body.
         match spread_entries(&val) {
-            Ok(entries) => args.extend(entries.into_iter().map(|(_, v)| v)),
+            Ok(entries) => {
+                for (k, v) in entries {
+                    // A STRING key names a parameter; an integer key is
+                    // positional. The key is what decides, not the position it
+                    // happened to sit at in the array.
+                    match k {
+                        Value::Str(_) => named.push((with_host(|h| h.to_str(&k)), v)),
+                        _ => args.push(v),
+                    }
+                }
+            }
             // An argument list raises `TypeError` whatever the operand was.
             Err((_, e)) => return throw_php(vm, "TypeError", &e),
         }
     }
     mark_frame_line(vm);
-    match host::call_function(&name, args) {
+    let out = if named.is_empty() {
+        host::call_function(&name, args)
+    } else {
+        host::call_function_named(&name, args, named)
+    };
+    match out {
         Ok(v) => bubbled(vm, v),
         Err(e) => fail(vm, e),
     }
