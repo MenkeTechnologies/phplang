@@ -578,3 +578,31 @@ echo ints2(1, 2, 3), "\n";
 function three($a, $b, $c) { return "$a|$b|$c"; }
 echo three(1, c: 3, b: 2), "\n";
 echo three(a: 1, b: 2, c: 3), "\n";
+#==#
+// ── a spread's STRING keys are named arguments, its integer keys positional ──
+// The key decides, not the position the entry happened to occupy: an array
+// listing `c` first still binds `c` to $c.
+function three_of($a, $b, $c) { return "$a|$b|$c"; }
+echo three_of(...["c" => 3, "a" => 1, "b" => 2]), "\n";
+echo three_of(...["a" => 1, "b" => 2, "c" => 3]), "\n";
+echo three_of(...[1, 2, 3]), "\n";
+// Positional arguments before the spread keep their places.
+echo three_of(1, ...["c" => 3, "b" => 2]), "\n";
+// A named argument may skip a parameter that has a default.
+function with_defaults($a, $b = 9, $c = 8) { return "$a|$b|$c"; }
+echo with_defaults(...["a" => 1, "c" => 3]), "\n";
+echo with_defaults(...["a" => 1]), "\n";
+// An integer-keyed array is positional even when the keys are out of order or
+// sparse, because unpacking renumbers them.
+echo three_of(...[0 => 1, 1 => 2, 2 => 3]), "\n";
+// A variadic collects the positional form.
+function how_many(...$n) { return count($n); }
+echo how_many(...[1, 2, 3]), "\n";
+// A Generator unpacks positionally — it has no string keys to name with.
+function gen_two() { yield 1; yield 2; }
+function add_all(...$n) { return array_sum($n); }
+echo add_all(...gen_two()), "\n";
+// Both spellings of the same call agree.
+function pair($a, $b) { return "$a$b"; }
+var_dump(pair(...["a" => 1, "b" => 2]) === pair(...[1, 2]));
+var_dump(pair(...["b" => 2, "a" => 1]) === pair(1, 2));

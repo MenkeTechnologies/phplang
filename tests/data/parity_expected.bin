@@ -1186,3 +1186,16 @@ TypeError: Only arrays and Traversables can be unpacked, int given
 1|2|3
 1|2|3
 
+#REC 46 exit=0 out=68 err=0
+1|2|3
+1|2|3
+1|2|3
+1|2|3
+1|9|3
+1|9|8
+1|2|3
+3
+3
+bool(true)
+bool(true)
+
