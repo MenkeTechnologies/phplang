@@ -327,18 +327,10 @@ be unpacked" for anything else — with the class the reference picks, which is
 not one class: an array literal says `TypeError` for an object and `Error` for a
 scalar or `null`, while an argument list says `TypeError` for both. A spread's
 STRING keys are named arguments and its integer keys positional, so
-`f(...["b" => 2, "a" => 1])` binds by name rather than by position. Two edges
-remain:
+`f(...["b" => 2, "a" => 1])` binds by name rather than by position, and a name
+that matches no parameter is now the reference's `Unknown named parameter`
+rather than a silent drop. Two edges remain:
 
-- **Named arguments do not check the NAME.** `f(zz: 1)` for a function with no
-  `$zz` parameter binds nothing and runs, where the reference raises
-  `Error: Unknown named parameter $zz`; a call left short of a required
-  parameter runs too, where the reference raises `ArgumentCountError: Too few
-  arguments`. Both belong to the named path itself rather than to a spelling —
-  `f(zz: 1)` and `f(...["zz" => 1])` behave identically, which is the consistent
-  half of it. Closing this needs the binder to report a name it could not place
-  and a parameter it could not fill, neither of which it currently tells apart
-  from a parameter left to its default.
 - **A non-unpackable LITERAL is diagnosed at run time, not at compile time.**
   `[..."str"]` written with a literal is a compile-time fatal in the reference —
   uncatchable, no `Uncaught` in the banner — because the operand is constant.

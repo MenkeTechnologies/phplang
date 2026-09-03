@@ -251,6 +251,11 @@ fn b_call_named(vm: &mut VM, argc: u8) -> Value {
     let pairs = pop_args(vm, argc as usize - 1);
     let name = pop_name(vm);
     let (pos, named) = split_named(pairs);
+    // The only call op that did not record its line: `b_call`, `b_mcall`,
+    // `b_scall` and both other named variants all do, so an error raised by a
+    // named FUNCTION call reported "on line 0" while the same error from every
+    // other spelling named the caller's line.
+    mark_frame_line(vm);
     match host::call_function_named(&name, pos, named) {
         Ok(v) => bubbled(vm, v),
         Err(e) => fail(vm, e),

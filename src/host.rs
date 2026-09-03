@@ -6274,6 +6274,83 @@ fn display_frame(frame: &str) -> String {
 /// happen, and the caller returns null while the dispatcher unwinds it.
 type ArgCheck = Result<Option<(Vec<Value>, Vec<(String, Value)>)>, String>;
 
+/// The call-shape errors PHP raises before a body runs: a named argument that
+/// names nothing, one that collides with a positional, and a required parameter
+/// left unfilled.
+///
+/// Separate from [`check_arg_types`], which returns early when no parameter is
+/// typed — these apply to every call, typed or not. `Ok(false)` means an error
+/// is pending and the caller must not run the body.
+fn check_call_shape(
+    frame: &str,
+    params: &[Param],
+    args: &[Value],
+    named: &[(String, Value)],
+) -> Result<bool, String> {
+    let called_with: Vec<Value> = args.to_vec();
+    let has_variadic = params.iter().any(|p| p.variadic);
+    for (n, _) in named {
+        match params.iter().position(|p| !p.variadic && p.name == *n) {
+            // Naming a parameter a positional argument already filled is an
+            // error, not a silent overwrite — PHP will not let one call bind the
+            // same parameter twice.
+            Some(i) if i < args.len() => {
+                throw_from_internal(
+                    frame,
+                    &called_with,
+                    "Error",
+                    &format!("Named parameter ${n} overwrites previous argument"),
+                )?;
+                return Ok(false);
+            }
+            Some(_) => {}
+            // A variadic collects names it cannot place; without one there is
+            // nowhere for the name to go and dropping it was silent.
+            None if !has_variadic => {
+                throw_from_internal(
+                    frame,
+                    &called_with,
+                    "Error",
+                    &format!("Unknown named parameter ${n}"),
+                )?;
+                return Ok(false);
+            }
+            None => {}
+        }
+    }
+    // A parameter is filled positionally, filled by name, variadic, or has a
+    // default. Anything else leaves the call short.
+    let required = params
+        .iter()
+        .filter(|p| !p.variadic && p.default.is_none())
+        .count();
+    let unfilled = params.iter().enumerate().any(|(i, p)| {
+        !p.variadic
+            && p.default.is_none()
+            && i >= args.len()
+            && !named.iter().any(|(n, _)| *n == p.name)
+    });
+    if unfilled {
+        // "exactly" when every parameter is required, "at least" when the
+        // function also takes optional or variadic ones.
+        let bound = if required == params.len() { "exactly" } else { "at least" };
+        let passed = args.len() + named.len();
+        let shown = display_frame(frame);
+        let (file, line) = with_host(|h| (h.script_name().to_string(), h.cur_frame_line()));
+        throw_from_internal(
+            frame,
+            &called_with,
+            "ArgumentCountError",
+            &format!(
+                "Too few arguments to function {shown}(), {passed} passed in {file} \
+                 on line {line} and {bound} {required} expected"
+            ),
+        )?;
+        return Ok(false);
+    }
+    Ok(true)
+}
+
 fn check_arg_types(
     frame: &str,
     params: &[Param],
@@ -6467,6 +6544,11 @@ fn invoke_with_locals(
     locals: &[String],
 ) -> Result<Value, String> {
     let Signature { params, ret } = sig;
+    if !check_call_shape(frame, params, &args, &named)? {
+        // The call was rejected before it began; the dispatcher unwinds the
+        // pending error.
+        return Ok(Value::Undef);
+    }
     let Some((args, named)) = check_arg_types(frame, params, args, named)? else {
         // The call was rejected before it began: a `TypeError` is pending and the
         // dispatcher will unwind it.
