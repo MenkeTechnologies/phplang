@@ -606,3 +606,34 @@ echo add_all(...gen_two()), "\n";
 function pair($a, $b) { return "$a$b"; }
 var_dump(pair(...["a" => 1, "b" => 2]) === pair(...[1, 2]));
 var_dump(pair(...["b" => 2, "a" => 1]) === pair(1, 2));
+#==#
+// ── the call-shape errors, raised before the body runs ──
+// A named argument that names no parameter is an error, not a silent drop —
+// unless the function has a variadic, which collects it under its name.
+function one_param($a) { return $a; }
+try { one_param(zz: 1); } catch (Error $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+function with_rest($a, ...$rest) { return count($rest); }
+echo with_rest(1, zz: 5), "\n";
+// Naming a parameter a positional argument already filled is an error too.
+try { one_param(1, a: 2); } catch (Error $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+// A required parameter left unfilled is ArgumentCountError, whether the call
+// was short positionally or named the wrong subset. "exactly" when every
+// parameter is required, "at least" when some are optional.
+function two_required($a, $b) { return "$a$b"; }
+function one_optional($a, $b, $c = 3) { return "$a$b$c"; }
+try { two_required(1); } catch (ArgumentCountError $e) { echo get_class($e), "\n"; }
+try { two_required(a: 1); } catch (ArgumentCountError $e) { echo get_class($e), "\n"; }
+try { one_optional(1); } catch (ArgumentCountError $e) { echo get_class($e), "\n"; }
+// The counts and wording, with the file and line stripped so the record is
+// machine-independent.
+function tail_of($e) { return preg_replace('/ in .*? on line \d+/', ' in FILE on line N', $e->getMessage()); }
+try { two_required(1); } catch (ArgumentCountError $e) { echo tail_of($e), "\n"; }
+try { one_optional(1); } catch (ArgumentCountError $e) { echo tail_of($e), "\n"; }
+class Holder { public function pair($a, $b) { return "$a$b"; } }
+try { (new Holder)->pair(1); } catch (ArgumentCountError $e) { echo tail_of($e), "\n"; }
+// Calls that ARE well formed still run, by position, by name, and mixed.
+echo two_required(1, 2), " ", two_required(b: 2, a: 1), " ", two_required(1, b: 2), "\n";
+function has_default($a, $b = 2) { return "$a$b"; }
+echo has_default(a: 9), " ", has_default(1), " ", has_default(1, 5), "\n";
+function no_params() { return "ok"; }
+echo no_params(), "\n";

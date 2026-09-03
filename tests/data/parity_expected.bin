@@ -1199,3 +1199,17 @@ TypeError: Only arrays and Traversables can be unpacked, int given
 bool(true)
 bool(true)
 
+#REC 47 exit=0 out=459 err=0
+Error: Unknown named parameter $zz
+1
+Error: Named parameter $a overwrites previous argument
+ArgumentCountError
+ArgumentCountError
+ArgumentCountError
+Too few arguments to function two_required(), 1 passed in FILE on line N and exactly 2 expected
+Too few arguments to function one_optional(), 1 passed in FILE on line N and at least 2 expected
+Too few arguments to function Holder::pair(), 1 passed in FILE on line N and exactly 2 expected
+12 12 12
+92 12 15
+ok
+
