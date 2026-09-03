@@ -6333,7 +6333,11 @@ fn check_call_shape(
     if unfilled {
         // "exactly" when every parameter is required, "at least" when the
         // function also takes optional or variadic ones.
-        let bound = if required == params.len() { "exactly" } else { "at least" };
+        let bound = if required == params.len() {
+            "exactly"
+        } else {
+            "at least"
+        };
         let passed = args.len() + named.len();
         let shown = display_frame(frame);
         let (file, line) = with_host(|h| (h.script_name().to_string(), h.cur_frame_line()));
