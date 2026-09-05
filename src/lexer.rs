@@ -100,6 +100,16 @@ const OPERATORS: &[&str] = &[
     ">", "!", "?", ":", "&", "|", "^", "~", "@", "\\",
 ];
 
+/// Where an interpolated body stops.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum InterpEnd {
+    /// A double-quoted string: the closing `"`, and an unterminated body is
+    /// an error.
+    DoubleQuote,
+    /// A heredoc body, already cut from the source: everything to the end.
+    EndOfInput,
+}
+
 struct Lexer<'a> {
     src: &'a [u8],
     pos: usize,
@@ -203,6 +213,9 @@ impl<'a> Lexer<'a> {
                 b'#' => self.skip_line_comment(),
                 b'/' if self.peek(1) == Some(b'*') => self.skip_block_comment()?,
                 b'$' => self.lex_variable(),
+                // Before the operator table, which would otherwise take `<<`
+                // and leave a stray `<` and an identifier.
+                _ if self.starts_with("<<<") => self.lex_heredoc()?,
                 b'\'' => self.lex_single_quote()?,
                 b'"' => self.lex_double_quote()?,
                 b'0'..=b'9' => self.lex_number(),
@@ -387,18 +400,31 @@ impl<'a> Lexer<'a> {
 
     fn lex_double_quote(&mut self) -> Result<(), String> {
         self.pos += 1; // opening quote
+        let parts = self.scan_interp(InterpEnd::DoubleQuote)?;
+        self.pos += 1; // closing quote
+        self.push(Tok::Interp(parts));
+        Ok(())
+    }
+
+    /// Scan interpolated body text into parts, stopping at `end`. The
+    /// terminator itself is left for the caller to consume.
+    ///
+    /// Shared by the double-quoted string and the heredoc, which differ in
+    /// exactly two ways and are otherwise the same language: where the body
+    /// stops, and whether `\"` is an escape. In a heredoc it is NOT — the
+    /// reference leaves the backslash in place, because a `"` there needs no
+    /// escaping to begin with.
+    fn scan_interp(&mut self, end: InterpEnd) -> Result<Vec<StrPart>, String> {
         let mut parts: Vec<StrPart> = Vec::new();
         let mut lit = String::new();
         while self.pos < self.src.len() {
             let c = self.src[self.pos];
             match c {
-                b'"' => {
-                    self.pos += 1;
+                b'"' if end == InterpEnd::DoubleQuote => {
                     if !lit.is_empty() {
                         parts.push(StrPart::Lit(std::mem::take(&mut lit)));
                     }
-                    self.push(Tok::Interp(parts));
-                    return Ok(());
+                    return Ok(parts);
                 }
                 b'\\' => {
                     self.pos += 1;
@@ -427,7 +453,7 @@ impl<'a> Lexer<'a> {
                         b'r' => '\r',
                         b'v' => '\x0b',
                         b'f' => '\x0c',
-                        b'"' => '"',
+                        b'"' if end == InterpEnd::DoubleQuote => '"',
                         b'\\' => '\\',
                         b'$' => '$',
                         b'e' => '\x1b',
@@ -507,13 +533,155 @@ impl<'a> Lexer<'a> {
                 _ => {
                     // Preserve UTF-8 multibyte sequences verbatim.
                     let ch_len = utf8_len(c);
-                    let end = (self.pos + ch_len).min(self.src.len());
-                    lit.push_str(&String::from_utf8_lossy(&self.src[self.pos..end]));
-                    self.pos = end;
+                    let stop = (self.pos + ch_len).min(self.src.len());
+                    lit.push_str(&String::from_utf8_lossy(&self.src[self.pos..stop]));
+                    self.pos = stop;
                 }
             }
         }
+        if end == InterpEnd::EndOfInput {
+            if !lit.is_empty() {
+                parts.push(StrPart::Lit(lit));
+            }
+            return Ok(parts);
+        }
         Err(format!("unterminated string (line {})", self.line))
+    }
+
+    /// `<<<LABEL` (heredoc) and `<<<'LABEL'` (nowdoc).
+    ///
+    /// The body is delimited by a line whose first non-blank content is the
+    /// label, and the closing line's indentation is stripped from every body
+    /// line (PHP 7.3's flexible form) before anything else happens — the
+    /// reference dedents the raw text and only then processes escapes and
+    /// interpolation, so a `$var` that begins a line is not affected by how
+    /// far the block is indented.
+    ///
+    /// A heredoc body is the double-quoted language minus the `\"` escape, so
+    /// it is scanned by [`Lexer::scan_interp`] over the dedented text rather
+    /// than by a second copy of it. A nowdoc body is verbatim: no escapes at
+    /// all, not even `\\`.
+    fn lex_heredoc(&mut self) -> Result<(), String> {
+        let opened = self.line;
+        let start = self.pos;
+        self.pos += 3; // `<<<`
+        while matches!(self.src.get(self.pos), Some(b' ' | b'\t')) {
+            self.pos += 1;
+        }
+        // `<<<'X'` is a nowdoc, `<<<"X"` and bare `<<<X` are heredocs.
+        let quote = match self.src.get(self.pos) {
+            Some(&q @ (b'\'' | b'"')) => {
+                self.pos += 1;
+                Some(q)
+            }
+            _ => None,
+        };
+        let label_start = self.pos;
+        while matches!(self.src.get(self.pos), Some(&b) if is_ident(b)) {
+            self.pos += 1;
+        }
+        let label = String::from_utf8_lossy(&self.src[label_start..self.pos]).into_owned();
+        if label.is_empty() || label.as_bytes()[0].is_ascii_digit() {
+            return Err(located(
+                "syntax error, unexpected token \"<<<\"".into(),
+                opened,
+            ));
+        }
+        if let Some(q) = quote {
+            if self.src.get(self.pos) != Some(&q) {
+                return Err(located(
+                    "syntax error, unexpected token \"<<<\"".into(),
+                    opened,
+                ));
+            }
+            self.pos += 1;
+        }
+        if self.src.get(self.pos) == Some(&b'\r') {
+            self.pos += 1;
+        }
+        if self.src.get(self.pos) != Some(&b'\n') {
+            return Err(located(
+                "syntax error, unexpected token \"<<<\"".into(),
+                opened,
+            ));
+        }
+        self.pos += 1;
+        let body_start = self.pos;
+
+        // The closing line: the label as the first non-blank content, and not
+        // the head of a longer identifier — `EOTX` does not close `EOT`.
+        let (body_end, indent_len, after) = {
+            let mut i = body_start;
+            loop {
+                let line_start = i;
+                let mut j = i;
+                while matches!(self.src.get(j), Some(b' ' | b'\t')) {
+                    j += 1;
+                }
+                let is_close = self.src[j..].starts_with(label.as_bytes())
+                    && !matches!(self.src.get(j + label.len()), Some(&b) if is_ident(b));
+                if is_close {
+                    break (line_start, j - line_start, j + label.len());
+                }
+                match self.src[i..].iter().position(|&b| b == b'\n') {
+                    Some(n) => i += n + 1,
+                    // The reference names the line the file RAN OUT on, not the
+                    // line the heredoc opened on.
+                    None => {
+                        let eof = opened
+                            + self.src[start..].iter().filter(|&&b| b == b'\n').count() as u32;
+                        return Err(located(
+                            "syntax error, unexpected end of file, expecting variable \
+                             or heredoc end or \"${\" or \"{$\""
+                                .to_string(),
+                            eof,
+                        ));
+                    }
+                }
+            }
+        };
+
+        // The newline that ends the last body line belongs to the delimiter,
+        // not to the string.
+        let mut raw_end = body_end;
+        if raw_end > body_start && self.src[raw_end - 1] == b'\n' {
+            raw_end -= 1;
+            if raw_end > body_start && self.src[raw_end - 1] == b'\r' {
+                raw_end -= 1;
+            }
+        }
+        let raw = String::from_utf8_lossy(&self.src[body_start..raw_end]).into_owned();
+        let body_line = opened
+            + self.src[start..body_start]
+                .iter()
+                .filter(|&&b| b == b'\n')
+                .count() as u32;
+        let body = dedent_heredoc(&raw, &self.src[body_end..body_end + indent_len], body_line)?;
+
+        // Line accounting covers the whole construct, delimiter included, so the
+        // token that follows the heredoc is attributed to the closing line.
+        let consumed = self.src[start..after]
+            .iter()
+            .filter(|&&b| b == b'\n')
+            .count() as u32;
+        self.pos = after;
+
+        // The token is attributed to the line the `<<<` was written on, which is
+        // where the reference reports a diagnostic raised by the body.
+        if quote == Some(b'\'') {
+            self.push(Tok::Str(body));
+        } else {
+            let mut sub = Lexer {
+                src: body.as_bytes(),
+                pos: 0,
+                line: body_line,
+                out: Vec::new(),
+            };
+            let parts = sub.scan_interp(InterpEnd::EndOfInput)?;
+            self.push(Tok::Interp(parts));
+        }
+        self.line = opened + consumed;
+        Ok(())
     }
 
     /// Consume a `{$…}` interpolation and return the expression source between
@@ -730,6 +898,44 @@ impl<'a> Lexer<'a> {
 
 /// Parse `digits` in the given radix into an integer token, falling back to a
 /// float when the value overflows `i64` (as PHP does for large literals).
+/// Strip the closing delimiter's indentation from every line of a heredoc body
+/// (PHP 7.3's flexible heredoc).
+///
+/// A line that is entirely empty carries no indentation and is legal at any
+/// level; any other line must begin with the delimiter's exact indentation, and
+/// the reference refuses the whole block when one does not — it is a PARSE
+/// error, naming the first offending line, not a line silently left as written.
+fn dedent_heredoc(raw: &str, indent: &[u8], first_line: u32) -> Result<String, String> {
+    if indent.is_empty() {
+        return Ok(raw.to_string());
+    }
+    let indent = String::from_utf8_lossy(indent).into_owned();
+    let mut out = String::with_capacity(raw.len());
+    for (n, line) in raw.split('\n').enumerate() {
+        if n > 0 {
+            out.push('\n');
+        }
+        if line.strip_suffix('\r').unwrap_or(line).is_empty() {
+            out.push_str(line);
+            continue;
+        }
+        match line.strip_prefix(indent.as_str()) {
+            Some(rest) => out.push_str(rest),
+            None => {
+                return Err(located(
+                    format!(
+                        "Invalid body indentation level (expecting an indentation \
+                         level of at least {})",
+                        indent.chars().count()
+                    ),
+                    first_line + n as u32,
+                ))
+            }
+        }
+    }
+    Ok(out)
+}
+
 fn parse_radix(digits: &str, radix: u32) -> Tok {
     match i64::from_str_radix(digits, radix) {
         Ok(n) => Tok::Int(n),

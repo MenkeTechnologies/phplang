@@ -648,6 +648,11 @@ pub struct ClassDecl {
     pub trait_aliases: Vec<TraitAlias>,
     /// Whether this is an `interface` (vs a `class`/`trait`).
     pub is_interface: bool,
+    /// Whether this is a `trait`. A trait's methods are compiled ONCE and copied
+    /// into every class that uses them, so the class `self` and `parent` name is
+    /// not known while the body is being lowered — it is whichever class ends up
+    /// running the method, exactly as for `__CLASS__`.
+    pub is_trait: bool,
     /// `readonly class` (PHP 8.2) — every property the class declares is
     /// readonly, promoted constructor parameters included.
     pub is_readonly: bool,

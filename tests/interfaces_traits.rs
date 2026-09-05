@@ -229,3 +229,64 @@ fn a_use_of_an_undeclared_trait_is_a_throwable_error() {
         catch (Error $e) { echo get_class($e), ": ", $e->getMessage(); }"#;
     assert_eq!(run(src), "Error: Trait \"Nope\" not found");
 }
+
+// ── interface constants ─────────────────────────────────────────────────────
+//
+// A `const` declared in an interface is inherited by everything that implements
+// or extends it. The constant lookup used to walk only the `parent` chain, so
+// every one of these was `Error: Undefined constant C::K`.
+
+#[test]
+fn a_class_inherits_the_constants_of_the_interface_it_implements() {
+    let src = r#"<?php
+        interface I { const K = 5; }
+        class C implements I {}
+        echo C::K;"#;
+    assert_eq!(run(src), "5");
+}
+
+#[test]
+fn self_and_static_reach_an_inherited_interface_constant() {
+    let src = r#"<?php
+        interface I { const K = 5; }
+        class C implements I {
+            public function a() { return self::K; }
+            public function b() { return static::K; }
+        }
+        $c = new C();
+        echo $c->a(), $c->b();"#;
+    assert_eq!(run(src), "55");
+}
+
+#[test]
+fn an_interface_constant_is_inherited_through_an_extending_interface() {
+    let src = r#"<?php
+        interface I { const K = 5; }
+        interface J extends I {}
+        class C implements J {}
+        echo C::K, J::K;"#;
+    assert_eq!(run(src), "55");
+}
+
+#[test]
+fn a_class_constant_shadows_the_interface_one() {
+    // The parent CHAIN is searched before any interface, so the nearer class
+    // wins at every depth — `P` still answers with the interface's value.
+    let src = r#"<?php
+        interface I { const K = 1; }
+        class P implements I {}
+        class C extends P { const K = 2; }
+        echo C::K, P::K;"#;
+    assert_eq!(run(src), "21");
+}
+
+#[test]
+fn a_class_that_implements_nothing_still_has_no_such_constant() {
+    // The widened lookup must not start finding constants of interfaces the
+    // class has no relation to.
+    let src = r#"<?php
+        interface I { const K = 1; }
+        class C {}
+        try { echo C::K; } catch (Error $e) { echo $e->getMessage(); }"#;
+    assert_eq!(run(src), "Undefined constant C::K");
+}

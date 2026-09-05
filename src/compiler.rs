@@ -126,6 +126,43 @@ fn byref_arg_class(e: &Expr) -> ByRefArg {
     }
 }
 
+/// The receiver of `e` when `e` is one LINK of a `->` / `?->` / `[…]` access
+/// chain, or `None` when `e` is not a link at all.
+///
+/// The spine this walks is exactly what a nullsafe operator short-circuits
+/// over — see [`chain_has_nullsafe`].
+fn chain_recv(e: &Expr) -> Option<&Expr> {
+    match e {
+        Expr::PropGet(r, _)
+        | Expr::NullsafePropGet(r, _)
+        | Expr::MethodCall(r, _, _)
+        | Expr::NullsafeMethodCall(r, _, _)
+        | Expr::Index(r, _) => Some(r),
+        _ => None,
+    }
+}
+
+/// Whether the receiver SPINE of `e` spells a `?->`.
+///
+/// Only the spine is walked. A `?->` inside an argument or a subscript is its
+/// own chain and short-circuits its own extent: `$a->m($n?->x->y)` must skip
+/// `->y` and still call `$a->m`, so the two chains cannot share one exit.
+fn chain_has_nullsafe(e: &Expr) -> bool {
+    let mut cur = e;
+    loop {
+        if matches!(
+            cur,
+            Expr::NullsafePropGet(..) | Expr::NullsafeMethodCall(..)
+        ) {
+            return true;
+        }
+        match chain_recv(cur) {
+            Some(r) => cur = r,
+            None => return false,
+        }
+    }
+}
+
 /// The by-reference positions that RAISE a diagnostic, as
 /// `(name, 1-based argument number, parameter name)`.
 ///
@@ -300,6 +337,10 @@ pub struct Compiler {
     /// before [`Compiler::slots`] everywhere a variable is read or written; a
     /// name that is not here keeps the by-name/host-slot path unchanged.
     fslots: FxHashMap<String, u16>,
+    /// Whether the declaration being lowered is a `trait`, in which case `self`
+    /// and `parent` are resolved at run time rather than baked — see
+    /// [`Compiler::emit_class_name`].
+    in_trait: bool,
     /// Of [`Compiler::fslots`], the names every write to is provably numeric, so
     /// `++` may be lowered as `+ 1` on the native `Add` rather than through the
     /// host step.
@@ -1295,6 +1336,7 @@ impl Compiler {
     fn compile_class(&mut self, b: &mut ChunkBuilder, decl: &ClassDecl) -> Result<(), String> {
         let prev_class = self.current_class.take();
         let prev_parent = self.current_parent.take();
+        let prev_in_trait = std::mem::replace(&mut self.in_trait, decl.is_trait);
         self.current_class = Some(decl.name.clone());
         self.current_parent = decl.parent.clone();
 
@@ -1344,6 +1386,7 @@ impl Compiler {
                 }
                 b.emit(Op::Pop, self.cur_line);
                 self.current_class = prev_class;
+                self.in_trait = prev_in_trait;
                 self.current_parent = prev_parent;
                 return Ok(());
             }
@@ -1497,6 +1540,7 @@ impl Compiler {
         ));
 
         self.current_class = prev_class;
+        self.in_trait = prev_in_trait;
         self.current_parent = prev_parent;
         Ok(())
     }
@@ -1751,6 +1795,25 @@ impl Compiler {
     /// class travels along as the fallback for a `static::` reached outside any
     /// method call.
     fn emit_class_name(&mut self, b: &mut ChunkBuilder, class: &str) -> Result<(), String> {
+        // Inside a TRAIT, `self` and `parent` are not knowable here: the body is
+        // compiled once and copied into every class that uses it, so the class
+        // they name is whichever one ends up running the method. Resolved at run
+        // time from the frame, the way `__CLASS__` already is (see the trait arm
+        // of `Parser::class_stmt`). `static` needs no special case — it is
+        // already a run-time lookup.
+        if self.in_trait {
+            match class.to_ascii_lowercase().as_str() {
+                "self" => {
+                    b.emit(Op::CallBuiltin(ops::SELF_CLASS, 0), self.cur_line);
+                    return Ok(());
+                }
+                "parent" => {
+                    b.emit(Op::CallBuiltin(ops::PARENT_CLASS, 0), self.cur_line);
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
         let cname = self.resolve_class_name(class)?;
         let idx = b.add_constant(Value::str(cname));
         b.emit(Op::LoadConst(idx), 0);
@@ -1951,6 +2014,14 @@ impl Compiler {
     // ── expressions ────────────────────────────────────────────────────────
 
     fn compile_expr(&mut self, b: &mut ChunkBuilder, e: &Expr) -> Result<(), String> {
+        // A chain containing a `?->` is lowered whole, so the short-circuit can
+        // skip every link that follows it rather than only the one that spelled
+        // it. Intercepted here rather than in the two nullsafe arms because the
+        // node that OWNS the chain is its outermost link, which is an ordinary
+        // `->` or `[…]` whenever the `?->` is not last.
+        if chain_has_nullsafe(e) {
+            return self.compile_nullsafe_chain(b, e, false);
+        }
         match e {
             // `$$x` / `${expr}`: the operand's STRING value is the variable's
             // name, so the lookup is by name rather than through a compiled
@@ -2205,7 +2276,7 @@ impl Compiler {
             Expr::Spread(_) => {
                 return Err("'...' argument unpacking is only valid in a function call".into())
             }
-            Expr::CallValue(callee, args) if has_named(args) => {
+            Expr::CallValue(callee, args) if needs_arg_pairs(args) => {
                 self.compile_expr(b, callee)?;
                 self.compile_arg_pairs(b, args)?;
                 b.emit(
@@ -2282,7 +2353,7 @@ impl Compiler {
                 self.compile_expr(b, &Expr::New(name, args.clone()))?;
                 self.cur_line = site;
             }
-            Expr::New(class, args) if has_named(args) => {
+            Expr::New(class, args) if needs_arg_pairs(args) => {
                 self.emit_class_name(b, class)?;
                 self.compile_arg_pairs(b, args)?;
                 b.emit(
@@ -2306,7 +2377,7 @@ impl Compiler {
                 b.emit(Op::LoadConst(idx), 0);
                 b.emit(Op::CallBuiltin(ops::PROP_GET, 2), self.cur_line);
             }
-            Expr::MethodCall(recv, name, args) if has_named(args) => {
+            Expr::MethodCall(recv, name, args) if needs_arg_pairs(args) => {
                 self.compile_expr(b, recv)?;
                 let idx = b.add_constant(Value::str(name.clone()));
                 b.emit(Op::LoadConst(idx), 0);
@@ -2330,37 +2401,11 @@ impl Compiler {
                 let all = (0..args.len()).collect::<Vec<_>>();
                 self.emit_byref_writeback(b, args, &all, true)?;
             }
-            // `$o?->prop` — evaluate the receiver once; short-circuit to null when
-            // it is null, else read the property.
-            Expr::NullsafePropGet(recv, name) => {
-                let warn_line = self.cur_line;
-                self.compile_nullsafe(b, recv, |c, b| {
-                    let idx = b.add_constant(Value::str(name.clone()));
-                    b.emit(Op::LoadConst(idx), 0);
-                    b.emit(Op::CallBuiltin(ops::PROP_GET, 2), warn_line);
-                    let _ = c;
-                    Ok(())
-                })?;
-            }
-            // `$o?->method(args)` — short-circuit to null on a null receiver (the
-            // arguments are not evaluated), else the normal method call.
-            Expr::NullsafeMethodCall(recv, name, args) => {
-                self.compile_nullsafe(b, recv, |c, b| {
-                    let idx = b.add_constant(Value::str(name.clone()));
-                    b.emit(Op::LoadConst(idx), 0);
-                    for a in args {
-                        c.compile_expr(b, a)?;
-                    }
-                    b.emit(
-                        Op::CallBuiltin(ops::MCALL, (args.len() + 2) as u8),
-                        c.cur_line,
-                    );
-                    // Inside the non-null branch, so a short-circuited `?->`
-                    // writes nothing back — there was no call to write back from.
-                    let all = (0..args.len()).collect::<Vec<_>>();
-                    c.emit_byref_writeback(b, args, &all, true)?;
-                    Ok(())
-                })?;
+            // Reached only if the interception at the top of this function is
+            // ever removed: a nullsafe link is ALWAYS lowered as part of its
+            // whole chain, never on its own.
+            Expr::NullsafePropGet(..) | Expr::NullsafeMethodCall(..) => {
+                self.compile_nullsafe_chain(b, e, false)?;
             }
             Expr::NamedArg(_, inner) => {
                 // A named argument outside a handled call site: compile its value
@@ -2386,7 +2431,7 @@ impl Compiler {
                     self.emit_class_ref(b, class)?;
                     let nidx = b.add_constant(Value::str(name.clone()));
                     b.emit(Op::LoadConst(nidx), 0);
-                    b.emit(Op::CallBuiltin(ops::SCONST, 2), 0);
+                    b.emit(Op::CallBuiltin(ops::SCONST, 2), self.cur_line);
                 }
             }
             Expr::StaticProp(class, name) => {
@@ -2395,7 +2440,7 @@ impl Compiler {
                 b.emit(Op::LoadConst(nidx), 0);
                 b.emit(Op::CallBuiltin(ops::SPROP_GET, 2), 0);
             }
-            Expr::StaticCall(class, name, args) if has_named(args) => {
+            Expr::StaticCall(class, name, args) if needs_arg_pairs(args) => {
                 self.emit_lsb_forward(b, class);
                 self.emit_class_ref(b, class)?;
                 let nidx = b.add_constant(Value::str(name.clone()));
@@ -2607,6 +2652,10 @@ impl Compiler {
     /// function call inside a key still reports its own diagnostics — which is
     /// what PHP's compile-time `BP_VAR_IS` fetch mode does.
     fn compile_quiet(&mut self, b: &mut ChunkBuilder, e: &Expr) -> Result<(), String> {
+        // Same whole-chain lowering as the loud path, in `BP_VAR_IS` mode.
+        if chain_has_nullsafe(e) {
+            return self.compile_nullsafe_chain(b, e, true);
+        }
         let line = self.cur_line;
         match e {
             Expr::Quiet(inner) => self.compile_quiet(b, inner)?,
@@ -2641,15 +2690,6 @@ impl Compiler {
                 let idx = b.add_constant(Value::str(name.clone()));
                 b.emit(Op::LoadConst(idx), line);
                 b.emit(Op::CallBuiltin(ops::PROP_GET_Q, 2), line);
-            }
-            Expr::NullsafePropGet(recv, name) => {
-                let name = name.clone();
-                self.compile_nullsafe(b, recv, |_, b| {
-                    let idx = b.add_constant(Value::str(name));
-                    b.emit(Op::LoadConst(idx), line);
-                    b.emit(Op::CallBuiltin(ops::PROP_GET_Q, 2), line);
-                    Ok(())
-                })?;
             }
             other => self.compile_expr(b, other)?,
         }
@@ -2910,10 +2950,8 @@ impl Compiler {
         } else {
             let cls = b.add_constant(Value::str("UnhandledMatchError".to_string()));
             b.emit(Op::LoadConst(cls), 0);
-            let pfx = b.add_constant(Value::str("Unhandled match case ".to_string()));
-            b.emit(Op::LoadConst(pfx), 0);
             self.emit_get_var(b, &m_t);
-            b.emit(Op::CallBuiltin(ops::CONCAT, 2), 0); // message string
+            b.emit(Op::CallBuiltin(ops::MATCH_ERROR_MSG, 1), 0); // message string
             b.emit(Op::CallBuiltin(ops::NEW, 2), self.cur_line); // the exception object
             b.emit(Op::CallBuiltin(ops::THROW, 1), self.cur_line); // record + unwind
             None
@@ -3786,28 +3824,116 @@ impl Compiler {
         Ok(())
     }
 
-    /// Lower a nullsafe access `recv?->…`: evaluate `recv` once; when it is null,
-    /// that null is left on the stack as the result (the `tail` is skipped);
-    /// otherwise `tail` runs with the receiver on top of the stack and produces
-    /// the accessed value. Both paths leave exactly one value.
-    fn compile_nullsafe(
+    /// Lower an access chain whose spine spells a `?->`.
+    ///
+    /// The short-circuit extent is the WHOLE remaining chain, not the one link
+    /// that spelled the operator: `$n?->a->b->c()` on a null `$n` is `NULL`
+    /// with no diagnostic and no call, because the reference stops evaluating
+    /// at the `?->` and resumes only after the last link. Lowering each link
+    /// with its own two-branch merge instead — which is what this did — read
+    /// `->b` off the null the first link produced, so every following link
+    /// raised `Attempt to read property` and a method link was an uncaught
+    /// `Call to a member function on null`.
+    ///
+    /// One value is left on the stack either way: the short-circuit jump goes
+    /// out with the null receiver already there, and each link consumes one
+    /// value and pushes one.
+    ///
+    /// `quiet` is PHP's `BP_VAR_IS` fetch mode (the operand of `isset`/`??`/`@`),
+    /// which applies to every link of the chain exactly as [`Compiler::compile_quiet`]
+    /// applies it to a chain without a `?->`.
+    fn compile_nullsafe_chain(
         &mut self,
         b: &mut ChunkBuilder,
-        recv: &Expr,
-        tail: impl FnOnce(&mut Self, &mut ChunkBuilder) -> Result<(), String>,
+        e: &Expr,
+        quiet: bool,
     ) -> Result<(), String> {
-        self.compile_expr(b, recv)?; // [recv]
-        b.emit(Op::Dup, 0); // [recv, recv]
-        b.emit(Op::LoadUndef, 0); // [recv, recv, null]
-        b.emit(Op::CallBuiltin(ops::STRICT_EQ, 2), 0); // [recv, isNull]
-        b.emit(Op::CallBuiltin(ops::TRUTHY, 1), 0); // [recv, bool]
-        let is_null = b.emit(Op::JumpIfTrue(0), 0); // null → keep recv(null) as result
-        tail(self, b)?; // not null: consume recv, push accessed value
-        let jend = b.emit(Op::Jump(0), 0);
-        let null_pos = b.current_pos();
-        b.patch_jump(is_null, null_pos); // null branch: recv(null) already on stack
+        // Walk the spine outward-in, then emit base-first.
+        let mut spine = Vec::new();
+        let mut base = e;
+        while let Some(r) = chain_recv(base) {
+            spine.push(base);
+            base = r;
+        }
+        if quiet {
+            self.compile_quiet(b, base)?;
+        } else {
+            self.compile_expr(b, base)?;
+        }
+        // Pending jumps to the chain's end — one per `?->` that short-circuits.
+        let mut exits = Vec::new();
+        for link in spine.iter().rev() {
+            if matches!(
+                link,
+                Expr::NullsafePropGet(..) | Expr::NullsafeMethodCall(..)
+            ) {
+                b.emit(Op::Dup, 0); // [recv, recv]
+                b.emit(Op::LoadUndef, 0); // [recv, recv, null]
+                b.emit(Op::CallBuiltin(ops::STRICT_EQ, 2), 0); // [recv, isNull]
+                b.emit(Op::CallBuiltin(ops::TRUTHY, 1), 0); // [recv, bool]
+                exits.push(b.emit(Op::JumpIfTrue(0), 0));
+            }
+            self.compile_chain_link(b, link, quiet)?;
+        }
         let end = b.current_pos();
-        b.patch_jump(jend, end);
+        for j in exits {
+            b.patch_jump(j, end);
+        }
+        Ok(())
+    }
+
+    /// Lower ONE link of an access chain, with its receiver already on the
+    /// stack. The nullsafe spelling of a link accesses exactly as the plain one
+    /// does — the operator's only effect is the short-circuit its caller emits.
+    fn compile_chain_link(
+        &mut self,
+        b: &mut ChunkBuilder,
+        link: &Expr,
+        quiet: bool,
+    ) -> Result<(), String> {
+        let line = self.cur_line;
+        match link {
+            Expr::PropGet(_, name) | Expr::NullsafePropGet(_, name) => {
+                let idx = b.add_constant(Value::str(name.clone()));
+                b.emit(Op::LoadConst(idx), line);
+                let op = if quiet {
+                    ops::PROP_GET_Q
+                } else {
+                    ops::PROP_GET
+                };
+                b.emit(Op::CallBuiltin(op, 2), line);
+            }
+            Expr::Index(_, idx) => {
+                self.compile_expr(b, idx)?;
+                let op = if quiet {
+                    ops::INDEX_GET_Q
+                } else {
+                    ops::INDEX_GET
+                };
+                b.emit(Op::CallBuiltin(op, 2), line);
+            }
+            // A method CALL is never quietened: `isset()` asks about a storage
+            // location, and the call that produced the value already ran.
+            Expr::MethodCall(_, name, args) | Expr::NullsafeMethodCall(_, name, args) => {
+                let idx = b.add_constant(Value::str(name.clone()));
+                b.emit(Op::LoadConst(idx), line);
+                if needs_arg_pairs(args) {
+                    self.compile_arg_pairs(b, args)?;
+                    b.emit(
+                        Op::CallBuiltin(ops::MCALL_NAMED, (args.len() * 2 + 2) as u8),
+                        line,
+                    );
+                } else {
+                    for a in args {
+                        self.compile_expr(b, a)?;
+                    }
+                    b.emit(Op::CallBuiltin(ops::MCALL, (args.len() + 2) as u8), line);
+                    let all = (0..args.len()).collect::<Vec<_>>();
+                    self.emit_byref_writeback(b, args, &all, true)?;
+                }
+            }
+            other => return Err(format!("not an access-chain link: {other:?}")),
+        }
         Ok(())
     }
 
@@ -3839,6 +3965,15 @@ impl Compiler {
                     b.emit(Op::LoadConst(idx), 0);
                     self.compile_expr(b, v)?;
                     diag.iter().find(|(_, _, param)| param == n).copied()
+                }
+                // `...$spread`: `true` in the name slot, flattened by the
+                // host at the call. A spread contributes an unknown number of
+                // arguments, so no by-reference diagnostic can be attached to
+                // a position it might land in.
+                Expr::Spread(inner) => {
+                    b.emit(Op::LoadTrue, 0);
+                    self.compile_expr(b, inner)?;
+                    None
                 }
                 _ => {
                     b.emit(Op::LoadUndef, 0);
@@ -4033,6 +4168,20 @@ impl Compiler {
 /// Whether a call's argument list contains any named argument (`name: value`).
 fn has_named(args: &[Expr]) -> bool {
     args.iter().any(|a| matches!(a, Expr::NamedArg(..)))
+}
+
+/// Whether an argument list needs the `(name, value)` pair encoding: a named
+/// argument, or a `...$spread`.
+///
+/// A spread rides the same encoding, with a marker in the name slot (see
+/// [`Compiler::compile_arg_pairs_for`]). Without it, `...` was accepted at ONE
+/// call site — a call to a function named literally — and refused at every
+/// other with the compile-time `'...' argument unpacking is only valid in a
+/// function call`, so `$f(...$a)`, `$o->m(...$a)`, `C::s(...$a)` and
+/// `new C(...$a)` were all hard failures rather than divergences.
+fn needs_arg_pairs(args: &[Expr]) -> bool {
+    args.iter()
+        .any(|a| matches!(a, Expr::NamedArg(..) | Expr::Spread(_)))
 }
 
 pub(crate) fn collect_free_vars(e: &Expr, out: &mut Vec<String>) {

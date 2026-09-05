@@ -1747,6 +1747,7 @@ impl Parser {
         let decl = self.class_rest(
             name,
             is_interface,
+            is_trait,
             is_enum,
             is_abstract,
             is_readonly_class,
@@ -1768,6 +1769,7 @@ impl Parser {
         &mut self,
         name: String,
         is_interface: bool,
+        is_trait: bool,
         is_enum: bool,
         is_abstract: bool,
         // `readonly class` — every property the body declares is readonly,
@@ -1955,6 +1957,7 @@ impl Parser {
             trait_insteadof,
             trait_aliases,
             is_interface,
+            is_trait,
             is_readonly: is_readonly_class,
             is_abstract,
             is_enum,
@@ -2537,6 +2540,7 @@ impl Parser {
                     let saved = std::mem::replace(&mut self.magic, entered);
                     let decl = self.class_rest(
                         "class@anonymous".to_string(),
+                        false,
                         false,
                         false,
                         false,

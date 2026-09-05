@@ -3,7 +3,9 @@
 //! Generates thousands of grammar-driven, deterministic-output PHP snippets, runs
 //! each through both interpreters, and reports every case where STDOUT, STDERR or
 //! the exit code differs. Each case is produced from a per-index seed so any
-//! divergence replays exactly: `parity-fuzz --once --seed <N>`.
+//! divergence replays exactly, from the SEED the report prints (not the case
+//! index): `parity-fuzz --once --seed <N>`, plus `--mode NAME` when the run that
+//! found it was filtered.
 //!
 //! All three observables are compared, and each was added because leaving it out
 //! was a blind spot rather than a considered exclusion — see [`differs`], whose
@@ -108,6 +110,18 @@ fn oracle_path() -> &'static str {
                 eprintln!("parity-fuzz: PHPLANG_FUZZ_PHP={p}: no such file");
                 std::process::exit(2);
             }
+            // An oracle that is phplang ITSELF compares the binary under test
+            // against itself: every case agrees, and the run reports a clean
+            // sweep having asked nothing. Refused rather than warned about,
+            // because the result of such a run is indistinguishable from a
+            // genuine one.
+            if !is_reference_php(&p) {
+                eprintln!(
+                    "parity-fuzz: PHPLANG_FUZZ_PHP={p} is not a reference PHP \
+                     (`--version` must print a `PHP …` banner that is not phplang's)"
+                );
+                std::process::exit(2);
+            }
             return p;
         }
         for p in [
@@ -121,6 +135,23 @@ fn oracle_path() -> &'static str {
         }
         "php".to_string()
     })
+}
+
+/// Whether `path` is a REFERENCE PHP rather than the binary under test.
+///
+/// phplang's own `php --version` answers `php <crate version>`; the reference
+/// answers `PHP 8.x.y (cli) …`. Both halves are checked, so a future phplang
+/// banner that starts spelling `PHP` still cannot pass for the oracle.
+fn is_reference_php(path: &str) -> bool {
+    Command::new(path)
+        .arg("--version")
+        .output()
+        .ok()
+        .map(|o| {
+            let banner = String::from_utf8_lossy(&o.stdout);
+            banner.starts_with("PHP ") && !banner.contains("phplang")
+        })
+        .unwrap_or(false)
 }
 
 fn oracle_id() -> String {
@@ -2968,6 +2999,511 @@ fn gen_arrayfold(seed: u64) -> Vec<String> {
     ]
 }
 
+/// Heredoc and nowdoc bodies.
+///
+/// This mode exists because the generator was BLIND to the construct: a grep
+/// for `<<<` over this file returned ZERO hits before it was added, and the
+/// lexer had no heredoc at all — every program here was
+/// `Parse error: syntax error, unexpected token "<<"`. A construct that appears
+/// in most real PHP scored not at all, in either direction.
+///
+/// Three properties are under test and each fails independently:
+///   * the BODY LANGUAGE — a heredoc interpolates and escapes as a double-quoted
+///     string does, except that `\"` keeps its backslash, while a nowdoc is
+///     verbatim to the byte;
+///   * the DELIMITER — only the exact label closes the body, and the newline
+///     before it belongs to the delimiter rather than to the string;
+///   * the INDENTATION — PHP 7.3 strips the closing marker's indentation from
+///     every line and REFUSES the block when a line has less, which is a parse
+///     error naming the offending line.
+///
+/// `var_dump` rather than `echo`: the length is half the answer, and an engine
+/// that kept the trailing newline agrees with every check that only looks at
+/// the text.
+fn gen_heredoc(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let n = ii(r);
+    let w = ww(r);
+    match r.below(7) {
+        // Interpolation, in each of the three spellings.
+        0 => vec![format!(
+            "$n = {n}; $a = [\"k\" => \"{w}\"]; $o = new stdClass; $o->p = \"{w}\";\n\
+             $s = <<<EOT\nsimple $n, sub $a[k], prop $o->p, braced {{$a[\"k\"]}}\nEOT;\n\
+             var_dump($s);"
+        )],
+        // Escapes. `\\\"` and `\\'` keep their backslash here and nowhere else.
+        1 => {
+            let esc = *r.pick(&[
+                "\\t|\\n|\\\\",
+                "\\$n",
+                "\\x41\\101",
+                "\\\"|\\'",
+                "\\u{48}",
+                "\\e",
+                "\\q",
+            ]);
+            vec![format!(
+                "$n = {n};\n$s = <<<EOT\n{esc}\nEOT;\nvar_dump($s);"
+            )]
+        }
+        // Nowdoc: none of the above happens.
+        2 => {
+            let body = *r.pick(&["$n {$n}", "\\n \\\\ \\t", "a$n\\x41", "{$n}"]);
+            vec![format!(
+                "$n = {n};\n$s = <<<'EOT'\n{body}\nEOT;\nvar_dump($s);"
+            )]
+        }
+        // Flexible indentation, including the level that is refused.
+        3 => {
+            let (body_indent, close_indent) = *r.pick(&[
+                ("    ", "    "),
+                ("      ", "    "),
+                ("  ", "    "),
+                ("\t", "\t"),
+                ("", "  "),
+                ("    ", ""),
+            ]);
+            vec![format!(
+                "$s = <<<EOT\n{body_indent}one\n{body_indent}two\n\n{close_indent}EOT;\n\
+                 var_dump($s);"
+            )]
+        }
+        // The delimiter: a longer identifier does not close the body, and the
+        // label may be followed by any token rather than only `;`.
+        4 => {
+            let tail = *r.pick(&["EOT;", "EOT . \"z\";", "EOT , \"z\");", "EOTX\nEOT;"]);
+            let open = if tail.starts_with("EOT ,") {
+                "$s = implode(\"-\", array(<<<EOT\nbody\n"
+            } else {
+                "$s = <<<EOT\nbody\n"
+            };
+            vec![format!("{open}{tail}\nvar_dump($s);")]
+        }
+        // The empty and near-empty bodies, where the trailing-newline rule is
+        // the whole answer.
+        5 => {
+            let body = *r.pick(&["", "\n", "a\n", "\n\n"]);
+            vec![format!("$s = <<<EOT\n{body}EOT;\nvar_dump($s);")]
+        }
+        // A quoted label is a heredoc; an unterminated body is a parse error
+        // that names the line the file ran out on.
+        _ => {
+            let form = *r.pick(&[
+                "$s = <<<\"EOT\"\nv$n\nEOT;\nvar_dump($s);",
+                "$s = <<<   EOT\nv$n\nEOT;\nvar_dump($s);",
+                "$s = <<<_e1\nv$n\n_e1;\nvar_dump($s);",
+                "$s = <<<EOT\nv$n\n",
+                "$s = <<<9BAD\nv\n9BAD;\nvar_dump($s);",
+            ]);
+            vec![format!("$n = {n};\n{form}")]
+        }
+    }
+}
+
+/// `?->` chains longer than one link.
+///
+/// The generator only ever emitted a `?->` as the LAST access, so the operator's
+/// defining property was never asked about: the short-circuit covers the whole
+/// remaining chain, not the link that spelled it. Every program here would have
+/// agreed under a one-link implementation; each of these does not.
+///
+/// The receiver is null in half the cases and an object in the other half,
+/// because an implementation that short-circuits unconditionally passes every
+/// null case and fails every other one.
+fn gen_nullsafechain(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let decl = "class B { public $v = 7; public $n = null; function m($x = 1) { return $x * 2; } } \
+                class A { public $b; public $z = null; function __construct() { $this->b = new B(); } }";
+    let chain = *r.pick(&[
+        "$r?->a->b",
+        "$r?->a->b->c",
+        "$r?->a[\"k\"]",
+        "$r?->m()->x",
+        "$r?->a->b->c()",
+        "$r?->b?->v",
+        "$r?->b->v",
+        "$r?->b->m(3)",
+        "$r?->z?->v->w",
+        "$r?->b->n?->v->w",
+        "$r?->b->n->v",
+    ]);
+    let recv = *r.pick(&["null", "new A()", "(new A())->z"]);
+    match r.below(4) {
+        // The value, with every diagnostic the chain raises on the way.
+        0 => vec![format!("{decl} $r = {recv}; var_dump({chain});")],
+        // The extent: the enclosing expression must still run.
+        1 => vec![format!(
+            "{decl} $r = {recv}; echo \"[\"; var_dump({chain}); echo \"]\";"
+        )],
+        // The skipped links' ARGUMENTS must not be evaluated.
+        2 => vec![format!(
+            "{decl} function f() {{ echo \"F\"; return 1; }} $r = {recv}; \
+             var_dump($r?->a->m(f()));"
+        )],
+        // `BP_VAR_IS` mode over the same chains.
+        _ => {
+            let q = *r.pick(&["isset(%)", "empty(%)", "% ?? \"D\"", "@%"]);
+            vec![format!(
+                "{decl} $r = {recv}; var_dump({});",
+                q.replace('%', chain)
+            )]
+        }
+    }
+}
+
+/// The `UnhandledMatchError` message, over a subject of every type.
+///
+/// The generator reached `match` in two places and both used an integer
+/// subject, so the message was only ever scored on the one type whose
+/// concatenation happens to be right. `null` rendered as nothing at all,
+/// `true` as `1`, a string unquoted, and an array as `Array` behind an `Array
+/// to string conversion` the reference never raises.
+fn gen_matcherr(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let subject = *r.pick(&[
+        "null",
+        "true",
+        "false",
+        "5",
+        "-0.0",
+        "1.0",
+        "1e100",
+        "NAN",
+        "PHP_INT_MAX",
+        "\"hi\"",
+        "\"\"",
+        "\"0\"",
+        "str_repeat(\"ab\", 30)",
+        "[1, 2]",
+        "[]",
+        "new stdClass",
+        "new ArrayObject([])",
+        "(fn() => 1)",
+    ]);
+    let arms = *r.pick(&[
+        "999999 => 1",
+        "1 => \"a\", 2 => \"b\"",
+        "\"x\" => 1",
+        "null => \"n\"",
+    ]);
+    match r.below(3) {
+        0 => vec![format!(
+            "try {{ echo match ({subject}) {{ {arms} }}; }} \
+             catch (\\UnhandledMatchError $e) {{ echo get_class($e), \"|\", $e->getMessage(); }}"
+        )],
+        // Uncaught: the whole fatal rendering, trace included.
+        1 => vec![format!("echo match ({subject}) {{ {arms} }};")],
+        // A `default` means no error at all — the arm must win over the throw.
+        _ => vec![format!(
+            "echo \"[\", match ({subject}) {{ {arms}, default => \"D\" }}, \"]\";"
+        )],
+    }
+}
+
+/// Constants reached through an interface.
+///
+/// The lookup walked only the `parent` chain, so a constant declared in an
+/// interface was `Error: Undefined constant C::K` from everywhere — through the
+/// class name, through `self::`, through `static::`, and through an interface
+/// that merely extends the one that declared it. No previous case asked: the
+/// only `interface` in this file declared no constants.
+fn gen_ifaceconst(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let v = ii(r);
+    let shape = *r.pick(&[
+        "interface I { const K = %; } class C implements I {}",
+        "interface I { const K = %; } interface J extends I {} class C implements J {}",
+        "interface I { const K = %; } class P implements I {} class C extends P {}",
+        "interface I { const K = 1; } class P implements I {} class C extends P { const K = %; }",
+        "interface I { const K = 1; } class C implements I { const K = %; }",
+        "interface I { const K = %; } trait T {} class C implements I { use T; }",
+        "interface I { const K = 1; } class C {} const K = %;",
+        "abstract class I { const K = %; } class C extends I {}",
+    ]);
+    let decl = shape.replace('%', v);
+    let read = *r.pick(&[
+        "C::K",
+        "I::K",
+        "constant(\"C::K\")",
+        "defined(\"C::K\")",
+        "(new C())->r()",
+    ]);
+    let body = if read == "(new C())->r()" {
+        // `self::`/`static::` reach the same table, through the running class.
+        let via = *r.pick(&["self::K", "static::K", "C::K", "$this::K"]);
+        format!(
+            "{decl} class D {{}} function mk() {{ return null; }} \
+                 try {{ echo (function () {{ return {via}; }})->call(new C()); }} \
+                 catch (\\Throwable $e) {{ echo get_class($e), \": \", $e->getMessage(); }}"
+        )
+    } else {
+        format!(
+            "{decl} try {{ var_dump({read}); }} \
+             catch (\\Throwable $e) {{ echo get_class($e), \": \", $e->getMessage(); }}"
+        )
+    };
+    vec![body]
+}
+
+/// Generators: `yield`, `yield from`, the return value, and `send`.
+///
+/// A grep for `yield` over this file returned ZERO hits before this mode, so
+/// the whole construct — its key numbering, its delegation, and the fact that
+/// a generator body does not run until it is asked — was unscored.
+///
+/// The auto-KEYS are the sharp end: a `yield from` over an array replays that
+/// array's own keys rather than continuing the outer counter, so a delegating
+/// generator legitimately yields the key `0` twice. An implementation that
+/// numbered them straight through agrees with every check that only looks at
+/// values.
+fn gen_generators(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let n = *r.pick(&["0", "1", "3"]);
+    match r.below(6) {
+        0 => vec![format!(
+            "function g() {{ for ($i = 0; $i < {n}; $i++) {{ yield $i => $i * 2; }} return \"R\"; }} \
+             $x = g(); foreach ($x as $k => $v) {{ echo \"$k=$v,\"; }} var_dump($x->getReturn());"
+        )],
+        1 => vec![
+            "function g() { yield 1; yield from [10, 20]; yield from h(); yield 2; } \
+             function h() { yield \"a\" => 5; } \
+             foreach (g() as $k => $v) { echo \"$k=$v,\"; }"
+                .to_string(),
+        ],
+        2 => vec![
+            "function g() { $x = yield 1; echo \"got:\", var_export($x, true), \",\"; \
+             $y = yield 2; echo \"got:\", var_export($y, true), \",\"; } \
+             $g = g(); echo $g->current(), \",\", $g->send(\"A\"), \",\"; $g->send(\"B\"); \
+             var_dump($g->valid());"
+                .to_string(),
+        ],
+        3 => vec![
+            "function g() { echo \"body,\"; yield 1; } echo \"before,\"; $g = g(); \
+             echo \"made,\"; var_dump($g->key()); echo \"|\"; var_dump(iterator_to_array($g));"
+                .to_string(),
+        ],
+        4 => vec![format!(
+            "function g() {{ try {{ yield 1; yield 2; }} finally {{ echo \"F,\"; }} }} \
+             foreach (g() as $v) {{ echo $v, \",\"; if ($v >= {n}) break; }} echo \"done\";"
+        )],
+        _ => vec![
+            "function g() { yield 1; throw new RuntimeException(\"boom\"); } \
+             try { foreach (g() as $v) { echo $v; } } \
+             catch (\\Throwable $e) { echo get_class($e), \":\", $e->getMessage(); } \
+             var_dump((function () { yield; })() instanceof Generator);"
+                .to_string(),
+        ],
+    }
+}
+
+/// Enums, pure and backed.
+///
+/// Unscored before this mode: a grep for `enum ` over the generated programs
+/// returned nothing. `from`/`tryFrom` are the half most likely to be wrong in
+/// a way no value check notices — `from` THROWS for an unknown value where
+/// `tryFrom` answers null, and `from` on a backed enum is strict about the
+/// backing type.
+fn gen_enums(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let backed = *r.pick(&["string", "int"]);
+    let (a, b) = if backed == "int" {
+        ("1", "2")
+    } else {
+        ("\"a\"", "\"b\"")
+    };
+    let probe = *r.pick(&[a, b, "\"z\"", "9", "null"]);
+    match r.below(5) {
+        0 => vec![format!(
+            "enum E: {backed} {{ case A = {a}; case B = {b}; }} \
+             var_dump(E::tryFrom({probe})); \
+             try {{ var_dump(E::from({probe})); }} \
+             catch (\\Throwable $e) {{ echo get_class($e), \": \", $e->getMessage(); }}"
+        )],
+        1 => vec![format!(
+            "enum E: {backed} {{ case A = {a}; case B = {b}; }} \
+             print_r(E::cases()); var_dump(E::A === E::A, E::A == E::B, E::A instanceof E);"
+        )],
+        2 => vec![
+            "enum P { case X; case Y; } var_dump(P::X); echo P::X->name; \
+             var_dump(P::X instanceof UnitEnum, P::X instanceof BackedEnum);"
+                .to_string(),
+        ],
+        3 => vec![format!(
+            "interface HasLabel {{ const PFX = \"p:\"; public function label(): string; }} \
+             enum E: {backed} implements HasLabel {{ case A = {a}; \
+             const DEFAULT = self::A; \
+             public function label(): string {{ return self::PFX . $this->name; }} }} \
+             echo E::A->label(), \"|\", E::DEFAULT->name, \"|\", E::PFX;"
+        )],
+        _ => vec![format!(
+            "enum E: {backed} {{ case A = {a}; }} \
+             try {{ $x = new E(); }} catch (\\Throwable $e) {{ echo get_class($e), \"|\"; }} \
+             var_dump(json_encode([E::A]), E::A->value, isset(E::A->name));"
+        )],
+    }
+}
+
+/// Trait composition, including the two conflict-resolution clauses.
+///
+/// The generator emitted no `trait` at all. The `insteadof`/`as` clauses are
+/// the part with real rules — an unresolved collision between two traits that
+/// declare the same method is a FATAL, and `as` can rename a method as well as
+/// change its visibility.
+fn gen_traits(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    match r.below(5) {
+        0 => vec![
+            "trait T { public function hi() { return static::class . \"-\" . self::class; } } \
+             class C { use T; } class D extends C {} echo (new C())->hi(), \"|\", (new D())->hi();"
+                .to_string(),
+        ],
+        1 => {
+            let clause = *r.pick(&[
+                "A::f insteadof B; B::f as g;",
+                "B::f insteadof A;",
+                "A::f insteadof B;",
+                "",
+            ]);
+            vec![format!(
+                "trait A {{ public function f() {{ return \"A\"; }} }} \
+                 trait B {{ public function f() {{ return \"B\"; }} }} \
+                 class C {{ use A, B {{ {clause} }} }} \
+                 $c = new C(); echo $c->f(); if (method_exists($c, \"g\")) {{ echo $c->g(); }}"
+            )]
+        }
+        2 => vec![
+            "trait T { public static $n = 0; public static function bump() { return ++static::$n; } \
+             abstract public function need(): string; } \
+             class C { use T; public function need(): string { return \"N\"; } } \
+             class D { use T; public function need(): string { return \"M\"; } } \
+             echo C::bump(), C::bump(), D::bump(), (new C())->need();"
+                .to_string(),
+        ],
+        3 => vec![
+            "trait T { public function f() { return \"T\"; } } \
+             class C { use T; public function f() { return \"C\"; } } \
+             class P { public function f() { return \"P\"; } } class Q extends P { use T; } \
+             echo (new C())->f(), (new Q())->f();"
+                .to_string(),
+        ],
+        _ => vec![
+            "trait T { public function f() { return \"T\"; } } \
+             class C { use T { f as protected p; } public function q() { return $this->p(); } } \
+             $c = new C(); echo $c->q(); \
+             try { echo $c->p(); } catch (\\Throwable $e) { echo \"|\", get_class($e), \": \", $e->getMessage(); }"
+                .to_string(),
+        ],
+    }
+}
+
+/// Variadic parameters and `...` spread at a call site and in an array literal.
+///
+/// A grep for `...` over the generated programs returned ZERO hits. The
+/// STRING-keyed spread is the corner worth the mode on its own: those keys are
+/// named arguments, so `f(...["b" => 2, "a" => 1])` binds by NAME, and a key
+/// that matches no parameter is an `Error`, not a silent drop.
+fn gen_variadic(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let spread = *r.pick(&[
+        "[1, 2]",
+        "[]",
+        "[\"b\" => 2, \"a\" => 1]",
+        "[\"nope\" => 1]",
+        "[1, \"b\" => 2]",
+        "\"str\"",
+        "null",
+        "(function () { yield 1; yield 2; })()",
+        "new ArrayIterator([3, 4])",
+    ]);
+    match r.below(5) {
+        0 => vec![format!(
+            "function f(...$xs) {{ return count($xs) . \":\" . implode(\",\", $xs); }} \
+             try {{ echo f(...{spread}); }} \
+             catch (\\Throwable $e) {{ echo get_class($e), \": \", $e->getMessage(); }}"
+        )],
+        1 => vec![format!(
+            "function f($a = \"x\", $b = \"y\") {{ return \"$a|$b\"; }} \
+             try {{ echo f(...{spread}); }} \
+             catch (\\Throwable $e) {{ echo get_class($e), \": \", $e->getMessage(); }}"
+        )],
+        2 => vec![format!(
+            "try {{ var_dump([0, ...{spread}, 9]); }} \
+             catch (\\Throwable $e) {{ echo get_class($e), \": \", $e->getMessage(); }}"
+        )],
+        3 => vec![
+            "function f(int ...$xs) { return array_sum($xs); } \
+             try { echo f(1, 2, \"3\"); } catch (\\Throwable $e) { echo get_class($e), \": \", $e->getMessage(); } \
+             echo \"|\"; \
+             function g($first, ...$rest) { return $first . \"/\" . implode(\",\", $rest); } echo g(1, 2, 3);"
+                .to_string(),
+        ],
+        _ => vec![format!(
+            "function f(&...$xs) {{ return count($xs); }} \
+             try {{ $a = 1; echo f($a); }} \
+             catch (\\Throwable $e) {{ echo get_class($e), \": \", $e->getMessage(); }} \
+             echo \"|\", (fn(...$a) => implode(\"-\", $a))(...{spread});"
+        )],
+    }
+}
+
+/// The interfaces the ENGINE consults rather than the program: `ArrayAccess`,
+/// `Countable`, `Iterator`, `IteratorAggregate` and `Stringable`.
+///
+/// None of them appeared in a generated program. Each is a place where a
+/// built-in operation (`$o[k]`, `count()`, `foreach`, string coercion) is
+/// supposed to dispatch into user code, and an engine that does not is wrong in
+/// a way the user code itself cannot show.
+fn gen_splobj(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    match r.below(5) {
+        0 => vec![
+            "class C implements ArrayAccess { private $d = [\"a\" => 1]; \
+             public function offsetExists($o): bool { return isset($this->d[$o]); } \
+             public function offsetGet($o): mixed { return $this->d[$o] ?? \"none\"; } \
+             public function offsetSet($o, $v): void { if ($o === null) { $this->d[] = $v; } else { $this->d[$o] = $v; } } \
+             public function offsetUnset($o): void { unset($this->d[$o]); } } \
+             $c = new C(); $c[\"b\"] = 2; $c[] = 3; \
+             var_dump($c[\"a\"], isset($c[\"b\"]), isset($c[\"zz\"]), $c[0]); \
+             unset($c[\"a\"]); var_dump($c[\"a\"], empty($c[\"b\"]));"
+                .to_string(),
+        ],
+        1 => {
+            let n = *r.pick(&["0", "1", "7"]);
+            vec![format!(
+                "class C implements Countable {{ public function count(): int {{ return {n}; }} }} \
+                 var_dump(count(new C()), (new C()) instanceof Countable); \
+                 try {{ var_dump(count(new stdClass)); }} \
+                 catch (\\Throwable $e) {{ echo get_class($e), \": \", $e->getMessage(); }}"
+            )]
+        }
+        2 => vec![
+            "class C implements IteratorAggregate { public function getIterator(): Iterator { return new ArrayIterator([\"x\" => 1, \"y\" => 2]); } } \
+             foreach (new C() as $k => $v) { echo \"$k=$v,\"; } \
+             var_dump(iterator_to_array(new C()));"
+                .to_string(),
+        ],
+        3 => vec![
+            "class C implements Iterator { private $i = 0; private $a = [10, 20, 30]; \
+             public function current(): mixed { return $this->a[$this->i]; } \
+             public function key(): mixed { return \"k\" . $this->i; } \
+             public function next(): void { $this->i++; } \
+             public function rewind(): void { echo \"R,\"; $this->i = 0; } \
+             public function valid(): bool { return $this->i < count($this->a); } } \
+             $c = new C(); foreach ($c as $k => $v) { echo \"$k=$v,\"; } \
+             foreach ($c as $v) { echo $v, \",\"; break; }"
+                .to_string(),
+        ],
+        _ => {
+            let ret = *r.pick(&["\"S\"", "\"\"", "(string) 5"]);
+            vec![format!(
+                "class C {{ public function __toString(): string {{ return {ret}; }} }} \
+                 $c = new C(); echo $c, \"|\", \"x{{$c}}y\", \"|\"; \
+                 var_dump((string) $c, $c instanceof Stringable, strlen($c), $c == \"S\");"
+            )]
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Mode registry.
 // ---------------------------------------------------------------------------
@@ -3243,22 +3779,73 @@ const MODES: &[Mode] = &[
         name: "exitdie",
         gen: gen_exitdie,
     },
+    Mode {
+        name: "heredoc",
+        gen: gen_heredoc,
+    },
+    Mode {
+        name: "nullsafechain",
+        gen: gen_nullsafechain,
+    },
+    Mode {
+        name: "matcherr",
+        gen: gen_matcherr,
+    },
+    Mode {
+        name: "ifaceconst",
+        gen: gen_ifaceconst,
+    },
+    Mode {
+        name: "generators",
+        gen: gen_generators,
+    },
+    Mode {
+        name: "enums",
+        gen: gen_enums,
+    },
+    Mode {
+        name: "traits",
+        gen: gen_traits,
+    },
+    Mode {
+        name: "variadic",
+        gen: gen_variadic,
+    },
+    Mode {
+        name: "splobj",
+        gen: gen_splobj,
+    },
 ];
 
 fn build_program(stmts: &[String]) -> String {
     stmts.join("\n")
 }
 
-/// Case `i` under `base` seed → (mode, program), a pure function so any
-/// divergence replays from its seed alone.
-fn case_for(base: u64, i: u64) -> (Mode, Vec<String>) {
-    let case_seed = {
-        let mut z = base ^ i.wrapping_mul(0x9E37_79B9_7F4A_7C15);
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z ^ (z >> 31)
-    };
-    let mode = MODES[(case_seed >> 7) as usize % MODES.len()];
-    (mode, (mode.gen)(case_seed))
+/// The seed of case `i` under `base` — the whole identity of a case, and what a
+/// divergence records.
+///
+/// The CASE SEED is reported, not the index `i`. They are not interchangeable:
+/// `--once --seed S` builds its case from `S` directly, so replaying a reported
+/// index produced an unrelated program under an unrelated mode, and the
+/// "replays exactly" promise at the top of this file was false for every
+/// divergence this harness has ever printed.
+fn case_seed(base: u64, i: u64) -> u64 {
+    let mut z = base ^ i.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z ^ (z >> 31)
+}
+
+/// A case from its seed → (mode, program), a pure function so any divergence
+/// replays from its seed alone.
+///
+/// `only` forces the mode (`--mode NAME`), which the seed otherwise chooses.
+/// Forcing it is what makes `--mode` mean "generate this mode's cases" rather
+/// than "generate every mode's cases and throw away all but one in
+/// `MODES.len()`" — under the old filter a `--count 2000` run of one mode
+/// compared about 27 programs and reported the rest as never having run.
+fn case_from_seed(seed: u64, only: Option<Mode>) -> (Mode, Vec<String>) {
+    let mode = only.unwrap_or(MODES[(seed >> 7) as usize % MODES.len()]);
+    (mode, (mode.gen)(seed))
 }
 
 /// Why a case produced no verdict. A skip is not a pass, and counting it as one
@@ -3470,7 +4057,7 @@ fn parse_args() -> Args {
             "--mode" => a.mode = it.next().cloned(),
             "--show" => a.show = it.next().and_then(|s| s.parse().ok()).unwrap_or(a.show),
             "-h" | "--help" => {
-                println!("parity-fuzz [--count N] [--seed S] [--jobs J] [--timeout MS] [--mode NAME] [--once --seed S] [--show N]");
+                println!("parity-fuzz [--count N] [--seed S] [--jobs J] [--timeout MS] [--mode NAME] [--once --seed S [--mode NAME]] [--show N]");
                 std::process::exit(0);
             }
             other => {
@@ -3493,12 +4080,30 @@ fn main() {
         std::process::exit(2);
     }
 
-    // `--once --seed S`: replay one case, print both sides, exit.
+    // The forced mode, resolved once: `--mode` names it and `--once` honours
+    // the same name, so a divergence found under a filter replays under it.
+    let forced = match &args.mode {
+        Some(m) => match MODES.iter().find(|md| md.name == m) {
+            Some(md) => Some(*md),
+            None => {
+                eprintln!("parity-fuzz: unknown mode {m}");
+                std::process::exit(2);
+            }
+        },
+        None => None,
+    };
+
+    // `--once --seed S [--mode NAME]`: replay one case, print both sides, exit.
     if args.once.is_some() {
-        let (mode, stmts) = case_for(args.base_seed, 0);
+        let (mode, stmts) = case_from_seed(args.base_seed, forced);
         let prog = build_program(&stmts);
         let o = run_oracle(&prog, args.timeout);
         let r = run_ours(&prog, &bin, args.timeout);
+        // Named here as well as in a full run: a replay is what gets pasted
+        // into a bug report, and a transcript that does not say which build
+        // answered cannot be checked by anyone else.
+        println!("oracle bin: {}", oracle_id());
+        println!("ours bin: {}", bin.display());
         println!("seed  : {}", args.base_seed);
         println!("mode  : {}", mode.name);
         println!("prog  : {prog}");
@@ -3516,14 +4121,6 @@ fn main() {
         );
         println!("differ: {}", differs(&o, &r));
         return;
-    }
-
-    let mode_filter = args.mode.clone();
-    if let Some(m) = &mode_filter {
-        if !MODES.iter().any(|md| md.name == m) {
-            eprintln!("parity-fuzz: unknown mode {m}");
-            std::process::exit(2);
-        }
     }
 
     eprintln!("parity-fuzz: oracle = {}", oracle_id());
@@ -3559,18 +4156,13 @@ fn main() {
         let timeout = args.timeout;
         let base = args.base_seed;
         let count = args.count;
-        let mode_filter = mode_filter.clone();
         handles.push(std::thread::spawn(move || loop {
             let i = next.fetch_add(1, Ordering::Relaxed) as u64;
             if i >= count {
                 break;
             }
-            let (mode, stmts) = case_for(base, i);
-            if let Some(m) = &mode_filter {
-                if mode.name != m {
-                    continue;
-                }
-            }
+            let seed = case_seed(base, i);
+            let (mode, stmts) = case_from_seed(seed, forced);
             ran.fetch_add(1, Ordering::Relaxed);
             let prog = build_program(&stmts);
             let verdict = judge(&prog, &bin, timeout);
@@ -3598,10 +4190,8 @@ fn main() {
                 let (o, r) = if differs(&om, &rm) { (om, rm) } else { (o, r) };
                 let sig = signature(mode.name, &min_prog);
                 divergences.lock().unwrap().push(Divergence {
-                    seed: {
-                        // Store the case index so `--once --seed <i>` replays it.
-                        i
-                    },
+                    // The case SEED, which is what `--once --seed <it>` takes.
+                    seed,
                     mode: mode.name,
                     program: min_prog,
                     oracle_out: render(&o.stdout),
@@ -3703,7 +4293,12 @@ fn main() {
         by_mode.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
         let ran_by_mode = |name: &str| {
             (0..args.count)
-                .filter(|i| case_for(args.base_seed, *i).0.name == name)
+                .filter(|i| {
+                    forced.map_or_else(
+                        || case_from_seed(case_seed(args.base_seed, *i), None).0.name,
+                        |m| m.name,
+                    ) == name
+                })
                 .count()
         };
         println!("  barren by mode (share of that mode's cases):");

@@ -28,6 +28,7 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::BYREF_ARG_DIAG, b_byref_arg_diag);
     vm.register_builtin(ops::GLOBAL_BIND, b_global_bind);
     vm.register_builtin(ops::INCDEC_STEP, b_incdec_step);
+    vm.register_builtin(ops::MATCH_ERROR_MSG, b_match_error_msg);
     vm.register_builtin(ops::CALL_SPREAD, b_call_spread);
     vm.register_builtin(ops::MKARRAY, b_mkarray);
     vm.register_builtin(ops::MKARRAY_ADD, b_mkarray_add);
@@ -96,6 +97,8 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::MAGIC_FILE, b_magic_file);
     vm.register_builtin(ops::MAGIC_DIR, b_magic_dir);
     vm.register_builtin(ops::MAGIC_CLASS, b_magic_class);
+    vm.register_builtin(ops::SELF_CLASS, b_self_class);
+    vm.register_builtin(ops::PARENT_CLASS, b_parent_class);
     vm.register_builtin(ops::UNSET_VAR, b_unset_var);
     vm.register_builtin(ops::UNSET_PATH, b_unset_path);
     vm.register_builtin(ops::FOREACH_PREP, b_foreach_prep);
@@ -233,24 +236,48 @@ fn b_gen_next(vm: &mut VM, _: u8) -> Value {
 
 /// Split a `(name, value)` argument-pair stream into positional arguments (name is
 /// `Undef`) and named arguments (name is a `Str`), preserving source order.
-fn split_named(pairs: Vec<Value>) -> (Vec<Value>, Vec<(String, Value)>) {
+fn split_named(pairs: Vec<Value>) -> Result<(Vec<Value>, Vec<(String, Value)>), String> {
     let mut positional = Vec::new();
     let mut named = Vec::new();
     let mut it = pairs.into_iter();
     while let (Some(name), Some(val)) = (it.next(), it.next()) {
         match name {
             Value::Str(s) => named.push((s.to_string(), val)),
+            // `Bool(true)` in the NAME slot marks a `...$spread` argument (see
+            // `Compiler::compile_arg_pairs_for`): the value is flattened into
+            // the list here, its string keys becoming named arguments and its
+            // integer keys positional ones. A name is otherwise a string or
+            // `Undef`, so the marker can never collide with one.
+            Value::Bool(true) => {
+                for (k, v) in spread_entries(&val).map_err(|(_, e)| e)? {
+                    match k {
+                        Value::Str(_) => named.push((with_host(|h| h.to_str(&k)), v)),
+                        _ => positional.push(v),
+                    }
+                }
+            }
             _ => positional.push(val),
         }
     }
-    (positional, named)
+    Ok((positional, named))
+}
+
+/// [`split_named`] for a builtin: an operand that cannot be unpacked is the
+/// reference's `TypeError` at the call site, which unwinds this chunk.
+macro_rules! split_named_or_throw {
+    ($vm:expr, $pairs:expr) => {
+        match split_named($pairs) {
+            Ok(v) => v,
+            Err(e) => return throw_php($vm, "TypeError", &e),
+        }
+    };
 }
 
 /// `f(name: v, ...)` — named-argument function call. Stack `[fname, (n,v)...]`.
 fn b_call_named(vm: &mut VM, argc: u8) -> Value {
     let pairs = pop_args(vm, argc as usize - 1);
     let name = pop_name(vm);
-    let (pos, named) = split_named(pairs);
+    let (pos, named) = split_named_or_throw!(vm, pairs);
     // The only call op that did not record its line: `b_call`, `b_mcall`,
     // `b_scall` and both other named variants all do, so an error raised by a
     // named FUNCTION call reported "on line 0" while the same error from every
@@ -266,7 +293,7 @@ fn b_call_named(vm: &mut VM, argc: u8) -> Value {
 fn b_callvalue_named(vm: &mut VM, argc: u8) -> Value {
     let pairs = pop_args(vm, argc as usize - 1);
     let callee = vm.pop();
-    let (pos, named) = split_named(pairs);
+    let (pos, named) = split_named_or_throw!(vm, pairs);
     mark_frame_line(vm);
     match host::call_value_named(callee, pos, named) {
         Ok(v) => bubbled(vm, v),
@@ -279,7 +306,7 @@ fn b_mcall_named(vm: &mut VM, argc: u8) -> Value {
     let pairs = pop_args(vm, argc as usize - 2);
     let method = pop_name(vm);
     let recv = vm.pop();
-    let (pos, named) = split_named(pairs);
+    let (pos, named) = split_named_or_throw!(vm, pairs);
     mark_frame_line(vm);
     // Built-in `Closure`/`Generator` methods take positional args (no named form).
     if with_host(|h| h.is_closure(&recv)) {
@@ -326,7 +353,7 @@ fn b_scall_named(vm: &mut VM, argc: u8) -> Value {
     let pairs = pop_args(vm, argc as usize - 2);
     let method = pop_name(vm);
     let class = pop_name(vm);
-    let (pos, named) = split_named(pairs);
+    let (pos, named) = split_named_or_throw!(vm, pairs);
     let this = with_host(|h| {
         let t = h.get_var("this");
         matches!(t, Value::Obj(_)).then_some(t)
@@ -351,7 +378,7 @@ fn b_scall_named(vm: &mut VM, argc: u8) -> Value {
 fn b_new_named(vm: &mut VM, argc: u8) -> Value {
     let pairs = pop_args(vm, argc as usize - 1);
     let class = pop_name(vm);
-    let (pos, named) = split_named(pairs);
+    let (pos, named) = split_named_or_throw!(vm, pairs);
     mark_frame_line(vm);
     match host::new_object_named(&class, pos, named) {
         Ok(v) => bubbled(vm, v),
@@ -664,6 +691,28 @@ fn b_magic_dir(vm: &mut VM, _: u8) -> Value {
 /// `__CLASS__` where the parse could not name the class, wrapped in the affixes
 /// the compiler emitted — `::q` builds an anonymous class's `__METHOD__` out of
 /// the same node.
+/// `SELF_CLASS`: the composing class of a trait method. See
+/// [`ops::SELF_CLASS`].
+fn b_self_class(_: &mut VM, _: u8) -> Value {
+    Value::str(with_host(|h| h.magic_class()))
+}
+
+/// `PARENT_CLASS`: the composing class's parent inside a trait method. A trait
+/// used by a class with no parent is the reference's `Cannot use "parent" when
+/// current class scope has no parent`, raised where the method RUNS because
+/// that is the first point the class is known.
+fn b_parent_class(vm: &mut VM, _: u8) -> Value {
+    let parent = with_host(|h| h.magic_parent_class());
+    if parent.is_empty() {
+        return throw_php(
+            vm,
+            "Error",
+            "Cannot use \"parent\" when current class scope has no parent",
+        );
+    }
+    Value::str(parent)
+}
+
 fn b_magic_class(vm: &mut VM, _: u8) -> Value {
     let suffix = pop_name(vm);
     let prefix = pop_name(vm);
@@ -988,6 +1037,7 @@ fn b_bitnot(vm: &mut VM, _: u8) -> Value {
 fn b_spaceship(vm: &mut VM, _: u8) -> Value {
     let b = vm.pop();
     let a = vm.pop();
+    let (a, b) = cast_for_compare(&a, &b).unwrap_or((a, b));
     Value::int(with_host(|h| php_compare(h, &a, &b)) as i64)
 }
 
@@ -1285,6 +1335,13 @@ fn b_setvar(vm: &mut VM, _: u8) -> Value {
 fn b_copy(vm: &mut VM, _: u8) -> Value {
     let val = vm.pop();
     with_host(|h| h.copy_on_assign(val))
+}
+
+/// `MATCH_ERROR_MSG`: `[subject] -> string`. See [`ops::MATCH_ERROR_MSG`].
+fn b_match_error_msg(vm: &mut VM, argc: u8) -> Value {
+    let args = pop_args(vm, argc as usize);
+    let msg = with_host(|h| h.match_error_message(&args[0]));
+    Value::str(msg)
 }
 
 fn b_concat(vm: &mut VM, _: u8) -> Value {
@@ -2563,15 +2620,49 @@ fn checked_ipow(mut base: i64, mut exp: u32) -> Option<i64> {
 
 // ── comparison builtins ──────────────────────────────────────────────────────
 
+/// An object whose class declares `__toString`, which is the only object the
+/// reference's comparison casts.
+fn is_stringable_object(h: &host::PhpHost, v: &Value) -> bool {
+    matches!(v, Value::Obj(_))
+        && !h.is_array(v)
+        && h.object_class(v)
+            .is_some_and(|c| h.class_has_method(&c, "__tostring"))
+}
+
+/// Cast an object with a `__toString` to its string when it is compared with a
+/// STRING, as `zend_compare` does before comparing the two as strings.
+///
+/// Without it every `$obj == "s"` was false, `$obj < "t"` answered by the
+/// object-vs-scalar rule, and `$obj <=> "s"` was 1 for a `__toString` that
+/// returns exactly `"s"`. Only the object/string pair casts: object vs object
+/// compares by class and properties, and object vs int is a different rule with
+/// a notice of its own.
+///
+/// Called OUTSIDE the host borrow — the cast runs user code.
+fn cast_for_compare(a: &Value, b: &Value) -> Option<(Value, Value)> {
+    let (a_obj, b_obj) = with_host(|h| (is_stringable_object(h, a), is_stringable_object(h, b)));
+    match (a_obj, b_obj) {
+        (true, false) if matches!(b, Value::Str(_)) => {
+            Some((Value::str(host::to_str_ext(a)), b.clone()))
+        }
+        (false, true) if matches!(a, Value::Str(_)) => {
+            Some((a.clone(), Value::str(host::to_str_ext(b))))
+        }
+        _ => None,
+    }
+}
+
 fn b_loose_eq(vm: &mut VM, _: u8) -> Value {
     let b = vm.pop();
     let a = vm.pop();
+    let (a, b) = cast_for_compare(&a, &b).unwrap_or((a, b));
     Value::bool(with_host(|h| loose_eq(h, &a, &b)))
 }
 
 fn b_loose_ne(vm: &mut VM, _: u8) -> Value {
     let b = vm.pop();
     let a = vm.pop();
+    let (a, b) = cast_for_compare(&a, &b).unwrap_or((a, b));
     Value::bool(with_host(|h| !loose_eq(h, &a, &b)))
 }
 
@@ -2603,6 +2694,7 @@ fn b_ge(vm: &mut VM, _: u8) -> Value {
 fn cmp_bool(vm: &mut VM, f: impl Fn(i32) -> bool) -> Value {
     let b = vm.pop();
     let a = vm.pop();
+    let (a, b) = cast_for_compare(&a, &b).unwrap_or((a, b));
     if is_unordered(&a, &b) {
         return Value::bool(false);
     }
@@ -2974,6 +3066,15 @@ pub fn numeric_hook_sited(call: NumericCall<'_>, lines: &[u32]) -> Result<Value,
     // an `Int`/`Int` pair never reaches here — so this is PHP's own comparison
     // over exactly the operands the native path declined.
     if let Some(want) = relational(op) {
+        // An object with `__toString` compared against a string is cast first,
+        // as `zend_compare` does — the same rule `b_loose_eq` and `b_spaceship`
+        // apply, and the four relational operators reach it through here rather
+        // than through `cmp_bool` because they are lowered natively.
+        let cast = cast_for_compare(a, b);
+        let (a, b) = match &cast {
+            Some((x, y)) => (x, y),
+            None => (a, b),
+        };
         // An UNORDERED pair answers false to all four, which is not the same as
         // the three-way comparison's answer: `NAN <=> 1` is 1, while `NAN > 1`
         // is false. This is the guard `cmp_bool` makes for the same reason.

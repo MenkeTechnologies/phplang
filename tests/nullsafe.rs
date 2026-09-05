@@ -75,3 +75,86 @@ fn nullsafe_with_coalesce_default() {
         echo ($n?->name ?? "none");"#;
     assert_eq!(run(src), "Bea|none");
 }
+
+// ── chain-wide short-circuit (PHP 8.0) ──────────────────────────────────────
+//
+// `?->` stops evaluating the WHOLE remaining chain, not just the one link that
+// spelled it. Each of these used to read a property off the null the first link
+// produced: the property reads warned `Attempt to read property … on null`, and
+// the method call was an uncaught `Call to a member function on null`.
+
+#[test]
+fn nullsafe_short_circuits_the_rest_of_the_chain() {
+    // Every diagnostic these could raise lands on stdout under the CLI, so an
+    // engine that warned would fail on the captured output, not only on the
+    // value.
+    assert_eq!(run("<?php $n = null; var_dump($n?->a->b);"), "NULL\n");
+    assert_eq!(run("<?php $n = null; var_dump($n?->a->b->c);"), "NULL\n");
+    assert_eq!(run("<?php $n = null; var_dump($n?->a[\"k\"]);"), "NULL\n");
+    assert_eq!(run("<?php $n = null; var_dump($n?->m()->x);"), "NULL\n");
+}
+
+#[test]
+fn nullsafe_short_circuit_skips_a_later_method_call() {
+    // A `->c()` on the short-circuited null is a FATAL in an engine that keeps
+    // walking, so this one fails as an error rather than as wrong output.
+    assert_eq!(run("<?php $n = null; var_dump($n?->a->b->c());"), "NULL\n");
+}
+
+#[test]
+fn nullsafe_short_circuit_skips_later_argument_evaluation() {
+    // The skipped links' arguments must not run: `f()` would print.
+    let src = r#"<?php
+        function f() { echo "F"; return 1; }
+        $n = null;
+        var_dump($n?->a->b(f()));"#;
+    assert_eq!(run(src), "NULL\n");
+}
+
+#[test]
+fn nullsafe_short_circuit_ends_at_the_chain_and_no_further() {
+    // The enclosing expression still runs — the short-circuit is the chain's
+    // extent, not the statement's.
+    assert_eq!(
+        run("<?php $n = null; var_dump($n?->a->b . \"x\");"),
+        "string(1) \"x\"\n"
+    );
+    assert_eq!(
+        run("<?php $n = null; echo \"a\"; var_dump($n?->a->b); echo \"z\";"),
+        "aNULL\nz"
+    );
+}
+
+#[test]
+fn a_nullsafe_chain_in_an_argument_is_its_own_extent() {
+    // Two chains in one expression: the inner one short-circuits to null and the
+    // OUTER call still happens. Sharing one exit would skip `m()` as well.
+    let src = r#"<?php
+        class A { function m($x) { return "m:" . var_export($x, true); } }
+        $a = new A(); $n = null;
+        echo $a->m($n?->x->y);"#;
+    assert_eq!(run(src), "m:NULL");
+}
+
+#[test]
+fn nullsafe_chain_under_isset_and_coalesce() {
+    assert_eq!(
+        run("<?php $n = null; var_dump(isset($n?->a->b));"),
+        "bool(false)\n"
+    );
+    assert_eq!(run("<?php $n = null; echo $n?->a->b ?? \"D\";"), "D");
+    assert_eq!(
+        run("<?php $n = null; var_dump(empty($n?->a->b));"),
+        "bool(true)\n"
+    );
+}
+
+#[test]
+fn a_non_null_receiver_still_walks_the_whole_chain() {
+    let src = r#"<?php
+        class B { public $v = 7; function twice() { return $this->v * 2; } }
+        class A { public $b; }
+        $a = new A(); $a->b = new B();
+        echo $a?->b->v, "|", $a->b?->twice(), "|", $a?->b?->twice();"#;
+    assert_eq!(run(src), "7|14|14");
+}

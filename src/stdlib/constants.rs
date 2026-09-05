@@ -18,14 +18,32 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             }))))
         }
         // defined(name) — whether a constant of that name exists.
+        //
+        // A `Class::CONST` name is answered too, through the same lookup
+        // `Class::CONST` itself uses — inherited constants, interface constants
+        // and enum cases included. Without the `::` case both functions saw a
+        // class constant as a plain name that was never defined, so
+        // `defined("C::K")` was false and `constant("C::K")` an `Error` for
+        // every class in every program.
         "defined" => {
             let cname = with_host(|h| h.to_str(args.first().unwrap_or(&Value::Undef)));
+            if let Some((class, konst)) = cname.split_once("::") {
+                return Some(Ok(Value::bool(
+                    crate::host::class_const(class, konst).is_ok(),
+                )));
+            }
             Some(Ok(Value::bool(with_host(|h| h.const_defined(&cname)))))
         }
         // constant(name) — the value of the named constant. Undefined is the same
         // catchable `Error` a bare reference raises, with the same message.
         "constant" => {
             let cname = with_host(|h| h.to_str(args.first().unwrap_or(&Value::Undef)));
+            if let Some((class, konst)) = cname.split_once("::") {
+                // `class_const` raises the reference's own two messages here:
+                // `Undefined constant C::K` (unquoted, unlike the bare-name
+                // form) and `Class "Nope" not found`.
+                return Some(crate::host::class_const(class, konst));
+            }
             Some(match with_host(|h| h.const_fetch(&cname)) {
                 Some(v) => Ok(v),
                 None => Err(crate::builtins::throws(

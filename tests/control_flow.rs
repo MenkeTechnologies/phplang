@@ -259,3 +259,57 @@ fn return_inside_try_inside_loop_terminates_the_function() {
         echo f();"#;
     assert_eq!(run(src), "r2");
 }
+
+// ── UnhandledMatchError message ─────────────────────────────────────────────
+//
+// The reference renders the unmatched subject the way a stack trace renders an
+// argument, and replaces a non-scalar with `of type <name>`. Concatenating the
+// subject into the message instead — which is what this did — reported `null`
+// as nothing at all, `true` as `1`, `'hi'` unquoted, and an array as `Array`
+// behind an `Array to string conversion` warning the reference never raises.
+
+fn match_error(subject: &str) -> String {
+    let src = format!(
+        "<?php try {{ echo match ({subject}) {{ 999999 => 1 }}; }} \
+         catch (\\UnhandledMatchError $e) {{ echo $e->getMessage(); }}"
+    );
+    run(&src)
+}
+
+#[test]
+fn an_unhandled_match_renders_a_scalar_subject_as_a_trace_does() {
+    assert_eq!(match_error("null"), "Unhandled match case NULL");
+    assert_eq!(match_error("true"), "Unhandled match case true");
+    assert_eq!(match_error("false"), "Unhandled match case false");
+    assert_eq!(match_error("5"), "Unhandled match case 5");
+    assert_eq!(match_error("1.0"), "Unhandled match case 1.0");
+    assert_eq!(match_error("\"hi\""), "Unhandled match case 'hi'");
+    assert_eq!(match_error("\"\""), "Unhandled match case ''");
+}
+
+#[test]
+fn an_unhandled_match_cuts_a_long_string_as_a_trace_does() {
+    assert_eq!(
+        match_error("str_repeat(\"ab\", 30)"),
+        "Unhandled match case 'abababababababa...'"
+    );
+}
+
+#[test]
+fn an_unhandled_match_names_the_type_of_a_non_scalar_subject() {
+    // No value rendering at all for these, and in particular no `Array to
+    // string conversion` on the way to one.
+    assert_eq!(match_error("[1, 2]"), "Unhandled match case of type array");
+    assert_eq!(
+        match_error("new stdClass"),
+        "Unhandled match case of type stdClass"
+    );
+    assert_eq!(
+        match_error("new ArrayObject([])"),
+        "Unhandled match case of type ArrayObject"
+    );
+    assert_eq!(
+        match_error("(fn() => 1)"),
+        "Unhandled match case of type Closure"
+    );
+}

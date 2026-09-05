@@ -346,6 +346,32 @@ pub mod ops {
     /// written by the ops themselves, so all it needs from the host is the step
     /// — which is not arithmetic: `"Az"++` is `"Ba"` and `null--` is a no-op.
     pub const INCDEC_STEP: u16 = 124;
+    /// `[subject] -> string` — the `UnhandledMatchError` message for a `match`
+    /// that matched no arm.
+    ///
+    /// Not a plain concatenation of the subject: the reference renders the
+    /// value the way a stack trace renders an argument (a string single-quoted,
+    /// escaped and cut at 15 bytes; a float keeping its `.0`; `true`/`false`/
+    /// `NULL` as words) and replaces anything that is not a scalar with `of
+    /// type <type>`. Concatenating instead turned `null` into the empty string,
+    /// `true` into `1`, `'hi'` into unquoted `hi`, and an array into `Array`
+    /// behind an `Array to string conversion` warning the reference never
+    /// raises.
+    pub const MATCH_ERROR_MSG: u16 = 125;
+    /// `[] -> string` — the class `self::` names inside a TRAIT method.
+    ///
+    /// A trait's methods are compiled once and copied into every class that
+    /// uses them, so `self` cannot be baked while the body is lowered: it is
+    /// the composing class, which is only known once a frame is running. Baking
+    /// it made `self::class` answer the TRAIT's name from every class that used
+    /// it, and `new self()` build an instance of the trait.
+    pub const SELF_CLASS: u16 = 126;
+    /// `[] -> string` — the class `parent::` names inside a TRAIT method: the
+    /// parent of the composing class, for the same reason as
+    /// [`ops::SELF_CLASS`]. Baking it refused every trait that spelled
+    /// `parent::` with `'parent' used in a class with no parent`, whatever the
+    /// using class extended.
+    pub const PARENT_CLASS: u16 = 127;
 }
 
 /// The capture name a `static` closure carries from its creation site.
@@ -2035,6 +2061,24 @@ impl PhpHost {
         }
     }
 
+    /// The `UnhandledMatchError` message for a subject that matched no arm.
+    ///
+    /// A SCALAR (and `null`) is rendered exactly as a stack trace renders an
+    /// argument — `'hi'`, `1.0`, `true`, `NULL` — which is the same
+    /// `smart_str_append_scalar` the reference calls for both. Anything else is
+    /// `of type <name>`: `array`, `resource`, or the class, since a container
+    /// has no rendering short enough for a message.
+    pub fn match_error_message(&self, v: &Value) -> String {
+        let rendered = match v {
+            Value::Undef | Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::Str(_) => {
+                self.trace_arg(v)
+            }
+            _ if self.is_resource(v) => "of type resource".to_string(),
+            _ => format!("of type {}", crate::stdlib::types::debug_type(self, v)),
+        };
+        format!("Unhandled match case {rendered}")
+    }
+
     /// A frame's name as a trace prints it: `f`, `A->m` for an instance method,
     /// `A::m` for a static one. Frames are recorded as `Class::method` with the
     /// class lowercased (that is the lookup key); the declared spelling comes back
@@ -3675,6 +3719,20 @@ impl PhpHost {
         self.classes.get(&cls).map_or(cls, |d| d.name.clone())
     }
 
+    /// The parent of the class the running frame belongs to, in its declared
+    /// spelling. Empty when there is no frame class or it extends nothing.
+    pub fn magic_parent_class(&self) -> String {
+        let Some(cls) = self.current_class_ctx() else {
+            return String::new();
+        };
+        let Some(parent) = self.classes.get(&cls).and_then(|d| d.parent.clone()) else {
+            return String::new();
+        };
+        self.classes
+            .get(&parent.to_ascii_lowercase())
+            .map_or(parent, |d| d.name.clone())
+    }
+
     /// `__DIR__` — the directory the script lives in.
     ///
     /// `php -r` code has no file, and the reference answers the working directory
@@ -4152,15 +4210,49 @@ impl PhpHost {
         Value::Obj((self.objs.len() - 1) as u32)
     }
 
-    /// The initializer chunk for `Class::name`, walking the parent chain.
+    /// The initializer chunk for `Class::name`, walking the parent chain and
+    /// then the interfaces.
+    ///
+    /// The interfaces are not optional. A `const` declared in an interface is
+    /// inherited by every class that implements it and by every interface that
+    /// extends it, so `interface I { const K = 5; } class C implements I {}`
+    /// answers `C::K` — and `self::K` and `static::K` from inside `C` are the
+    /// same lookup. Walking only `parent` reported `Undefined constant C::K`
+    /// for all three.
+    ///
+    /// Classes first, interfaces after: a class constant shadows the interface
+    /// one of the same name (PHP 8.1 permits the override), and searching the
+    /// whole parent chain before any interface is what makes that hold at every
+    /// depth. The visited set and bound guard a malformed cycle, as in
+    /// [`Host::class_is_a`].
     fn resolve_const_chunk(&self, class: &str, name: &str) -> Option<Chunk> {
+        let mut ifaces: Vec<String> = Vec::new();
         let mut cur = Some(class.to_ascii_lowercase());
         while let Some(c) = cur {
-            let def = self.classes.get(&c)?;
+            let Some(def) = self.classes.get(&c) else {
+                break;
+            };
             if let Some((_, chunk)) = def.consts.iter().find(|(n, _)| n == name) {
                 return Some(chunk.clone());
             }
+            ifaces.extend(def.interfaces.iter().map(|i| i.to_ascii_lowercase()));
             cur = def.parent.as_ref().map(|p| p.to_ascii_lowercase());
+        }
+        let mut seen: Vec<String> = Vec::new();
+        while let Some(i) = ifaces.pop() {
+            if seen.contains(&i) || seen.len() > 1000 {
+                continue;
+            }
+            seen.push(i.clone());
+            if let Some(def) = self.classes.get(&i) {
+                if let Some((_, chunk)) = def.consts.iter().find(|(n, _)| n == name) {
+                    return Some(chunk.clone());
+                }
+                ifaces.extend(def.interfaces.iter().map(|x| x.to_ascii_lowercase()));
+                if let Some(p) = &def.parent {
+                    ifaces.push(p.to_ascii_lowercase());
+                }
+            }
         }
         None
     }
@@ -7542,7 +7634,42 @@ pub fn enum_cases_all(class: &str) -> Result<Value, String> {
 /// a catchable `ValueError`; the scaffold surfaces it as a fatal).
 pub fn enum_from(class: &str, needle: Value, is_try: bool) -> Result<Value, String> {
     let names = with_host(|h| h.enum_case_names(class));
-    let needle_s = with_host(|h| h.to_str(&needle));
+    let spelled = with_host(|h| h.declared_class_name(class));
+    let fname = if is_try { "tryFrom" } else { "from" };
+    // The BACKING TYPE, read off the first case. It decides three things the
+    // needle alone cannot: which values are accepted at all, what they are
+    // coerced to, and how the failure message renders them. A pure enum has no
+    // backing value and no `from` at all.
+    let first = match names.first() {
+        Some(n) => match enum_case(class, n) {
+            Some(Ok(v)) => v,
+            Some(Err(e)) => return Err(e),
+            None => Value::Undef,
+        },
+        None => Value::Undef,
+    };
+    let want_int = match with_host(|h| h.prop_get(&first, "value")) {
+        Value::Int(_) => true,
+        Value::Str(_) => false,
+        _ => {
+            return Err(crate::builtins::throws_bare(
+                "Error",
+                format!("Call to undefined method {spelled}::{fname}()"),
+            ))
+        }
+    };
+    // Weak-mode parameter coercion, which the reference performs BEFORE looking
+    // for a matching case: `E::from(1.5)` on an int-backed enum finds the case
+    // for `1` (after deprecating the narrowing), and `E::from("z")` on one is a
+    // TypeError rather than a "not a valid backing value" ValueError.
+    let coerced = match enum_backing_coerce(&needle, want_int, &spelled, fname) {
+        Coerced::Value(v) => v,
+        // The argument was refused: `throw_from_internal` has already recorded
+        // the exception (it returns `Ok` with a PENDING throw, not `Err`), so
+        // its own result is what has to travel back.
+        Coerced::Refused(r) => return r,
+    };
+    let needle_s = with_host(|h| h.to_str(&coerced));
     for name in names {
         let case = match enum_case(class, &name) {
             Some(Ok(v)) => v,
@@ -7557,22 +7684,111 @@ pub fn enum_from(class: &str, needle: Value, is_try: bool) -> Result<Value, Stri
     if is_try {
         return Ok(Value::Undef);
     }
-    // A catchable ValueError, not a scaffold fatal. The needle is rendered the
-    // way the reference renders it: an int bare, a string quoted.
-    let shown = match with_host(|h| h.to_number(&needle)) {
-        _ if matches!(needle, Value::Int(_)) => needle_s.clone(),
-        _ => format!("\"{needle_s}\""),
+    // A catchable ValueError, not a scaffold fatal. The needle is rendered as
+    // the BACKING type, which is what it was coerced to: an int bare, a string
+    // quoted. Rendering the value as passed reported `E::from(9)` on a
+    // string-backed enum as `9` where the reference says `"9"`.
+    let shown = if want_int {
+        needle_s.clone()
+    } else {
+        format!("\"{needle_s}\"")
     };
     // `from` is a real call in the reference's trace — `#0 file(1): E::from(99)`
     // — and both halves of the name are the DECLARED spelling however the call
     // was written, so `MYENUM::FROM(99)` still reports `MyEnum::from(99)`.
-    let spelled = with_host(|h| h.declared_class_name(class));
     throw_from_internal(
         &format!("{spelled}::from"),
         &[needle],
         "ValueError",
         &format!("{shown} is not a valid backing value for enum {spelled}"),
     )
+}
+
+/// Coerce `Enum::from`'s argument to the enum's backing type under PHP's
+/// weak-mode rules for its `string|int $value` parameter.
+///
+/// The union prefers `int`, so a float, a bool and `null` all narrow to an int
+/// first and only then become a string for a string-backed enum: `E::from(1.5)`
+/// is the case for `"1"` there, not for `"1.5"`. Each narrowing carries the
+/// reference's own diagnostic.
+fn enum_backing_coerce(v: &Value, want_int: bool, spelled: &str, fname: &str) -> Coerced {
+    // The reference's TypeError carries a FRAME for the call — `#0 file(1):
+    // E::from('z')` — exactly as its ValueError does, so it goes through the
+    // same internal-throw path rather than a bare throw.
+    let type_error = |v: &Value| -> Coerced {
+        let what = with_host(|h| h.type_name_for_error(v));
+        let want = if want_int { "int" } else { "string|int" };
+        let msg = format!(
+            "{spelled}::{fname}(): Argument #1 ($value) must be of type {want}, {what} given"
+        );
+        Coerced::Refused(throw_from_internal(
+            &format!("{spelled}::{fname}"),
+            std::slice::from_ref(v),
+            "TypeError",
+            &msg,
+        ))
+    };
+    let as_int = |n: i64| -> Value {
+        if want_int {
+            Value::int(n)
+        } else {
+            Value::str(n.to_string())
+        }
+    };
+    match v {
+        // An object or an array satisfies neither member of the union.
+        Value::Obj(_) => type_error(v),
+        Value::Undef => {
+            with_host(|h| {
+                h.deprecated(format!(
+                    "{spelled}::{fname}(): Passing null to parameter #1 ($value) of \
+                     type string|int is deprecated"
+                ))
+            });
+            Coerced::Value(as_int(0))
+        }
+        Value::Bool(b) => Coerced::Value(as_int(i64::from(*b))),
+        Value::Int(n) => Coerced::Value(as_int(*n)),
+        Value::Float(f) => {
+            if f.fract() != 0.0 {
+                let shown = with_host(|h| h.to_str(v));
+                with_host(|h| {
+                    h.deprecated(format!(
+                        "Implicit conversion from float {shown} to int loses precision"
+                    ))
+                });
+            }
+            Coerced::Value(as_int(*f as i64))
+        }
+        // A string satisfies the union as itself for a string-backed enum. For
+        // an int-backed one it has to be numeric — and a numeric one narrows in
+        // silence unless the narrowing loses a fraction.
+        Value::Str(s) => {
+            if !want_int {
+                return Coerced::Value(v.clone());
+            }
+            if !is_numeric_string(s) {
+                return type_error(v);
+            }
+            let f = with_host(|h| h.to_number(v)).to_float();
+            if f.fract() != 0.0 {
+                with_host(|h| {
+                    h.deprecated(format!(
+                        "Implicit conversion from float-string \"{s}\" to int loses precision"
+                    ))
+                });
+            }
+            Coerced::Value(Value::int(f as i64))
+        }
+        other => type_error(other),
+    }
+}
+
+/// The outcome of [`enum_backing_coerce`]: the coerced value, or the refusal
+/// that has already been thrown.
+enum Coerced {
+    Value(Value),
+    Refused(Result<Value, String>),
 }
 
 /// `Class::$prop` read. On first access the (constant) initializer runs once and

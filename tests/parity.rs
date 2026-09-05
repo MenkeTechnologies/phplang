@@ -33,32 +33,82 @@ use std::process::Command;
 /// Separator between corpus blocks — a line containing exactly this.
 const SEP: &str = "#==#";
 
-/// The reference interpreter, if one is installed. `PHP` overrides the search
-/// so a specific build can be pinned.
+/// Absolute locations a system PHP is installed at, searched before `PATH`.
 ///
-/// A `php` that is phplang ITSELF is refused: the harness would then be
-/// comparing the binary under test against itself and pass unconditionally.
+/// `PATH` is searched only as a fallback, and what it yields is made absolute
+/// before it is used: a relative `php`, or one picked up from a directory the
+/// build itself writes to, is the one way this harness can end up comparing the
+/// binary under test against ITSELF and reporting a clean sweep for it.
+const SYSTEM_PHP: &[&str] = &[
+    "/opt/homebrew/bin/php",
+    "/usr/local/bin/php",
+    "/usr/bin/php",
+];
+
+/// The reference interpreter, if one is installed, as an ABSOLUTE path.
+/// `PHP` overrides the search so a specific build can be pinned.
+///
+/// Two candidates are refused rather than used:
+///
+/// * one whose `--version` is not a reference banner — phplang's own `php`
+///   answers `php <crate version>`, so a `target/` directory that reached
+///   `PATH` cannot be mistaken for the oracle;
+/// * one that lives under this crate's `target/`, whatever it prints. The
+///   banner test alone is a weak reed: it holds only while phplang's
+///   `--version` stays un-PHP-shaped, and the failure it guards against —
+///   the harness comparing the binary under test against itself and passing
+///   unconditionally — is silent.
 fn reference_php() -> Option<PathBuf> {
+    let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
     let candidates: Vec<PathBuf> = match std::env::var_os("PHP") {
         Some(p) => vec![PathBuf::from(p)],
-        None => std::env::var_os("PATH")
-            .map(|path| {
-                std::env::split_paths(&path)
-                    .map(|d| d.join("php"))
-                    .collect()
-            })
-            .unwrap_or_default(),
+        None => SYSTEM_PHP
+            .iter()
+            .map(PathBuf::from)
+            .chain(
+                std::env::var_os("PATH")
+                    .map(|path| {
+                        std::env::split_paths(&path)
+                            .map(|d| d.join("php"))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default(),
+            )
+            .collect(),
     };
     for c in candidates {
-        let Ok(out) = Command::new(&c).arg("--version").output() else {
+        let abs = c.canonicalize().unwrap_or(c);
+        if abs.starts_with(&target) {
+            continue;
+        }
+        let Ok(out) = Command::new(&abs).arg("--version").output() else {
             continue;
         };
         let banner = String::from_utf8_lossy(&out.stdout);
         if banner.starts_with("PHP ") && !banner.contains("phplang") {
-            return Some(c);
+            return Some(abs);
         }
     }
     None
+}
+
+/// The first line of `php --version`, which names the build the comparison was
+/// actually made against.
+fn php_banner(php: &Path) -> String {
+    Command::new(php)
+        .arg("--version")
+        .output()
+        .ok()
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_string()
+        })
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 fn corpus_path() -> PathBuf {
@@ -276,6 +326,11 @@ fn frozen_snapshot_still_matches_live_php() {
         eprintln!("no reference `php` on PATH — skipping live re-derivation");
         return;
     };
+    // Say WHICH interpreter answered. A parity result is a claim about a
+    // specific build, and a run that does not name it cannot be reproduced or
+    // contradicted — the snapshot's `major.minor` pin below is a coarser
+    // version of the same thing.
+    eprintln!("parity oracle: {} ({})", php.display(), php_banner(&php));
     let corpus = std::fs::read_to_string(corpus_path()).expect("read parity corpus");
     let blocks = blocks(&corpus);
     let live: Vec<Run> = blocks.iter().map(|b| run(&php, b)).collect();
