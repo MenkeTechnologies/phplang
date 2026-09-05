@@ -123,3 +123,56 @@ fn strcmp_returns_the_byte_difference_not_its_sign() {
         strncmp("aX","zY",1), "|", strncasecmp("aX","ZY",1), "|", strcmp("a","a");"#;
     assert_eq!(run(src), "-25|25|-1|-32|-25|-25|-25|0");
 }
+
+// ── comparison casts an object with __toString ──────────────────────────────
+//
+// `zend_compare` casts such an object when the other operand is a string.
+// Without the cast `$obj == "s"` was false, `$obj < "t"` fell to the
+// object-vs-scalar rule, and `$obj <=> "s"` was 1 for a `__toString` that
+// returns exactly `"s"`.
+
+#[test]
+fn an_object_with_tostring_compares_as_its_string() {
+    let src = r#"<?php
+        class C { public function __toString(): string { return "S"; } }
+        $c = new C();
+        var_dump($c == "S", "S" == $c, $c != "S", $c == "x");"#;
+    assert_eq!(
+        run(src),
+        "bool(true)\nbool(true)\nbool(false)\nbool(false)\n"
+    );
+}
+
+#[test]
+fn the_relational_operators_cast_it_too() {
+    // These are lowered natively, so they reach the cast by a different path
+    // from `==` and would keep the old answer if only the builtin were fixed.
+    let src = r#"<?php
+        class C { public function __toString(): string { return "S"; } }
+        $c = new C();
+        var_dump($c < "T", $c > "R", $c <= "S", $c >= "T", $c <=> "S");"#;
+    assert_eq!(
+        run(src),
+        "bool(true)\nbool(true)\nbool(true)\nbool(false)\nint(0)\n"
+    );
+}
+
+#[test]
+fn identity_and_object_pairs_are_unaffected() {
+    // `===` never casts, and two objects compare as objects however they
+    // stringify.
+    let src = r#"<?php
+        class C { public function __toString(): string { return "S"; } }
+        $a = new C(); $b = new C();
+        var_dump($a === "S", $a == $b, $a === $b);"#;
+    assert_eq!(run(src), "bool(false)\nbool(true)\nbool(false)\n");
+}
+
+#[test]
+fn an_object_without_tostring_still_does_not_compare_as_a_string() {
+    let src = r#"<?php
+        class C {}
+        $c = new C();
+        var_dump($c == "S");"#;
+    assert_eq!(run(src), "bool(false)\n");
+}

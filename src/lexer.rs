@@ -626,16 +626,23 @@ impl<'a> Lexer<'a> {
                 match self.src[i..].iter().position(|&b| b == b'\n') {
                     Some(n) => i += n + 1,
                     // The reference names the line the file RAN OUT on, not the
-                    // line the heredoc opened on.
+                    // line the heredoc opened on — and it words the failure by
+                    // what the body scanned: a body that reached an
+                    // interpolation is `unexpected end of file` alone, while
+                    // one that is still plain text lists what could have
+                    // followed it.
                     None => {
+                        let rest = &self.src[body_start..];
                         let eof = opened
                             + self.src[start..].iter().filter(|&&b| b == b'\n').count() as u32;
-                        return Err(located(
+                        let msg = if scanned_interpolation(rest) {
+                            "syntax error, unexpected end of file".to_string()
+                        } else {
                             "syntax error, unexpected end of file, expecting variable \
                              or heredoc end or \"${\" or \"{$\""
-                                .to_string(),
-                            eof,
-                        ));
+                                .to_string()
+                        };
+                        return Err(located(msg, eof));
                     }
                 }
             }
@@ -898,6 +905,17 @@ impl<'a> Lexer<'a> {
 
 /// Parse `digits` in the given radix into an integer token, falling back to a
 /// float when the value overflows `i64` (as PHP does for large literals).
+/// Whether an unterminated heredoc body reached an interpolation before the
+/// file ran out — a `$name` or a `{$`, either of which puts the reference's
+/// lexer in a state whose end-of-file message lists nothing.
+fn scanned_interpolation(body: &[u8]) -> bool {
+    body.windows(2).any(|w| match w {
+        [b'$', c] => is_ident(*c) && !c.is_ascii_digit(),
+        [b'{', b'$'] => true,
+        _ => false,
+    })
+}
+
 /// Strip the closing delimiter's indentation from every line of a heredoc body
 /// (PHP 7.3's flexible heredoc).
 ///

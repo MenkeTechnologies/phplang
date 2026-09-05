@@ -1814,6 +1814,35 @@ impl Compiler {
                 _ => {}
             }
         }
+        // A CLOSURE (or the top level) with no enclosing class is the other
+        // scope that is not knowable here: `Closure::bind` and `->call()` give
+        // one a class later, so `(function () { return self::K; })->call($o)`
+        // resolves against the bound scope and only fails — with a catchable
+        // `Error` — if it is called without one. Refusing it at compile time
+        // rejected a program the reference runs. A NAMED function is the case
+        // the reference itself settles at compile time, and keeps the
+        // compile-time path below.
+        let unbound_closure =
+            self.current_class.is_none() && !matches!(self.decl_site, host::DeclSite::Named(_));
+        if unbound_closure {
+            let lower = class.to_ascii_lowercase();
+            if matches!(lower.as_str(), "self" | "parent" | "static") {
+                let kw = b.add_constant(Value::str(lower.clone()));
+                b.emit(Op::LoadConst(kw), self.cur_line);
+                let op = if lower == "parent" {
+                    ops::PARENT_CLASS
+                } else {
+                    ops::SELF_CLASS
+                };
+                b.emit(Op::CallBuiltin(op, 1), self.cur_line);
+                // `static` is the late-static-binding class when one is set and
+                // the bound scope otherwise, which is what `LSB_CLASS` decides.
+                if lower == "static" {
+                    b.emit(Op::CallBuiltin(ops::LSB_CLASS, 1), self.cur_line);
+                }
+                return Ok(());
+            }
+        }
         let cname = self.resolve_class_name(class)?;
         let idx = b.add_constant(Value::str(cname));
         b.emit(Op::LoadConst(idx), 0);

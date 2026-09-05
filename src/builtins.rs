@@ -693,21 +693,63 @@ fn b_magic_dir(vm: &mut VM, _: u8) -> Value {
 /// the same node.
 /// `SELF_CLASS`: the composing class of a trait method. See
 /// [`ops::SELF_CLASS`].
-fn b_self_class(_: &mut VM, _: u8) -> Value {
-    Value::str(with_host(|h| h.magic_class()))
+fn b_self_class(vm: &mut VM, argc: u8) -> Value {
+    let kw = scope_keyword(vm, argc);
+    let class = with_host(|h| h.magic_class());
+    if class.is_empty() {
+        return no_class_scope(vm, &kw);
+    }
+    Value::str(class)
+}
+
+/// The keyword operand both class-scope ops carry, so a failure names the one
+/// the program wrote. A trait body emits the op without it (a trait method
+/// always has a composing class), and `self` is the only spelling that can
+/// reach that arm.
+fn scope_keyword(vm: &mut VM, argc: u8) -> String {
+    if argc == 0 {
+        return "self".to_string();
+    }
+    with_host(|h| h.to_str(&vm.pop()))
+}
+
+/// `self`/`parent`/`static` reached with no class scope at all.
+///
+/// This is the CLOSURE and top-level case, which the reference answers with a
+/// catchable `Error` because a closure may still be bound to a scope. Inside a
+/// named function it knows at compile time that no scope can ever be active and
+/// refuses the program before it runs; the compiler keeps that path.
+fn no_class_scope(vm: &mut VM, kw: &str) -> Value {
+    throw_php(
+        vm,
+        "Error",
+        &format!("Cannot access \"{kw}\" when no class scope is active"),
+    )
 }
 
 /// `PARENT_CLASS`: the composing class's parent inside a trait method. A trait
 /// used by a class with no parent is the reference's `Cannot use "parent" when
 /// current class scope has no parent`, raised where the method RUNS because
 /// that is the first point the class is known.
-fn b_parent_class(vm: &mut VM, _: u8) -> Value {
+fn b_parent_class(vm: &mut VM, argc: u8) -> Value {
+    // A trait body emits this with no operand; a closure (or the top level)
+    // emits the keyword. The two say the parentless case differently — `Cannot
+    // use` where the scope is known to be a class and `Cannot access` where it
+    // is whatever the closure was bound to — so the shape of the emission is
+    // what picks the verb.
+    let from_trait = argc == 0;
+    let kw = scope_keyword(vm, argc);
+    let class = with_host(|h| h.magic_class());
+    if class.is_empty() {
+        return no_class_scope(vm, &kw);
+    }
     let parent = with_host(|h| h.magic_parent_class());
     if parent.is_empty() {
+        let verb = if from_trait { "use" } else { "access" };
         return throw_php(
             vm,
             "Error",
-            "Cannot use \"parent\" when current class scope has no parent",
+            &format!("Cannot {verb} \"parent\" when current class scope has no parent"),
         );
     }
     Value::str(parent)
@@ -1349,6 +1391,17 @@ fn b_concat(vm: &mut VM, _: u8) -> Value {
     let a = vm.pop();
     // As in `b_echo`: the conversion warns against the concatenation's own line.
     mark_warn_site(vm);
+    // Two strings need no conversion at all — no `__toString` to run, no
+    // `Array to string conversion`, no NaN notice — so they skip both host
+    // borrows and the `format!`, and the result is built once at the exact
+    // length. This is the shape of most concatenations, including every
+    // interpolation whose parts are already strings.
+    if let (Value::Str(x), Value::Str(y)) = (&a, &b) {
+        let mut out = String::with_capacity(x.len() + y.len());
+        out.push_str(x);
+        out.push_str(y);
+        return Value::str(out);
+    }
     // Both conversions happen outside the host borrow so an operand with
     // `__toString` can run it. String interpolation lowers to this op too.
     let (a, b) = (host::to_str_ext(&a), host::to_str_ext(&b));
@@ -2640,6 +2693,17 @@ fn is_stringable_object(h: &host::PhpHost, v: &Value) -> bool {
 ///
 /// Called OUTSIDE the host borrow — the cast runs user code.
 fn cast_for_compare(a: &Value, b: &Value) -> Option<(Value, Value)> {
+    // Only an object/string PAIR can cast, and that shape is decidable from the
+    // two discriminants. Checked before anything else so the host is not
+    // borrowed for the scalar pairs that are almost every comparison a program
+    // makes — this sits on the `==` builtin and on the numeric hook every
+    // relational operator falls into.
+    if !matches!(
+        (a, b),
+        (Value::Obj(_), Value::Str(_)) | (Value::Str(_), Value::Obj(_))
+    ) {
+        return None;
+    }
     let (a_obj, b_obj) = with_host(|h| (is_stringable_object(h, a), is_stringable_object(h, b)));
     match (a_obj, b_obj) {
         (true, false) if matches!(b, Value::Str(_)) => {

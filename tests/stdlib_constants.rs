@@ -212,3 +212,50 @@ fn const_inside_a_namespace_block_is_top_level() {
     // And under the statement (semicolon) form of the same declaration.
     assert_eq!(run("<?php namespace N; const B = 2; echo B;"), "2");
 }
+
+// ── class constants through constant()/defined() ────────────────────────────
+//
+// Both functions saw a `Class::CONST` name as a plain constant name that was
+// never defined, so `defined("C::K")` was false and `constant("C::K")` an
+// `Error` for every class in every program.
+
+#[test]
+fn constant_and_defined_read_a_class_constant() {
+    let src = r#"<?php
+        class C { const K = 5; }
+        var_dump(constant("C::K"), defined("C::K"));"#;
+    assert_eq!(run(src), "int(5)\nbool(true)\n");
+}
+
+#[test]
+fn constant_and_defined_read_an_inherited_interface_constant() {
+    let src = r#"<?php
+        interface I { const K = 5; }
+        class C implements I {}
+        var_dump(constant("C::K"), defined("C::K"));"#;
+    assert_eq!(run(src), "int(5)\nbool(true)\n");
+}
+
+#[test]
+fn constant_reads_an_enum_case() {
+    let src = r#"<?php
+        enum E: string { case A = "a"; }
+        var_dump(defined("E::A"), constant("E::A")->value);"#;
+    assert_eq!(run(src), "bool(true)\nstring(1) \"a\"\n");
+}
+
+#[test]
+fn an_absent_class_constant_keeps_the_class_form_of_each_message() {
+    // The `::` form is NOT quoted, unlike the bare-name form, and a class that
+    // does not exist is reported as the missing class rather than as a missing
+    // constant.
+    let src = r#"<?php
+        class C {}
+        var_dump(defined("C::K"));
+        try { constant("C::K"); } catch (Error $e) { echo $e->getMessage(), "|"; }
+        try { constant("Nope::K"); } catch (Error $e) { echo $e->getMessage(); }"#;
+    assert_eq!(
+        run(src),
+        "bool(false)\nUndefined constant C::K|Class \"Nope\" not found"
+    );
+}

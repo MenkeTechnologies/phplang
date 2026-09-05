@@ -3725,7 +3725,14 @@ impl PhpHost {
         let Some(cls) = self.current_class_ctx() else {
             return String::new();
         };
-        let Some(parent) = self.classes.get(&cls).and_then(|d| d.parent.clone()) else {
+        // Lowercased before the lookup: `current_class_ctx` can hand back the
+        // DECLARED spelling (a closure bound with `->call()` does), and the
+        // class map is keyed by the lowercased name.
+        let Some(parent) = self
+            .classes
+            .get(&cls.to_ascii_lowercase())
+            .and_then(|d| d.parent.clone())
+        else {
             return String::new();
         };
         self.classes
@@ -4283,7 +4290,7 @@ impl PhpHost {
             Value::Undef => ArrayKey::Str(String::new()),
             Value::Str(s) => match canonical_int_key(s) {
                 Some(n) => ArrayKey::Int(n),
-                None => ArrayKey::Str(s.to_string()),
+                None => ArrayKey::Str(String::clone(s)),
             },
             Value::Obj(_) => ArrayKey::Str("Array".into()),
             _ => ArrayKey::Str(self.to_str(key)),
@@ -5049,13 +5056,22 @@ impl PhpHost {
         self.to_str(v)
     }
 
+    /// A value as a PHP string.
+    ///
+    /// The `Str` arm CLONES the buffer rather than going through `to_string()`.
+    /// They are not the same call: `Value::Str` holds an `Arc<String>`, which
+    /// `ToString` has no specialisation for, so `s.to_string()` ran the whole
+    /// `core::fmt` machinery — `Display::fmt` → `Write::write_str` →
+    /// `push_str` — for every string that reaches a concatenation, an
+    /// interpolation, an array key or a library argument. A sampling profile of
+    /// `$s .= "x$i,"` spent most of its VM time there.
     pub fn to_str(&self, v: &Value) -> String {
         match v {
             Value::Undef => String::new(),
             Value::Bool(b) => if *b { "1" } else { "" }.to_string(),
             Value::Int(n) => n.to_string(),
             Value::Float(f) => float_to_php_string(*f),
-            Value::Str(s) => s.to_string(),
+            Value::Str(s) => String::clone(s),
             Value::Obj(_) => "Array".to_string(),
             _ => String::new(),
         }
@@ -5191,6 +5207,13 @@ impl PhpHost {
 /// Whether a variable name (sans `$`) is a PHP superglobal — auto-global across
 /// every scope, resolved against the global frame.
 pub fn is_superglobal(name: &str) -> bool {
+    // First-byte gate before the eleven comparisons. This is asked on every
+    // by-name variable access — it was 3% of a `foreach` profile — and the
+    // answer is almost always no, which one byte settles for every name that
+    // does not begin like a superglobal.
+    if !matches!(name.as_bytes().first(), Some(b'_' | b'G' | b'a')) {
+        return false;
+    }
     matches!(
         name,
         "_SERVER"

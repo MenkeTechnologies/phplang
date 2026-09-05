@@ -157,3 +157,80 @@ fn backed_enum_from_miss_names_the_call_in_its_trace() {
          #0 Command line code(7): Status::from('zz')\n#1 {main}\n"
     );
 }
+
+// ── from()/tryFrom() argument coercion ──────────────────────────────────────
+//
+// The needle used to be compared as its string rendering with no typing at all,
+// so an argument the reference refuses outright found a case, and one it
+// narrows found none.
+
+#[test]
+fn a_type_the_backing_rejects_is_a_type_error() {
+    let src = r#"<?php
+        enum E: int { case A = 1; }
+        try { E::from("z"); } catch (TypeError $e) { echo $e->getMessage(); }
+        echo "|";
+        try { E::tryFrom([1]); } catch (TypeError $e) { echo $e->getMessage(); }"#;
+    assert_eq!(
+        run(src),
+        "E::from(): Argument #1 ($value) must be of type int, string given|\
+         E::tryFrom(): Argument #1 ($value) must be of type int, array given"
+    );
+}
+
+#[test]
+fn a_string_backed_enum_accepts_an_int_and_reports_it_as_a_string() {
+    // The union prefers `int`, so the int becomes the backing string — and the
+    // failure message quotes it, because that is the type it was coerced to.
+    let src = r#"<?php
+        enum E: string { case A = "1"; }
+        var_dump(E::from(1) === E::A);
+        try { E::from(9); } catch (ValueError $e) { echo $e->getMessage(); }"#;
+    assert_eq!(
+        run(src),
+        "bool(true)\n\"9\" is not a valid backing value for enum E"
+    );
+}
+
+#[test]
+fn a_numeric_string_narrows_for_an_int_backed_enum() {
+    let src = r#"<?php
+        enum E: int { case A = 1; }
+        var_dump(E::from("1") === E::A, E::from(" 1") === E::A, E::from(1.0) === E::A);"#;
+    assert_eq!(run(src), "bool(true)\nbool(true)\nbool(true)\n");
+}
+
+#[test]
+fn a_fractional_float_deprecates_its_narrowing() {
+    let src = r#"<?php
+        enum E: int { case A = 1; }
+        var_dump(E::from(1.5) === E::A);"#;
+    let out = run(src);
+    assert!(
+        out.contains("Implicit conversion from float 1.5 to int loses precision")
+            && out.contains("bool(true)"),
+        "{out}"
+    );
+}
+
+#[test]
+fn null_is_deprecated_and_reads_as_zero() {
+    let src = r#"<?php
+        enum E: int { case A = 1; }
+        try { E::from(null); } catch (ValueError $e) { echo "|", $e->getMessage(); }"#;
+    let out = run(src);
+    assert!(
+        out.contains(
+            "E::from(): Passing null to parameter #1 ($value) of type string|int is deprecated"
+        ) && out.contains("|0 is not a valid backing value for enum E"),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_pure_enum_has_no_from() {
+    let src = r#"<?php
+        enum E { case A; }
+        try { E::from(1); } catch (Error $e) { echo $e->getMessage(); }"#;
+    assert_eq!(run(src), "Call to undefined method E::from()");
+}

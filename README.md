@@ -119,13 +119,23 @@ end-to-end (see `tests/basic.rs`):
   interpolation forms — `"$v"`, the simple one-level `"$o->p"` / `"$a[key]"` (where
   an unquoted key is a string, not a constant), the complex `"{$expr}"` for any
   expression, and the legacy `"${v}"`.
+- **Heredoc** (`<<<EOT`) and **nowdoc** (`<<<'EOT'`): a heredoc body is the
+  double-quoted language minus the `\"` escape (a `"` there needs none), a
+  nowdoc body is verbatim to the byte. PHP 7.3's flexible closing delimiter is
+  honoured — its indentation is stripped from every body line before anything
+  is interpolated, and a line indented less than it is a parse error naming
+  that line. Only the exact label closes a body, the newline before the label
+  belongs to the delimiter, and the label may be followed by any token.
 - Variables, arithmetic (`+ - * / % **`), string concat (`.`), compound
   assignment (`+= .=` …), pre/post `++`/`--`.
 - Loose/strict comparison (`== != === !== < > <= >=`, PHP-8 string↔number
   ordering), short-circuit `&& || and or`, ternary `?:` (incl. the elvis short
   form), null-coalesce `??`, the nullsafe operator `?->` (a null receiver
-  short-circuits the whole `$a?->b`/`$a?->b()` to null without evaluating the
-  member or its arguments), `!`, and `(int)`/`(float)`/`(string)`/`(bool)` casts.
+  short-circuits the whole REMAINING CHAIN to null — `$a?->b->c["k"]->d()`
+  evaluates no member, no subscript and no argument past the `?->`, while a
+  `?->` inside an argument keeps its own extent), `!`, and
+  `(int)`/`(float)`/`(string)`/`(bool)` casts. An object with `__toString`
+  compared against a string is cast to it first, as `zend_compare` does.
 - Indexed, associative, and appended (`$a[] =`) arrays with PHP **value semantics**
   — assigning, passing, returning or storing one hands over a copy (deep through
   nested arrays; an object inside stays a handle), while `$b = &$a` and a `&$x`
@@ -138,7 +148,8 @@ end-to-end (see `tests/basic.rs`):
   `continue`, `return`; `match` expressions (a no-arm/no-`default` match throws
   `\UnhandledMatchError`, as PHP 8 does).
 - User `function`s with positional, default (`$x = 1`) and variadic (`...$rest`)
-  parameters, recursion, argument unpacking at a call site (`f(...$args)`)
+  parameters, recursion, argument unpacking at EVERY call site (`f(...$args)`,
+  `$f(...$args)`, `$o->m(...$args)`, `C::s(...$args)`, `new C(...$args)`)
   and inside an array literal (`[...$a, ...$b]`, keys renumbered for integers
   and kept for strings), either of which also drives a Generator or a
   Traversable, and
@@ -164,7 +175,10 @@ end-to-end (see `tests/basic.rs`):
   switch and no VM change.
 - Classes/OOP: `new`, instance properties and methods, `$this`, constructors
   (with property promotion), class constants, `::class`, static methods/constants,
-  `self::`/`parent::`, **late static binding** (`static::` — `static::class`,
+  `self::`/`parent::` (inside a trait both name the COMPOSING class, and inside
+  a closure the class it is bound to — `(function () { return self::K; })->call($o)`
+  — both resolved when the code runs), constants inherited from an implemented
+  or extended **interface**, **late static binding** (`static::` — `static::class`,
   `new static`, `static::CONST`, `static::$prop`, `static::m()` — resolves to the
   class the call was made on, and `self::`/`parent::`/`static::` calls forward
   it), single inheritance, **interfaces** (`implements`, interface
@@ -464,9 +478,17 @@ which made `exit(3)` and `exit(9)` the same answer.
 
 ```sh
 cargo build --bin parity-fuzz
-./target/debug/parity-fuzz --count 5000        # fuzz 5000 cases
-./target/debug/parity-fuzz --once --seed 1234  # replay one case, show both sides
+./target/debug/parity-fuzz --count 5000            # fuzz 5000 cases
+./target/debug/parity-fuzz --count 500 --mode enums   # 500 cases of ONE mode
+./target/debug/parity-fuzz --once --seed 1234         # replay one case, both sides
 ```
+
+`--mode NAME` generates that mode's cases rather than filtering the rest away,
+so `--count 500 --mode enums` compares 500 enum programs. A divergence prints
+the case SEED, which `--once --seed <it>` rebuilds exactly; add the same
+`--mode` when the run that found it was filtered. `PHPLANG_FUZZ_PHP` pins the
+oracle and is refused unless it is a reference PHP — pointing it at phplang
+would compare the binary under test against itself and report a clean sweep.
 
 Generators are biased toward where a PHP frontend is likely to disagree with the
 reference: float formatting, integer division/modulo signs, `**` precedence,
@@ -502,7 +524,10 @@ Round 7 found `json_decode`, `ctype_*`, `parse_url`, `strip_tags`, `__invoke`,
 `compact`, `md5` and `base64_*` on that list, and every one of them was carrying
 a bug. Round 8 found `sscanf`, `addcslashes`, `count_chars`, `strtok`,
 `substr_compare` and the array forms of `substr_replace` on it, with the same
-result. A curated corpus cannot report a construct nobody captured, so a mode
+result. Round 10 ran the same test over the SYNTAX instead of the library — a
+grep for `<<<`, `yield`, `enum `, `trait `, `...` and a `?->` past the first
+link returned zero hits over the generators — and every one of those six was
+carrying a bug too, `<<<` not being implemented at all. A curated corpus cannot report a construct nobody captured, so a mode
 should be added for the family FIRST and the fix written against what it reports.
 
 A clean divergence count only means something alongside the two numbers printed

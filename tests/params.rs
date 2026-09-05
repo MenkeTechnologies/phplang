@@ -183,3 +183,74 @@ fn spread_drives_a_generator_into_a_variadic() {
         echo total(...gen());"#;
     assert_eq!(run(src), "6");
 }
+
+// ── `...` unpacking away from a literal function name ───────────────────────
+//
+// Unpacking used to be lowered only for `f(...$a)` where `f` is a literal name.
+// Every other call site was the compile-time refusal `'...' argument unpacking
+// is only valid in a function call`, so none of these programs ran at all.
+
+#[test]
+fn unpacking_at_a_closure_call() {
+    let src = r#"<?php
+        $f = function ($a, $b) { return "$a/$b"; };
+        $g = fn (...$xs) => implode("-", $xs);
+        echo $f(...[1, 2]), "|", $g(...[1, 2, 3]);"#;
+    assert_eq!(run(src), "1/2|1-2-3");
+}
+
+#[test]
+fn unpacking_at_a_method_and_static_call() {
+    let src = r#"<?php
+        class C {
+            public function m($a, $b) { return "m:$a$b"; }
+            public static function s($a, $b) { return "s:$a$b"; }
+        }
+        $c = new C();
+        echo $c->m(...[1, 2]), "|", C::s(...[3, 4]), "|", $c?->m(...[5, 6]);"#;
+    assert_eq!(run(src), "m:12|s:34|m:56");
+}
+
+#[test]
+fn unpacking_at_a_constructor() {
+    let src = r#"<?php
+        class C { public function __construct(public $a, public $b) {} }
+        $o = new C(...[1, 2]);
+        $n = new C(...["b" => 4, "a" => 3]);
+        echo $o->a, $o->b, "|", $n->a, $n->b;"#;
+    assert_eq!(run(src), "12|34");
+}
+
+#[test]
+fn a_string_keyed_spread_binds_by_name_at_every_site() {
+    // The keys are named arguments, so ORDER in the array does not matter and a
+    // key that matches no parameter is an Error.
+    let src = r#"<?php
+        class C { public function m($a, $b = "d") { return "$a/$b"; } }
+        $c = new C();
+        echo $c->m(...["b" => 2, "a" => 1]), "|", $c->m(1, ...["b" => 9]), "|";
+        try { echo $c->m(...["zz" => 1]); }
+        catch (Error $e) { echo $e->getMessage(); }"#;
+    assert_eq!(run(src), "1/2|1/9|Unknown named parameter $zz");
+}
+
+#[test]
+fn a_non_unpackable_operand_is_a_type_error_at_every_site() {
+    let src = r#"<?php
+        class C { public function m($a) { return $a; } }
+        $c = new C();
+        try { $c->m(..."str"); }
+        catch (TypeError $e) { echo $e->getMessage(); }"#;
+    assert_eq!(
+        run(src),
+        "Only arrays and Traversables can be unpacked, string given"
+    );
+}
+
+#[test]
+fn a_generator_unpacks_at_a_method_call() {
+    let src = r#"<?php
+        class C { public function m($a, $b) { return $a + $b; } }
+        echo (new C())->m(...(function () { yield 5; yield 6; })());"#;
+    assert_eq!(run(src), "11");
+}

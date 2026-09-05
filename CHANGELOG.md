@@ -26,6 +26,185 @@ comment above it.
 
 ---
 
+## Round 10 — the syntax the fuzzer never generated
+
+Measured under `PHP 8.5.10 (cli) (built: Aug 25 2026 21:09:32) (NTS)`; ini state
+and environment as recorded in the oracle table above.
+
+Round 7 and 8 found their bugs by listing the library functions no generator
+mode emits. This round ran the same test over the SYNTAX. A grep for `<<<`,
+`yield`, `enum `, `trait `, `...` and a `?->` past the first link returned ZERO
+hits across 3,800 lines of generators — six constructs that every previous
+"0 divergences" run scored not at all. Every one of them was carrying a bug, and
+the first was not implemented at all.
+
+### Heredoc and nowdoc are lexed
+
+`<<<EOT` was `Parse error: syntax error, unexpected token "<<"`. The lexer now
+has both forms:
+
+* a heredoc body is the double-quoted language minus the `\"` escape — the
+  reference leaves that backslash in place, because a `"` in a heredoc needs no
+  escaping — so it shares `scan_interp` with `"…"` rather than a second copy of
+  the interpolation and escape rules;
+* a nowdoc body is verbatim, `\\` included;
+* PHP 7.3's flexible closing delimiter is honoured: its indentation is stripped
+  from every body line BEFORE anything is interpolated, an entirely empty line
+  is legal at any level, and a line with less indentation is
+  `Invalid body indentation level (expecting an indentation level of at least
+  N)` naming that line;
+* only the exact label closes a body (`EOTX` does not close `EOT`), the newline
+  before the closing line belongs to the delimiter, and the label may be
+  followed by any token — `<<<EOT\na\nEOT . "z";` is `"az"`.
+
+### `?->` short-circuits the whole chain
+
+```text
+$ php -r '$n = null; var_dump($n?->a->b->c());'
+NULL
+```
+
+phplang lowered each link with its own two-branch merge, so `->b` was read off
+the null the first link produced: two `Attempt to read property` warnings and an
+uncaught `Call to a member function c() on null`. A chain containing a `?->` is
+now lowered as a unit, with one exit for every link that spells the operator, so
+no later member, subscript or ARGUMENT is evaluated. A `?->` inside an argument
+opens its own chain and keeps its own extent, so `$a->m($n?->x->y)` still calls
+`$a->m`.
+
+### `self` and `parent` inside a trait
+
+A trait's methods are compiled once and copied into every class that uses them,
+so the class they belong to is not known while the body is lowered — which is
+why the parser already resolves `__CLASS__` there at run time. `self` and
+`parent` did not: `self::class` answered the trait's name from every class,
+`new self()` built an instance of the trait, and `parent::` refused every trait
+that spelled it with `'parent' used in a class with no parent`. Both now resolve
+from the running frame (`SELF_CLASS`, `PARENT_CLASS`), which is the composing
+class exactly as PHP defines it.
+
+### Interface constants are inherited
+
+`interface I { const K = 5; } class C implements I {}` answered
+`Error: Undefined constant C::K` from `C::K`, `self::K` and `static::K` alike —
+the lookup walked the `parent` chain and nothing else. It now walks the parent
+chain first (so a class constant still shadows an interface one at every depth)
+and then the interfaces, transitively. `constant("C::K")` and `defined("C::K")`
+did not read class constants at all, in any shape, and now go through the same
+lookup.
+
+### `...` unpacking at every call site
+
+Unpacking was accepted in a call to a function named literally and refused
+everywhere else with the compile-time `'...' argument unpacking is only valid in
+a function call` — `$f(...$a)`, `$o->m(...$a)`, `C::s(...$a)` and
+`new C(...$a)` were all hard failures. A spread now rides the same
+`(name, value)` pair encoding named arguments use, with a marker in the name
+slot that the host flattens, so all four sites take one and the string-keyed
+form still binds by name.
+
+### `Enum::from` / `Enum::tryFrom` coerce their argument
+
+The needle was compared as its string rendering with no typing at all. The
+reference coerces it to the backing type first, under the weak-mode rules for a
+`string|int` parameter, and each step of that is observable:
+
+```text
+$ php -r 'enum E: int { case A = 1; } E::from("z");'
+PHP Fatal error:  Uncaught TypeError: E::from(): Argument #1 ($value) must be of type int, string given
+$ php -r 'enum E: string { case A = "a"; } try { E::from(9); } catch (ValueError $e) { echo $e->getMessage(); }'
+"9" is not a valid backing value for enum E
+```
+
+A non-numeric string against an int-backed enum is a `TypeError` with a frame,
+not a `ValueError`; `null` is the deprecation for passing null to a
+`string|int` parameter and then `0`; a fractional float deprecates the
+narrowing; and the failure message renders the value as the BACKING type, so a
+string-backed enum quotes it. A pure enum has no `from` at all
+(`Call to undefined method E::from()`).
+
+### An object with `__toString` compared against a string
+
+`zend_compare` casts it and compares the two strings. Without that `$obj == "s"`
+was false, `$obj < "t"` fell to the object-vs-scalar rule, and `$obj <=> "s"`
+was `1` for a `__toString` returning exactly `"s"`. The cast runs where all four
+relational operators reach it — they are lowered natively, so it is applied in
+the numeric hook as well as in the `==`/`<=>` builtins.
+
+### `UnhandledMatchError` renders its subject as a trace does
+
+The message concatenated the subject, so `null` became nothing at all, `true`
+became `1`, `'hi'` lost its quotes, and an array became `Array` behind an
+`Array to string conversion` warning the reference never raises. A scalar is now
+rendered as a stack trace renders an argument and anything else is
+`of type <name>`.
+
+### `self` / `parent` / `static` in a closure
+
+A closure is not compiled inside a class, so all three used to be the
+compile-time refusal `php: 'self' used outside of a class` — which rejected a
+program the reference RUNS, because `Closure::bind` and `->call()` give a
+closure a class scope afterwards:
+
+```text
+$ php -r 'class C { const K = 1; } $f = function () { return self::K; }; echo $f->call(new C());'
+1
+```
+
+They now resolve from the bound scope, and a closure called without one is the
+reference's catchable `Error: Cannot access "self" when no class scope is
+active` rather than a compile failure. A NAMED function keeps the compile-time
+path — that is where the reference decides it too, refusing the program before
+it runs any of it.
+
+### Performance
+
+Three changes on the string path, measured on this machine with the two
+binaries built from the same tree and run alternately, each over a
+uniquely-tagged source so the content-hash cache is cold for every measurement
+(best of four):
+
+| loop, 40k iterations | before | after |
+|---|---|---|
+| `$s .= "x"` | 0.19s | 0.14s |
+| `$s = $s . "x"` | 0.30s | 0.13s |
+| `$t = "x$i,"` | 0.20s | 0.13s |
+| 50k `$a[] = $i` then `foreach` | 1.57s | 1.17s |
+| `$s += $i` (no strings) | 0.02s | 0.02s |
+
+* `PhpHost::to_str` CLONES a `Value::Str` instead of calling `to_string()` on
+  it. They are not the same call: the payload is an `Arc<String>`, which
+  `ToString` has no specialisation for, so every string reaching a
+  concatenation, an interpolation, an array key or a library argument ran
+  through `core::fmt`. A sampling profile of `$t = "x$i,"` spent most of its VM
+  time in `Display::fmt`.
+* `CONCAT` of two strings builds the result directly at the exact length,
+  taking neither host borrow and no `format!`. Two strings have no
+  `__toString` to run and no diagnostic to raise, which is what those borrows
+  were for.
+* `is_superglobal` gates on the first byte before its eleven comparisons. It is
+  asked on every by-name variable access and was 3% of a `foreach` profile.
+
+---
+
+### Harness
+
+* **The reported seed now replays.** A divergence recorded the case INDEX, while
+  `--once --seed S` builds its case from `S` directly — so every "replays
+  exactly" transcript this harness has ever printed rebuilt an unrelated program
+  under an unrelated mode. The seed is what is recorded now.
+* **`--mode NAME` generates that mode's cases** instead of generating every
+  mode's and throwing away all but one in `MODES.len()`: a `--count 250` run of
+  one mode used to compare one to four programs and report the rest as never
+  having run. `--once` honours `--mode`, so a filtered finding replays.
+* `PHPLANG_FUZZ_PHP` is refused unless it is a reference PHP, and `--once`
+  prints the oracle it resolved. `tests/parity.rs` resolves an ABSOLUTE oracle
+  (system paths before `PATH`, never one under `target/`) and prints its banner.
+* Nine new modes: `heredoc`, `nullsafechain`, `matcherr`, `ifaceconst`,
+  `generators`, `enums`, `traits`, `variadic`, `splobj`.
+
+---
+
 ## Round 9 — the frames a library call occupies
 
 Measured under `PHP 8.5.10 (cli) (built: Aug 25 2026 21:09:32) (NTS)`, a point
