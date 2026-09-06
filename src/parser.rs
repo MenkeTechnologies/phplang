@@ -427,6 +427,23 @@ impl MagicCtx {
     }
 }
 
+/// Which of PHP's class-like declarations is being parsed, and the modifiers on
+/// it — the five flags `class_rest` used to take one after another, which is
+/// what `clippy::too_many_arguments` refuses at 8 (`-D warnings` in CI).
+///
+/// `Default` is the anonymous-class case: `new class(args) … { … }` is a plain
+/// class, so every flag is false.
+#[derive(Default, Clone, Copy)]
+struct ClassKind {
+    is_interface: bool,
+    is_trait: bool,
+    is_enum: bool,
+    is_abstract: bool,
+    /// `readonly class` — every property the body declares is readonly,
+    /// promoted constructor parameters included.
+    is_readonly_class: bool,
+}
+
 impl Parser {
     // ── cursor ─────────────────────────────────────────────────────────────
 
@@ -1824,11 +1841,13 @@ impl Parser {
         let saved = std::mem::replace(&mut self.magic, entered);
         let decl = self.class_rest(
             name,
-            is_interface,
-            is_trait,
-            is_enum,
-            is_abstract,
-            is_readonly_class,
+            ClassKind {
+                is_interface,
+                is_trait,
+                is_enum,
+                is_abstract,
+                is_readonly_class,
+            },
             enum_backing,
         );
         self.magic = saved;
@@ -1846,15 +1865,16 @@ impl Parser {
     fn class_rest(
         &mut self,
         name: String,
-        is_interface: bool,
-        is_trait: bool,
-        is_enum: bool,
-        is_abstract: bool,
-        // `readonly class` — every property the body declares is readonly,
-        // promoted constructor parameters included.
-        is_readonly_class: bool,
+        kind: ClassKind,
         enum_backing: Option<String>,
     ) -> Result<ClassDecl, String> {
+        let ClassKind {
+            is_interface,
+            is_trait,
+            is_enum,
+            is_abstract,
+            is_readonly_class,
+        } = kind;
         let mut parent = None;
         let mut implements = Vec::new();
         // `extends`: one parent for a class; an interface may extend several.
@@ -2671,11 +2691,7 @@ impl Parser {
                     let saved = std::mem::replace(&mut self.magic, entered);
                     let decl = self.class_rest(
                         "class@anonymous".to_string(),
-                        false,
-                        false,
-                        false,
-                        false,
-                        false,
+                        ClassKind::default(),
                         None,
                     );
                     self.magic = saved;

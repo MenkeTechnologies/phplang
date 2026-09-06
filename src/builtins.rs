@@ -236,9 +236,14 @@ fn b_gen_next(vm: &mut VM, _: u8) -> Value {
     }
 }
 
+/// What [`split_named`] hands back: the positional arguments, then the named
+/// ones with the name each was given. Spelled out in the return position it is
+/// what `clippy::type_complexity` refuses (`-D warnings` in CI).
+type SplitArgs = (Vec<Value>, Vec<(String, Value)>);
+
 /// Split a `(name, value)` argument-pair stream into positional arguments (name is
 /// `Undef`) and named arguments (name is a `Str`), preserving source order.
-fn split_named(pairs: Vec<Value>) -> Result<(Vec<Value>, Vec<(String, Value)>), String> {
+fn split_named(pairs: Vec<Value>) -> Result<SplitArgs, String> {
     let mut positional = Vec::new();
     let mut named = Vec::new();
     let mut it = pairs.into_iter();
