@@ -2689,11 +2689,8 @@ impl Parser {
                         ..self.magic.clone()
                     };
                     let saved = std::mem::replace(&mut self.magic, entered);
-                    let decl = self.class_rest(
-                        "class@anonymous".to_string(),
-                        ClassKind::default(),
-                        None,
-                    );
+                    let decl =
+                        self.class_rest("class@anonymous".to_string(), ClassKind::default(), None);
                     self.magic = saved;
                     let decl = decl?;
                     return Ok(Expr::NewAnon {
