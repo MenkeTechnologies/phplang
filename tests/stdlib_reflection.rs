@@ -35,13 +35,34 @@ fn class_exists_true_and_false() {
 }
 
 #[test]
-fn interface_trait_enum_exist_always_false() {
+fn each_existence_predicate_answers_for_its_own_kind() {
+    // Undeclared: every one is false.
     assert_eq!(
         run(r#"<?php echo interface_exists("Foo") ? "y" : "n";"#),
         "n"
     );
     assert_eq!(run(r#"<?php echo trait_exists("Foo") ? "y" : "n";"#), "n");
     assert_eq!(run(r#"<?php echo enum_exists("Foo") ? "y" : "n";"#), "n");
+    // Declared: each name answers yes to exactly one predicate — except an
+    // enum, which the reference reports as a class as well.
+    let src = r#"<?php
+        interface I {} trait T {} enum E { case A; } class C {}
+        foreach (["I", "T", "E", "C"] as $n) {
+            echo (int)class_exists($n), (int)interface_exists($n),
+                 (int)trait_exists($n), (int)enum_exists($n), "|";
+        }"#;
+    assert_eq!(run(src), "0100|0010|1001|1000|");
+}
+
+#[test]
+fn engine_types_exist_under_their_own_kind() {
+    // `Closure`/`Generator` are classes and `Traversable`/`Iterator` are
+    // interfaces even though neither has a declaration in the class table.
+    let src = r#"<?php
+        echo (int)class_exists("Closure"), (int)class_exists("Generator"),
+             (int)interface_exists("Traversable"), (int)interface_exists("Iterator"),
+             (int)class_exists("Iterator"), (int)interface_exists("Closure");"#;
+    assert_eq!(run(src), "111100");
 }
 
 #[test]
@@ -347,9 +368,13 @@ fn class_parents_on_object_and_no_parent() {
 
 #[test]
 fn class_parents_unknown_is_false() {
+    // The reference WARNS before answering `false`, and the warning is on
+    // stdout because `display_errors` is on. Measured against PHP 8.5.10:
+    //   Warning: class_parents(): Class Ghost does not exist and could not be
+    //   loaded in Command line code on line 1
     assert_eq!(
         run(r#"<?php echo class_parents("Ghost") === false ? "y" : "n";"#),
-        "y"
+        "\nWarning: class_parents(): Class Ghost does not exist and could not be loaded in Command line code on line 1\ny"
     );
 }
 
@@ -361,7 +386,31 @@ fn class_implements_empty_for_valid_false_for_unknown() {
         echo count(class_implements("C"));
         echo count(class_implements(new C()));
         echo class_implements("Ghost") === false ? "F" : "?";"#;
-    assert_eq!(run(src), "00F");
+    assert_eq!(run(src), "00\nWarning: class_implements(): Class Ghost does not exist and could not be loaded in Command line code on line 5\nF");
+}
+
+#[test]
+fn class_implements_lists_interfaces_transitively() {
+    let src = r#"<?php
+        interface A {}
+        interface B extends A {}
+        class Base implements A {}
+        class Kid extends Base implements B {}
+        $i = class_implements("Kid");
+        sort($i);
+        echo implode(",", $i);"#;
+    assert_eq!(run(src), "A,B");
+}
+
+#[test]
+fn class_uses_lists_composed_traits() {
+    let src = r#"<?php
+        trait T1 {}
+        trait T2 {}
+        class C { use T1, T2; }
+        // Only THIS class's `use` clauses, keyed by name, as PHP reports them.
+        echo implode(",", array_keys(class_uses("C")));"#;
+    assert_eq!(run(src), "T1,T2");
 }
 
 #[test]
@@ -370,7 +419,7 @@ fn class_uses_empty_for_valid_false_for_unknown() {
         class C {}
         echo count(class_uses("C"));
         echo class_uses("Ghost") === false ? "F" : "?";"#;
-    assert_eq!(run(src), "0F");
+    assert_eq!(run(src), "0\nWarning: class_uses(): Class Ghost does not exist and could not be loaded in Command line code on line 4\nF");
 }
 
 // ── EXPAND: get_class_vars (false for unknown; empty for declared) ────────────

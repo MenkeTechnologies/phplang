@@ -85,6 +85,7 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::SUPPRESS_PUSH, b_suppress_push);
     vm.register_builtin(ops::SUPPRESS_POP, b_suppress_pop);
     vm.register_builtin(ops::MCALL, b_mcall);
+    vm.register_builtin(ops::MCALL_RECV_CHECK, b_mcall_recv_check);
     vm.register_builtin(ops::SCALL, b_scall);
     vm.register_builtin(ops::SCONST, b_sconst);
     vm.register_builtin(ops::THROW, b_throw);
@@ -114,6 +115,7 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::REF_TO_PROP, b_ref_to_prop);
     vm.register_builtin(ops::GETVAR_Q, b_getvar_q);
     vm.register_builtin(ops::INDEX_GET_Q, b_index_get_q);
+    vm.register_builtin(ops::INDEX_GET_EMPTY, b_index_get_empty);
     vm.register_builtin(ops::LIST_ELEM_GET, b_list_elem_get);
     vm.register_builtin(ops::PROP_GET_Q, b_prop_get_q);
     vm.register_builtin(ops::LSB_CLASS, b_lsb_class);
@@ -587,7 +589,7 @@ fn b_lsb_forward(_: &mut VM, _: u8) -> Value {
 fn b_instanceof(vm: &mut VM, _: u8) -> Value {
     let target = pop_name(vm);
     let obj = vm.pop();
-    Value::bool(with_host(|h| match h.object_class(&obj) {
+    Value::bool(with_host(|h| match h.instance_class(&obj) {
         Some(class) => h.is_a_class(&class, &target),
         None => false,
     }))
@@ -618,7 +620,7 @@ fn b_dyn_class(vm: &mut VM, _: u8) -> Value {
 /// report the class of a value rather than to echo one back.
 fn b_dyn_class_const(vm: &mut VM, _: u8) -> Value {
     let v = vm.pop();
-    match with_host(|h| h.object_class(&v).filter(|_| !h.is_array(&v))) {
+    match with_host(|h| h.instance_class(&v).filter(|_| !h.is_array(&v))) {
         Some(class) => Value::str(class),
         None => {
             let what = with_host(|h| crate::stdlib::types::value_name(h, &v));
@@ -1731,11 +1733,38 @@ fn array_access_result(vm: &mut VM, r: Result<Value, String>) -> Value {
     }
 }
 
+/// The `TypeError` the reference raises for an offset that is an array or an
+/// object, or `None` for a key it accepts.
+///
+/// `tail` is what the message ends with: a value-context read says
+/// `on array`, while `isset()`/`empty()` say `in isset or empty`. An
+/// `ArrayAccess` object is exempt — `offsetGet` takes any key at all — and so is
+/// a string receiver, which has its own diagnostic.
+fn bad_offset_type(recv: &Value, key: &Value, tail: &str) -> Option<String> {
+    if matches!(recv, Value::Str(_)) {
+        return None;
+    }
+    let name = with_host(|h| {
+        if h.array_access_class(recv).is_some() {
+            None
+        } else {
+            h.bad_offset_type(key)
+        }
+    })?;
+    Some(throws_bare(
+        "TypeError",
+        format!("Cannot access offset of type {name} {tail}"),
+    ))
+}
+
 fn b_index_get(vm: &mut VM, _: u8) -> Value {
     let key = vm.pop();
     let recv = vm.pop();
     if let Some(r) = array_access_call(vm, &recv, "offsetGet", vec![key.clone()]) {
         return array_access_result(vm, r);
+    }
+    if let Some(e) = bad_offset_type(&recv, &key, "on array") {
+        return fail_or_throw(vm, e);
     }
     // A subscript no string offset can be is a TypeError in a VALUE context —
     // `"abc"["x"]` throws rather than reading byte 0, which is what reading the
@@ -1765,7 +1794,16 @@ fn bad_string_offset(recv: &Value, key: &Value) -> Option<String> {
 }
 
 /// `$a[k]` read with no missing-key diagnostic — see `ops::INDEX_GET_Q`.
-fn b_index_get_q(vm: &mut VM, _: u8) -> Value {
+fn b_index_get_q(vm: &mut VM, argc: u8) -> Value {
+    index_get_quiet(vm, argc, "on array")
+}
+
+/// `empty($a[k])` — [`b_index_get_q`] with the wording `empty()` uses.
+fn b_index_get_empty(vm: &mut VM, argc: u8) -> Value {
+    index_get_quiet(vm, argc, "in isset or empty")
+}
+
+fn index_get_quiet(vm: &mut VM, _: u8, tail: &str) -> Value {
     let key = vm.pop();
     let recv = vm.pop();
     // `$o[k] ?? d` on an `ArrayAccess` asks `offsetExists` first and only reads
@@ -1789,6 +1827,9 @@ fn b_index_get_q(vm: &mut VM, _: u8) -> Value {
     // Quiet about a MISSING element, not about a lossy OFFSET: `$a[1.7] ?? $d`
     // and `empty($a[1.7])` both report the narrowing, exactly as a plain read
     // does.
+    if let Some(e) = bad_offset_type(&recv, &key, tail) {
+        return fail_or_throw(vm, e);
+    }
     mark_warn_site(vm);
     with_host(|h| {
         h.diagnose_quiet_offset(&recv, &key);
@@ -1890,6 +1931,9 @@ fn b_index_isset(vm: &mut VM, _: u8) -> Value {
             Err(e) => fail(vm, e),
         };
     }
+    if let Some(e) = bad_offset_type(&recv, &key, "in isset or empty") {
+        return fail_or_throw(vm, e);
+    }
     // Everything else: set means "reads as something other than null".
     //
     // `isset()` is quiet about a MISSING element but not about a lossy OFFSET:
@@ -1912,6 +1956,9 @@ fn b_index_set(vm: &mut VM, _: u8) -> Value {
             return fail(vm, e);
         }
         return bubbled(vm, val);
+    }
+    if let Some(e) = bad_offset_type(&recv, &key, "on array") {
+        return fail_or_throw(vm, e);
     }
     // The write can warn (`String offset cast occurred`) or throw, and both name
     // this line, so the current op's line has to be recorded first.
@@ -2483,6 +2530,35 @@ fn b_prop_incdec(vm: &mut VM, _: u8) -> Value {
     }
 }
 
+/// `[recv, method] -> recv` — the receiver half of a method call's dispatch,
+/// run BEFORE the arguments are evaluated.
+///
+/// PHP decides that a receiver cannot take a method call before it evaluates a
+/// single argument, so `$null->m(f())` prints nothing that `f` would have
+/// printed. This op raises exactly that error and hands the receiver back for
+/// the real `MCALL` to use.
+///
+/// It looks up NOTHING: the test is on the value's own shape (is it an object,
+/// a closure or a generator), so a call that is going to succeed pays one
+/// discriminant check and no second method resolution. Whether the method
+/// EXISTS is still decided by `MCALL`, after the arguments — a narrower
+/// divergence than the one this closes, and one that needs the resolution
+/// carried forward to close without paying for it twice.
+fn b_mcall_recv_check(vm: &mut VM, _: u8) -> Value {
+    let method = pop_name(vm);
+    let recv = vm.pop();
+    if with_host(|h| h.is_object_value(&recv)) {
+        return recv;
+    }
+    mark_frame_line(vm);
+    let ty = with_host(|h| receiver_type_name(h, &recv));
+    throw_php(
+        vm,
+        "Error",
+        &format!("Call to a member function {method}() on {ty}"),
+    )
+}
+
 fn b_mcall(vm: &mut VM, argc: u8) -> Value {
     let mut args = pop_args(vm, argc as usize);
     let recv = args.remove(0);
@@ -2827,12 +2903,20 @@ fn arrays_loose_eq(h: &host::PhpHost, a: &Value, b: &Value) -> bool {
     // loose-equal — a different pair of instances can compare equal, which is
     // exactly what separates `==` from `===` on objects. An array is never `==`
     // an object, so the mixed pair is rejected before the element walk.
-    if h.is_object(a) || h.is_object(b) {
-        let (Some(ca), Some(cb)) = (h.object_class(a), h.object_class(b)) else {
+    if h.is_object_value(a) || h.is_object_value(b) {
+        let (Some(ca), Some(cb)) = (h.instance_class(a), h.instance_class(b)) else {
             return false;
         };
         if !ca.eq_ignore_ascii_case(&cb) {
             return false;
+        }
+        // `Closure` is the one class the reference gives a compare handler that
+        // answers "not equal" to everything but itself: two closures built from
+        // the SAME literal are `==` false, and so is a rebound copy of one.
+        // Every other object — a `Generator` included, which has no visible
+        // properties and so is `==` every other generator — takes the walk.
+        if h.is_closure(a) {
+            return matches!((a, b), (Value::Obj(x), Value::Obj(y)) if x == y);
         }
         let (pa, pb) = (h.object_props(a), h.object_props(b));
         return pa.len() == pb.len()

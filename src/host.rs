@@ -372,6 +372,15 @@ pub mod ops {
     /// `parent::` with `'parent' used in a class with no parent`, whatever the
     /// using class extended.
     pub const PARENT_CLASS: u16 = 127;
+    /// `[recv, method]` -> `recv`. Raises `Call to a member function m() on
+    /// <type>` when `recv` is not an object, WITHOUT touching the method table.
+    /// Emitted before a method call's arguments, because the reference decides
+    /// a receiver is uncallable before it evaluates any of them.
+    pub const MCALL_RECV_CHECK: u16 = 128;
+    /// `[recv, key] -> value` — [`INDEX_GET_Q`] with `empty()`'s wording for a
+    /// bad offset TYPE. Everything else about the read is identical; the two
+    /// contexts differ only in the sentence the reference ends the message with.
+    pub const INDEX_GET_EMPTY: u16 = 129;
 }
 
 /// The capture name a `static` closure carries from its creation site.
@@ -560,6 +569,15 @@ pub struct ClassDef {
     /// is a fatal error in PHP.
     pub is_abstract: bool,
     pub is_interface: bool,
+    /// Whether this entry is a `trait`. Traits share the class table (their
+    /// members are seeded into every composing class from it), but they are a
+    /// different KIND to the reflection surface: `trait_exists` answers yes and
+    /// `class_exists` answers no.
+    pub is_trait: bool,
+    /// Traits named by `use` in this declaration, in source order and declared
+    /// spelling. Kept after the members have been merged, because `class_uses`
+    /// reports which traits were composed and the merge itself erases that.
+    pub uses: Vec<String>,
     /// Whether the class carries `#[AllowDynamicProperties]`, which opts it — and
     /// everything that extends it — out of the "Creation of dynamic property"
     /// deprecation. Checked by walking the parent chain, because the attribute is
@@ -1517,6 +1535,15 @@ impl PhpHost {
                 for i in &d.interfaces {
                     stack.push(i.to_ascii_lowercase());
                 }
+            } else {
+                // Not in the class table: it may still be one of the engine's
+                // own types, whose ancestry lives in `BUILTIN_TYPES` — that is
+                // what makes `$gen instanceof Traversable` true.
+                stack.extend(
+                    builtin_type_parents(&c)
+                        .iter()
+                        .map(|p| p.to_ascii_lowercase()),
+                );
             }
         }
         false
@@ -1689,7 +1716,9 @@ impl PhpHost {
             Value::Str(_) => "string".to_string(),
             Value::Obj(_) => match self.as_array(v) {
                 Some(PhpObj::Array { .. }) => "array".to_string(),
-                _ => self.object_class(v).unwrap_or_else(|| "object".to_string()),
+                _ => self
+                    .instance_class(v)
+                    .unwrap_or_else(|| "object".to_string()),
             },
             _ => "mixed".to_string(),
         }
@@ -1861,6 +1890,20 @@ impl PhpHost {
 
     /// [`PhpHost::diagnose_offset`], but only for a receiver that really is an
     /// array — a string offset reports something else entirely.
+    /// The name the reference gives an offset that cannot BE an offset — an
+    /// array or an object — or `None` for every key it accepts.
+    ///
+    /// PHP has no coercion for these two: `$a[[1]]` and `$a[new C]` are a
+    /// `TypeError`, not the `Array to string conversion` warning plus a lookup
+    /// under the key `"Array"` that this engine used to perform.
+    pub fn bad_offset_type(&self, key: &Value) -> Option<String> {
+        if self.is_array(key) {
+            return Some("array".to_string());
+        }
+        self.instance_class(key)
+            .map(|c| display_class(&c).to_string())
+    }
+
     pub fn diagnose_array_offset(&mut self, recv: &Value, key: &Value) {
         if matches!(self.as_array(recv), Some(PhpObj::Array { .. })) {
             self.diagnose_offset(key);
@@ -2040,8 +2083,7 @@ impl PhpHost {
             Value::Bool(false) => "false".to_string(),
             Value::Str(s) => format!("'{}'", escape_trace_string(s)),
             Value::Obj(_) if self.is_array(v) => "Array".to_string(),
-            Value::Obj(_) if self.is_closure(v) => "Object(Closure)".to_string(),
-            Value::Obj(_) => match self.object_class(v) {
+            Value::Obj(_) => match self.instance_class(v) {
                 Some(c) => format!("Object({c})"),
                 None => "Object(stdClass)".to_string(),
             },
@@ -3210,6 +3252,11 @@ impl PhpHost {
     }
 
     /// The class name of an object handle, or `None` if `v` is not an object.
+    ///
+    /// STRUCTURAL: only a class instance answers here. Every call site that asks
+    /// "what does PHP think this value's class is" wants [`Self::instance_class`]
+    /// instead — a closure and a generator are objects of class `Closure` and
+    /// `Generator` to a PHP program, but neither is a `PhpObj::Object`.
     pub fn object_class(&self, v: &Value) -> Option<String> {
         match self.as_array(v) {
             Some(PhpObj::Object { class, .. }) => Some(class.clone()),
@@ -3217,11 +3264,111 @@ impl PhpHost {
         }
     }
 
+    /// The class name PHP reports for `v`, or `None` when `v` is not an object at
+    /// all (a scalar, an array, a resource).
+    ///
+    /// This is the reflection surface's view, and it is wider than
+    /// [`Self::object_class`]: a closure is an instance of `Closure` and a
+    /// generator an instance of `Generator`, so `get_class`, `::class`,
+    /// `instanceof`, `is_a`, `method_exists`, `get_debug_type` and every
+    /// diagnostic that names a value's type must go through here. Before this
+    /// existed each of those either special-cased `is_closure` by hand or missed
+    /// the case, which is why `get_class($gen)` was a `TypeError` reading
+    /// "must be of type object, object given".
+    pub fn instance_class(&self, v: &Value) -> Option<String> {
+        match self.as_array(v) {
+            Some(PhpObj::Object { class, .. }) => Some(class.clone()),
+            Some(PhpObj::Closure { .. }) => Some("Closure".to_string()),
+            Some(PhpObj::Generator { .. }) => Some("Generator".to_string()),
+            _ => None,
+        }
+    }
+
+    /// Whether `v` is an object to a PHP program — `is_object()`'s answer.
+    /// True for class instances, closures and generators; false for arrays.
+    pub fn is_object_value(&self, v: &Value) -> bool {
+        matches!(
+            self.as_array(v),
+            Some(PhpObj::Object { .. } | PhpObj::Closure { .. } | PhpObj::Generator { .. })
+        )
+    }
+
     // ── reflection support (for the `reflection` stdlib module) ──────────────
 
-    /// Whether a class of the given name is declared (case-insensitive).
+    /// Whether a type of the given name is declared (case-insensitive) — a
+    /// class, an interface, a trait or an enum. The kind is not distinguished
+    /// here because most callers only need "is this name resolvable"; the
+    /// reflection builtins ask [`Self::type_kind`] instead.
     pub fn class_exists(&self, name: &str) -> bool {
-        self.classes.contains_key(&name.to_ascii_lowercase())
+        let lower = name.to_ascii_lowercase();
+        self.classes.contains_key(&lower) || builtin_type_kind(&lower).is_some()
+    }
+
+    /// Which of PHP's four declaration kinds `name` is, or `None` if the name is
+    /// not declared. `class_exists`/`interface_exists`/`trait_exists`/
+    /// `enum_exists` each answer for exactly one kind, so they cannot share the
+    /// "is it declared at all" test: an `interface I {}` makes `class_exists('I')`
+    /// FALSE in PHP even though the name resolves everywhere else.
+    pub fn type_kind(&self, name: &str) -> Option<TypeKind> {
+        let lower = name.to_ascii_lowercase();
+        match self.classes.get(&lower) {
+            Some(d) if d.is_trait => Some(TypeKind::Trait),
+            Some(d) if d.is_interface => Some(TypeKind::Interface),
+            Some(d) if d.is_enum => Some(TypeKind::Enum),
+            Some(_) => Some(TypeKind::Class),
+            None => builtin_type_kind(&lower),
+        }
+    }
+
+    /// Every interface `class` implements, transitively, nearest first, in
+    /// declared spelling. For `class_implements`.
+    pub fn class_interface_names(&self, class: &str) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        // Breadth-first over the parent chain and each class's interface list,
+        // so a class reports the interfaces its ancestors implement too.
+        let mut queue = vec![class.to_ascii_lowercase()];
+        let mut seen: Vec<String> = Vec::new();
+        while let Some(c) = queue.pop() {
+            if seen.contains(&c) || seen.len() > 1000 {
+                continue;
+            }
+            seen.push(c.clone());
+            let Some(def) = self.classes.get(&c) else {
+                // An engine type: its ancestry is the built-in table's, and
+                // every ancestor there is an interface.
+                for p in builtin_type_parents(&c) {
+                    if !out.iter().any(|o| o.eq_ignore_ascii_case(p)) {
+                        out.push((*p).to_string());
+                    }
+                }
+                continue;
+            };
+            if let Some(p) = &def.parent {
+                queue.push(p.to_ascii_lowercase());
+            }
+            for i in &def.interfaces {
+                let spelled = self
+                    .classes
+                    .get(&i.to_ascii_lowercase())
+                    .map(|d| d.name.clone())
+                    .unwrap_or_else(|| i.clone());
+                if !out.contains(&spelled) {
+                    out.push(spelled);
+                }
+                queue.push(i.to_ascii_lowercase());
+            }
+        }
+        out
+    }
+
+    /// The traits `class` composes with `use`, in source order and declared
+    /// spelling. For `class_uses`, which reports only THIS class's `use` clauses
+    /// (PHP does not walk the parent chain for it).
+    pub fn class_trait_names(&self, class: &str) -> Vec<String> {
+        self.classes
+            .get(&class.to_ascii_lowercase())
+            .map(|d| d.uses.clone())
+            .unwrap_or_default()
     }
 
     /// The PHP fatal-error message if `class` cannot be instantiated with `new`
@@ -3274,6 +3421,9 @@ impl PhpHost {
         let mut cur = Some(class.to_ascii_lowercase());
         while let Some(c) = cur {
             let Some(def) = self.classes.get(&c) else {
+                // An engine type has no `ClassDef`; its methods are listed in
+                // `BUILTIN_TYPES`, in PHP's own spelling.
+                out.extend(builtin_type_methods(&c).iter().map(|m| m.to_string()));
                 break;
             };
             for m in def.methods.keys() {
@@ -3288,8 +3438,17 @@ impl PhpHost {
 
     /// Whether `class` (or an ancestor) defines `method` (case-insensitive).
     pub fn class_has_method(&self, class: &str, method: &str) -> bool {
-        self.resolve_method(class, &method.to_ascii_lowercase())
+        if self
+            .resolve_method(class, &method.to_ascii_lowercase())
             .is_some()
+        {
+            return true;
+        }
+        // An engine type (`Generator`, `Closure`, `Iterator`, …) has no
+        // `ClassDef` for `resolve_method` to walk.
+        builtin_type_methods(&class.to_ascii_lowercase())
+            .iter()
+            .any(|m| m.eq_ignore_ascii_case(method))
     }
 
     /// Whether `class` (or an ancestor) declares the property `name`.
@@ -7547,6 +7706,18 @@ fn in_clone_hook<T>(obj: &Value, body: impl FnOnce() -> Result<T, String>) -> Re
 /// properties the outside world can no longer touch (a `readonly` one included,
 /// which PHP allows precisely here so a clone can carry a fresh identity).
 pub fn clone_object(v: Value) -> Result<Value, String> {
+    // An `enum` case is a SINGLETON: the reference refuses to duplicate one, by
+    // the same message a generator gets, so `clone E::A` never produces a second
+    // instance that `===` would tell apart from the case.
+    if let Some(class) = with_host(|h| h.object_class(&v).filter(|c| h.is_enum_class(c))) {
+        return Err(crate::builtins::throws_bare(
+            "Error",
+            format!(
+                "Trying to clone an uncloneable object of class {}",
+                display_class(&class)
+            ),
+        ));
+    }
     let Some(copy) = with_host(|h| h.clone_obj(&v)) else {
         // Not clonable. A live generator holds a suspended stack that cannot be
         // duplicated and says so by name; everything else never was an object.
@@ -8479,6 +8650,133 @@ pub fn classify_arith(v: &Value) -> ArithOperand {
     }
 }
 
+/// One of PHP's four type declaration kinds. `class_exists`, `interface_exists`,
+/// `trait_exists` and `enum_exists` each answer for exactly one of them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypeKind {
+    Class,
+    Interface,
+    Trait,
+    Enum,
+}
+
+/// The engine types PHP declares that this runtime implements without a
+/// `ClassDef` — the two object kinds that are `PhpObj` variants rather than
+/// class instances, and the interfaces the engine defines for user classes to
+/// implement. Each entry is `(name, kind, transitive parents, method names) —
+/// every name in PHP's own spelling, matched case-insensitively, because
+/// `class_implements` reports the spelling and not the lookup key.
+///
+/// The parents are what `instanceof`/`is_a` walk when the name has no entry in
+/// the class table: `$gen instanceof Traversable` is true, and nothing in the
+/// class table says so.
+///
+/// Deliberately NOT here: engine classes this runtime does not implement
+/// (`WeakMap`, `Attribute`, `Fiber`). Answering `class_exists` yes for a name
+/// that `new` cannot build trades one wrong answer for a worse one.
+type BuiltinType = (
+    &'static str,
+    TypeKind,
+    &'static [&'static str],
+    &'static [&'static str],
+);
+
+const BUILTIN_TYPES: &[BuiltinType] = &[
+    (
+        "Closure",
+        TypeKind::Class,
+        &[],
+        &["bind", "bindTo", "call", "fromCallable", "getCurrent"],
+    ),
+    (
+        "Generator",
+        TypeKind::Class,
+        &["Iterator", "Traversable"],
+        &[
+            "rewind",
+            "valid",
+            "current",
+            "key",
+            "next",
+            "send",
+            "throw",
+            "getReturn",
+            "__debugInfo",
+        ],
+    ),
+    ("Traversable", TypeKind::Interface, &[], &[]),
+    (
+        "Iterator",
+        TypeKind::Interface,
+        &["Traversable"],
+        &["current", "next", "key", "valid", "rewind"],
+    ),
+    (
+        "IteratorAggregate",
+        TypeKind::Interface,
+        &["Traversable"],
+        &["getIterator"],
+    ),
+    ("Countable", TypeKind::Interface, &[], &["count"]),
+    (
+        "ArrayAccess",
+        TypeKind::Interface,
+        &[],
+        &["offsetExists", "offsetGet", "offsetSet", "offsetUnset"],
+    ),
+    ("Stringable", TypeKind::Interface, &[], &["__toString"]),
+    (
+        "JsonSerializable",
+        TypeKind::Interface,
+        &[],
+        &["jsonSerialize"],
+    ),
+    (
+        "Throwable",
+        TypeKind::Interface,
+        &["Stringable"],
+        &[
+            "getMessage",
+            "getCode",
+            "getFile",
+            "getLine",
+            "getTrace",
+            "getPrevious",
+            "getTraceAsString",
+            "__toString",
+        ],
+    ),
+    ("UnitEnum", TypeKind::Interface, &[], &["cases"]),
+    (
+        "BackedEnum",
+        TypeKind::Interface,
+        &["UnitEnum"],
+        &["from", "tryFrom", "cases"],
+    ),
+];
+
+/// The entry for a built-in type name, matched case-insensitively.
+fn builtin_type(name: &str) -> Option<&'static BuiltinType> {
+    BUILTIN_TYPES
+        .iter()
+        .find(|(n, ..)| n.eq_ignore_ascii_case(name))
+}
+
+/// The kind of a built-in type name, or `None`.
+fn builtin_type_kind(name: &str) -> Option<TypeKind> {
+    builtin_type(name).map(|(_, k, ..)| *k)
+}
+
+/// The transitive ancestors of a built-in type name, in PHP's spelling.
+fn builtin_type_parents(name: &str) -> &'static [&'static str] {
+    builtin_type(name).map_or(&[][..], |(_, _, p, _)| *p)
+}
+
+/// The methods a built-in type declares, in PHP's spelling.
+fn builtin_type_methods(name: &str) -> &'static [&'static str] {
+    builtin_type(name).map_or(&[][..], |(.., m)| *m)
+}
+
 /// A class name as a *message* shows it: everything up to the first NUL.
 ///
 /// Only an anonymous class has one — its name is
@@ -8507,10 +8805,7 @@ pub fn arith_type_name(h: &PhpHost, v: &Value) -> String {
         Value::Float(_) => "float".into(),
         Value::Str(_) => "string".into(),
         Value::Obj(_) if h.is_array(v) => "array".into(),
-        // A closure is an object of class `Closure`, and the reference names it
-        // that way even though it has no declared class entry.
-        Value::Obj(_) if h.is_closure(v) => "Closure".into(),
-        Value::Obj(_) => h.object_class(v).unwrap_or_else(|| "object".into()),
+        Value::Obj(_) => h.instance_class(v).unwrap_or_else(|| "object".into()),
         _ => "mixed".into(),
     }
 }

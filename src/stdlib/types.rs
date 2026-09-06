@@ -25,7 +25,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         // `is_object` is true for class instances and closures, but not arrays.
         "is_object" => {
             let a = arg(args, 0);
-            with_host(|h| Value::bool(h.is_object(&a) || h.is_closure(&a)))
+            with_host(|h| Value::bool(h.is_object_value(&a)))
         }
         // An array is both. Beyond that the two ask different questions: a
         // `Countable` can be counted, while anything `foreach` can drive — an
@@ -138,12 +138,10 @@ pub fn debug_type(h: &crate::host::PhpHost, v: &Value) -> String {
         Value::Obj(_) => {
             if h.is_array(v) {
                 "array".to_string()
-            } else if h.is_closure(v) {
-                "Closure".to_string()
             } else {
                 // Reported the way a message reports a class name, so an
                 // anonymous class shows its readable head alone.
-                h.object_class(v).map_or_else(
+                h.instance_class(v).map_or_else(
                     || "object".to_string(),
                     |c| crate::host::display_class(&c).to_string(),
                 )

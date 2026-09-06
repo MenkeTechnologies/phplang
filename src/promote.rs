@@ -345,7 +345,19 @@ impl Scan<'_> {
                 }
             }
             Expr::Null | Expr::Bool(_) | Expr::Int(_) | Expr::Float(_) => {}
-            Expr::Str(_) | Expr::ConstFetch(_) | Expr::Magic(_) | Expr::StaticGet(..) => {}
+            Expr::Str(_) | Expr::ConstFetch(_) | Expr::Magic(_) => {}
+            // `$cls::K` / `$cls::$p` / `$cls::m()` — the LEFT of a `::` can be an
+            // expression, and it reads a variable. Skipping it (which every one
+            // of these arms used to do) hid that read from this analysis, so a
+            // variable reached ONLY through `$v::` was promoted into a frame slot
+            // and then read as null by any detached chunk — a `try` body, most
+            // visibly: `try { echo $o::class; }` answered
+            // `Cannot use "::class" on null`.
+            Expr::StaticGet(class, _) => {
+                if let Some(op) = class.operand() {
+                    self.expr(op);
+                }
+            }
             Expr::Interp(parts) => {
                 for p in parts {
                     if let crate::ast::InterpPart::Expr(e) = p {
@@ -440,7 +452,13 @@ impl Scan<'_> {
                 self.expr(r);
                 self.call_args(None, args);
             }
-            Expr::StaticCall(_, _, args) | Expr::New(_, args) => self.call_args(None, args),
+            Expr::StaticCall(class, _, args) => {
+                if let Some(op) = class.operand() {
+                    self.expr(op);
+                }
+                self.call_args(None, args);
+            }
+            Expr::New(_, args) => self.call_args(None, args),
             Expr::NewAnon { args, .. } => self.call_args(None, args),
             // A closure captures by NAME at creation; an arrow function does the
             // same for every free variable of its body. Either way the captured
@@ -460,8 +478,12 @@ impl Scan<'_> {
                 }
             }
             Expr::PropGet(r, _) | Expr::NullsafePropGet(r, _) => self.expr(r),
-            Expr::StaticProp(..) => {}
-            Expr::Clone(x) | Expr::Throw(x) | Expr::YieldFrom(x) => self.expr(x),
+            Expr::StaticProp(class, _) => {
+                if let Some(op) = class.operand() {
+                    self.expr(op);
+                }
+            }
+            Expr::Clone(x) | Expr::Throw(x) | Expr::YieldFrom(x) | Expr::Print(x) => self.expr(x),
             Expr::InstanceOf(x, _) => self.expr(x),
             Expr::Ternary(a, b, c) => {
                 self.expr(a);
@@ -717,8 +739,12 @@ impl Flow {
                 self.expr(a);
                 self.expr(b);
             }
-            Expr::Call(_, args) | Expr::StaticCall(_, _, args) | Expr::New(_, args) => {
-                self.exprs(args)
+            Expr::Call(_, args) | Expr::New(_, args) => self.exprs(args),
+            Expr::StaticCall(class, _, args) => {
+                if let Some(op) = class.operand() {
+                    self.expr(op);
+                }
+                self.exprs(args);
             }
             Expr::NewAnon { args, .. } => self.exprs(args),
             Expr::CallValue(f, args) => {
@@ -730,9 +756,11 @@ impl Flow {
                 self.exprs(args);
             }
             Expr::PropGet(r, _) | Expr::NullsafePropGet(r, _) => self.expr(r),
-            Expr::Clone(x) | Expr::Throw(x) | Expr::YieldFrom(x) | Expr::InstanceOf(x, _) => {
-                self.expr(x)
-            }
+            Expr::Clone(x)
+            | Expr::Throw(x)
+            | Expr::YieldFrom(x)
+            | Expr::Print(x)
+            | Expr::InstanceOf(x, _) => self.expr(x),
             Expr::Ternary(a, b, c) => {
                 self.expr(a);
                 self.maybe(|f| f.expr(b));
@@ -764,9 +792,19 @@ impl Flow {
             | Expr::Float(_)
             | Expr::Str(_)
             | Expr::ConstFetch(_)
-            | Expr::Magic(_)
-            | Expr::StaticGet(..)
-            | Expr::StaticProp(..) => {}
+            | Expr::Magic(_) => {}
+            // `$cls::K` / `$cls::$p` / `$cls::m()` — the LEFT of a `::` can be an
+            // expression, and it reads a variable. Skipping it (which every one
+            // of these arms used to do) hid that read from this analysis, so a
+            // variable reached ONLY through `$v::` was promoted into a frame slot
+            // and then read as null by any detached chunk — a `try` body, most
+            // visibly: `try { echo $o::class; }` answered
+            // `Cannot use "::class" on null`.
+            Expr::StaticGet(class, _) | Expr::StaticProp(class, _) => {
+                if let Some(op) = class.operand() {
+                    self.expr(op);
+                }
+            }
         }
     }
 }
@@ -952,6 +990,7 @@ impl GlobalScan {
             | Expr::Clone(x)
             | Expr::Throw(x)
             | Expr::YieldFrom(x)
+            | Expr::Print(x)
             | Expr::InstanceOf(x, _)
             | Expr::IssetOf(x)
             | Expr::EmptyOf(x)
@@ -959,10 +998,15 @@ impl GlobalScan {
             | Expr::Suppress(x)
             | Expr::VarVar(x) => self.expr(x),
             Expr::IncDec { target, .. } => self.expr(target),
-            Expr::Call(_, args)
-            | Expr::StaticCall(_, _, args)
-            | Expr::New(_, args)
-            | Expr::NewAnon { args, .. } => self.exprs(args),
+            Expr::Call(_, args) | Expr::New(_, args) | Expr::NewAnon { args, .. } => {
+                self.exprs(args)
+            }
+            Expr::StaticCall(class, _, args) => {
+                if let Some(op) = class.operand() {
+                    self.expr(op);
+                }
+                self.exprs(args);
+            }
             Expr::CallValue(f, args) => {
                 self.expr(f);
                 self.exprs(args);
@@ -1001,9 +1045,19 @@ impl GlobalScan {
             | Expr::Float(_)
             | Expr::Str(_)
             | Expr::ConstFetch(_)
-            | Expr::Magic(_)
-            | Expr::StaticGet(..)
-            | Expr::StaticProp(..) => {}
+            | Expr::Magic(_) => {}
+            // `$cls::K` / `$cls::$p` / `$cls::m()` — the LEFT of a `::` can be an
+            // expression, and it reads a variable. Skipping it (which every one
+            // of these arms used to do) hid that read from this analysis, so a
+            // variable reached ONLY through `$v::` was promoted into a frame slot
+            // and then read as null by any detached chunk — a `try` body, most
+            // visibly: `try { echo $o::class; }` answered
+            // `Cannot use "::class" on null`.
+            Expr::StaticGet(class, _) | Expr::StaticProp(class, _) => {
+                if let Some(op) = class.operand() {
+                    self.expr(op);
+                }
+            }
         }
     }
 }

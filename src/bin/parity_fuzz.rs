@@ -3508,6 +3508,315 @@ fn gen_splobj(seed: u64) -> Vec<String> {
 // Mode registry.
 // ---------------------------------------------------------------------------
 
+/// PHP's ALTERNATIVE control-structure syntax: `if (…): … endif;` and the
+/// `endwhile`/`endfor`/`endforeach`/`endswitch`/`enddeclare` family.
+///
+/// A grep for `endif`/`endwhile`/`endfor` over the generators returned ZERO
+/// hits, and the whole spelling was a parse error — every one of the six
+/// constructs. It is the spelling PHP templates are written in, so a program
+/// that mixes it with `?> html <?php` is the shape that matters most.
+fn gen_altsyntax(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let n = ii(r);
+    let m = ii(r);
+    let body = *r.pick(&[
+        "echo \"b\";",
+        "echo $i;",
+        "$t .= \"x\";",
+        "if ($i > 0): echo \"p\"; else: echo \"q\"; endif;",
+        "?>raw<?php ",
+        "echo \"a\"; ?>|<?php echo \"z\";",
+    ]);
+    let shape = *r.pick(&[
+        "if (#N): echo \"t\"; endif;",
+        "if (#N): echo \"t\"; else: echo \"f\"; endif;",
+        "if (#N): echo \"t\"; elseif (#M): echo \"e\"; else: echo \"f\"; endif;",
+        "if (#N): if (#M): echo \"in\"; endif; echo \"out\"; endif;",
+        "for ($i = 0; $i < 3; $i++): #B endfor;",
+        "$i = 0; while ($i < 3): #B $i++; endwhile;",
+        "foreach ([#N, #M] as $i): #B endforeach;",
+        "foreach ([\"k\" => #N] as $k => $i): echo \"$k=$i\"; endforeach;",
+        "switch (#N): case #M: echo \"m\"; break; case #N: echo \"n\"; break; default: echo \"d\"; endswitch;",
+        "switch (#N): default: echo \"d\"; endswitch;",
+        "declare(ticks=1): echo \"tick\"; enddeclare;",
+        "if (#N): ?>YES<?php else: ?>NO<?php endif;",
+        "for ($i = 0; $i < 2; $i++): if ($i): continue; endif; echo $i; endfor;",
+        "$i = 0; while (true): $i++; if ($i > 2): break; endif; echo $i; endwhile;",
+    ]);
+    let prog = shape.replace("#N", n).replace("#M", m).replace("#B", body);
+    vec![format!("$t = \"\"; {prog} echo \"|\", $t, \"|\";")]
+}
+
+/// `print` as an EXPRESSION, and the word logical operators around it.
+///
+/// `print` was read only at the head of a statement, so `$r = print "x"` and
+/// `var_dump(print "x")` were parse errors; `and`/`or` were folded onto
+/// `&&`/`||`, which binds them TIGHTER than `=` instead of looser; and `xor`
+/// was not a token at all. All three are in the same precedence neighbourhood,
+/// so one mode scores them together.
+fn gen_printexpr(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let a = *r.pick(&[
+        "true", "false", "1", "0", "\"\"", "\"s\"", "null", "[]", "2",
+    ]);
+    let b = *r.pick(&["true", "false", "1", "0", "\"\"", "\"s\"", "null", "3"]);
+    let shape = *r.pick(&[
+        "$x = #A and #B; var_dump($x);",
+        "$x = #A or #B; var_dump($x);",
+        "$x = #A xor #B; var_dump($x);",
+        "var_dump(#A and #B, #A or #B, #A xor #B);",
+        "var_dump(#A xor #B xor #A);",
+        "var_dump(#A or #B and #A);",
+        "$x = 1; $y = $x == 1 and #B; var_dump($x, $y);",
+        "$r = print \"p\"; var_dump($r);",
+        "var_dump(print \"p\");",
+        "echo print(\"p\"), \"|\";",
+        "print #A; echo \"|\";",
+        "#A or print \"o\"; echo \"|\";",
+        "$x = #A and print \"a\"; var_dump($x);",
+        "var_dump(#A ? print \"y\" : print \"n\");",
+        "print print \"n\"; echo \"|\";",
+        "function f($v) { echo \"f\"; return $v; } var_dump(f(#A) and f(#B));",
+        "function f($v) { echo \"f\"; return $v; } var_dump(f(#A) or f(#B));",
+        "function f($v) { echo \"f\"; return $v; } var_dump(f(#A) xor f(#B));",
+        "$a = #A; $a = #B and #A; var_dump($a);",
+        "var_dump(#A && #B or #A);",
+    ]);
+    vec![shape.replace("#A", a).replace("#B", b)]
+}
+
+/// The reflection surface over the values that are objects WITHOUT being class
+/// instances, plus the four existence predicates.
+///
+/// A grep for `get_class`, `is_a(`, `class_exists`, `get_object_vars` and
+/// `spl_object` over the generators returned zero or near-zero hits. A closure
+/// and a generator are instances of `Closure` and `Generator` to every one of
+/// these, and were not: `get_class($gen)` was a `TypeError` whose own message
+/// read "must be of type object, object given".
+fn gen_reflect(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let subject = *r.pick(&[
+        "(function () { yield 1; })()",
+        "(function () { return 1; })",
+        "(fn() => 1)",
+        "new C()",
+        "new D()",
+        "E::A",
+        "[1, 2]",
+        "\"C\"",
+        "17",
+        "null",
+    ]);
+    let q = *r.pick(&[
+        "var_dump(is_object($v));",
+        "var_dump(gettype($v));",
+        "var_dump(get_debug_type($v));",
+        "try { var_dump(get_class($v)); } catch (\\Throwable $e) { echo get_class($e), \": \", $e->getMessage(); }",
+        "try { var_dump(get_object_vars($v)); } catch (\\Throwable $e) { echo get_class($e), \": \", $e->getMessage(); }",
+        "var_dump($v instanceof Generator, $v instanceof Closure);",
+        "var_dump($v instanceof Traversable, $v instanceof Iterator);",
+        "var_dump($v instanceof I, $v instanceof C, $v instanceof UnitEnum);",
+        "var_dump(is_a($v, \"Closure\"), is_a($v, \"Generator\"), is_a($v, \"C\"));",
+        "var_dump(is_subclass_of($v, \"Iterator\"), is_subclass_of($v, \"C\"));",
+        "var_dump(method_exists($v, \"current\"), method_exists($v, \"bindTo\"), method_exists($v, \"go\"));",
+        "var_dump(is_callable($v), is_iterable($v), is_countable($v), is_scalar($v));",
+        "try { echo strlen($v); } catch (\\Throwable $e) { echo get_class($e), \": \", $e->getMessage(); }",
+        "try { echo $v + 1; } catch (\\Throwable $e) { echo get_class($e), \": \", $e->getMessage(); }",
+        "try { var_dump($v::class); } catch (\\Throwable $e) { echo get_class($e), \": \", $e->getMessage(); }",
+        "var_dump($v == $v);",
+        "$w = $v; var_dump($v === $w);",
+    ]);
+    let names = *r.pick(&[
+        "\"C\"",
+        "\"D\"",
+        "\"I\"",
+        "\"T\"",
+        "\"E\"",
+        "\"Closure\"",
+        "\"Generator\"",
+        "\"Traversable\"",
+        "\"Iterator\"",
+        "\"Countable\"",
+        "\"Ghost\"",
+        "\"stdClass\"",
+    ]);
+    let extra = r.pick(&[
+        "",
+        "echo \"|\", (int)class_exists(#N), (int)interface_exists(#N), (int)trait_exists(#N), (int)enum_exists(#N);",
+        "echo \"|\"; var_dump(class_implements(#N));",
+        "echo \"|\"; var_dump(class_uses(#N));",
+        "echo \"|\"; var_dump(class_parents(#N));",
+    ])
+    .replace("#N", names);
+    vec![format!(
+        "interface I {{}} trait T {{}} enum E {{ case A; }} \
+         class C implements I {{ use T; public $p = 1; function go() {{}} }} \
+         class D extends C {{}} \
+         $v = {subject}; {q} {extra}"
+    )]
+}
+
+/// `isset()`'s operand rule, which is a COMPILE-time one.
+///
+/// The reference refuses `isset()` on anything that is not a variable, an
+/// index, a property or a static property — before the program runs, so nothing
+/// the operand would have printed appears. phplang evaluated the operand and
+/// answered `true`, which is a wrong answer AND wrong output.
+fn gen_issetform(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let operand = *r.pick(&[
+        "$a",
+        "$a[0]",
+        "$a[9]",
+        "$a[\"k\"]",
+        "$u",
+        "$o->p",
+        "$o->q",
+        "$o?->p",
+        "C::$s",
+        "C::$s[0]",
+        "$$name",
+        "f()",
+        "f()[0]",
+        "f2()->p",
+        "$o->m()",
+        "C::sm()",
+        "new C",
+        "1 + 1",
+        "\"s\"",
+        "K",
+        "C::KK",
+        "$c()",
+        "$a[f()]",
+    ]);
+    let form = *r.pick(&["isset(#O)", "empty(#O)", "isset($a, #O)", "isset(#O, $a)"]);
+    let call = form.replace("#O", operand);
+    vec![format!(
+        "define(\"K\", 1); \
+         class C {{ const KK = 2; public static $s = [5]; public $p = 1; \
+                    function m() {{ return 1; }} static function sm() {{ return 1; }} }} \
+         function f() {{ echo \"F\"; return [7]; }} \
+         function f2() {{ echo \"G\"; return new C(); }} \
+         $a = [1, \"k\" => 2]; $o = new C(); $name = \"a\"; $c = fn() => 1; \
+         echo \"start|\"; var_dump({call});"
+    )]
+}
+
+/// The ORDER a call evaluates its parts in: the reference decides the callee
+/// cannot be called before it evaluates one argument, so an argument that
+/// echoes prints nothing when the call is going to fail.
+///
+/// A grep found no generator that put a side effect in an argument of a call
+/// that fails, so every one of these printed the argument's output first.
+fn gen_callorder(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let recv = *r.pick(&[
+        "null", "5", "\"s\"", "[1]", "true", "false", "1.5", "new C()", "$g", "$c",
+    ]);
+    let call = *r.pick(&[
+        "$r->m(f())",
+        "$r->m(f(), f())",
+        "$r->go(f())",
+        "$r?->m(f())",
+        "$r->m(x: f())",
+        "$r->m(...[f()])",
+    ]);
+    let wrap = r.pick(&[
+        "try { #C; } catch (\\Throwable $e) { echo \"|\", get_class($e), \": \", $e->getMessage(); }",
+        "#C;",
+        "echo @#C;",
+    ])
+    .replace("#C", call);
+    vec![format!(
+        "class C {{ function go($x = 0) {{ echo \"GO\"; return $x; }} }} \
+         function f() {{ echo \"F\"; return 1; }} \
+         $g = (function () {{ yield 1; }})(); $c = fn() => 1; \
+         $r = {recv}; echo \"start|\"; {wrap}"
+    )]
+}
+
+/// `clone` and `__clone`: a shallow copy, the hook that runs after it, and the
+/// values that cannot be cloned at all.
+///
+/// A grep for `clone ` and `__clone` over the generators returned zero hits.
+fn gen_cloning(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let subject = *r.pick(&[
+        "new P()",
+        "new Q()",
+        "new R(1)",
+        "$arr",
+        "5",
+        "null",
+        "\"s\"",
+        "$cl",
+        "$gen",
+        "new stdClass",
+        "E::A",
+    ]);
+    let after = *r.pick(&[
+        "var_dump($a == $b, $a === $b);",
+        "$b->n = 9; var_dump($a->n ?? \"none\", $b->n ?? \"none\");",
+        "$b->list[] = 3; var_dump($a->list ?? \"none\", $b->list ?? \"none\");",
+        "$b->inner->k = 9; var_dump($a->inner->k ?? \"none\");",
+        "var_dump(get_object_vars($b));",
+        "try { $b->ro = 5; } catch (\\Throwable $e) { echo get_class($e), \": \", $e->getMessage(); }",
+        "var_dump(get_class($b));",
+    ]);
+    vec![format!(
+        "class Inner {{ public $k = 1; }} \
+         class P {{ public $n = 1; public $list = [1, 2]; public $inner; \
+                    function __construct() {{ $this->inner = new Inner(); }} }} \
+         class Q extends P {{ public $n = 2; function __clone() {{ echo \"CL\"; $this->n++; }} }} \
+         class R {{ function __construct(public readonly int $ro) {{}} }} \
+         enum E {{ case A; }} \
+         $arr = [1, 2]; $cl = fn() => 1; $gen = (function () {{ yield 1; }})(); \
+         $a = {subject}; \
+         try {{ $b = clone $a; }} catch (\\Throwable $e) {{ echo get_class($e), \": \", $e->getMessage(); return; }} \
+         {after}"
+    )]
+}
+
+/// `__call` / `__callStatic` — the magic dispatch that catches a method name
+/// the class does not declare.
+///
+/// A grep for both returned zero hits: `propmagic` scores `__get`/`__set` and
+/// nothing scored the method half.
+fn gen_magiccall(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let call = *r.pick(&[
+        "$o->missing()",
+        "$o->missing(1, \"a\")",
+        "$o->declared()",
+        "$o->missing(...[1, 2])",
+        "$o->missing(k: 1)",
+        "M::missing()",
+        "M::missing(1, 2)",
+        "M::declaredStatic()",
+        "N::missing()",
+        "$o->privateOne()",
+        "call_user_func([$o, \"missing\"], 1)",
+        "call_user_func(\"M::missing\", 1)",
+        "array_map([$o, \"missing\"], [1, 2])",
+        "is_callable([$o, \"missing\"])",
+        "method_exists($o, \"missing\")",
+        "$o(3)",
+    ]);
+    let cls = *r.pick(&["M", "N"]);
+    vec![format!(
+        "class M {{ \
+            function __call($n, $a) {{ echo \"C:$n/\", count($a), \"|\"; return $n; }} \
+            static function __callStatic($n, $a) {{ echo \"S:$n/\", count($a), \"|\"; return $n; }} \
+            function __invoke($x) {{ return $x * 2; }} \
+            function declared() {{ return \"D\"; }} \
+            static function declaredStatic() {{ return \"DS\"; }} \
+            private function privateOne() {{ return \"P\"; }} }} \
+         class N {{}} \
+         $o = new {cls}(); \
+         try {{ var_dump({call}); }} catch (\\Throwable $e) {{ echo get_class($e), \": \", $e->getMessage(); }}"
+    )]
+}
+
 #[derive(Clone, Copy)]
 struct Mode {
     name: &'static str,
@@ -3814,6 +4123,34 @@ const MODES: &[Mode] = &[
     Mode {
         name: "splobj",
         gen: gen_splobj,
+    },
+    Mode {
+        name: "altsyntax",
+        gen: gen_altsyntax,
+    },
+    Mode {
+        name: "printexpr",
+        gen: gen_printexpr,
+    },
+    Mode {
+        name: "reflect",
+        gen: gen_reflect,
+    },
+    Mode {
+        name: "issetform",
+        gen: gen_issetform,
+    },
+    Mode {
+        name: "callorder",
+        gen: gen_callorder,
+    },
+    Mode {
+        name: "cloning",
+        gen: gen_cloning,
+    },
+    Mode {
+        name: "magiccall",
+        gen: gen_magiccall,
     },
 ];
 

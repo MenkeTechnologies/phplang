@@ -5,11 +5,9 @@
 //! reflection helpers (`class_exists`, `class_parent`, `is_a_class`,
 //! `class_method_names`, `class_has_method`, `class_has_prop`, `object_props`,
 //! `object_class`). The runtime has no interfaces, traits, or enums, so
-//! `interface_exists`/`trait_exists`/`enum_exists` are always `false`, and
-//! `class_implements`/`class_uses` return an empty array for any declared
-//! class/object. There is no calling-scope context available here, so the
-//! no-argument forms of `get_class`/`get_parent_class` (which PHP resolves to the
-//! current class) are unsupported and reported as `false`.
+//! There is no calling-scope context available here, so the no-argument form of
+//! `get_parent_class` (which PHP resolves to the current class) is unsupported
+//! and reported as `false`.
 //!
 //! Two PHP enumerators are limited by what the host exposes. `get_declared_classes`
 //! and `get_class_vars` cannot reach the private class table / property-default
@@ -18,7 +16,7 @@
 //! iterator at all — the table exposes only single-name accessors — so it is not
 //! handled by this module (a call falls through as an undefined function).
 
-use crate::host::with_host;
+use crate::host::{with_host, TypeKind};
 use fusevm::Value;
 
 use super::common::{arg, str_arg, throws};
@@ -42,21 +40,44 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         // ── existence predicates ────────────────────────────────────────────
         // `class_exists($name, $autoload = true)`: the autoload flag is ignored
         // (nothing to autoload in this runtime). Case-insensitive lookup.
-        "class_exists" => {
+        // Each of the four answers for exactly ONE declaration kind: an
+        // `interface I {}` makes `interface_exists('I')` true and
+        // `class_exists('I')` FALSE, and an `enum E {}` is an enum, not a class.
+        "class_exists" | "interface_exists" | "trait_exists" | "enum_exists" => {
             let n = str_arg(args, 0);
-            with_host(|h| Value::bool(h.class_exists(&n)))
+            with_host(|h| {
+                let kind = h.type_kind(&n);
+                // An enum is a class too: `enum E {}` answers yes to BOTH
+                // `class_exists('E')` and `enum_exists('E')` in the reference.
+                Value::bool(match name {
+                    "class_exists" => matches!(kind, Some(TypeKind::Class | TypeKind::Enum)),
+                    "interface_exists" => kind == Some(TypeKind::Interface),
+                    "trait_exists" => kind == Some(TypeKind::Trait),
+                    _ => kind == Some(TypeKind::Enum),
+                })
+            })
         }
-        // No interfaces, traits, or enums exist in this runtime — always false.
-        "interface_exists" | "trait_exists" | "enum_exists" => Value::bool(false),
 
         // ── member existence ────────────────────────────────────────────────
         // `method_exists($object_or_class, $method)`. First arg may be an object
         // handle or a class-name string.
         "method_exists" => {
             let a = arg(args, 0);
+            // `object|string` is DECLARED on the parameter, so anything else is
+            // a TypeError rather than a `false` — an int, a null or an array all
+            // reach it, and each is named by what it is.
+            if !matches!(a, Value::Str(_)) && !with_host(|h| h.is_object_value(&a)) {
+                let t = with_host(|h| h.type_name_for_error(&a));
+                return Some(Err(throws(
+                    "TypeError",
+                    &format!(
+                        "method_exists(): Argument #1 ($object_or_class) must be of type object|string, {t} given"
+                    ),
+                )));
+            }
             let method = str_arg(args, 1);
             with_host(|h| {
-                let class = h.object_class(&a).unwrap_or_else(|| h.to_str(&a));
+                let class = h.instance_class(&a).unwrap_or_else(|| h.to_str(&a));
                 Value::bool(h.class_has_method(&class, &method))
             })
         }
@@ -104,7 +125,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         }
         "get_class" => {
             let a = arg(args, 0);
-            match with_host(|h| h.object_class(&a)) {
+            match with_host(|h| h.instance_class(&a)) {
                 Some(c) => Value::str(c),
                 None => return Some(Err(object_arg_type_error("get_class", &a))),
             }
@@ -134,7 +155,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         // for the same reason `get_class` is — see there.
         "get_object_vars" => {
             let a = arg(args, 0);
-            if !with_host(|h| h.is_object(&a)) {
+            if !with_host(|h| h.is_object_value(&a)) {
                 return Some(Err(object_arg_type_error("get_object_vars", &a)));
             }
             with_host(|h| {
@@ -153,7 +174,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         "get_class_methods" => {
             let a = arg(args, 0);
             with_host(|h| {
-                let class = h.object_class(&a).unwrap_or_else(|| h.to_str(&a));
+                let class = h.instance_class(&a).unwrap_or_else(|| h.to_str(&a));
                 let arr = h.new_array();
                 for m in h.class_method_names(&class) {
                     h.arr_push_auto(&arr, Value::str(m));
@@ -198,7 +219,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         "class_parents" => {
             let a = arg(args, 0);
             with_host(|h| {
-                let Some(start) = resolve_named_class(h, &a) else {
+                let Some(start) = resolve_named_class_warn(h, &a, "class_parents") else {
                     return Value::bool(false);
                 };
                 let arr = h.new_array();
@@ -216,18 +237,32 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         // subject is not a declared class/object (matching PHP's failure result).
         "class_implements" => {
             let a = arg(args, 0);
-            with_host(|h| match resolve_named_class(h, &a) {
-                Some(_) => h.new_array(),
-                None => Value::bool(false),
-            })
+            with_host(
+                |h| match resolve_named_class_warn(h, &a, "class_implements") {
+                    Some(c) => {
+                        let arr = h.new_array();
+                        for i in h.class_interface_names(&c) {
+                            h.arr_set_key(&arr, &Value::str(i.clone()), Value::str(i));
+                        }
+                        arr
+                    }
+                    None => Value::bool(false),
+                },
+            )
         }
-        // `class_uses($object_or_class, $autoload = true)`: the traits a class
-        // uses. This runtime has no traits, so an empty array for a valid
-        // class/object, or `false` for a non-declared subject.
+        // `class_uses($object_or_class, $autoload = true)`: the traits THIS
+        // class composes with `use` — PHP does not walk the parent chain for it.
+        // `false` for a non-declared subject.
         "class_uses" => {
             let a = arg(args, 0);
-            with_host(|h| match resolve_named_class(h, &a) {
-                Some(_) => h.new_array(),
+            with_host(|h| match resolve_named_class_warn(h, &a, "class_uses") {
+                Some(c) => {
+                    let arr = h.new_array();
+                    for t in h.class_trait_names(&c) {
+                        h.arr_set_key(&arr, &Value::str(t.clone()), Value::str(t));
+                    }
+                    arr
+                }
                 None => Value::bool(false),
             })
         }
@@ -274,7 +309,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
 /// would wrongly report `true` for a class that was never declared — PHP returns
 /// `false` there.
 fn class_of(h: &crate::host::PhpHost, a: &Value, allow_string: bool) -> Option<String> {
-    if let Some(c) = h.object_class(a) {
+    if let Some(c) = h.instance_class(a) {
         return Some(c);
     }
     match a {
@@ -292,7 +327,7 @@ fn class_of(h: &crate::host::PhpHost, a: &Value, allow_string: bool) -> Option<S
 /// names a declared class, so a bad name produces the `false` these functions
 /// return for an unknown class rather than a misleading empty result.
 fn resolve_named_class(h: &crate::host::PhpHost, a: &Value) -> Option<String> {
-    if let Some(c) = h.object_class(a) {
+    if let Some(c) = h.instance_class(a) {
         return Some(c);
     }
     match a {
@@ -302,4 +337,19 @@ fn resolve_named_class(h: &crate::host::PhpHost, a: &Value) -> Option<String> {
         }
         _ => None,
     }
+}
+
+/// [`resolve_named_class`] plus the warning the reference raises when the name
+/// does not resolve: `class_parents`/`class_implements`/`class_uses` all say
+/// `<fn>(): Class <name> does not exist and could not be loaded` before
+/// returning `false`.
+fn resolve_named_class_warn(h: &mut crate::host::PhpHost, a: &Value, func: &str) -> Option<String> {
+    if let Some(c) = resolve_named_class(h, a) {
+        return Some(c);
+    }
+    let name = h.to_str(a);
+    h.warn(format!(
+        "{func}(): Class {name} does not exist and could not be loaded"
+    ));
+    None
 }

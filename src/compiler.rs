@@ -468,6 +468,20 @@ impl Compiler {
         b.emit(Op::Pop, 0);
     }
 
+    /// The receiver guard a method call needs when it HAS arguments.
+    ///
+    /// PHP raises `Call to a member function m() on null` before it evaluates
+    /// any argument, so an argument that echoes must not run first. With no
+    /// arguments there is nothing to observe, so the guard is skipped and a
+    /// zero-argument call — the hot shape — costs nothing.
+    fn emit_mcall_recv_check(&mut self, b: &mut ChunkBuilder, name_idx: u16, argc: usize) {
+        if argc == 0 {
+            return;
+        }
+        b.emit(Op::LoadConst(name_idx), 0);
+        b.emit(Op::CallBuiltin(ops::MCALL_RECV_CHECK, 2), self.cur_line);
+    }
+
     fn emit_byref_writeback(
         &mut self,
         b: &mut ChunkBuilder,
@@ -1531,6 +1545,8 @@ impl Compiler {
                 is_enum: decl.is_enum,
                 is_abstract: decl.is_abstract,
                 is_interface: decl.is_interface,
+                is_trait: decl.is_trait,
+                uses: decl.uses.clone(),
                 allow_dynamic_props: decl
                     .attributes
                     .iter()
@@ -2409,6 +2425,7 @@ impl Compiler {
             Expr::MethodCall(recv, name, args) if needs_arg_pairs(args) => {
                 self.compile_expr(b, recv)?;
                 let idx = b.add_constant(Value::str(name.clone()));
+                self.emit_mcall_recv_check(b, idx, args.len());
                 b.emit(Op::LoadConst(idx), 0);
                 self.compile_arg_pairs(b, args)?;
                 b.emit(
@@ -2419,6 +2436,7 @@ impl Compiler {
             Expr::MethodCall(recv, name, args) => {
                 self.compile_expr(b, recv)?;
                 let idx = b.add_constant(Value::str(name.clone()));
+                self.emit_mcall_recv_check(b, idx, args.len());
                 b.emit(Op::LoadConst(idx), 0);
                 for a in args {
                     self.compile_expr(b, a)?;
@@ -2572,6 +2590,14 @@ impl Compiler {
                     b.emit(Op::LoadConst(idx), self.cur_line);
                     b.emit(Op::CallBuiltin(ops::PROP_GET_EMPTY, 2), self.cur_line);
                 }
+                // An index target reads like `??` does, but an offset the
+                // reference refuses is worded for `empty()` — see
+                // `ops::INDEX_GET_EMPTY`.
+                Expr::Index(recv, key) => {
+                    self.compile_quiet(b, recv)?;
+                    self.compile_expr(b, key)?;
+                    b.emit(Op::CallBuiltin(ops::INDEX_GET_EMPTY, 2), self.cur_line);
+                }
                 other => self.compile_quiet(b, other)?,
             },
             Expr::Coalesce(a, els) => {
@@ -2663,6 +2689,16 @@ impl Compiler {
                         b.emit(Op::CallBuiltin(ops::YIELD, 1), 0);
                     }
                 }
+            }
+            // `print E` is `echo E` with the int `1` left behind: the same
+            // opcode, then its `Undef` swapped for the value PHP documents.
+            Expr::Print(operand) => {
+                let line = self.cur_line;
+                self.compile_expr(b, operand)?;
+                b.emit(Op::CallBuiltin(ops::ECHO, 1), line);
+                b.emit(Op::Pop, line);
+                let idx = b.add_constant(Value::int(1));
+                b.emit(Op::LoadConst(idx), line);
             }
             Expr::YieldFrom(src) => {
                 self.compile_expr(b, src)?;
@@ -4359,6 +4395,7 @@ pub(crate) fn collect_free_vars(e: &Expr, out: &mut Vec<String>) {
             }
         }
         Expr::YieldFrom(src) => collect_free_vars(src, out),
+        Expr::Print(a) => collect_free_vars(a, out),
         Expr::Null | Expr::Bool(_) | Expr::Int(_) | Expr::Float(_) | Expr::Str(_) => {}
     }
 }
@@ -4436,6 +4473,7 @@ fn expr_has_yield(e: &Expr) -> bool {
         | Expr::NullsafePropGet(a, _)
         | Expr::Throw(a)
         | Expr::Clone(a)
+        | Expr::Print(a)
         | Expr::InstanceOf(a, _)
         | Expr::NamedArg(_, a) => expr_has_yield(a),
         Expr::Binary(_, a, b)
@@ -4915,6 +4953,7 @@ impl SlotScan {
             | Expr::Clone(a)
             | Expr::Throw(a)
             | Expr::Quiet(a)
+            | Expr::Print(a)
             | Expr::NamedArg(_, a)
             | Expr::PropGet(a, _)
             | Expr::NullsafePropGet(a, _)

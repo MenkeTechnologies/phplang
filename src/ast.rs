@@ -330,6 +330,11 @@ pub enum Expr {
     /// generator. Evaluates to the delegated generator's `return` value (null for
     /// an array / a generator with no `return`).
     YieldFrom(Box<Expr>),
+    /// `print EXPR` — writes the operand like `echo` does, but it is an
+    /// EXPRESSION whose value is always the int `1`, so `$r = print "x"` and
+    /// `$a ?: print "y"` are both legal. Its precedence sits between assignment
+    /// and `yield`, which is why it is read where `yield` is.
+    Print(Box<Expr>),
 }
 
 /// The run-time half of PHP's magic constants.

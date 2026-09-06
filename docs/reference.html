@@ -248,20 +248,20 @@ list('k' =&gt; $v) = expr;</code></pre>
         <article class="doc-entry" id="doc-keyword-27">
           <h3><a class="doc-anchor" href="#doc-keyword-27">#</a> <code>interface</code></h3>
           <pre><code class="lang-php">interface Name [extends I, …] { const …; function m(); }</code></pre>
-          <p>Declares an interface, stored in the same class table as classes so `instanceof` and `class_exists` both see it. DIVERGENCE: `interface_exists()` is a hardcoded `false`, so it disagrees with `instanceof` on the very same name.</p>
+          <p>Declares an interface, stored in the same class table as classes. `interface_exists()` reports it and `class_exists()` does NOT, as in PHP, where each existence predicate answers for one declaration kind.</p>
           <pre><code class="lang-php">interface I {} class C implements I {} $o = new C;
-var_dump($o instanceof I, interface_exists("I"));   // =&gt; bool(true) bool(false)</code></pre>
+var_dump($o instanceof I, interface_exists("I"), class_exists("I"));   // =&gt; bool(true) bool(true) bool(false)</code></pre>
         </article>
         <article class="doc-entry" id="doc-keyword-28">
           <h3><a class="doc-anchor" href="#doc-keyword-28">#</a> <code>trait</code></h3>
           <pre><code class="lang-php">trait Name { members }   //  then: use Name; inside a class</code></pre>
-          <p>Declares a reusable member bundle that a class pulls in with `use`, optionally adapted by an `insteadof`/`as` block. A `use` naming a trait that was never declared is a throwable `Error`; an unresolved method collision is a fatal raised when the declaration is reached, so output produced before it is still printed. DIVERGENCE: `trait_exists()` is a hardcoded `false` even for a trait that was declared and successfully used; two definitions of the same property with different defaults are merged silently rather than refused.</p>
+          <p>Declares a reusable member bundle that a class pulls in with `use`, optionally adapted by an `insteadof`/`as` block. A `use` naming a trait that was never declared is a throwable `Error`; an unresolved method collision is a fatal raised when the declaration is reached, so output produced before it is still printed. DIVERGENCE: two definitions of the same property with different defaults are merged silently rather than refused.</p>
           <pre><code class="lang-php">trait T { function f() { return 3; } } class C { use T; } echo (new C)-&gt;f();   // =&gt; 3</code></pre>
         </article>
         <article class="doc-entry" id="doc-keyword-29">
           <h3><a class="doc-anchor" href="#doc-keyword-29">#</a> <code>enum</code></h3>
           <pre><code class="lang-php">enum Name [: backing-type] [implements I] { case A [= value]; … }</code></pre>
-          <p>Declares an enum. Cases are class constants holding a case object with `-&gt;name` and, for a backed enum, `-&gt;value`. Every enum implicitly implements `UnitEnum`, and a backed one also `BackedEnum`. `enum` is only treated as a declaration when a name and `{`, `:`, or `implements` follow, so a bareword `enum` still parses as an identifier. DIVERGENCE: `enum_exists()` is a hardcoded `false`.</p>
+          <p>Declares an enum. Cases are class constants holding a case object with `-&gt;name` and, for a backed enum, `-&gt;value`. Every enum implicitly implements `UnitEnum`, and a backed one also `BackedEnum`. `enum` is only treated as a declaration when a name and `{`, `:`, or `implements` follow, so a bareword `enum` still parses as an identifier. An enum answers yes to both `enum_exists()` and `class_exists()`, as in PHP.</p>
           <pre><code class="lang-php">enum Suit: string { case Hearts = "H"; } echo Suit::Hearts-&gt;value;   // =&gt; H</code></pre>
         </article>
         <article class="doc-entry" id="doc-keyword-30">
@@ -273,7 +273,7 @@ var_dump($o instanceof I, interface_exists("I"));   // =&gt; bool(true) bool(fal
         <article class="doc-entry" id="doc-keyword-31">
           <h3><a class="doc-anchor" href="#doc-keyword-31">#</a> <code>implements</code></h3>
           <pre><code class="lang-php">class C implements I, J</code></pre>
-          <p>Lists the interfaces a class satisfies. `instanceof` walks this list transitively, including through parent classes. DIVERGENCE: `class_implements()` always returns an empty array, so it does not report what `instanceof` honours.</p>
+          <p>Lists the interfaces a class satisfies. `instanceof` and `class_implements()` both walk this list transitively, including through parent classes.</p>
           <pre><code class="lang-php">interface I {} class C implements I {} var_dump((new C) instanceof I);   // =&gt; bool(true)</code></pre>
         </article>
         <article class="doc-entry" id="doc-keyword-32">
@@ -724,7 +724,7 @@ $o = new C; echo $o-&gt;x, $o-&gt;f();   // =&gt; 12</code></pre>
         <article class="doc-entry" id="doc-operator-31">
           <h3><a class="doc-anchor" href="#doc-operator-31">#</a> <code>...</code></h3>
           <pre><code class="lang-php">f(...$array)   function f(...$rest)   strlen(...)</code></pre>
-          <p>Three roles for one token: argument unpacking at a call site, a variadic parameter that collects the trailing arguments into an array, and — as the sole argument — PHP 8.1 first-class callable syntax, which builds a real `Closure`.</p>
+          <p>Four roles for one token: argument unpacking at a call site, unpacking inside an array literal (`[...$a, ...$b]`), a variadic parameter that collects the trailing arguments into an array, and — as the sole argument — PHP 8.1 first-class callable syntax, which builds a real `Closure`. Unpacking drives a Generator or a Traversable as well as an array; anything else raises "Only arrays and Traversables can be unpacked". DIVERGENCE: a string-keyed array unpacked at a CALL binds by position rather than by name.</p>
           <pre><code class="lang-php">function sum(...$n) { return array_sum($n); }
 echo sum(...[1, 2, 3]);   // =&gt; 6
 $f = strlen(...); echo $f("abcd");   // =&gt; 4</code></pre>
@@ -3637,19 +3637,19 @@ echo implode(",", array_keys($a));   // =&gt; a,b</code></pre>
         <article class="doc-entry" id="doc-types-and-serialization-2">
           <h3><a class="doc-anchor" href="#doc-types-and-serialization-2">#</a> <code>is_object</code></h3>
           <pre><code class="lang-php">is_object(mixed $value): bool</code></pre>
-          <p>True for an object OR a closure; arrays are excluded. DIVERGENCE: PHP also reports true for a closure, so this matches — but note phplang arrays and objects share one handle representation, and the distinction is asked of the host.</p>
+          <p>True for a class instance, a closure or a generator; arrays are excluded. Closures and generators are `Closure` and `Generator` instances to the whole reflection surface, as in PHP. Arrays and objects share one handle representation here, so the distinction is asked of the host.</p>
           <pre><code class="lang-php">var_dump(is_object(new stdClass), is_object([]));   // =&gt; bool(true) bool(false)</code></pre>
         </article>
         <article class="doc-entry" id="doc-types-and-serialization-3">
           <h3><a class="doc-anchor" href="#doc-types-and-serialization-3">#</a> <code>is_iterable</code></h3>
           <pre><code class="lang-php">is_iterable(mixed $value): bool</code></pre>
-          <p>True only for an array. DIVERGENCE: no object is ever iterable here, because the runtime has no `Traversable` or `Iterator` interface.</p>
+          <p>True for an array, a generator, and an object whose class implements `Traversable`, `Iterator` or `IteratorAggregate`.</p>
           <pre><code class="lang-php">var_dump(is_iterable([1]), is_iterable(new stdClass));   // =&gt; bool(true) bool(false)</code></pre>
         </article>
         <article class="doc-entry" id="doc-types-and-serialization-4">
           <h3><a class="doc-anchor" href="#doc-types-and-serialization-4">#</a> <code>is_countable</code></h3>
           <pre><code class="lang-php">is_countable(mixed $value): bool</code></pre>
-          <p>Shares the `is_iterable` arm, so it is true only for an array. DIVERGENCE: there is no `Countable` interface to honour.</p>
+          <p>True for an array, or an object whose class implements `Countable`.</p>
           <pre><code class="lang-php">var_dump(is_countable([1]));   // =&gt; bool(true)</code></pre>
         </article>
         <article class="doc-entry" id="doc-types-and-serialization-5">
@@ -4935,27 +4935,26 @@ echo implode(",", $a), "|", implode(",", $b);   // =&gt; 1,2,3|a,b,c</code></pre
         <article class="doc-entry" id="doc-reflection-1">
           <h3><a class="doc-anchor" href="#doc-reflection-1">#</a> <code>class_exists</code></h3>
           <pre><code class="lang-php">class_exists(string $class, bool $autoload = true): bool</code></pre>
-          <p>A case-insensitive lookup in the host class table. DIVERGENCE: because interfaces, traits, and enums share that table, this returns TRUE for all of them — PHP returns false. `$autoload` is never read.</p>
-          <pre><code class="lang-php">interface I {} var_dump(class_exists("I"));   // =&gt; bool(true)</code></pre>
+          <p>A case-insensitive lookup in the host class table, answering for CLASSES only: an interface, a trait or an enum shares that table but is reported by its own predicate (an enum, as in PHP, is both). The engine's own classes `Closure` and `Generator` answer too. `$autoload` is never read.</p>
+          <pre><code class="lang-php">interface I {} var_dump(class_exists("I"), class_exists("Closure"));   // =&gt; bool(false) bool(true)</code></pre>
         </article>
         <article class="doc-entry" id="doc-reflection-2">
           <h3><a class="doc-anchor" href="#doc-reflection-2">#</a> <code>interface_exists</code></h3>
           <pre><code class="lang-php">interface_exists(string $interface, bool $autoload = true): bool</code></pre>
-          <p>DIVERGENCE: hardcoded `false` — no argument is read. It therefore CONTRADICTS `instanceof` and `is_a()`, which do resolve the same interface through the class table's interface list. Test with `class_exists()` instead.</p>
-          <pre><code class="lang-php">interface I {} class C implements I {} $o = new C;
-var_dump($o instanceof I, interface_exists("I"));   // =&gt; bool(true) bool(false)</code></pre>
+          <p>True for a declared interface, and for the engine's own — `Traversable`, `Iterator`, `IteratorAggregate`, `Countable`, `ArrayAccess`, `Stringable`, `JsonSerializable`, `Throwable`, `UnitEnum`, `BackedEnum`. `$autoload` is never read.</p>
+          <pre><code class="lang-php">interface I {} var_dump(interface_exists("I"), interface_exists("Traversable"));   // =&gt; bool(true) bool(true)</code></pre>
         </article>
         <article class="doc-entry" id="doc-reflection-3">
           <h3><a class="doc-anchor" href="#doc-reflection-3">#</a> <code>trait_exists</code></h3>
           <pre><code class="lang-php">trait_exists(string $trait, bool $autoload = true): bool</code></pre>
-          <p>DIVERGENCE: hardcoded `false`, sharing the `interface_exists` arm, even for a trait that was declared and successfully used by a class.</p>
-          <pre><code class="lang-php">trait T {} var_dump(trait_exists("T"));   // =&gt; bool(false)</code></pre>
+          <p>True for a declared trait and false for every other kind of name. `$autoload` is never read.</p>
+          <pre><code class="lang-php">trait T {} var_dump(trait_exists("T"), class_exists("T"));   // =&gt; bool(true) bool(false)</code></pre>
         </article>
         <article class="doc-entry" id="doc-reflection-4">
           <h3><a class="doc-anchor" href="#doc-reflection-4">#</a> <code>enum_exists</code></h3>
           <pre><code class="lang-php">enum_exists(string $enum, bool $autoload = true): bool</code></pre>
-          <p>DIVERGENCE: hardcoded `false`. This one is a choice rather than a missing capability — the class definition does record whether it is an enum, and the runtime consults that flag to synthesize `cases()`.</p>
-          <pre><code class="lang-php">enum E { case A; } var_dump(enum_exists("E"));   // =&gt; bool(false)</code></pre>
+          <p>True for a declared enum. An enum is the one name that is two kinds at once, so `class_exists()` answers for it as well — which is what PHP does.</p>
+          <pre><code class="lang-php">enum E { case A; } var_dump(enum_exists("E"), class_exists("E"));   // =&gt; bool(true) bool(true)</code></pre>
         </article>
         <article class="doc-entry" id="doc-reflection-5">
           <h3><a class="doc-anchor" href="#doc-reflection-5">#</a> <code>get_class</code></h3>
@@ -5002,18 +5001,19 @@ var_dump($o instanceof I, interface_exists("I"));   // =&gt; bool(true) bool(fal
         <article class="doc-entry" id="doc-reflection-12">
           <h3><a class="doc-anchor" href="#doc-reflection-12">#</a> <code>class_implements</code></h3>
           <pre><code class="lang-php">class_implements(object|string $object_or_class, bool $autoload = true): array|false</code></pre>
-          <p>DIVERGENCE: a stub returning an EMPTY array for any valid class or object. The interface list it would need IS populated and IS used by `instanceof` — this function simply never reads it.</p>
-          <pre><code class="lang-php">interface I {} class C implements I {} print_r(class_implements(new C));   // =&gt; Array\n(\n)</code></pre>
+          <p>The interfaces the subject satisfies, transitively and through its parents, keyed by name. Engine ancestry answers too, so `class_implements("Generator")` reports `Iterator` and `Traversable`. An unknown name warns and returns `false`, as in PHP.</p>
+          <pre><code class="lang-php">interface I {} class C implements I {} print_r(array_keys(class_implements(new C)));   // =&gt; Array\n(\n    [0] =&gt; I\n)</code></pre>
         </article>
         <article class="doc-entry" id="doc-reflection-13">
           <h3><a class="doc-anchor" href="#doc-reflection-13">#</a> <code>class_uses</code></h3>
           <pre><code class="lang-php">class_uses(object|string $object_or_class, bool $autoload = true): array|false</code></pre>
-          <p>DIVERGENCE: a stub returning an empty array for any valid class or object; nothing trait-related is consulted.</p>
+          <p>The traits THIS class composes with `use`, keyed by name — PHP does not walk the parent chain for it. An unknown name warns and returns `false`.</p>
+          <pre><code class="lang-php">trait T {} class C { use T; } print_r(array_keys(class_uses("C")));   // =&gt; Array\n(\n    [0] =&gt; T\n)</code></pre>
         </article>
         <article class="doc-entry" id="doc-reflection-14">
           <h3><a class="doc-anchor" href="#doc-reflection-14">#</a> <code>method_exists</code></h3>
           <pre><code class="lang-php">method_exists(object|string $object_or_class, string $method): bool</code></pre>
-          <p>Resolves the method through the class and its parents, comparing the name case-insensitively as PHP does.</p>
+          <p>Resolves the method through the class and its parents, comparing the name case-insensitively as PHP does. The engine classes answer too (`method_exists($gen, "current")`). A subject that is neither an object nor a string is the `TypeError` PHP declares on the parameter.</p>
           <pre><code class="lang-php">class C { function m() {} } var_dump(method_exists("C", "M"));   // =&gt; bool(true)</code></pre>
         </article>
         <article class="doc-entry" id="doc-reflection-15">
@@ -5122,8 +5122,8 @@ var_dump(is_subclass_of(new B, "A"), is_subclass_of(new A, "A"));   // =&gt; boo
         <article class="doc-entry" id="doc-runtime-and-diagnostics-15">
           <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-15">#</a> <code>get_defined_vars</code></h3>
           <pre><code class="lang-php">get_defined_vars(): array</code></pre>
-          <p>DIVERGENCE: a stub that always returns an empty array — no scope enumerator is exposed to the standard library. Use `compact()` with explicit names instead.</p>
-          <pre><code class="lang-php">$x = 1; echo count(get_defined_vars());   // =&gt; 0</code></pre>
+          <p>The current frame's bound variables, in the order they were first bound. An unset name is absent; a name bound to `null` is present. `$this` and `$GLOBALS` are not included. PARTIAL DIVERGENCE at GLOBAL scope only: the reference lists the superglobals its `variables_order` actually populated, in ITS fixed order and ahead of the script's own variables, where this lists every superglobal the frame holds in binding order. Inside a function — where the answer is the user's own variables — it matches.</p>
+          <pre><code class="lang-php">function f($p) { $a = 1; unset($a); return get_defined_vars(); } print_r(f(7));   // =&gt; [p =&gt; 7]</code></pre>
         </article>
         <article class="doc-entry" id="doc-runtime-and-diagnostics-16">
           <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-16">#</a> <code>class_alias</code></h3>
@@ -5144,7 +5144,7 @@ var_dump(is_subclass_of(new B, "A"), is_subclass_of(new A, "A"));   // =&gt; boo
         <article class="doc-entry" id="doc-callables-2">
           <h3><a class="doc-anchor" href="#doc-callables-2">#</a> <code>call_user_func_array</code></h3>
           <pre><code class="lang-php">call_user_func_array(callable $callback, array $args): mixed</code></pre>
-          <p>Spreads the array's VALUES in order, discarding keys — so named-argument spreading is not modelled. A non-array second argument passes no arguments rather than raising. This is also what first-class callable syntax `f(...)` desugars to.</p>
+          <p>Spreads the array's VALUES in order, discarding keys — so named-argument spreading is not modelled. A non-array second argument raises the reference's `Argument #2 ($args) must be of type array` TypeError. This is also what first-class callable syntax `f(...)` desugars to.</p>
           <pre><code class="lang-php">echo call_user_func_array("max", [1, 5, 3]);   // =&gt; 5</code></pre>
         </article>
         <article class="doc-entry" id="doc-callables-3">

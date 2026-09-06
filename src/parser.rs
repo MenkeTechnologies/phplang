@@ -161,7 +161,25 @@ fn is_dyn_class_operand(e: &Expr) -> bool {
     )
 }
 
+/// Whether `e` is a form `isset()` accepts: a variable, a variable variable, an
+/// index, a property fetch (arrow or nullsafe) or a static property. Only the
+/// OUTERMOST node matters — the reference reads `isset(f()->p)` and
+/// `isset(f()[0])` happily, and rejects `isset(f())`, `isset(C::K)`,
+/// `isset(NAME)`, `isset(new C)` and `isset(1 + 1)`.
+fn is_isset_operand(e: &Expr) -> bool {
+    matches!(
+        e,
+        Expr::Var(_)
+            | Expr::VarVar(_)
+            | Expr::Index(..)
+            | Expr::PropGet(..)
+            | Expr::NullsafePropGet(..)
+            | Expr::StaticProp(..)
+    )
+}
+
 /// Map a `(type)` cast keyword to the conversion function it desugars to.
+///
 /// `(array)` and `(object)` have no PHP-callable equivalent, so they lower to
 /// the internal `__cast_array`/`__cast_object` builtins. `(unset)` was removed
 /// in PHP 8 → `None`.
@@ -766,12 +784,6 @@ impl Parser {
                 self.expect_punct(";")?;
                 StmtKind::Echo(args)
             }
-            _ if self.at_kw("print") => {
-                self.pos += 1;
-                let e = self.expression()?;
-                self.expect_punct(";")?;
-                StmtKind::Echo(vec![e])
-            }
             _ if self.at_kw("declare") => self.declare_stmt()?,
             _ if self.at_kw("namespace") => self.namespace_stmt()?,
             _ if self.at_kw("use") => self.use_import_stmt()?,
@@ -939,12 +951,47 @@ impl Parser {
         }
     }
 
+    /// The body of a control structure, in either spelling.
+    ///
+    /// PHP writes every one of `if`/`while`/`for`/`foreach`/`switch`/`declare`
+    /// two ways: braced (or a single statement), and the ALTERNATIVE syntax
+    /// `: stmt... endif;` that templates use because it survives being cut in
+    /// half by `?> html <?php`. Both are the same grammar with a different
+    /// terminator, so both are read here: a `:` after the head opens the
+    /// alternative form, whose statements run until one of `ends` is at the head
+    /// — left UNCONSUMED, because `elseif`/`else` continue the same `if` and
+    /// only the caller knows which of them it accepts.
+    ///
+    /// Returns `(body, is_alternative)`.
+    fn control_body(&mut self, ends: &[&str]) -> Result<(Vec<Stmt>, bool), String> {
+        if !self.eat_punct(":") {
+            return Ok((self.body()?, false));
+        }
+        let mut out = Vec::new();
+        while !self.at_end() && !ends.iter().any(|e| self.at_kw(e)) {
+            out.push(self.statement()?);
+        }
+        Ok((out, true))
+    }
+
+    /// Consume the `endif;` / `endwhile;` … that closes an alternative-syntax
+    /// body. A missing terminator is the same syntax error PHP raises.
+    fn expect_end_kw(&mut self, kw: &str) -> Result<(), String> {
+        if !self.eat_kw(kw) {
+            return Err(self.syntax_error());
+        }
+        // The `;` is required, exactly as it is after any statement — a closing
+        // `?>` stands in for it, which the scanner has already turned into one.
+        self.expect_punct(";")
+    }
+
     fn if_stmt(&mut self) -> Result<StmtKind, String> {
         self.pos += 1; // if
         self.expect_punct("(")?;
         let cond = self.expression()?;
         self.expect_punct(")")?;
-        let then = self.body()?;
+        const IF_ENDS: &[&str] = &["elseif", "else", "endif"];
+        let (then, alt) = self.control_body(IF_ENDS)?;
         let mut elifs = Vec::new();
         let mut els = None;
         loop {
@@ -952,22 +999,28 @@ impl Parser {
                 self.expect_punct("(")?;
                 let c = self.expression()?;
                 self.expect_punct(")")?;
-                elifs.push((c, self.body()?));
+                elifs.push((c, self.control_body(IF_ENDS)?.0));
             } else if self.at_kw("else") {
                 self.pos += 1;
                 // `else if` is two keywords; fold it into an elseif branch.
+                // NOTE: `else if` is NOT legal in the alternative syntax (PHP
+                // requires `elseif` there), but accepting it costs nothing and
+                // rejecting it would need a second error path.
                 if self.eat_kw("if") {
                     self.expect_punct("(")?;
                     let c = self.expression()?;
                     self.expect_punct(")")?;
-                    elifs.push((c, self.body()?));
+                    elifs.push((c, self.control_body(IF_ENDS)?.0));
                 } else {
-                    els = Some(self.body()?);
+                    els = Some(self.control_body(IF_ENDS)?.0);
                     break;
                 }
             } else {
                 break;
             }
+        }
+        if alt {
+            self.expect_end_kw("endif")?;
         }
         Ok(StmtKind::If {
             cond,
@@ -982,7 +1035,10 @@ impl Parser {
         self.expect_punct("(")?;
         let cond = self.expression()?;
         self.expect_punct(")")?;
-        let body = self.body()?;
+        let (body, alt) = self.control_body(&["endwhile"])?;
+        if alt {
+            self.expect_end_kw("endwhile")?;
+        }
         Ok(StmtKind::While { cond, body })
     }
 
@@ -1004,9 +1060,14 @@ impl Parser {
         self.expect_punct("(")?;
         let subj = self.expression()?;
         self.expect_punct(")")?;
-        self.expect_punct("{")?;
+        // `switch ($x):` opens the alternative form, closed by `endswitch;`
+        // instead of `}`. The case labels themselves are spelled identically.
+        let alt = self.eat_punct(":");
+        if !alt {
+            self.expect_punct("{")?;
+        }
         let mut cases = Vec::new();
-        while !self.at_punct("}") && !self.at_end() {
+        while !self.at_punct("}") && !self.at_kw("endswitch") && !self.at_end() {
             // A `case EXPR:` or `default:` label (PHP also allows `;` for `:`).
             let test = if self.eat_kw("case") {
                 let e = self.expression()?;
@@ -1027,13 +1088,18 @@ impl Parser {
             while !self.at_kw("case")
                 && !self.at_kw("default")
                 && !self.at_punct("}")
+                && !self.at_kw("endswitch")
                 && !self.at_end()
             {
                 body.push(self.statement()?);
             }
             cases.push(SwitchCase { test, body });
         }
-        self.expect_punct("}")?;
+        if alt {
+            self.expect_end_kw("endswitch")?;
+        } else {
+            self.expect_punct("}")?;
+        }
         Ok(StmtKind::Switch { subj, cases })
     }
 
@@ -1050,7 +1116,10 @@ impl Parser {
         self.expect_punct(";")?;
         let step = self.expr_list_until(")")?;
         self.expect_punct(")")?;
-        let body = self.body()?;
+        let (body, alt) = self.control_body(&["endfor"])?;
+        if alt {
+            self.expect_end_kw("endfor")?;
+        }
         Ok(StmtKind::For {
             init,
             cond,
@@ -1101,7 +1170,10 @@ impl Parser {
             return Err(self.syntax_error_at(self.pos - 1));
         }
         self.expect_punct(")")?;
-        let body = self.body()?;
+        let (body, alt) = self.control_body(&["endforeach"])?;
+        if alt {
+            self.expect_end_kw("endforeach")?;
+        }
         Ok(StmtKind::Foreach {
             arr,
             key_var,
@@ -1256,14 +1328,20 @@ impl Parser {
             }
         }
         self.expect_punct(")")?;
-        if self.at_punct("{") {
+        // Both bodied spellings — `{ … }` and `: … enddeclare;` — are block
+        // mode, and the reference refuses `strict_types` in either.
+        if self.at_punct("{") || self.at_punct(":") {
             if here_strict {
                 return Err(self.fatal_at(
                     kw_line,
                     "strict_types declaration must not use block mode".to_string(),
                 ));
             }
-            body = Some(self.block()?);
+            let (stmts, alt) = self.control_body(&["enddeclare"])?;
+            if alt {
+                self.expect_end_kw("enddeclare")?;
+            }
+            body = Some(stmts);
         } else {
             self.eat_punct(";");
         }
@@ -2059,10 +2137,65 @@ impl Parser {
     // ── expressions (precedence climbing) ──────────────────────────────────
 
     fn expression(&mut self) -> Result<Expr, String> {
-        self.assignment()
+        self.logical_word(0)
+    }
+
+    /// The three WORD logical operators, which sit BELOW assignment in PHP's
+    /// precedence table — that is the whole reason the language has them
+    /// alongside `&&`/`||`. `$x = a and b` assigns `a` and then ands the result
+    /// with `b`; folding them onto `&&`/`||` (which is where they used to be
+    /// read) made it assign `a and b` instead, and there was no `xor` at all.
+    ///
+    /// Loosest first: `or` < `xor` < `and`, all left-associative.
+    fn logical_word(&mut self, min_bp: u8) -> Result<Expr, String> {
+        let mut lhs = self.assignment()?;
+        while let Some((word, bp)) = self.peek_logical_word() {
+            if bp < min_bp {
+                break;
+            }
+            self.pos += 1;
+            let rhs = self.logical_word(bp + 1)?;
+            lhs = match word {
+                "or" => Expr::Binary(BinOp::Or, Box::new(lhs), Box::new(rhs)),
+                "and" => Expr::Binary(BinOp::And, Box::new(lhs), Box::new(rhs)),
+                // `xor` has no short circuit — both sides always run — and its
+                // result is a bool, so it IS `(bool)a !== (bool)b`, evaluated
+                // left to right. Desugaring keeps it out of the opcode table.
+                _ => Expr::Binary(
+                    BinOp::StrictNe,
+                    Box::new(Expr::Call("boolval".to_string(), vec![lhs])),
+                    Box::new(Expr::Call("boolval".to_string(), vec![rhs])),
+                ),
+            };
+        }
+        Ok(lhs)
+    }
+
+    /// The word logical operator at the cursor and its binding power.
+    fn peek_logical_word(&self) -> Option<(&'static str, u8)> {
+        let Some(Tok::Ident(s)) = self.peek() else {
+            return None;
+        };
+        if s.eq_ignore_ascii_case("or") {
+            Some(("or", 0))
+        } else if s.eq_ignore_ascii_case("xor") {
+            Some(("xor", 2))
+        } else if s.eq_ignore_ascii_case("and") {
+            Some(("and", 4))
+        } else {
+            None
+        }
     }
 
     fn assignment(&mut self) -> Result<Expr, String> {
+        // `print` is an operator, not a statement: it binds looser than `=` and
+        // tighter than `yield`, so it is read here and takes everything to its
+        // right at assignment precedence (`print $x = 5` prints the assignment).
+        if self.at_kw("print") {
+            self.pos += 1;
+            let operand = self.assignment()?;
+            return Ok(Expr::Print(Box::new(operand)));
+        }
         // `yield` binds looser than assignment, so it surfaces here (a statement
         // `yield $v;` and an assignment RHS `$x = yield $v` both route through
         // `assignment()`). `yield from EXPR` delegates; `yield K => V` carries a key;
@@ -2185,8 +2318,6 @@ impl Parser {
         let op = match self.peek() {
             Some(Tok::Punct("||")) => BinOp::Or,
             Some(Tok::Punct("&&")) => BinOp::And,
-            Some(Tok::Ident(s)) if s.eq_ignore_ascii_case("or") => BinOp::Or,
-            Some(Tok::Ident(s)) if s.eq_ignore_ascii_case("and") => BinOp::And,
             Some(Tok::Punct("==")) => BinOp::LooseEq,
             Some(Tok::Punct("!=")) | Some(Tok::Punct("<>")) => BinOp::LooseNe,
             Some(Tok::Punct("===")) => BinOp::StrictEq,
@@ -2715,6 +2846,22 @@ impl Parser {
                         ));
                     }
                     if name.eq_ignore_ascii_case("isset") && !args.is_empty() {
+                        // `isset()` reads a VARIABLE and nothing else. A call, a
+                        // `new`, a constant, a literal or any arithmetic is a
+                        // COMPILE-time fatal in the reference, raised before the
+                        // program runs — so `isset(f())` prints nothing at all,
+                        // where evaluating it would have printed whatever `f`
+                        // echoes. Only the outermost node decides: `isset(f()->p)`
+                        // is a property fetch and therefore legal.
+                        if let Some(bad) = args.iter().find(|a| !is_isset_operand(a)) {
+                            let _ = bad;
+                            return Err(self.fatal_at(
+                                self.line(),
+                                "Cannot use isset() on the result of an expression \
+                                 (you can use \"null !== expression\" instead)"
+                                    .to_string(),
+                            ));
+                        }
                         // isset($a, $b, …) ≡ isset($a) && isset($b) && …
                         let mut it = args.into_iter();
                         let mut expr = Expr::IssetOf(Box::new(it.next().unwrap()));

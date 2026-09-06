@@ -146,7 +146,17 @@ end-to-end (see `tests/basic.rs`):
 - `if` / `elseif` / `else`, `while`, `do … while`, `for`,
   `foreach ($a as [$k =>] $v)`, `switch` (with fall-through), `break`,
   `continue`, `return`; `match` expressions (a no-arm/no-`default` match throws
-  `\UnhandledMatchError`, as PHP 8 does).
+  `\UnhandledMatchError`, as PHP 8 does). Each of the six control structures is
+  also read in PHP's ALTERNATIVE spelling — `if (…): … endif;`, `endwhile`,
+  `endfor`, `endforeach`, `endswitch`, `enddeclare` — including bodies cut in
+  half by `?> html <?php`, which is the spelling templates are written in.
+- `print` is an operator, not a statement: it writes its operand like `echo` and
+  evaluates to the int `1`, so `$r = print "x"` and `var_dump(print $v)` are
+  expressions. It binds looser than `=` and tighter than `yield`.
+- The three WORD logical operators `and`, `or` and `xor`, at their own precedence
+  BELOW assignment — which is the only reason the language has them next to
+  `&&`/`||`: `$x = a and b` assigns `a` first. `xor` has no short circuit and
+  answers a bool.
 - User `function`s with positional, default (`$x = 1`) and variadic (`...$rest`)
   parameters, recursion, argument unpacking at EVERY call site (`f(...$args)`,
   `$f(...$args)`, `$o->m(...$args)`, `C::s(...$args)`, `new C(...$args)`)
@@ -314,6 +324,20 @@ end-to-end (see `tests/basic.rs`):
   `$arrayObject['k']` and `count($storage)` work through the ordinary syntax.
 - **`Stringable`** is implied by `__toString`, whether or not a class names the
   interface, exactly as PHP 8 implies it.
+- **Closures and generators are objects.** A closure is an instance of `Closure`
+  and a generator one of `Generator` to `is_object`, `get_class`, `::class`,
+  `get_debug_type`, `instanceof`, `is_a`, `is_subclass_of`, `method_exists`,
+  `get_object_vars` and every diagnostic that names a value's type — and
+  `$gen instanceof Iterator` / `Traversable` is true, through an engine ancestry
+  table rather than a class declaration. `Closure` is also the one class the
+  reference gives an identity-only `==`.
+- **`class_exists`/`interface_exists`/`trait_exists`/`enum_exists` each answer
+  for ONE declaration kind**: an `interface I {}` makes `interface_exists('I')`
+  true and `class_exists('I')` false, while an enum is both an enum and a class.
+  The engine's own types answer too — `Closure` and `Generator` as classes,
+  `Traversable`, `Iterator`, `IteratorAggregate`, `Countable`, `ArrayAccess`,
+  `Stringable`, `JsonSerializable`, `Throwable`, `UnitEnum` and `BackedEnum` as
+  interfaces. `class_implements` and `class_uses` report the real lists.
 - **`__toString`** is invoked wherever a value becomes a string: `echo`, `print`,
   `.` concatenation, interpolation, the `(string)` cast / `strval`, `implode`'s
   elements, and the library functions whose parameters PHP declares as `string`.
@@ -527,8 +551,25 @@ a bug. Round 8 found `sscanf`, `addcslashes`, `count_chars`, `strtok`,
 result. Round 10 ran the same test over the SYNTAX instead of the library — a
 grep for `<<<`, `yield`, `enum `, `trait `, `...` and a `?->` past the first
 link returned zero hits over the generators — and every one of those six was
-carrying a bug too, `<<<` not being implemented at all. A curated corpus cannot report a construct nobody captured, so a mode
-should be added for the family FIRST and the fix written against what it reports.
+carrying a bug too, `<<<` not being implemented at all. Round 11 repeated it and
+found `endif`/`endwhile`/`endfor`, `clone`, `__call`, `get_class`, `is_a(`,
+`class_exists` and `func_get_args` at zero: the entire alternative control-
+structure syntax was a parse error, and the reflection surface did not know a
+closure was an object. A curated corpus cannot report a construct nobody
+captured, so a mode should be added for the family FIRST and the fix written
+against what it reports.
+
+Sampling the corpus is itself easy to get wrong. The mode is chosen from
+`seed >> 7`, so consecutive seeds share one — seeds `1..6000` reach only the
+first 47 of the 82 modes, and a survey over them will report every later mode's
+constructs as absent. Sample per mode instead:
+
+```sh
+for m in $(perl -ne 'print "$1\n" if /name: "([a-z0-9_]+)",/' src/bin/parity_fuzz.rs); do
+  seq 1 60 | xargs -P 12 -I{} target/debug/parity-fuzz --once --mode "$m" --seed {} \
+    | perl -ne 'if(/^prog  : /){$p=1; s/^prog  : //} elsif(/^oracle: /){$p=0} print if $p'
+done > corpus.txt
+```
 
 A clean divergence count only means something alongside the two numbers printed
 under it. `skipped` counts cases that never reached a comparison — the reference

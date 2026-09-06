@@ -10,8 +10,8 @@ Every expectation in this file and in `tests/` comes from a recorded run of:
 
 | | |
 |---|---|
-| binary | `/opt/homebrew/bin/php` → `/opt/homebrew/Cellar/php/8.5.9/bin/php` |
-| version | `PHP 8.5.9 (cli) (built: Jul 28 2026 13:06:52) (NTS)`, Zend Engine v4.5.9 |
+| binary | `/opt/homebrew/bin/php` → `/opt/homebrew/Cellar/php/8.5.10/bin/php` |
+| version | `PHP 8.5.10 (cli) (built: Aug 25 2026 21:09:32) (NTS)`, Zend Engine v4.5.10 |
 | entry point | `php -r` unless stated — script name `Command line code`. `php FILE`, `php -f` and stdin name themselves differently and are pinned separately in `tests/cli_entry_points.rs` |
 | php.ini | `/opt/homebrew/etc/php/8.5/php.ini` (no scanned `.d` files) |
 | `error_reporting` | `30719` (`E_ALL`; `E_STRICT` is gone in 8.4+) |
@@ -23,6 +23,221 @@ Every expectation in this file and in `tests/` comes from a recorded run of:
 
 Where a fix is a port, the C source it was ported from is named in the Rust doc
 comment above it.
+
+---
+
+## Round 11 — a closure is an object, and `endif` is a keyword
+
+Measured under `PHP 8.5.10 (cli) (built: Aug 25 2026 21:09:32) (NTS)`; ini state
+and environment as recorded in the oracle table above.
+
+Round 10 found its bugs by grepping the fuzzer's generated corpus for syntax no
+mode emits. Repeating that test found `endif`/`endwhile`/`endfor` at zero hits
+— the entire alternative control-structure spelling, which every PHP template is
+written in, was a parse error — along with `clone`, `__call`, `get_class`,
+`is_a(`, `class_exists` and `func_get_args`. Seven modes were added for those
+families and the fixes written against what they reported.
+
+Sampling the corpus needed fixing first. The mode comes from `seed >> 7`, so
+seeds `1..6000` reach only the first 47 of the 82 modes: a survey over a flat
+seed range reports every later mode's constructs as absent, including the ones
+round 10 had just added. The README now documents the per-mode sweep.
+
+### The alternative control-structure syntax is parsed
+
+`if (…): … endif;` and every sibling — `endwhile`, `endfor`, `endforeach`,
+`endswitch`, `enddeclare` — were `Parse error: syntax error, unexpected token
+":"`. All six now share one `control_body` reader: a `:` after the head opens
+the alternative form and its statements run to the terminator, which is left
+unconsumed because `elseif`/`else` continue the same `if` and only the caller
+knows which of them it accepts. The `;` after the terminator is required exactly
+as it is after any statement, so a closing `?>` stands in for it and a body split
+by `?> html <?php` still closes.
+
+### `print` is an operator
+
+`print` was read only at the head of a statement, so `$r = print "x"`,
+`var_dump(print $v)` and `false or print "y"` were parse errors, and
+`true ? print("y") : print("n")` was `Call to undefined function print()`. It is
+now an expression that writes its operand like `echo` and evaluates to the int
+`1`, read where `yield` is — looser than `=`, tighter than `yield` — so
+`print $a = 7` prints the assignment. The statement form is the same production
+with its value discarded.
+
+### `and`, `or` and `xor` sit below assignment
+
+`and` and `or` were folded onto `&&` and `||`, which binds them TIGHTER than
+`=` — the opposite of the one property that makes the word spellings worth
+having. `$x = true and false` assigned `false` where the reference assigns
+`true`, and `$a = 1 and 2` assigned `bool(true)` where the reference assigns
+`int(1)`. `xor` was not read at all: `true xor false` was
+`syntax error, unexpected token "xor"`.
+
+The three now form their own precedence layer between `expression()` and
+`assignment()`, loosest first `or` < `xor` < `and`. `xor` has no short circuit
+and yields a bool, so it lowers to `(bool)a !== (bool)b` with both sides
+evaluated left to right — an exact desugaring that needs no opcode.
+
+### Closures and generators are objects to the reflection surface
+
+```text
+$ php -r 'function g(){ yield 1; } var_dump(get_class(g()));'
+string(9) "Generator"
+```
+
+phplang answered `TypeError: get_class(): Argument #1 ($object) must be of type
+object, object given` — a message that argues with itself, because the value
+renders as `object` and fails the `is_object` test at the same time. A closure
+and a generator are `PhpObj` variants rather than class instances, and each
+predicate either special-cased `is_closure` by hand or missed the case
+entirely.
+
+`PhpHost::instance_class` now answers "what class does PHP think this value is"
+in one place — a class instance's class, `Closure`, or `Generator` — and the
+whole surface goes through it: `is_object`, `gettype`, `get_debug_type`,
+`get_class`, `::class`, `instanceof`, `is_a`, `is_subclass_of`,
+`method_exists`, `get_object_vars`, `get_class_methods`, the stack-trace
+argument renderer, the `Unsupported operand types` name and the
+`must be of type X, Y given` name. Fourteen answers changed; the three
+hand-written `is_closure` special cases went away with them.
+
+The ancestry those predicates walk lives in a `BUILTIN_TYPES` table, because
+nothing in the class table says a `Generator` implements `Iterator`. It carries
+the two engine classes and the ten engine interfaces (`Traversable`, `Iterator`,
+`IteratorAggregate`, `Countable`, `ArrayAccess`, `Stringable`,
+`JsonSerializable`, `Throwable`, `UnitEnum`, `BackedEnum`), each with its
+parents and its method names, so `$gen instanceof Traversable`,
+`method_exists($gen, "current")` and `class_implements("Generator")` all answer.
+Engine classes this runtime does NOT implement — `WeakMap`, `Attribute`,
+`Fiber` — are deliberately absent: answering `class_exists` yes for a name `new`
+cannot build trades one wrong answer for a worse one.
+
+`Closure` is also the one class the reference gives an identity-only `==`: two
+closures built from the same literal are not equal, and neither is a rebound
+copy. A `Generator` takes the ordinary property walk, has none, and so is `==`
+every other generator.
+
+### Each existence predicate answers for its own kind
+
+`interface_exists`, `trait_exists` and `enum_exists` returned `false`
+unconditionally, and `class_exists` returned true for every declared name
+whatever its kind. In the reference each answers for exactly ONE kind:
+`interface I {}` makes `interface_exists('I')` true and `class_exists('I')`
+false. `ClassDef` now records `is_trait` and the `use` list it composes, and
+`PhpHost::type_kind` reports the kind; an enum is the one name that is two
+things, a class and an enum, as the reference has it.
+
+`class_implements` and `class_uses` returned an empty array for every class, on
+the grounds — recorded in the module docs — that "this runtime has no
+interfaces" and "no traits". Both were stale: interfaces have been in `ClassDef`
+for rounds. They now report the real transitive interface list and the real
+`use` list, and all three of `class_parents`/`class_implements`/`class_uses`
+raise the reference's `Class X does not exist and could not be loaded` warning
+before answering `false`.
+
+### `isset()` on anything but a variable is a compile-time fatal
+
+```text
+$ php -r 'function f(){ echo "F"; return 1; } var_dump(isset(f()));'
+Fatal error: Cannot use isset() on the result of an expression (you can use "null !== expression" instead)
+```
+
+phplang evaluated the call and answered `bool(true)` — a wrong answer AND
+output the reference never produces, because the rejection happens at compile
+time and nothing runs. `isset()` now accepts only a variable, a variable
+variable, an index, a property (arrow or nullsafe) and a static property, judged
+on the OUTERMOST node alone: `isset(f()->p)` and `isset(f()[0])` stay legal,
+`isset(C::K)`, `isset(NAME)`, `isset(new C)` and `isset(1 + 1)` do not.
+
+### An array or an object cannot be an offset
+
+`$a[[1]]` warned `Array to string conversion` and looked the element up under
+the key `"Array"`. The reference has no coercion here at all: it is a
+`TypeError`, worded `Cannot access offset of type array on array` in a read or a
+write and `… in isset or empty` under `isset()`/`empty()` — which is why
+`empty($a[k])` now lowers to its own `INDEX_GET_EMPTY` rather than sharing the
+`??` opcode. An object names its class (`… of type stdClass`, `… of type
+Closure`). An `ArrayAccess` receiver is exempt, because `offsetGet` takes any
+key.
+
+### A receiver is judged before the arguments run
+
+```text
+$ php -r 'function f(){ echo "F"; return 1; } $n = null; $n->m(f());'
+Fatal error: Uncaught Error: Call to a member function m() on null
+```
+
+Nothing `f` echoes appears: the reference decides the receiver cannot take a
+call before it evaluates one argument. phplang printed `F` first. A method call
+that HAS arguments now emits `MCALL_RECV_CHECK` between the receiver and them.
+The op looks nothing up — the test is on the value's own shape — so a call that
+is going to succeed pays one discriminant check and no second method
+resolution, and a zero-argument call, which has nothing to observe, emits
+nothing at all.
+
+Whether the method EXISTS is still decided after the arguments; closing that
+needs the resolution carried forward to the call so it is not paid for twice,
+and is left for a later round. The `callorder` mode scores it.
+
+### An enum case refuses to be cloned
+
+`clone E::A` produced a second object, so `E::A === clone E::A` was false and an
+enum stopped being a singleton. The reference answers
+`Error: Trying to clone an uncloneable object of class E`, the same refusal a
+generator gets.
+
+### A variable read only through `::` was invisible to the frame-slot analysis
+
+```text
+$ php -r 'class C {} $o = new C; try { echo $o::class; } catch (\Throwable $e) { echo "E"; }'
+C
+```
+
+phplang answered `TypeError: Cannot use "::class" on null`. Three separate
+passes in `promote.rs` matched `Expr::StaticGet(..)`, `Expr::StaticProp(..)` and
+`Expr::StaticCall(_, _, args)` and never looked at the `ClassRef`, which may
+hold an expression. A variable reached ONLY through `$v::` therefore looked
+unread, was promoted into a frame slot, and read back as null from any detached
+chunk — a `try` body most visibly, since that runs on the enclosing scope by
+name. All three now walk `ClassRef::operand()`.
+
+### `method_exists` rejects a subject that is neither object nor string
+
+Its parameter is declared `object|string`, so `method_exists(null, 'x')` is a
+`TypeError` in the reference; phplang answered `false`.
+
+### Harness
+
+Seven modes, each for a family the corpus grep showed at zero: `altsyntax`
+(the six alternative spellings, including bodies split by `?> html <?php`),
+`printexpr` (`print` in expression position and the word logical operators),
+`reflect` (the predicates above over closures, generators, enum cases,
+interfaces and traits), `issetform` (every operand shape `isset`/`empty` can be
+given), `callorder` (a side effect in an argument of a call that is going to
+fail), `cloning` (`clone`, `__clone`, readonly and the uncloneable values) and
+`magiccall` (`__call`/`__callStatic`/`__invoke`).
+
+`altsyntax`, `printexpr`, `reflect` and `issetform` run clean at 800 cases each.
+`callorder`, `cloning` and `magiccall` still report, and are left in place
+scoring what is not fixed:
+
+* an undefined METHOD or function is still resolved after the arguments run;
+* every library function that takes a callback reports an unresolvable one as
+  `Error: Call to undefined function`/`method`, where the reference raises a
+  catchable `TypeError` naming the parameter — the gap `BUGS.md` already records
+  under "Argument type checks are missing on a broad set of library functions",
+  now measured through `call_user_func`, `array_map` and `usort` as well;
+* a dynamic property on a `Closure` is accepted rather than
+  `Error: Cannot create dynamic property Closure::$x`;
+* `$obj->undefined->k = 1` warns and continues where the reference raises
+  `Error: Attempt to assign property "k" on null`;
+* the object-ordinal divergence `var_dump` prints as `#N`, which `BUGS.md` and
+  `PhpHost::object_ordinal` already record as needing refcounted handles.
+
+Two items deferred by round 10 are deferred again, for the reason recorded
+there: object DESTRUCTION — `__destruct`, and a generator's `finally` running
+when the generator is abandoned — needs refcounting the append-only object arena
+does not have.
 
 ---
 
