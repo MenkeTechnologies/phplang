@@ -577,6 +577,196 @@ fn gen_mathfns(seed: u64) -> Vec<String> {
     }
 }
 
+/// `func_get_args` / `func_num_args` / `func_get_arg`, the family that reports on
+/// the call frame it is standing in.
+///
+/// The mode exists because the generator was BLIND to all three: a grep for
+/// `func_get_args` over this file returned ZERO hits, and every one of them was
+/// wrong. The reference has reported a declared parameter's CURRENT value since
+/// PHP 7 — `function f($a) { $a = 99; return func_get_args(); }` called as `f(1)`
+/// answers `[99]` — while this engine answered `[1]` from a snapshot taken when
+/// the frame was bound. Named arguments were reported in CALL order rather than
+/// at their parameter's position, all three were silent at the global scope where
+/// the reference raises a fatal (with three DIFFERENT messages), and an
+/// out-of-range `func_get_arg` returned null instead of a `ValueError`.
+///
+/// The programs therefore have to mutate parameters, call with named and extra
+/// and spread arguments, and reach the family from the global scope — a mode that
+/// only ever called `f(1, 2)` and printed the count would score none of it.
+fn gen_funcargs(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    // The global-scope arms: a fatal in the reference, one message per function.
+    if r.below(6) == 0 {
+        let f = *r.pick(&["func_get_args()", "func_num_args()", "func_get_arg(0)"]);
+        return vec![format!("var_dump({f});")];
+    }
+    let params = *r.pick(&[
+        "$a",
+        "$a, $b",
+        "$a, $b = 5",
+        "$a = 1, $b = 2, $c = 3",
+        "...$r",
+        "$a, ...$r",
+        "&$a",
+        "$a, $b, $c",
+    ]);
+    // Mutating the parameter is the whole point of the mode: a snapshot and a
+    // live read are indistinguishable until something writes to it.
+    let mutate = *r.pick(&[
+        "",
+        "$a = 99;",
+        "$a = 99; $b = 88;",
+        "unset($a);",
+        "$r[0] = 77;",
+        "$a++;",
+    ]);
+    let report = *r.pick(&[
+        "return func_get_args();",
+        "return func_num_args();",
+        "return func_get_arg(0);",
+        "return func_get_arg(2);",
+        "return func_get_arg(-1);",
+        "return [func_num_args(), func_get_args()];",
+    ]);
+    let call = *r.pick(&[
+        "f(1)",
+        "f(1, 2)",
+        "f(1, 2, 3)",
+        "f()",
+        "f(b: 2, a: 1)",
+        "f(9, c: 7)",
+        "f(...[1, 2, 3])",
+        "f(1, ...[2, 3])",
+    ]);
+    // The same body reached through a method and a closure as well: each builds
+    // its frame by a different path, and only the plain function form was ever
+    // exercised by hand.
+    let prog = match r.below(3) {
+        0 => format!("function f({params}) {{ {mutate} {report} }} var_dump({call});"),
+        1 => format!(
+            "class C {{ function f({params}) {{ {mutate} {report} }} }} \
+             $o = new C; var_dump($o->{call});"
+        ),
+        _ => format!("$f = function({params}) {{ {mutate} {report} }}; var_dump($f({call}));"),
+    };
+    vec![format!(
+        "try {{ {prog} }} catch (Throwable $e) {{ echo get_class($e), \"|\", $e->getMessage(); }}"
+    )]
+}
+
+/// `extract()` and its `EXTR_*` flags.
+///
+/// Another construct the generator could not see: a grep for `extract(` returned
+/// ZERO hits, and neither did the flags exist. `EXTR_SKIP` and its six siblings
+/// were UNDEFINED CONSTANTS, so every call that named one died with `Undefined
+/// constant "EXTR_SKIP"`, and `extract()` itself ignored both `$flags` and
+/// `$prefix` — it always overwrote, whatever it was asked for.
+///
+/// The array is built with keys that are and are not legal variable names, and
+/// against variables that do and do not already exist, because half the modes
+/// turn on exactly those two questions.
+fn gen_extractflags(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let pre = *r.pick(&["", "$x = 1;", "$x = 1; $z = 2;", "$p_x = 0;"]);
+    let arr = *r.pick(&[
+        "[\"x\" => 2]",
+        "[\"x\" => 2, \"z\" => 3]",
+        "[\"1bad\" => 2, \"ok\" => 3]",
+        "[5 => 1, \"ok\" => 2]",
+        "[\"this\" => 5]",
+        "[]",
+        "[\"x\" => 2, \"y\" => 4, \"z\" => 6]",
+    ]);
+    let flags = *r.pick(&[
+        "",
+        ", EXTR_OVERWRITE",
+        ", EXTR_SKIP",
+        ", EXTR_PREFIX_SAME, \"p\"",
+        ", EXTR_PREFIX_ALL, \"p\"",
+        ", EXTR_PREFIX_INVALID, \"p\"",
+        ", EXTR_PREFIX_IF_EXISTS, \"p\"",
+        ", EXTR_IF_EXISTS",
+        ", EXTR_REFS",
+        ", EXTR_SKIP | EXTR_REFS",
+        // The rejected forms: a mode that is not one, a prefix that is missing,
+        // and a prefix that is not an identifier.
+        ", 999",
+        ", -1",
+        ", EXTR_PREFIX_ALL",
+        ", EXTR_PREFIX_ALL, \"1\"",
+        ", EXTR_PREFIX_ALL, \"\"",
+    ]);
+    // `EXTR_REFS` is only distinguishable from a plain bind by writing THROUGH
+    // the variable afterwards and looking at the array again.
+    let after = *r.pick(&["", "$x = 9;", "$p_x = 9;"]);
+    // Run inside a function, and name the variables to report rather than asking
+    // for all of them: at the global scope `get_defined_vars()` answers with the
+    // superglobals too, so the comparison would be dominated by the environment
+    // the two processes were started with — which differs, is enormous, and is
+    // none of this mode's business.
+    let seen = "foreach ([\"x\", \"y\", \"z\", \"ok\", \"p_x\", \"p_z\", \"p_ok\", \"p_5\", \"_x\", \"p_1bad\", \"p_this\"]                 as $k) { echo $k, \"=\", isset($$k) ? var_export($$k, true) : \"-\", \"|\"; }";
+    vec![format!(
+        "function t() {{ {pre} $a = {arr}; $n = extract($a{flags}); \
+         var_dump($n); {after} var_dump($a); {seen} }} \
+         try {{ t(); }} catch (Throwable $e) {{ echo get_class($e), \"|\", $e->getMessage(); }}"
+    )]
+}
+
+/// [`gen_callorder`] for every call form that is NOT a method call.
+///
+/// That mode settled the receiver of `$r->m(…)`, which left the same fault
+/// standing in seven other spellings: an undefined function, an undeclared class
+/// under both `new X(…)` and `X::m(…)`, and a `$callee(…)` whose value is an
+/// array of the wrong length, a non-callable scalar, an object with no
+/// `__invoke`, or a string naming nothing. Each printed its argument's output
+/// before the fatal the reference reaches without printing anything.
+///
+/// The zero-argument spellings are in the pool on purpose: the check is emitted
+/// only when a call HAS an argument, and nothing else would notice if that
+/// condition were dropped and every call started paying for a second lookup.
+fn gen_calleeforms(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    // A receiver/callee pool that is mostly uncallable — the successful arms are
+    // there to keep the mode honest about not breaking working calls.
+    let subject = *r.pick(&[
+        "$n = [1];",
+        "$n = false;",
+        "$n = null;",
+        "$n = 5;",
+        "$n = \"nope\";",
+        "$n = \"Nope::m\";",
+        "$n = new stdClass;",
+        "$n = [new stdClass, \"nope\"];",
+        "$n = [1, 2, 3];",
+        "class C { function m($x) { return $x * 2; } } $n = new C;",
+        "$n = function ($x) { return $x; };",
+        "$n = \"strtoupper\";",
+    ]);
+    let call = *r.pick(&[
+        "$n->m(f())",
+        "$n?->m(f())",
+        "$n(f())",
+        "undefinedfn(f())",
+        "Nope::m(f())",
+        "new Nope(f())",
+        "C::nope(f())",
+        "$n->m(f(), f())",
+        "$n->m(x: f())",
+        "undefinedfn(x: f())",
+        "new Nope(x: f())",
+        // The zero-argument spellings, where there is nothing to order and the
+        // check must not have been emitted at all.
+        "$n->m()",
+        "undefinedfn()",
+        "new Nope()",
+    ]);
+    vec![format!(
+        "function f() {{ echo \"F\"; return 1; }} {subject} \
+         try {{ var_dump({call}); }} \
+         catch (Throwable $e) {{ echo get_class($e), \"|\", $e->getMessage(); }}"
+    )]
+}
+
 /// Scalar parameter and return types, under BOTH typing modes.
 ///
 /// This mode exists because the generator was BLIND to the whole construct: a grep
@@ -3824,6 +4014,18 @@ struct Mode {
 }
 
 const MODES: &[Mode] = &[
+    Mode {
+        name: "funcargs",
+        gen: gen_funcargs,
+    },
+    Mode {
+        name: "extractflags",
+        gen: gen_extractflags,
+    },
+    Mode {
+        name: "calleeforms",
+        gen: gen_calleeforms,
+    },
     Mode {
         name: "sscanf",
         gen: gen_sscanf,

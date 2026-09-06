@@ -440,6 +440,148 @@ fn extract_binds_string_keys() {
     );
 }
 
+/// The `$flags` argument, which used to be ignored outright — every call
+/// overwrote, and naming a flag was an `Undefined constant` because none of the
+/// `EXTR_*` constants existed. One assertion per mode, since they differ only in
+/// what they do about a name that is taken or unusable.
+#[test]
+fn extract_honours_every_extr_mode() {
+    // OVERWRITE (the default) replaces; SKIP leaves the existing value alone and
+    // does not count it.
+    assert_eq!(run("<?php $x=1; echo extract(['x'=>2]),'|',$x;"), "1|2");
+    assert_eq!(
+        run("<?php $x=1; echo extract(['x'=>2], EXTR_SKIP),'|',$x;"),
+        "0|1"
+    );
+    // PREFIX_SAME prefixes only the name that is TAKEN, leaving the free one bare.
+    assert_eq!(
+        run("<?php $x=1; echo extract(['x'=>2,'z'=>3], EXTR_PREFIX_SAME,'p'),'|',$x,'|',$p_x,'|',$z;"),
+        "2|1|2|3"
+    );
+    // PREFIX_ALL prefixes both, so the original `$x` is untouched.
+    assert_eq!(
+        run("<?php $x=1; echo extract(['x'=>2,'z'=>3], EXTR_PREFIX_ALL,'p'),'|',$x,'|',$p_x,'|',$p_z;"),
+        "2|1|2|3"
+    );
+    // PREFIX_INVALID rescues only the key that is not a legal variable name.
+    assert_eq!(
+        run(
+            "<?php echo extract(['1bad'=>2,'ok'=>3], EXTR_PREFIX_INVALID,'p'),'|',$p_1bad,'|',$ok;"
+        ),
+        "2|2|3"
+    );
+    // The two IF_EXISTS modes bind nothing for a name that is not already there.
+    assert_eq!(
+        run("<?php $x=1; echo extract(['x'=>2,'z'=>3], EXTR_IF_EXISTS),'|',$x,'|',isset($z)?'set':'unset';"),
+        "1|2|unset"
+    );
+    assert_eq!(
+        run("<?php $x=1; echo extract(['x'=>2,'z'=>3], EXTR_PREFIX_IF_EXISTS,'p'),'|',$x,'|',$p_x,'|',isset($p_z)?'s':'u';"),
+        "1|1|2|u"
+    );
+}
+
+/// An integer key is never a legal variable name, so only the two modes that
+/// rescue an unusable name bind it at all — the rest skip it silently. This is
+/// the case that separates PREFIX_SAME (skips) from PREFIX_ALL (prefixes).
+#[test]
+fn extract_only_prefixes_an_unusable_key_under_two_modes() {
+    assert_eq!(
+        run("<?php echo extract([5=>1], EXTR_PREFIX_ALL,'p'),'|',$p_5;"),
+        "1|1"
+    );
+    assert_eq!(
+        run("<?php echo extract([5=>1], EXTR_PREFIX_INVALID,'p'),'|',$p_5;"),
+        "1|1"
+    );
+    for mode in ["EXTR_OVERWRITE", "EXTR_SKIP", "EXTR_PREFIX_SAME"] {
+        assert_eq!(
+            run(&format!(
+                "<?php echo extract([5=>1], {mode},'p'),'|',isset($p_5)?'set':'unset';"
+            )),
+            "0|unset",
+            "an int key must not bind under {mode}"
+        );
+    }
+}
+
+/// `EXTR_REFS` is a BIT, not a mode: it may be OR'd onto any of them, and it
+/// binds by reference so a later write to the variable reaches the array.
+#[test]
+fn extract_refs_binds_through_to_the_array() {
+    assert_eq!(
+        run("<?php $a=['x'=>1,'y'=>2]; $n=extract($a, EXTR_REFS); $x=9; $y=8; echo $n,'|',$a['x'],'|',$a['y'];"),
+        "2|9|8"
+    );
+    // OR'd onto SKIP, which still governs whether the name is bound at all.
+    assert_eq!(
+        run("<?php $a=['x'=>1]; echo extract($a, EXTR_SKIP|EXTR_REFS),'|',$x;"),
+        "1|1"
+    );
+}
+
+/// The three ways `extract()` refuses its arguments outright.
+#[test]
+fn extract_rejects_a_bad_flag_a_missing_prefix_and_a_bad_prefix() {
+    let err = |src: &str| {
+        run(&format!(
+            "<?php try {{ {src} }} catch (\\Throwable $e) {{ echo get_class($e),'|',$e->getMessage(); }}"
+        ))
+    };
+    assert_eq!(
+        err("extract(['x'=>1], 999);"),
+        "ValueError|extract(): Argument #2 ($flags) must be a valid extract type"
+    );
+    // A prefix is required by every prefixing mode, whether or not the array
+    // holds a name that would actually need one.
+    for mode in [
+        "EXTR_PREFIX_SAME",
+        "EXTR_PREFIX_ALL",
+        "EXTR_PREFIX_INVALID",
+        "EXTR_PREFIX_IF_EXISTS",
+    ] {
+        assert_eq!(
+            err(&format!("extract(['x'=>1], {mode});")),
+            "ValueError|extract(): Argument #3 ($prefix) is required when using this extract type",
+            "{mode} must require a prefix"
+        );
+    }
+    assert_eq!(
+        err("extract(['x'=>1], EXTR_PREFIX_ALL, '1');"),
+        "ValueError|extract(): Argument #3 ($prefix) must be a valid identifier"
+    );
+    // An EMPTY prefix is legal, and yields the `_key` names.
+    assert_eq!(
+        run("<?php echo extract(['x'=>1], EXTR_PREFIX_ALL, ''),'|',$_x;"),
+        "1|1"
+    );
+}
+
+/// `$this` is the one key `extract()` stops on rather than skipping — but only
+/// under the mode that would assign the bare name. The others pass over it or
+/// prefix it, which is measured behaviour rather than a rule that follows from
+/// the others.
+#[test]
+fn extract_refuses_to_reassign_this_only_where_it_would_bind_it() {
+    assert_eq!(
+        run("<?php try { extract(['this'=>5]); } catch (\\Error $e) { echo $e->getMessage(); }"),
+        "Cannot re-assign $this"
+    );
+    // Prefixed, it is an ordinary name and binds.
+    assert_eq!(
+        run("<?php echo extract(['this'=>5], EXTR_PREFIX_ALL,'p'),'|',$p_this;"),
+        "1|5"
+    );
+    // The modes that would not have bound it pass over it without complaint.
+    for mode in ["EXTR_SKIP", "EXTR_IF_EXISTS"] {
+        assert_eq!(
+            run(&format!("<?php echo extract(['this'=>5], {mode});")),
+            "0",
+            "{mode} must pass over `this` silently"
+        );
+    }
+}
+
 // ── internal pointer (end/reset/current/key/next/prev) ───────────────────────
 
 #[test]

@@ -86,6 +86,9 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::SUPPRESS_POP, b_suppress_pop);
     vm.register_builtin(ops::MCALL, b_mcall);
     vm.register_builtin(ops::MCALL_RECV_CHECK, b_mcall_recv_check);
+    vm.register_builtin(ops::CALL_NAME_CHECK, b_call_name_check);
+    vm.register_builtin(ops::CALL_CLASS_CHECK, b_call_class_check);
+    vm.register_builtin(ops::CALLVALUE_CHECK, b_callvalue_check);
     vm.register_builtin(ops::SCALL, b_scall);
     vm.register_builtin(ops::SCONST, b_sconst);
     vm.register_builtin(ops::THROW, b_throw);
@@ -2564,10 +2567,64 @@ fn b_mcall_recv_check(vm: &mut VM, _: u8) -> Value {
     )
 }
 
+/// `[name] -> name` — reject a call to a function that does not exist BEFORE its
+/// arguments run, leaving the name for the call itself.
+///
+/// The authority is `function_resolves`, the same predicate `function_exists`
+/// answers from, so this can only ever refuse a call that was going to be
+/// refused anyway — it moves the diagnostic earlier, it does not add one.
+fn b_call_name_check(vm: &mut VM, _: u8) -> Value {
+    let name = pop_name(vm);
+    if crate::stdlib::callable::dispatches(&name) {
+        return Value::Str(name);
+    }
+    mark_frame_line(vm);
+    // No function to enter, so the reference's trace starts at the caller.
+    fail_or_throw(
+        vm,
+        throws_bare("Error", format!("Call to undefined function {name}()")),
+    )
+}
+
+/// `[class] -> class` — reject `new X(...)` / `X::m(...)` for an undeclared `X`
+/// before the arguments run, leaving the class name for the call itself.
+fn b_call_class_check(vm: &mut VM, _: u8) -> Value {
+    let class = pop_name(vm);
+    // `Closure` is synthesized rather than declared, exactly as
+    // `static_method_plan` lets it through ahead of its own existence check.
+    if class.eq_ignore_ascii_case("Closure") || with_host(|h| h.class_exists(&class)) {
+        return Value::Str(class);
+    }
+    mark_frame_line(vm);
+    throw_php(
+        vm,
+        "Error",
+        &format!("Class \"{}\" not found", host::display_class(&class)),
+    )
+}
+
+/// `[callee] -> callee` — reject an uncallable value before its arguments run,
+/// leaving the callee for the call itself.
+fn b_callvalue_check(vm: &mut VM, _: u8) -> Value {
+    let callee = vm.pop();
+    match host::callvalue_refusal(&callee) {
+        None => callee,
+        Some(e) => {
+            mark_frame_line(vm);
+            fail_or_throw(vm, e)
+        }
+    }
+}
+
 fn b_mcall(vm: &mut VM, argc: u8) -> Value {
-    let mut args = pop_args(vm, argc as usize);
-    let recv = args.remove(0);
-    let method = with_host(|h| h.to_str(&args.remove(0)));
+    // Popped in stack order — `[recv, method, args…]` — rather than taken as one
+    // block and shifted twice. `pop_name` also hands back the method's existing
+    // `Arc<String>` from the constant pool, where `to_str` allocated a fresh
+    // `String` for the name of EVERY method call. `b_mcall_named` below already
+    // does it this way; this is the same shape.
+    let args = pop_args(vm, argc as usize - 2);
+    let method = pop_name(vm);
+    let recv = vm.pop();
     mark_frame_line(vm);
     // `Closure` and `Generator` are built-in objects with no PHP class; dispatch
     // their methods before the ordinary class-method resolution.
@@ -2612,9 +2669,12 @@ fn b_mcall(vm: &mut VM, argc: u8) -> Value {
 }
 
 fn b_scall(vm: &mut VM, argc: u8) -> Value {
-    let mut args = pop_args(vm, argc as usize);
-    let class = with_host(|h| h.to_str(&args.remove(0)));
-    let method = with_host(|h| h.to_str(&args.remove(0)));
+    // As in `b_mcall`: pop in stack order and keep the constant pool's own
+    // `Arc<String>` for both names, instead of shifting the argument vector
+    // twice and allocating a `String` for each of them on every static call.
+    let args = pop_args(vm, argc as usize - 2);
+    let method = pop_name(vm);
+    let class = pop_name(vm);
     // Forward `$this` when the call is made from an object context (so
     // `parent::m()` / `self::m()` inside a method keep the current instance).
     let this = with_host(|h| {

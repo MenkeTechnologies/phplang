@@ -381,6 +381,19 @@ pub mod ops {
     /// bad offset TYPE. Everything else about the read is identical; the two
     /// contexts differ only in the sentence the reference ends the message with.
     pub const INDEX_GET_EMPTY: u16 = 129;
+    /// `[name]` -> `name`. Raises `Call to undefined function f()` when no
+    /// function of that name resolves. Emitted before a named call's arguments
+    /// for the same reason as [`MCALL_RECV_CHECK`]: the reference decides the
+    /// callee before it evaluates a single argument, so `undefined(f())` must
+    /// not run `f`.
+    pub const CALL_NAME_CHECK: u16 = 130;
+    /// `[class]` -> `class`. Raises `Class "X" not found` for an undeclared
+    /// class. Emitted before the arguments of `new X(...)` and `X::m(...)`,
+    /// which both reject an unknown class before evaluating them.
+    pub const CALL_CLASS_CHECK: u16 = 131;
+    /// `[callee]` -> `callee`. Raises whatever `$callee(...)` was going to raise
+    /// for a value that is not callable at all, before the arguments run.
+    pub const CALLVALUE_CHECK: u16 = 132;
 }
 
 /// The capture name a `static` closure carries from its creation site.
@@ -2196,10 +2209,10 @@ impl PhpHost {
         for i in (1..self.scopes.len()).rev() {
             let scope = &self.scopes[i];
             let args = self
-                .array_pairs(&self.get_var_in(i, "@args"))
+                .frame_args(i)
                 .unwrap_or_default()
                 .iter()
-                .map(|(_, v)| self.trace_arg(v))
+                .map(|v| self.trace_arg(v))
                 .collect::<Vec<_>>()
                 .join(", ");
             let site = if self.scopes[i - 1].internal {
@@ -2234,6 +2247,44 @@ impl PhpHost {
 
     pub fn pop_internal_frame(&mut self) {
         self.scopes.pop();
+    }
+
+    /// Frame `idx`'s call arguments as the reference reports them, or `None` if
+    /// that frame is not a call frame at all (the global scope has no `@args`).
+    ///
+    /// A position covered by a declared parameter is reported as that
+    /// parameter's CURRENT value, which is why `invoke` stashes the parameter's
+    /// NAME there rather than the value passed. Both readers need it and both
+    /// must agree: `func_get_args()` answers `[99]` for `function f($a) { $a =
+    /// 99; … }` called as `f(1)`, and the stack trace renders that frame as
+    /// `f(99)` for the same reason. A frame pushed for a LIBRARY function has
+    /// `@args` and no `@argnames`, so every position there falls through to the
+    /// value.
+    pub(crate) fn frame_args(&self, idx: usize) -> Option<Vec<Value>> {
+        let args = self.get_var_in(idx, "@args");
+        if !self.is_array(&args) {
+            return None;
+        }
+        let names = self.get_var_in(idx, "@argnames");
+        Some(
+            self.array_pairs(&args)
+                .unwrap_or_default()
+                .iter()
+                .enumerate()
+                .map(
+                    |(pos, (_, v))| match self.index_get(&names, &Value::int(pos as i64)) {
+                        Value::Undef => v.clone(),
+                        n => self.get_var_in(idx, &self.to_str(&n)),
+                    },
+                )
+                .collect(),
+        )
+    }
+
+    /// [`PhpHost::frame_args`] for the frame that is executing — what the
+    /// `func_get_args` family reports on.
+    pub(crate) fn current_frame_args(&self) -> Option<Vec<Value>> {
+        self.frame_args(self.scopes.len().checked_sub(1)?)
     }
 
     /// Read a variable out of a specific frame — the backtrace needs each frame's
@@ -5441,6 +5492,15 @@ fn predefined_constants() -> FxHashMap<String, Value> {
     si("STR_PAD_BOTH", 2);
     si("ARRAY_FILTER_USE_KEY", ARRAY_FILTER_USE_KEY);
     si("ARRAY_FILTER_USE_BOTH", ARRAY_FILTER_USE_BOTH);
+    // extract() — the low values pick one mode, EXTR_REFS is an OR-able bit.
+    si("EXTR_OVERWRITE", 0);
+    si("EXTR_SKIP", 1);
+    si("EXTR_PREFIX_SAME", 2);
+    si("EXTR_PREFIX_ALL", 3);
+    si("EXTR_PREFIX_INVALID", 4);
+    si("EXTR_PREFIX_IF_EXISTS", 5);
+    si("EXTR_IF_EXISTS", 6);
+    si("EXTR_REFS", 256);
     // preg
     si("PREG_PATTERN_ORDER", 1);
     si("PREG_SET_ORDER", 2);
@@ -6850,17 +6910,6 @@ fn invoke_with_locals(
         };
         h.scopes.push(scope);
         h.seed_slots(locals);
-        // Stash the full call argument list (hidden `@args`) for func_get_args /
-        // func_num_args / func_get_arg: positional args then named values, in call
-        // order.
-        let argsarr = h.new_array();
-        for a in &args {
-            h.arr_push_auto(&argsarr, a.clone());
-        }
-        for (_, v) in &named {
-            h.arr_push_auto(&argsarr, v.clone());
-        }
-        h.set_var("@args", argsarr);
         // Captured bindings first, then parameters (a parameter of the same name
         // as a capture shadows it, as PHP does).
         for (k, v) in pre {
@@ -6954,6 +7003,41 @@ fn invoke_with_locals(
                 bound[i] = true;
             }
         }
+        // The call's argument list as `func_get_args()` reports it, in the hidden
+        // `@args`/`@argnames` pair. Since PHP 7 the reference reports a declared
+        // parameter's CURRENT value, not the value the caller passed — `function
+        // f($a) { $a = 99; return func_get_args(); }` called as `f(1)` answers
+        // `[99]`. So a position covered by a declared parameter stashes that
+        // parameter's NAME and the read goes through the variable; only an
+        // argument PAST the declared parameters is stored by value, which is why
+        // mutating a variadic's array does not change what is reported.
+        //
+        // The count is the number of arguments the call supplied. A named
+        // argument counts at its PARAMETER's position, so `f(9, c: 7)` on
+        // `f($a=1,$b=2,$c=3)` reports three — the skipped `$b` reported at its
+        // default, exactly as reading the parameter gives.
+        let n_decl = params.iter().filter(|p| !p.variadic).count();
+        let mut argc = args.len();
+        for (n, _) in &named {
+            if let Some(i) = params.iter().position(|p| !p.variadic && p.name == *n) {
+                argc = argc.max(i + 1);
+            }
+        }
+        let argsarr = h.new_array();
+        let namesarr = h.new_array();
+        for i in 0..argc {
+            // A position covered by a declared parameter records the NAME and no
+            // value; one past them records the value and no name.
+            let declared = params.get(i).filter(|_| i < n_decl);
+            let (name, value) = match declared {
+                Some(p) => (Value::str(p.name.clone()), Value::Undef),
+                None => (Value::Undef, args.get(i).cloned().unwrap_or(Value::Undef)),
+            };
+            h.arr_push_auto(&namesarr, name);
+            h.arr_push_auto(&argsarr, value);
+        }
+        h.set_var("@args", argsarr);
+        h.set_var("@argnames", namesarr);
         bound
     });
     // Evaluate defaults for the still-unbound parameters, left to right, so a
@@ -7122,6 +7206,30 @@ pub(crate) fn callable_method(callee: &Value) -> Option<(String, String, Option<
         }
     }
     None
+}
+
+/// Why `callee` cannot be called AT ALL, or `None` if the call gets to start.
+///
+/// This is [`call_value`]'s own decision tree, stopping where that one begins to
+/// dispatch: a closure and anything [`callable_method`] resolves are let through
+/// untouched, because whether the method they name exists is a question for the
+/// method table, not for this. What is left is exactly `call_value`'s two
+/// terminal arms — an unresolvable name string and [`not_callable`] — so this can
+/// only ever refuse a call that was going to be refused a moment later.
+///
+/// It exists so the refusal can happen BEFORE the arguments are evaluated, which
+/// is where the reference puts it: `$n = [1]; $n(f())` prints nothing before the
+/// `Error`, because PHP never gets as far as `f()`.
+pub(crate) fn callvalue_refusal(callee: &Value) -> Option<String> {
+    if with_host(|h| h.closure_of(callee)).is_some() || callable_method(callee).is_some() {
+        return None;
+    }
+    match callee {
+        Value::Str(s) => (!crate::stdlib::callable::function_resolves(s)).then(|| {
+            crate::builtins::throws_bare("Error", format!("Call to undefined function {s}()"))
+        }),
+        other => Some(not_callable(other)),
+    }
 }
 
 /// Invoke a callable *value*: a closure handle runs its captured-plus-bound body

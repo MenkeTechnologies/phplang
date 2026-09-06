@@ -50,7 +50,10 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         },
         "array_walk" => return Some(php_array_walk(args)),
         "compact" => host::with_host(|h| php_compact(h, args)),
-        "extract" => host::with_host(|h| php_extract(h, args)),
+        "extract" => match host::with_host(|h| php_extract(h, args)) {
+            Ok(v) => v,
+            e => return Some(e),
+        },
         "end" => host::with_host(|h| ptr_end(h, args)),
         "reset" => host::with_host(|h| ptr_reset(h, args)),
         "current" | "pos" => host::with_host(|h| ptr_current(h, args)),
@@ -815,18 +818,115 @@ fn compact_add(h: &mut host::PhpHost, out: &Value, name: &Value, pos: usize) {
 /// `extract($array)` — import each string-keyed entry as a variable in the
 /// current scope; returns the number of variables set. Integer keys are skipped
 /// (they are not valid variable names), matching PHP's default behavior.
-fn php_extract(h: &mut host::PhpHost, args: &[Value]) -> Value {
+/// `EXTR_*`, the `$flags` argument of [`php_extract`]. The low bits pick ONE
+/// behaviour; `EXTR_REFS` is a separate bit that may be OR'd onto any of them.
+mod extr {
+    pub const OVERWRITE: i64 = 0;
+    pub const SKIP: i64 = 1;
+    pub const PREFIX_SAME: i64 = 2;
+    pub const PREFIX_ALL: i64 = 3;
+    pub const PREFIX_INVALID: i64 = 4;
+    pub const PREFIX_IF_EXISTS: i64 = 5;
+    pub const IF_EXISTS: i64 = 6;
+    pub const REFS: i64 = 256;
+}
+
+/// `extract($array, $flags = EXTR_OVERWRITE, $prefix = "")` — bind each element
+/// of `$array` to a variable of its key's name, answering how many were bound.
+///
+/// `$flags` chooses what happens when the name is already taken or is not a
+/// legal variable name; four of the seven modes rewrite the name to
+/// `"{$prefix}_{$key}"`, and `EXTR_REFS` (a bit, not a mode) binds by REFERENCE
+/// so a later write to the variable is visible through the array.
+fn php_extract(h: &mut host::PhpHost, args: &[Value]) -> Result<Value, String> {
     let arr = arg(args, 0);
+    let raw = if args.len() > 1 {
+        h.to_number(&args[1]).to_int()
+    } else {
+        extr::OVERWRITE
+    };
+    let by_ref = raw & extr::REFS != 0;
+    let mode = raw & !extr::REFS;
+    if !(extr::OVERWRITE..=extr::IF_EXISTS).contains(&mode) {
+        return Err(throws(
+            "ValueError",
+            "extract(): Argument #2 ($flags) must be a valid extract type",
+        ));
+    }
+    let prefixed = matches!(
+        mode,
+        extr::PREFIX_SAME | extr::PREFIX_ALL | extr::PREFIX_INVALID | extr::PREFIX_IF_EXISTS
+    );
+    let prefix = if args.len() > 2 {
+        h.to_str(&args[2])
+    } else {
+        if prefixed {
+            return Err(throws(
+                "ValueError",
+                "extract(): Argument #3 ($prefix) is required when using this extract type",
+            ));
+        }
+        String::new()
+    };
+    // An EMPTY prefix is accepted and yields the `_key` names; anything else has
+    // to be a legal identifier, since it becomes the head of one.
+    if prefixed && !prefix.is_empty() && !is_var_name(&prefix) {
+        return Err(throws(
+            "ValueError",
+            "extract(): Argument #3 ($prefix) must be a valid identifier",
+        ));
+    }
+
     let mut count = 0i64;
     for (k, v) in h.array_pairs(&arr).unwrap_or_default() {
-        let name = match &k {
-            Value::Str(s) if is_var_name(s) => s.to_string(),
+        // An integer key is a legal ARRAY key but never a legal variable name,
+        // so it is only ever reached through one of the prefixing modes.
+        let key = match &k {
+            Value::Str(s) => s.to_string(),
+            other => h.to_str(other),
+        };
+        // `this` is spelled like a legal name but can never be assigned, so it is
+        // not `plain` either. What the reference then does with it is a MEASURED
+        // table rather than one rule — verified flag by flag:
+        //   OVERWRITE  refuses outright, PREFIX_SAME/ALL/INVALID all prefix it,
+        //   and SKIP, PREFIX_IF_EXISTS and IF_EXISTS pass over it silently.
+        // PREFIX_INVALID prefixing it is the tell that the engine counts it among
+        // the unusable names, not among the taken ones.
+        let reserved = key == "this";
+        let plain = is_var_name(&key) && !reserved;
+        let exists = plain && h.var_defined(&key);
+        let with_prefix = || format!("{prefix}_{key}");
+        let target = match mode {
+            // The one name `extract()` stops on rather than skipping.
+            extr::OVERWRITE if reserved => return Err(throws("Error", "Cannot re-assign $this")),
+            extr::OVERWRITE if plain => key.clone(),
+            extr::SKIP if plain && !exists => key.clone(),
+            // PREFIX_SAME prefixes a name that is TAKEN. A key that is not a
+            // spellable name at all is skipped here, not prefixed — only the two
+            // modes below rescue one.
+            extr::PREFIX_SAME if plain && !exists => key.clone(),
+            extr::PREFIX_SAME if plain || reserved => with_prefix(),
+            extr::PREFIX_ALL => with_prefix(),
+            extr::PREFIX_INVALID if plain => key.clone(),
+            extr::PREFIX_INVALID => with_prefix(),
+            extr::PREFIX_IF_EXISTS if exists => with_prefix(),
+            extr::IF_EXISTS if exists => key.clone(),
             _ => continue,
         };
-        h.set_var(&name, v);
+        // A prefixing mode can still produce an illegal name — a prefix of `""`
+        // in front of a key that starts with a digit, say.
+        if !is_var_name(&target) {
+            continue;
+        }
+        if by_ref {
+            let slot = h.arr_elem_ref_slot(&arr, &k);
+            h.bind_ref_slot(&target, slot);
+        } else {
+            h.set_var(&target, v);
+        }
         count += 1;
     }
-    Value::int(count)
+    Ok(Value::int(count))
 }
 
 /// Whether `s` is a valid PHP variable name (`[A-Za-z_][A-Za-z0-9_]*`).

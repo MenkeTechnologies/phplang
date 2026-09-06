@@ -9,356 +9,52 @@ use crate::host::{call_value, with_host};
 use crate::stdlib::common::*;
 use fusevm::Value;
 
-/// A curated set of very common builtin function names, used by
-/// `function_exists` as a best-effort fallback. There is no global builtin
-/// registry, so builtin coverage here is intentionally PARTIAL: only these
-/// well-known names report `true` for builtins. User-defined functions are
-/// detected exactly via `host::function_defined`. Names are matched
-/// case-insensitively (compared already-lowercased).
-const KNOWN_BUILTINS: &[&str] = &[
-    // strings
-    "strlen",
-    "count",
-    "sizeof",
-    "strtoupper",
-    "strtolower",
-    "ucfirst",
-    "ucwords",
-    "lcfirst",
-    "trim",
-    "ltrim",
-    "rtrim",
-    "chop",
-    "substr",
-    "strpos",
-    "stripos",
-    "strrpos",
-    "str_replace",
-    "str_repeat",
-    "str_pad",
-    "str_split",
-    "strrev",
-    "str_contains",
-    "str_starts_with",
-    "str_ends_with",
-    "sprintf",
-    "printf",
-    "vsprintf",
-    "vprintf",
-    "implode",
-    "join",
-    "explode",
-    "number_format",
-    "nl2br",
-    "wordwrap",
-    "chr",
-    "ord",
-    "bin2hex",
-    "hex2bin",
-    "htmlspecialchars",
-    "htmlentities",
-    "addslashes",
-    "stripslashes",
-    "similar_text",
-    "levenshtein",
-    "strcmp",
-    "strcasecmp",
-    "strncmp",
-    "strstr",
-    "stristr",
-    "substr_count",
-    // arrays
-    "array_map",
-    "array_filter",
-    "array_reduce",
-    "array_keys",
-    "array_values",
-    "array_merge",
-    "array_push",
-    "array_pop",
-    "array_shift",
-    "array_unshift",
-    "array_slice",
-    "array_splice",
-    "array_search",
-    "in_array",
-    "array_key_exists",
-    "array_flip",
-    "array_reverse",
-    "array_unique",
-    "array_combine",
-    "array_fill",
-    "array_column",
-    "array_diff",
-    "array_intersect",
-    "array_sum",
-    "array_product",
-    "sort",
-    "rsort",
-    "asort",
-    "arsort",
-    "ksort",
-    "krsort",
-    "usort",
-    "uasort",
-    "uksort",
-    "range",
-    "compact",
-    "extract",
-    "array_walk",
-    "array_pad",
-    "array_chunk",
-    // math
-    "abs",
-    "ceil",
-    "floor",
-    "round",
-    "sqrt",
-    "pow",
-    "intdiv",
-    "fmod",
-    "max",
-    "min",
-    "rand",
-    "mt_rand",
-    "random_int",
-    "pi",
-    "exp",
-    "log",
-    "log10",
-    "sin",
-    "cos",
-    "tan",
-    "asin",
-    "acos",
-    "atan",
-    "atan2",
-    "deg2rad",
-    "rad2deg",
-    "hypot",
-    "dechex",
-    "hexdec",
-    "decbin",
-    "bindec",
-    "decoct",
-    "octdec",
-    "base_convert",
-    "intval",
-    "floatval",
-    "doubleval",
-    "boolval",
-    // type / util
-    "gettype",
-    "settype",
-    "is_int",
-    "is_integer",
-    "is_long",
-    "is_float",
-    "is_double",
-    "is_string",
-    "is_bool",
-    "is_array",
-    "is_object",
-    "is_null",
-    // NOTE: `isset`/`empty`/`unset`/`list`/`echo`/`print`/`eval` are PHP language
-    // constructs, not functions — real PHP `function_exists` returns false for
-    // them, so they are deliberately absent here. `exit`/`die` are the exception
-    // that proves the rule: PHP 8.4 made them real functions, and 8.5 answers
-    // `true` for both (verified against `php -r 'var_dump(function_exists("exit"),
-    // function_exists("die"));'` on 8.5.9).
-    "exit",
-    "die",
-    "is_numeric",
-    "is_callable",
-    "is_scalar",
-    "var_dump",
-    "var_export",
-    "print_r",
-    "serialize",
-    "unserialize",
-    // more strings
-    "strtr",
-    "substr_replace",
-    "str_ireplace",
-    "str_word_count",
-    "str_getcsv",
-    "str_rot13",
-    "addcslashes",
-    "stripcslashes",
-    "count_chars",
-    "strtok",
-    "strpbrk",
-    "strspn",
-    "strcspn",
-    "strchr",
-    "strrchr",
-    "strripos",
-    "strncasecmp",
-    "strnatcmp",
-    "strnatcasecmp",
-    "quotemeta",
-    "strip_tags",
-    "soundex",
-    "sscanf",
-    "chunk_split",
-    "convert_uuencode",
-    "convert_uudecode",
-    "quoted_printable_encode",
-    "quoted_printable_decode",
-    // more arrays
-    "array_key_first",
-    "array_key_last",
-    "array_is_list",
-    "array_fill_keys",
-    "array_replace",
-    "array_replace_recursive",
-    "array_rand",
-    "array_count_values",
-    "array_merge_recursive",
-    "array_diff_key",
-    "array_diff_assoc",
-    "array_intersect_key",
-    "array_intersect_assoc",
-    "array_walk_recursive",
-    "array_find",
-    "array_find_key",
-    "array_any",
-    "array_all",
-    "natsort",
-    "natcasesort",
-    "shuffle",
-    "reset",
-    "end",
-    "next",
-    "prev",
-    "current",
-    "key",
-    "pos",
-    // more math
-    "sinh",
-    "cosh",
-    "tanh",
-    "asinh",
-    "acosh",
-    "atanh",
-    "expm1",
-    "log1p",
-    "fdiv",
-    "is_nan",
-    "is_finite",
-    "is_infinite",
-    "getrandmax",
-    "mt_getrandmax",
-    // ctype
-    "ctype_alnum",
-    "ctype_alpha",
-    "ctype_digit",
-    "ctype_lower",
-    "ctype_upper",
-    "ctype_space",
-    "ctype_punct",
-    "ctype_xdigit",
-    "ctype_cntrl",
-    "ctype_graph",
-    "ctype_print",
-    // mbstring
-    "mb_strlen",
-    "mb_substr",
-    "mb_strtoupper",
-    "mb_strtolower",
-    "mb_strpos",
-    "mb_stripos",
-    "mb_strrpos",
-    "mb_str_split",
-    "mb_convert_case",
-    "mb_ord",
-    "mb_chr",
-    "mb_str_pad",
-    "mb_substr_count",
-    "mb_strwidth",
-    // hash / encoding
-    "md5",
-    "sha1",
-    "crc32",
-    "hash",
-    "hash_hmac",
-    "hash_algos",
-    "base64_encode",
-    "base64_decode",
-    "urlencode",
-    "urldecode",
-    "rawurlencode",
-    "rawurldecode",
-    "http_build_query",
-    "parse_url",
-    "parse_str",
-    "utf8_encode",
-    "utf8_decode",
-    // reflection / class introspection
-    "class_exists",
-    "interface_exists",
-    "trait_exists",
-    "enum_exists",
-    "method_exists",
-    "property_exists",
-    "get_class",
-    "get_parent_class",
-    "get_object_vars",
-    "get_class_methods",
-    "get_debug_type",
-    "is_subclass_of",
-    "is_a",
-    "is_iterable",
-    "is_countable",
-    // fileio
-    "file_exists",
-    "file_get_contents",
-    "file_put_contents",
-    "dirname",
-    "basename",
-    "pathinfo",
-    "realpath",
-    "getcwd",
-    "scandir",
-    "is_dir",
-    "is_file",
-    "is_readable",
-    "is_writable",
-    "file",
-    "readfile",
-    "unlink",
-    "mkdir",
-    "rmdir",
-    // filter / constants
-    "filter_var",
-    "filter_var_array",
-    "constant",
-    "define",
-    "defined",
-    // preg
-    "preg_quote",
-    "preg_grep",
-    "preg_replace_callback",
-    "preg_last_error",
-    // callable / json / misc
-    "call_user_func",
-    "call_user_func_array",
-    "function_exists",
-    "json_encode",
-    "json_decode",
-    "json_last_error",
-    "preg_match",
-    "preg_replace",
-    "preg_split",
-    "preg_match_all",
-    "strtotime",
-    "date",
-    "gmdate",
-    "mktime",
-    "checkdate",
-    "time",
-    "microtime",
-];
+/// Every function name this build implements, derived from [`crate::corpus`] —
+/// the same table `gen-docs` renders and the LSP completes from, and the one
+/// place a new stdlib function is already required to be registered.
+///
+/// It replaces a hand-maintained list, which had drifted 195 names behind the
+/// dispatcher: `bcadd`, `array_multisort`, `class_implements`, `debug_backtrace`
+/// and 191 others all ran correctly while `function_exists` denied them. A
+/// hand-written second registry cannot help but drift, so there is no longer
+/// one — adding a function to the corpus (already mandatory) is what makes it
+/// visible here.
+///
+/// Chapters that do not describe callable functions are excluded. Names the
+/// corpus documents as absent from reference PHP are KEPT here — this set is
+/// what this build dispatches, and `(object)`/`(array)` casts lower to
+/// `__cast_object`/`__cast_array` calls that must resolve. It is
+/// [`function_resolves`] that subtracts them, because that one answers the
+/// different question of what a PHP program may see.
+fn known_builtins() -> &'static std::collections::HashSet<&'static str> {
+    use std::sync::OnceLock;
+    static SET: OnceLock<std::collections::HashSet<&'static str>> = OnceLock::new();
+    SET.get_or_init(|| {
+        // Keywords, operators, casts, constants, classes and the magic methods
+        // a program declares rather than calls: none is a function name.
+        const NOT_FUNCTIONS: &[&str] = &[
+            "Predefined constant",
+            "Keyword",
+            "Operator",
+            "Prelude class",
+            "Language construct",
+            "Magic method",
+            "Cast",
+            "Built-in object methods",
+        ];
+        let mut set: std::collections::HashSet<&'static str> = crate::corpus::CORPUS
+            .iter()
+            .filter(|(_, chapter, ..)| !NOT_FUNCTIONS.contains(chapter))
+            .map(|(name, ..)| *name)
+            .collect();
+        // `exit`/`die` are spelled as language constructs and live in the
+        // corpus under that chapter, but PHP 8.4 turned them into real
+        // functions and the reference reports them as such.
+        set.insert("exit");
+        set.insert("die");
+        set
+    })
+}
 
 /// Resolve and invoke any PHP callable form with `args`.
 ///
@@ -373,11 +69,30 @@ fn invoke_callable(callee: Value, args: Vec<Value>) -> Result<Value, String> {
 
 /// Whether a bare function name resolves — a user-defined function or a builtin
 /// this engine implements. Same authority as `function_exists`, so the two can
-/// never disagree about a name; builtin coverage is PARTIAL (see
-/// [`KNOWN_BUILTINS`]).
-fn function_resolves(name: &str) -> bool {
+/// never disagree about a name; see [`known_builtins`].
+pub(crate) fn function_resolves(name: &str) -> bool {
+    let lname = name.to_ascii_lowercase();
+    // Implemented and dispatchable, but the corpus entry for each says in so
+    // many words that reference PHP has no such function. A PHP program must not
+    // see them, so `function_exists`/`is_callable` deny them exactly as the
+    // reference does — while `dispatches` still lets the engine call them.
+    const NOT_IN_PHP: &[&str] = &["__cast_array", "__cast_object", "gmp_pow2"];
+    !NOT_IN_PHP.contains(&lname.as_str()) && dispatches(&lname)
+}
+
+/// Whether a name reaches an implementation AT ALL — a user function or any
+/// builtin in [`known_builtins`], the compiler's internal cast targets included.
+///
+/// This is what a call site asks before it evaluates arguments; [`function_resolves`]
+/// is what a PHP program asks, and the two differ only by the handful of names
+/// that exist here but not in the reference.
+pub(crate) fn dispatches(name: &str) -> bool {
     with_host(|h| h.function_defined(name))
-        || KNOWN_BUILTINS.contains(&name.to_ascii_lowercase().as_str())
+        || known_builtins().contains(name.to_ascii_lowercase().as_str())
+        // A `rust { … }` block's exports are registered at RUN time and are
+        // callable by bareword, so they are in none of the tables above —
+        // `call_function_dispatched` consults this same registry.
+        || fusevm::ffi::is_registered(name)
 }
 
 /// Whether `class::method` is reachable from the current scope, either directly
@@ -470,15 +185,11 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         // actually invoke — see `callable_resolves`.
         "is_callable" => Some(Ok(Value::bool(callable_resolves(&arg(args, 0))))),
 
-        // function_exists(name): true for a defined user function, or for a
-        // recognized builtin. Builtin coverage is PARTIAL — see KNOWN_BUILTINS.
-        "function_exists" => {
-            let fname = str_arg(args, 0);
-            let lname = fname.to_ascii_lowercase();
-            let exists = with_host(|h| h.function_defined(&fname))
-                || KNOWN_BUILTINS.contains(&lname.as_str());
-            Some(Ok(Value::bool(exists)))
-        }
+        // function_exists(name): true for a defined user function, or for any
+        // builtin this build implements that the reference also has. It answers
+        // from `function_resolves` rather than reading the tables itself, so it
+        // cannot drift from `is_callable`, which reads the same predicate.
+        "function_exists" => Some(Ok(Value::bool(function_resolves(&str_arg(args, 0))))),
 
         _ => None,
     }

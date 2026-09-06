@@ -359,3 +359,50 @@ fn closure_from_callable_accepts_every_form() {
         "ABC"
     );
 }
+
+/// `function_exists` used to answer from a hand-maintained list that had drifted
+/// 195 names behind the dispatcher: each of these RUNS, and each was denied. The
+/// set is now derived from the corpus, so a function cannot be implemented and
+/// invisible at the same time.
+#[test]
+fn function_exists_agrees_with_what_actually_dispatches() {
+    for name in [
+        "bcadd",
+        "array_multisort",
+        "class_implements",
+        "debug_backtrace",
+        "array_change_key_case",
+        "array_udiff",
+        "date_create",
+        "clearstatcache",
+    ] {
+        assert_eq!(
+            run(&format!(
+                "<?php echo function_exists('{name}') ? 'y' : 'n';"
+            )),
+            "y",
+            "{name} dispatches, so function_exists must say so"
+        );
+    }
+    // And it still denies a name that is genuinely absent.
+    assert_eq!(
+        run("<?php echo function_exists('no_such_function_at_all') ? 'y' : 'n';"),
+        "n"
+    );
+}
+
+/// `is_callable` reads the same predicate, so the two can never disagree — the
+/// denied names above were not callable by it either.
+#[test]
+fn is_callable_agrees_with_function_exists() {
+    assert_eq!(
+        run("<?php echo is_callable('bcadd') ? 'y' : 'n', is_callable('nope_nope') ? 'y' : 'n';"),
+        "yn"
+    );
+    // A name that dispatches here but does NOT exist in reference PHP stays
+    // invisible to both, even though the engine can call it internally.
+    assert_eq!(
+        run("<?php echo function_exists('__cast_object') ? 'y' : 'n', function_exists('gmp_pow2') ? 'y' : 'n';"),
+        "nn"
+    );
+}

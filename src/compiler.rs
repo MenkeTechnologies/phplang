@@ -482,6 +482,40 @@ impl Compiler {
         b.emit(Op::CallBuiltin(ops::MCALL_RECV_CHECK, 2), self.cur_line);
     }
 
+    /// Reject an undefined callee before the arguments run. Both checks are
+    /// net-neutral on the stack — they read the callee the call already pushed
+    /// and put it back — so each is emitted directly after that push.
+    ///
+    /// Emitted only when there IS an argument: with none there is nothing whose
+    /// evaluation could be observed ahead of the diagnostic, and the check would
+    /// be a second lookup bought for nothing.
+    fn emit_callee_check(&mut self, b: &mut ChunkBuilder, op: u16, argc: usize) {
+        if argc == 0 {
+            return;
+        }
+        b.emit(Op::CallBuiltin(op, 1), self.cur_line);
+    }
+
+    /// [`Compiler::emit_callee_check`] for a call spelled with a literal name.
+    ///
+    /// A `__`-prefixed name is left unchecked. The engine reaches several of its
+    /// own entry points by synthesizing an ordinary call — `(object) $x` lowers
+    /// to `__cast_object($x)`, and a `rust { … }` block is rewritten to
+    /// `__rust_compile("…", n)` in the SOURCE before it is even lexed — so by
+    /// this point neither is distinguishable from something the program wrote.
+    /// None of them is a function a PHP program can see, so no name predicate
+    /// that is right for `function_exists` can also be right here.
+    ///
+    /// Skipping is the safe direction: it forgoes an EARLIER diagnostic and
+    /// leaves the call to fail exactly as it did before, whereas a wrong refusal
+    /// would stop a program that works.
+    fn emit_call_name_check(&mut self, b: &mut ChunkBuilder, name: &str, argc: usize) {
+        if name.starts_with("__") {
+            return;
+        }
+        self.emit_callee_check(b, ops::CALL_NAME_CHECK, argc);
+    }
+
     fn emit_byref_writeback(
         &mut self,
         b: &mut ChunkBuilder,
@@ -2196,6 +2230,7 @@ impl Compiler {
                 // then a `(name, value)` pair per argument for the host to rebind.
                 let idx = b.add_constant(Value::str(name.clone()));
                 b.emit(Op::LoadConst(idx), 0);
+                self.emit_call_name_check(b, name, args.len());
                 self.compile_arg_pairs_for(b, name, args)?;
                 b.emit(
                     Op::CallBuiltin(ops::CALL_NAMED, (args.len() * 2 + 1) as u8),
@@ -2285,6 +2320,7 @@ impl Compiler {
                 } else {
                     let idx = b.add_constant(Value::str(name.clone()));
                     b.emit(Op::LoadConst(idx), 0);
+                    self.emit_call_name_check(b, name, args.len());
                     let byref = self.byref_positions(name, args.len());
                     let diag = byref_diag_slots(name, args.len());
                     for (i, a) in args.iter().enumerate() {
@@ -2323,6 +2359,7 @@ impl Compiler {
             }
             Expr::CallValue(callee, args) if needs_arg_pairs(args) => {
                 self.compile_expr(b, callee)?;
+                self.emit_callee_check(b, ops::CALLVALUE_CHECK, args.len());
                 self.compile_arg_pairs(b, args)?;
                 b.emit(
                     Op::CallBuiltin(ops::CALLVALUE_NAMED, (args.len() * 2 + 1) as u8),
@@ -2331,6 +2368,7 @@ impl Compiler {
             }
             Expr::CallValue(callee, args) => {
                 self.compile_expr(b, callee)?;
+                self.emit_callee_check(b, ops::CALLVALUE_CHECK, args.len());
                 for a in args {
                     self.compile_expr(b, a)?;
                 }
@@ -2400,6 +2438,7 @@ impl Compiler {
             }
             Expr::New(class, args) if needs_arg_pairs(args) => {
                 self.emit_class_name(b, class)?;
+                self.emit_callee_check(b, ops::CALL_CLASS_CHECK, args.len());
                 self.compile_arg_pairs(b, args)?;
                 b.emit(
                     Op::CallBuiltin(ops::NEW_NAMED, (args.len() * 2 + 1) as u8),
@@ -2408,6 +2447,7 @@ impl Compiler {
             }
             Expr::New(class, args) => {
                 self.emit_class_name(b, class)?;
+                self.emit_callee_check(b, ops::CALL_CLASS_CHECK, args.len());
                 for a in args {
                     self.compile_expr(b, a)?;
                 }
@@ -2490,6 +2530,7 @@ impl Compiler {
             Expr::StaticCall(class, name, args) if needs_arg_pairs(args) => {
                 self.emit_lsb_forward(b, class);
                 self.emit_class_ref(b, class)?;
+                self.emit_callee_check(b, ops::CALL_CLASS_CHECK, args.len());
                 let nidx = b.add_constant(Value::str(name.clone()));
                 b.emit(Op::LoadConst(nidx), 0);
                 self.compile_arg_pairs(b, args)?;
@@ -2501,6 +2542,7 @@ impl Compiler {
             Expr::StaticCall(class, name, args) => {
                 self.emit_lsb_forward(b, class);
                 self.emit_class_ref(b, class)?;
+                self.emit_callee_check(b, ops::CALL_CLASS_CHECK, args.len());
                 let nidx = b.add_constant(Value::str(name.clone()));
                 b.emit(Op::LoadConst(nidx), 0);
                 for a in args {
@@ -3981,6 +4023,11 @@ impl Compiler {
             // location, and the call that produced the value already ran.
             Expr::MethodCall(_, name, args) | Expr::NullsafeMethodCall(_, name, args) => {
                 let idx = b.add_constant(Value::str(name.clone()));
+                // The receiver is judged before the arguments here too — a `?->`
+                // short-circuits only on NULL, so a `false`/int/array receiver
+                // still reaches the call and must reject it before an argument
+                // has the chance to print anything.
+                self.emit_mcall_recv_check(b, idx, args.len());
                 b.emit(Op::LoadConst(idx), line);
                 if needs_arg_pairs(args) {
                     self.compile_arg_pairs(b, args)?;

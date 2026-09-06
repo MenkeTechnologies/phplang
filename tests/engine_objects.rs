@@ -177,10 +177,19 @@ fn a_receiver_is_rejected_before_the_arguments_run() {
     let src = r#"<?php function f() { echo "F"; return 1; } $n = [1];
         try { $n->m(f()); } catch (\Error $e) { echo $e->getMessage(); }"#;
     assert_eq!(run(src), "Call to a member function m() on array");
-    // A call that is going to succeed is unaffected.
+    // `?->` short-circuits on NULL, so a `false` receiver still reaches the
+    // call and must reject it before the argument runs.
+    let src = r#"<?php function f() { echo "F"; return 1; } $n = false;
+        try { $n?->m(f()); } catch (\Error $e) { echo $e->getMessage(); }"#;
+    assert_eq!(run(src), "Call to a member function m() on false");
+    // A null receiver skips the whole link, argument included.
+    let src = r#"<?php function f() { echo "F"; return 1; } $n = null;
+        var_dump($n?->m(f()));"#;
+    assert_eq!(run(src), "NULL\n");
+    // A call that is going to succeed is unaffected, in either spelling.
     let src = r#"<?php class C { function m($x) { return $x * 2; } }
-        echo (new C())->m(21);"#;
-    assert_eq!(run(src), "42");
+        echo (new C())->m(21), "|", (new C())?->m(10);"#;
+    assert_eq!(run(src), "42|20");
 }
 
 #[test]
@@ -192,4 +201,79 @@ fn a_variable_read_only_through_a_double_colon_survives_a_detached_chunk() {
         $o = new C();
         try { echo $o::class, $o::K, $o::$s, $o::m(); } catch (\Throwable $e) { echo "E"; }"#;
     assert_eq!(run(src), "C579");
+}
+
+/// The reference settles the CALLEE before it evaluates a single argument, so a
+/// call that cannot proceed prints nothing at all first. The method-receiver form
+/// is covered above; these are the other spellings, each of which used to run its
+/// argument and print `F` before raising.
+#[test]
+fn a_callee_is_rejected_before_the_arguments_run() {
+    let case = |src: &str| {
+        run(&format!(
+            "<?php function f() {{ echo \"F\"; return 1; }} {src}"
+        ))
+    };
+    let caught = |setup: &str, call: &str| {
+        case(&format!(
+            "{setup} try {{ {call}; }} catch (\\Error $e) {{ echo $e->getMessage(); }}"
+        ))
+    };
+    assert_eq!(
+        caught("", "undefinedfn(f())"),
+        "Call to undefined function undefinedfn()"
+    );
+    assert_eq!(caught("", "Nope::m(f())"), "Class \"Nope\" not found");
+    assert_eq!(caught("", "new Nope(f())"), "Class \"Nope\" not found");
+    // The named-argument spelling of each lowers separately and must agree.
+    assert_eq!(
+        caught("", "undefinedfn(x: f())"),
+        "Call to undefined function undefinedfn()"
+    );
+    assert_eq!(caught("", "new Nope(x: f())"), "Class \"Nope\" not found");
+    // A value that is not callable at all, in each of the shapes the reference
+    // words differently.
+    assert_eq!(
+        caught("$n = [1];", "$n(f())"),
+        "Array callback must have exactly two elements"
+    );
+    assert_eq!(
+        caught("$n = \"nope\";", "$n(f())"),
+        "Call to undefined function nope()"
+    );
+    assert_eq!(
+        caught("$n = 5;", "$n(f())"),
+        "Value of type int is not callable"
+    );
+    assert_eq!(
+        caught("$n = new stdClass;", "$n(f())"),
+        "Object of type stdClass is not callable"
+    );
+}
+
+/// The check exists only to move a diagnostic earlier, so a call that was going
+/// to succeed must be untouched by it — including every form that now carries
+/// one.
+#[test]
+fn the_callee_check_leaves_a_working_call_alone() {
+    assert_eq!(
+        run("<?php class C { function __construct(public $x = 0) {} \
+             function m($z) { return $z + 1; } static function s($y) { return $y * 2; } } \
+             echo (new C(5))->x, C::s(3), (new C)->m(1);"),
+        "562"
+    );
+    // A library function, a user function, and a dynamic callee.
+    assert_eq!(
+        run(
+            "<?php function u($a,$b) { return $a + $b; } $f = 'strtoupper'; \
+             echo strtoupper('hi'), u(1,2), $f('x'), bcadd('1','2');"
+        ),
+        "HI3X3"
+    );
+    // A cast lowers to an internal call that no name predicate can see; it must
+    // not be refused.
+    assert_eq!(
+        run("<?php $o = (object)['a'=>1]; $a = (array)$o; echo $o->a, $a['a'];"),
+        "11"
+    );
 }

@@ -218,24 +218,81 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         }),
 
         // ── variadic call introspection ───────────────────────────────────
-        // These read the enclosing frame's hidden `@args` list (set by `invoke`).
-        "func_get_args" => with_host(|h| {
-            let a = h.get_var("@args");
-            if h.is_array(&a) {
-                a
-            } else {
-                h.new_array()
-            }
-        }),
-        "func_num_args" => with_host(|h| Value::int(h.array_len(&h.get_var("@args")))),
+        // These read the enclosing frame's hidden `@args`/`@argnames` pair, set
+        // by `invoke`. A position whose `@argnames` entry is a name is answered
+        // by READING that parameter now, because the reference reports a
+        // parameter's current value rather than the value that was passed.
+        //
+        // Absent entirely at the global scope, where all three are a fatal in
+        // the reference — and each has its own wording.
+        "func_get_args" => {
+            let Some(vals) = frame_args() else {
+                return Some(Err(throws(
+                    "Error",
+                    "func_get_args() cannot be called from the global scope",
+                )));
+            };
+            with_host(|h| {
+                let out = h.new_array();
+                for v in vals {
+                    h.arr_push_auto(&out, v);
+                }
+                out
+            })
+        }
+        "func_num_args" => {
+            let Some(vals) = frame_args() else {
+                return Some(Err(throws(
+                    "Error",
+                    "func_num_args() must be called from a function context",
+                )));
+            };
+            Value::int(vals.len() as i64)
+        }
         "func_get_arg" => {
+            let Some(vals) = frame_args() else {
+                return Some(Err(throws(
+                    "Error",
+                    "func_get_arg() cannot be called from the global scope",
+                )));
+            };
+            // Out of range in the two directions is two DIFFERENT ValueErrors in
+            // the reference, and a negative position is rejected on its own terms
+            // rather than folded into the upper-bound message.
             let i = int_arg(args, 0);
-            with_host(|h| h.index_get(&h.get_var("@args"), &Value::int(i)))
+            let Ok(i) = usize::try_from(i) else {
+                return Some(Err(throws(
+                    "ValueError",
+                    "func_get_arg(): Argument #1 ($position) must be greater \
+                     than or equal to 0",
+                )));
+            };
+            let Some(v) = vals.get(i) else {
+                return Some(Err(throws(
+                    "ValueError",
+                    "func_get_arg(): Argument #1 ($position) must be less than \
+                     the number of the arguments passed to the currently \
+                     executed function",
+                )));
+            };
+            v.clone()
         }
 
         _ => return None,
     };
     Some(Ok(v))
+}
+
+/// The enclosing call's arguments as the reference reports them, or `None` at
+/// the global scope. `invoke` records them on EVERY function frame and on no
+/// other, so their presence is what separates "called from a function" from
+/// "called from the top level" — the distinction all three `func_*`
+/// introspection functions are a fatal on the wrong side of.
+///
+/// The reporting rule itself lives in `PhpHost::current_frame_args`, shared with
+/// the stack trace, which renders the same values for the same reason.
+fn frame_args() -> Option<Vec<Value>> {
+    with_host(|h| h.current_frame_args())
 }
 
 /// `php_uname($mode)` — `s` OS name, `n` node/host, `r` release, `v` version,
