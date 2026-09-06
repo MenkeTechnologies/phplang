@@ -70,7 +70,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
                 let t = with_host(|h| h.type_name_for_error(&a));
                 return Some(Err(throws(
                     "TypeError",
-                    &format!(
+                    format!(
                         "method_exists(): Argument #1 ($object_or_class) must be of type object|string, {t} given"
                     ),
                 )));
