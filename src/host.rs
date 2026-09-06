@@ -368,7 +368,7 @@ pub mod ops {
     pub const SELF_CLASS: u16 = 126;
     /// `[] -> string` — the class `parent::` names inside a TRAIT method: the
     /// parent of the composing class, for the same reason as
-    /// [`ops::SELF_CLASS`]. Baking it refused every trait that spelled
+    /// [`SELF_CLASS`]. Baking it refused every trait that spelled
     /// `parent::` with `'parent' used in a class with no parent`, whatever the
     /// using class extended.
     pub const PARENT_CLASS: u16 = 127;
