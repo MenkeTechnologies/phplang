@@ -394,6 +394,18 @@ pub mod ops {
     /// `[callee]` -> `callee`. Raises whatever `$callee(...)` was going to raise
     /// for a value that is not callable at all, before the arguments run.
     pub const CALLVALUE_CHECK: u16 = 132;
+    /// `[class, method]` -> `class`. The whole of `C::m(…)`'s callee decision —
+    /// the class exists, the method is declared, and it is reachable from here —
+    /// run before the arguments. Subsumes [`CALL_CLASS_CHECK`] for the static
+    /// call form, which is why that op is not also emitted there.
+    pub const SCALL_CALLEE_CHECK: u16 = 133;
+    /// `[callable, is_instance_form]` -> `callable`. The callee decision of
+    /// PHP 8.1 first-class callable syntax, `callee(...)`, made where the syntax
+    /// is WRITTEN. The reference refuses an undefined function, an undeclared
+    /// class, an undefined or unreachable method and a non-object receiver at
+    /// that point — the closure is never built — so none of it can wait for the
+    /// call the closure may never receive.
+    pub const FCC_CHECK: u16 = 134;
 }
 
 /// The capture name a `static` closure carries from its creation site.
@@ -3489,10 +3501,7 @@ impl PhpHost {
 
     /// Whether `class` (or an ancestor) defines `method` (case-insensitive).
     pub fn class_has_method(&self, class: &str, method: &str) -> bool {
-        if self
-            .resolve_method(class, &method.to_ascii_lowercase())
-            .is_some()
-        {
+        if self.method_declared(class, &method.to_ascii_lowercase()) {
             return true;
         }
         // An engine type (`Generator`, `Closure`, `Iterator`, …) has no
@@ -3892,6 +3901,31 @@ impl PhpHost {
         arr
     }
 
+    /// Whether `class` or an ancestor declares `method` (already lowercased),
+    /// WITHOUT materializing the definition.
+    ///
+    /// [`PhpHost::resolve_method`] clones the whole [`FuncDef`] — including the
+    /// method body's `Chunk`, which owns its ops, constants, names, line table
+    /// and nested sub-chunks — so asking it a yes/no question copies an entire
+    /// compiled method to throw it away. Every ordinary `$o->m()` asked twice:
+    /// once through [`PhpHost::method_dispatch`] to decide whether the call is
+    /// allowed, then again in [`call_method`] for the definition it actually
+    /// runs. This answers the first question with a `contains_key` per class in
+    /// the chain and no allocation, leaving one clone on the path.
+    fn method_declared(&self, class: &str, method: &str) -> bool {
+        let mut cur = Some(class.to_ascii_lowercase());
+        while let Some(c) = cur {
+            let Some(def) = self.classes.get(&c) else {
+                return false;
+            };
+            if def.methods.contains_key(method) {
+                return true;
+            }
+            cur = def.parent.as_ref().map(|p| p.to_ascii_lowercase());
+        }
+        false
+    }
+
     /// Resolve a method by walking the class up its parent chain; returns the
     /// defining class name plus the method definition.
     fn resolve_method(&self, class: &str, method: &str) -> Option<(String, FuncDef)> {
@@ -4264,8 +4298,11 @@ impl PhpHost {
     /// with only `__call` does NOT answer a static call, and vice versa.
     fn magic_call_name(&self, class: &str, has_this: bool) -> Option<&'static str> {
         let magic = if has_this { "__call" } else { "__callstatic" };
-        self.resolve_method(class, magic)
-            .map(|_| if has_this { "__call" } else { "__callStatic" })
+        self.method_declared(class, magic).then_some(if has_this {
+            "__call"
+        } else {
+            "__callStatic"
+        })
     }
 
     /// Decide what `$obj->m(...)` (or `C::m(...)`) does, consulting the method
@@ -4274,7 +4311,7 @@ impl PhpHost {
     /// forms answer identically.
     pub fn method_dispatch(&self, class: &str, method: &str, has_this: bool) -> MethodDispatch {
         let method_l = method.to_ascii_lowercase();
-        if self.resolve_method(class, &method_l).is_none() {
+        if !self.method_declared(class, &method_l) {
             return match self.magic_call_name(class, has_this) {
                 Some(_) => MethodDispatch::Magic,
                 None => MethodDispatch::Undefined,
@@ -6162,7 +6199,10 @@ pub fn call_generator_method(gen: &Value, method: &str, args: Vec<Value>) -> Res
         "getreturn" => gen_get_return(gen),
         other => {
             let _ = args.pop();
-            Err(format!("call to undefined method Generator::{other}()"))
+            Err(crate::builtins::throws_bare(
+                "Error",
+                format!("Call to undefined method Generator::{other}()"),
+            ))
         }
     }
 }
@@ -7221,8 +7261,15 @@ pub(crate) fn callable_method(callee: &Value) -> Option<(String, String, Option<
 /// is where the reference puts it: `$n = [1]; $n(f())` prints nothing before the
 /// `Error`, because PHP never gets as far as `f()`.
 pub(crate) fn callvalue_refusal(callee: &Value) -> Option<String> {
-    if with_host(|h| h.closure_of(callee)).is_some() || callable_method(callee).is_some() {
+    if with_host(|h| h.closure_of(callee)).is_some() {
         return None;
+    }
+    // A callable naming a method answers to the method table, and it answers the
+    // same way [`call_value`] will a moment later — so the refusal for
+    // `$n = "Nope::m"` or `$n = [$obj, "nope"]` is available here, before the
+    // arguments, which is where the reference raises it.
+    if let Some((class, method, this)) = callable_method(callee) {
+        return callable_method_refusal(&class, &method, &this);
     }
     match callee {
         Value::Str(s) => (!crate::stdlib::callable::function_resolves(s)).then(|| {
@@ -7230,6 +7277,93 @@ pub(crate) fn callvalue_refusal(callee: &Value) -> Option<String> {
         }),
         other => Some(not_callable(other)),
     }
+}
+
+/// Why a method reached through a *value* — `$f = "C::m"`, `$f = [$obj, "m"]`,
+/// the same shapes handed to `call_user_func` and `array_map` — cannot be
+/// called, as a CATCHABLE `Error`, or `None` when the call gets to start.
+///
+/// `$o->m()` and `C::m()` are screened by their own opcodes, which throw a real
+/// `Error` a `catch` block can see. The value form reached [`call_method`]
+/// directly, whose miss is a bare `Err` — the scaffold surfaces that as
+/// `php: Call to undefined method C::m()` on stderr and stops the program, so
+/// `try { $f(1); } catch (Error $e)` never ran its handler. The three arms below
+/// are the reference's, in its order: an undeclared class is reported as the
+/// missing CLASS (`$n = "Nope::m"; $n(1)` says `Class "Nope" not found`, never
+/// naming the method), and only then is the method table consulted.
+fn callable_method_refusal(class: &str, method: &str, this: &Option<Value>) -> Option<String> {
+    // Synthesized callees with no class table to consult, exactly as
+    // `static_method_plan` lets them through: `Closure::bind`/`fromCallable`,
+    // and the enum helpers. An engine object's methods (`Generator::next`) are
+    // reached by `builtin_type_methods`, not by a `ClassDef`, so a class the
+    // table does not know but that DOES answer this method is left alone.
+    if class.eq_ignore_ascii_case("Closure") {
+        return None;
+    }
+    if !with_host(|h| h.class_exists(class)) {
+        if with_host(|h| h.class_has_method(class, method)) {
+            return None;
+        }
+        return Some(crate::builtins::throws_bare(
+            "Error",
+            format!("Class \"{}\" not found", display_class(class)),
+        ));
+    }
+    if with_host(|h| h.is_enum_class(class))
+        && matches!(
+            method.to_ascii_lowercase().as_str(),
+            "cases" | "from" | "tryfrom"
+        )
+    {
+        return None;
+    }
+    // `__call` answers an instance callable; `__callStatic` a `"C::m"` one. The
+    // same test `static_method_plan` makes, so the two forms cannot disagree.
+    let has_this = this
+        .as_ref()
+        .and_then(|t| with_host(|h| h.object_class(t)))
+        .is_some_and(|c| with_host(|h| h.class_is_a_pub(&c, class)));
+    match with_host(|h| h.method_dispatch(class, method, has_this)) {
+        MethodDispatch::Direct | MethodDispatch::Magic => None,
+        MethodDispatch::Denied(msg) => Some(crate::builtins::throws_bare("Error", msg)),
+        MethodDispatch::Undefined => Some(crate::builtins::throws_bare(
+            "Error",
+            format!(
+                "Call to undefined method {}::{method}()",
+                display_class(class)
+            ),
+        )),
+    }
+}
+
+/// Why `callee(...)` — PHP 8.1 first-class callable syntax — cannot build a
+/// closure, as a catchable `Error`, or `None` when it can.
+///
+/// The reference settles the callee where the syntax is written: `$o->nope(...)`
+/// raises `Call to undefined method C::nope()` on the spot, even though the
+/// closure is never invoked. Every refusal is worded exactly as the CALL would
+/// have been worded, which is why this delegates to [`callvalue_refusal`] rather
+/// than inventing a second set of messages.
+///
+/// `instance` says the syntax was spelled with `->`. It cannot be recovered from
+/// the value: both `$s->m(...)` and `$s::m(...)` on `$s = "C"` arrive as the
+/// array `["C", "m"]`, and only the first is refused — a non-object receiver is
+/// reported by its TYPE, as `$s->m()` itself would report it.
+pub fn fcc_refusal(callable: &Value, instance: bool) -> Option<String> {
+    if instance {
+        let pairs = with_host(|h| h.array_pairs(callable)).unwrap_or_default();
+        if let [(_, recv), (_, name)] = pairs.as_slice() {
+            if !with_host(|h| h.is_object_value(recv)) {
+                let method = with_host(|h| h.to_str(name));
+                let ty = with_host(|h| crate::builtins::receiver_type_name(h, recv));
+                return Some(crate::builtins::throws_bare(
+                    "Error",
+                    format!("Call to a member function {method}() on {ty}"),
+                ));
+            }
+        }
+    }
+    callvalue_refusal(callable)
 }
 
 /// Invoke a callable *value*: a closure handle runs its captured-plus-bound body
@@ -7241,6 +7375,9 @@ pub fn call_value(callee: Value, args: Vec<Value>) -> Result<Value, String> {
         return invoke_closure(cc, args, Vec::new());
     }
     if let Some((class, method, this)) = callable_method(&callee) {
+        if let Some(e) = callable_method_refusal(&class, &method, &this) {
+            return Err(e);
+        }
         return call_method(&class, &method, this, args);
     }
     match callee {
@@ -7259,6 +7396,9 @@ pub fn call_value_named(
         return invoke_closure(cc, args, named);
     }
     if let Some((class, method, this)) = callable_method(&callee) {
+        if let Some(e) = callable_method_refusal(&class, &method, &this) {
+            return Err(e);
+        }
         return call_method_named(&class, &method, this, args, named);
     }
     match callee {
@@ -7338,8 +7478,57 @@ pub fn call_closure_method(
             closure_call(closure, obj, args)
         }
         "__invoke" => call_value(closure.clone(), args),
-        other => Err(format!("call to undefined method Closure::{other}()")),
+        other => Err(crate::builtins::throws_bare(
+            "Error",
+            format!("Call to undefined method Closure::{other}()"),
+        )),
     }
+}
+
+/// The method names [`call_closure_method`] dispatches, lowercased.
+///
+/// Stated as data beside that `match` so [`engine_method_refusal`] — which has
+/// to answer "does this name exist" BEFORE the arguments run, where the
+/// dispatcher's own answer would come too late — cannot drift away from it.
+const CLOSURE_METHODS: &[&str] = &["bindto", "call", "__invoke"];
+
+/// [`CLOSURE_METHODS`] for [`call_generator_method`].
+const GENERATOR_METHODS: &[&str] = &[
+    "current",
+    "key",
+    "next",
+    "valid",
+    "rewind",
+    "send",
+    "throw",
+    "getreturn",
+];
+
+/// Why `$closure->m(…)` or `$generator->m(…)` is refused, as a catchable
+/// `Error`, or `None` when the call dispatches.
+///
+/// A `Closure` and a `Generator` are objects with no PHP class, so neither
+/// `PhpHost::method_dispatch` nor the class method table can answer for them;
+/// they are dispatched by name in [`call_closure_method`] and
+/// [`call_generator_method`]. This is that same decision, available early enough
+/// to stop `$c->nope(f())` before `f` runs — which is where the reference stops
+/// it.
+pub fn engine_method_refusal(recv: &Value, method: &str) -> Option<String> {
+    let (class, methods) = if with_host(|h| h.is_closure(recv)) {
+        ("Closure", CLOSURE_METHODS)
+    } else if with_host(|h| h.is_generator_val(recv)) {
+        ("Generator", GENERATOR_METHODS)
+    } else {
+        return None;
+    };
+    let lname = method.to_ascii_lowercase();
+    if methods.contains(&lname.as_str()) {
+        return None;
+    }
+    Some(crate::builtins::throws_bare(
+        "Error",
+        format!("Call to undefined method {class}::{method}()"),
+    ))
 }
 
 // ── objects (new / method dispatch / constants) ─────────────────────────────
@@ -7524,7 +7713,7 @@ pub fn new_object(class: &str, args: Vec<Value>) -> Result<Value, String> {
     });
     seed_throwable(class, &obj);
     // Run the constructor if one exists anywhere in the chain.
-    if with_host(|h| h.resolve_method(&cl, "__construct").is_some()) {
+    if with_host(|h| h.method_declared(&cl, "__construct")) {
         // `static::` inside the constructor is the instantiated class in its
         // declared spelling, not the lowercased lookup key.
         with_host(|h| h.lsb_set_for_next_call(class));
@@ -7564,7 +7753,7 @@ pub fn new_object_named(
         Value::Obj((h.objs.len() - 1) as u32)
     });
     seed_throwable(class, &obj);
-    if with_host(|h| h.resolve_method(&cl, "__construct").is_some()) {
+    if with_host(|h| h.method_declared(&cl, "__construct")) {
         with_host(|h| h.lsb_set_for_next_call(class));
         call_method_named(&cl, "__construct", Some(obj.clone()), args, named)?;
     }
@@ -7844,10 +8033,7 @@ pub fn clone_object(v: Value) -> Result<Value, String> {
         ));
     };
     if let Some(class) = with_host(|h| h.object_class(&copy)) {
-        if with_host(|h| {
-            h.resolve_method(&class.to_ascii_lowercase(), "__clone")
-                .is_some()
-        }) {
+        if with_host(|h| h.method_declared(&class.to_ascii_lowercase(), "__clone")) {
             in_clone_hook(&copy, || {
                 call_method(
                     &class.to_ascii_lowercase(),

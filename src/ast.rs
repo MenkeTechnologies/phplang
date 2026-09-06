@@ -182,6 +182,20 @@ pub enum Expr {
     /// `(function(){...})(args)`. The callee evaluates to a closure handle or a
     /// callable string.
     CallValue(Box<Expr>, Vec<Expr>),
+    /// PHP 8.1 first-class callable syntax, `callee(...)`: a real `Closure` over
+    /// the callable, whose CALLEE is settled where the syntax is written rather
+    /// than where the closure is later invoked.
+    ///
+    /// It carries the callable as a *value* expression — `"f"` for a bare name,
+    /// `"C::m"` for a resolved static call, `[recv, "m"]` for the two member
+    /// forms — plus whether it was spelled with `->`. That flag cannot be
+    /// recovered at run time: `$s = "C"; $s->m(...)` and `$s::m(...)` both build
+    /// `["C", "m"]`, and the reference refuses the first (`Call to a member
+    /// function m() on string`) while accepting the second.
+    Fcc {
+        callable: Box<Expr>,
+        instance: bool,
+    },
     /// An anonymous function `function(params) use(vars) { body }`. `uses` names
     /// the enclosing variables captured at closure-creation time, each by value
     /// or — for `use (&$v)` — by reference.

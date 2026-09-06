@@ -1761,32 +1761,14 @@ impl Parser {
     /// `fn(...$args) => call_user_func_array(<callable>, $args)` — a real
     /// `Closure`. Returns `None` when it is not the first-class-callable form (the
     /// caller then parses a normal argument list).
-    fn try_fcc(&mut self, callable: Expr) -> Result<Option<Expr>, String> {
+    fn try_fcc(&mut self, callable: Expr, instance: bool) -> Result<Option<Expr>, String> {
         if !(self.at_punct("...") && self.nth_is_punct(1, ")")) {
             return Ok(None);
         }
         self.pos += 2; // consume `...` and `)`
-        let param = Param {
-            name: "args".to_string(),
-            line: self.line(),
-            ty: None,
-            default: None,
-            variadic: true,
-            promoted: false,
-            readonly: false,
-            by_ref: false,
-        };
-        let body = Expr::Call(
-            "call_user_func_array".to_string(),
-            vec![callable, Expr::Var("args".to_string())],
-        );
-        Ok(Some(Expr::ArrowFn {
-            params: vec![param],
-            body: Box::new(body),
-            ret: None,
-            // The closure PHP synthesizes for `f(...)` is written where the
-            // call is, so that is the line its frame names.
-            line: self.line(),
+        Ok(Some(Expr::Fcc {
+            callable: Box::new(callable),
+            instance,
         }))
     }
 
@@ -2497,10 +2479,13 @@ impl Parser {
                 // Instance member: `$o->prop` or `$o->method(args)`.
                 let member = self.member_name()?;
                 if self.eat_punct("(") {
-                    if let Some(fcc) = self.try_fcc(Expr::Array(vec![
-                        ArrayElem::new(None, e.clone()),
-                        ArrayElem::new(None, Expr::Str(member.clone())),
-                    ]))? {
+                    if let Some(fcc) = self.try_fcc(
+                        Expr::Array(vec![
+                            ArrayElem::new(None, e.clone()),
+                            ArrayElem::new(None, Expr::Str(member.clone())),
+                        ]),
+                        true,
+                    )? {
                         e = fcc;
                     } else {
                         e = Expr::MethodCall(Box::new(e), member, self.arg_list()?);
@@ -2552,7 +2537,7 @@ impl Parser {
                                 ArrayElem::new(None, Expr::Str(member.clone())),
                             ]),
                         };
-                        if let Some(fcc) = self.try_fcc(callable)? {
+                        if let Some(fcc) = self.try_fcc(callable, false)? {
                             e = fcc;
                         } else {
                             e = Expr::StaticCall(class, member, self.arg_list()?);
@@ -2567,7 +2552,7 @@ impl Parser {
                 // `(expr)(…)`. A bareword `name(` is already consumed as
                 // `Expr::Call` in `primary`, so this only fires on a value callee.
                 self.pos += 1;
-                if let Some(fcc) = self.try_fcc(e.clone())? {
+                if let Some(fcc) = self.try_fcc(e.clone(), false)? {
                     e = fcc;
                 } else {
                     let args = self.arg_list()?;
@@ -2843,7 +2828,7 @@ impl Parser {
                 // A bareword followed by `(` is a function call.
                 if self.eat_punct("(") {
                     // `name(...)` — first-class callable syntax → a `Closure`.
-                    if let Some(fcc) = self.try_fcc(Expr::Str(name.clone()))? {
+                    if let Some(fcc) = self.try_fcc(Expr::Str(name.clone()), false)? {
                         return Ok(fcc);
                     }
                     let args = self.arg_list()?;

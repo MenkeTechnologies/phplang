@@ -444,6 +444,9 @@ impl Scan<'_> {
             }
             // The callee is a value, so its by-reference signature — and even
             // its identity — is unknown here.
+            // `callee(...)` evaluates its callable HERE, so the variables it
+            // reads are reads of this scope, exactly like a call's callee.
+            Expr::Fcc { callable, .. } => self.expr(callable),
             Expr::CallValue(f, args) => {
                 self.expr(f);
                 self.call_args(None, args);
@@ -747,6 +750,9 @@ impl Flow {
                 self.exprs(args);
             }
             Expr::NewAnon { args, .. } => self.exprs(args),
+            // `callee(...)` evaluates its callable HERE, so the variables it
+            // reads are reads of this scope, exactly like a call's callee.
+            Expr::Fcc { callable, .. } => self.expr(callable),
             Expr::CallValue(f, args) => {
                 self.expr(f);
                 self.exprs(args);
@@ -1007,6 +1013,9 @@ impl GlobalScan {
                 }
                 self.exprs(args);
             }
+            // `callee(...)` evaluates its callable HERE, so the variables it
+            // reads are reads of this scope, exactly like a call's callee.
+            Expr::Fcc { callable, .. } => self.expr(callable),
             Expr::CallValue(f, args) => {
                 self.expr(f);
                 self.exprs(args);

@@ -296,7 +296,7 @@ pub const CORPUS: &[Entry] = &[
         "private",
         "Keyword",
         "private $prop;   private function m() { … }",
-        "Marks a member reachable only from the declaring class. Enforced for both properties and methods. A property access from outside throws a catchable `Error: Cannot access private property C::$x`, naming the class that DECLARED it, unless the class defines the matching magic method (`__get`, `__set`, `__unset`), which is consulted first. `isset()` never throws here — an unreachable property is simply not set. DIVERGENCE: a method call from outside still aborts with the uncatchable host error `php: Call to private method C::m() from global scope`.",
+        "Marks a member reachable only from the declaring class. Enforced for both properties and methods. A property access from outside throws a catchable `Error: Cannot access private property C::$x`, naming the class that DECLARED it, unless the class defines the matching magic method (`__get`, `__set`, `__unset`), which is consulted first. `isset()` never throws here — an unreachable property is simply not set. A method call from outside throws the catchable `Error: Call to private method C::m() from global scope`, and it is raised before the call's ARGUMENTS run — a class with `__call` reaches the catch-all instead, for a private method just as for an absent one.",
         "class C { private $x = 4; function get() { return $this->x; } }\necho (new C)->get();   // => 4",
     ),
     (
@@ -754,7 +754,7 @@ pub const CORPUS: &[Entry] = &[
         "...",
         "Operator",
         "f(...$array)   function f(...$rest)   strlen(...)",
-        "Four roles for one token: argument unpacking at a call site, unpacking inside an array literal (`[...$a, ...$b]`), a variadic parameter that collects the trailing arguments into an array, and — as the sole argument — PHP 8.1 first-class callable syntax, which builds a real `Closure`. Unpacking drives a Generator or a Traversable as well as an array; anything else raises \"Only arrays and Traversables can be unpacked\". DIVERGENCE: a string-keyed array unpacked at a CALL binds by position rather than by name.",
+        "Four roles for one token: argument unpacking at a call site, unpacking inside an array literal (`[...$a, ...$b]`), a variadic parameter that collects the trailing arguments into an array, and — as the sole argument — PHP 8.1 first-class callable syntax, which builds a real `Closure`. Unpacking drives a Generator or a Traversable as well as an array; anything else raises \"Only arrays and Traversables can be unpacked\". A string-keyed array unpacked at a CALL binds each entry to the parameter its key NAMES, and a key no parameter carries is `Error: Unknown named parameter $z`.",
         "function sum(...$n) { return array_sum($n); }\necho sum(...[1, 2, 3]);   // => 6\n$f = strlen(...); echo $f(\"abcd\");   // => 4",
     ),
     (
@@ -6001,7 +6001,7 @@ pub const CORPUS: &[Entry] = &[
         "call_user_func_array",
         "Callables",
         "call_user_func_array(callable $callback, array $args): mixed",
-        "Spreads the array's VALUES in order, discarding keys — so named-argument spreading is not modelled. A non-array second argument raises the reference's `Argument #2 ($args) must be of type array` TypeError. This is also what first-class callable syntax `f(...)` desugars to.",
+        "An INTEGER key contributes a positional argument, in order; a STRING key contributes a NAMED one, bound to the parameter it spells — the same reading `f(...$array)` gives. A non-array second argument raises the reference's `Argument #2 ($args) must be of type array` TypeError. The `Closure` that first-class callable syntax `f(...)` builds forwards its arguments through this function, which is what carries `$f(b: 2)` to the parameter it names.",
         "echo call_user_func_array(\"max\", [1, 5, 3]);   // => 5",
     ),
     (

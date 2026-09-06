@@ -5,7 +5,7 @@
 //! `crate::host::call_value`, which accepts either a closure handle or a
 //! function-name string (`call_user_func("strtoupper", "hi") === "HI"`).
 
-use crate::host::{call_value, with_host};
+use crate::host::{call_value, call_value_named, with_host};
 use crate::stdlib::common::*;
 use fusevm::Value;
 
@@ -167,18 +167,24 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             Some(invoke_callable(callee, rest))
         }
 
-        // call_user_func_array(callable, array): unpack the array's VALUES (in
-        // order, keys ignored — named-argument spreading is not modeled) and
-        // invoke. A non-array second argument yields no arguments.
+        // call_user_func_array(callable, array): unpack the array and invoke.
+        // An INTEGER key contributes a positional argument, in order; a STRING
+        // key contributes a NAMED one, bound to the parameter it spells — the
+        // same reading `f(...$array)` gives, and the reason
+        // `call_user_func_array("g", ["b" => 2, "a" => 1])` fills `$a` with `1`.
+        // Taking every value positionally filled it with `2`. A non-array second
+        // argument yields no arguments.
         "call_user_func_array" => {
             let callee = arg(args, 0);
             let arr = arg(args, 1);
-            let call_args = with_host(|h| h.array_pairs(&arr))
-                .unwrap_or_default()
-                .into_iter()
-                .map(|(_, v)| v)
-                .collect::<Vec<_>>();
-            Some(invoke_callable(callee, call_args))
+            let (mut pos, mut named) = (Vec::new(), Vec::new());
+            for (k, v) in with_host(|h| h.array_pairs(&arr)).unwrap_or_default() {
+                match k {
+                    Value::Str(name) => named.push((name.to_string(), v)),
+                    _ => pos.push(v),
+                }
+            }
+            Some(call_value_named(callee, pos, named))
         }
 
         // is_callable(value): whether the value names something this engine could

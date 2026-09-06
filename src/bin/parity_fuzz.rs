@@ -767,6 +767,97 @@ fn gen_calleeforms(seed: u64) -> Vec<String> {
     )]
 }
 
+/// PHP 8.1 first-class callable syntax, `callee(...)`, and the argument binding
+/// of the `Closure` it produces.
+///
+/// The construct appeared ZERO times in this file before this mode: a grep for
+/// `(...)` over the generators returned no hits, so every previous clean sweep
+/// scored it not at all. It was in fact inert in three ways at once — the callee
+/// was never checked, so `$o->nope(...)` built a closure the reference refuses
+/// outright; the closure bound its arguments by POSITION, so `$f(b: 2, a: 1)`
+/// filled `$a` with `2`; and the receiver was re-evaluated on every call, so
+/// `f()->m(...)` ran `f` once per invocation instead of once at the syntax.
+///
+/// Each callee spelling carries its OWN call pool rather than drawing from a
+/// shared one, because the two would otherwise be crossed into calls whose
+/// arity is wrong for the callee — and a builtin enforces neither its arity nor
+/// its parameter names here (`strtolower("a", "b")` answers `"a"`, and
+/// `strtolower(a: "AB")` answers `"ab"` where the reference raises
+/// `ArgumentCountError` and `Error: Unknown named parameter $a`). That gap is
+/// real, measured, and PRE-EXISTING — it is a property of every builtin, not of
+/// `(...)` — so pairing arity to callee keeps this mode scoring the callable
+/// semantics it is named for instead of restating a library-wide one.
+///
+/// `$o?->m(...)` is NOT in the pool. The reference rejects it at COMPILE time
+/// (`Cannot combine nullsafe operator with Closure creation`) through a channel
+/// this engine does not have — it reports a parse error instead — so including
+/// it would score the diagnostic channel rather than the callable semantics.
+/// Measured against the reference, not assumed.
+fn gen_fcc(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    // Declarations the callee spellings draw on. Kept in one place so a refusal
+    // and the working call it mirrors name the same class.
+    let decl = *r.pick(&[
+        "class C { function m($a, $b = 5) { return \"$a/$b\"; } \
+           static function s($a, $b = 5) { return \"s$a/$b\"; } }",
+        "class C { private function m($a, $b = 5) { return \"p$a/$b\"; } \
+           private static function s($a, $b = 5) { return \"ps$a/$b\"; } }",
+        "class C { protected function m($a, $b = 5) { return \"q$a/$b\"; } \
+           static function s($a, $b = 5) { return \"s$a/$b\"; } }",
+        "class C { function __call($n, $x) { return \"call:$n:\" . count($x); } \
+           static function __callStatic($n, $x) { return \"cs:$n:\" . count($x); } }",
+    ]);
+    // Every call spelling a two-parameter user callable accepts, including the
+    // named forms whose binding the old desugaring got wrong. `$f()` is absent:
+    // it raises `Too few arguments to function {closure:file:line}()`, whose
+    // frame name this engine renders `{closure}` (see README) — a divergence in
+    // the NAME, not in the callable.
+    const USER_CALLS: &[&str] = &[
+        "$f(1)",
+        "$f(1, 2)",
+        "$f(a: 1)",
+        "$f(b: 2, a: 1)",
+        "$f(1, b: 2)",
+        // Never called: for a callee the reference refuses, the diagnostic must
+        // already have been raised by the syntax alone.
+        "\"built\"",
+    ];
+    // A builtin callee is called at its declared arity only, for the reason in
+    // the doc comment above.
+    const BUILTIN_CALLS: &[&str] = &["$f(\"Ab\")", "\"built\""];
+    let (callee, calls): (&str, &[&str]) = *r.pick(&[
+        // Free functions: one that exists, one that does not.
+        ("strtoupper(...)", BUILTIN_CALLS),
+        ("$name(...)", BUILTIN_CALLS),
+        ("nosuchfunction(...)", BUILTIN_CALLS),
+        // The two member forms on a declared class, reachable and not.
+        ("(new C)->m(...)", USER_CALLS),
+        ("(new C)->nope(...)", USER_CALLS),
+        ("C::s(...)", USER_CALLS),
+        ("C::nope(...)", USER_CALLS),
+        // An undeclared class is reported as the missing CLASS, never as a
+        // missing method.
+        ("Nope::m(...)", USER_CALLS),
+        // A receiver that is not an object at all, which the reference refuses
+        // by the receiver's TYPE — and which is indistinguishable at run time
+        // from the `$scalar::m(...)` the reference accepts.
+        ("$scalar->m(...)", USER_CALLS),
+        ("$scalar::s(...)", USER_CALLS),
+        // A closure re-wrapped, and a receiver that must be evaluated exactly
+        // ONCE — `mk()` echoes, so a second evaluation is visible in stdout.
+        ("$fn(...)", USER_CALLS),
+        ("mk()->m(...)", USER_CALLS),
+    ]);
+    let call = *r.pick(calls);
+    vec![format!(
+        "{decl} function mk() {{ echo \"MK\"; return new C; }} \
+         $scalar = \"C\"; $name = \"strtolower\"; \
+         $fn = function ($a, $b = 5) {{ return \"f$a/$b\"; }}; \
+         try {{ $f = {callee}; var_dump({call}); }} \
+         catch (Throwable $e) {{ echo get_class($e), \"|\", $e->getMessage(); }}"
+    )]
+}
+
 /// Scalar parameter and return types, under BOTH typing modes.
 ///
 /// This mode exists because the generator was BLIND to the whole construct: a grep
@@ -4025,6 +4116,10 @@ const MODES: &[Mode] = &[
     Mode {
         name: "calleeforms",
         gen: gen_calleeforms,
+    },
+    Mode {
+        name: "fcc",
+        gen: gen_fcc,
     },
     Mode {
         name: "sscanf",

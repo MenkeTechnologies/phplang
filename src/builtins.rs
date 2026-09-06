@@ -89,6 +89,8 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::CALL_NAME_CHECK, b_call_name_check);
     vm.register_builtin(ops::CALL_CLASS_CHECK, b_call_class_check);
     vm.register_builtin(ops::CALLVALUE_CHECK, b_callvalue_check);
+    vm.register_builtin(ops::SCALL_CALLEE_CHECK, b_scall_callee_check);
+    vm.register_builtin(ops::FCC_CHECK, b_fcc_check);
     vm.register_builtin(ops::SCALL, b_scall);
     vm.register_builtin(ops::SCONST, b_sconst);
     vm.register_builtin(ops::THROW, b_throw);
@@ -322,7 +324,10 @@ fn b_mcall_named(vm: &mut VM, argc: u8) -> Value {
     if with_host(|h| h.is_closure(&recv)) {
         return match host::call_closure_method(&recv, &method, pos) {
             Ok(v) => bubbled(vm, v),
-            Err(e) => fail(vm, e),
+            // A `Closure` method can refuse the call with a real PHP exception —
+            // an undefined one is a catchable `Error` — so a tagged throw has to
+            // become one rather than being printed as a scaffold message.
+            Err(e) => fail_or_throw(vm, e),
         };
     }
     if with_host(|h| h.is_generator_val(&recv)) {
@@ -1259,7 +1264,7 @@ fn static_method_plan(
 
 /// PHP's name for a value's type in the "Call to a member function f() on X"
 /// error. Booleans are spelled `true`/`false` there rather than `bool`.
-fn receiver_type_name(h: &host::PhpHost, v: &Value) -> &'static str {
+pub(crate) fn receiver_type_name(h: &host::PhpHost, v: &Value) -> &'static str {
     match v {
         Value::Undef => "null",
         Value::Bool(true) => "true",
@@ -2546,17 +2551,36 @@ fn b_prop_incdec(vm: &mut VM, _: u8) -> Value {
 /// printed. This op raises exactly that error and hands the receiver back for
 /// the real `MCALL` to use.
 ///
-/// It looks up NOTHING: the test is on the value's own shape (is it an object,
-/// a closure or a generator), so a call that is going to succeed pays one
-/// discriminant check and no second method resolution. Whether the method
-/// EXISTS is still decided by `MCALL`, after the arguments — a narrower
-/// divergence than the one this closes, and one that needs the resolution
-/// carried forward to close without paying for it twice.
+/// The method table is consulted too, so `$o->nope(f())` and a call to a method
+/// that is out of reach both stop without running `f` — the reference settles
+/// the whole callee, not just the receiver, before the first argument.
+///
+/// That screening is [`method_plan`], the same predicate `MCALL` itself uses a
+/// moment later, so this op can only refuse a call that was going to be refused.
+/// It is affordable because `PhpHost::method_declared` answers the existence
+/// half with a `contains_key` per class in the chain: no `FuncDef` — and so no
+/// method body — is copied to decide it. A `Closure` or `Generator` receiver has
+/// no PHP class to screen against and is handed straight back, exactly as
+/// `MCALL` dispatches it before the class-method path.
 fn b_mcall_recv_check(vm: &mut VM, _: u8) -> Value {
     let method = pop_name(vm);
     let recv = vm.pop();
     if with_host(|h| h.is_object_value(&recv)) {
-        return recv;
+        if let Some(e) = host::engine_method_refusal(&recv, &method) {
+            mark_frame_line(vm);
+            return fail_or_throw(vm, e);
+        }
+        if with_host(|h| h.is_closure(&recv) || h.is_generator_val(&recv)) {
+            return recv;
+        }
+        let Some(class) = with_host(|h| h.object_class(&recv)) else {
+            return recv;
+        };
+        mark_frame_line(vm);
+        return match method_plan(vm, &class, &method, true) {
+            Ok(_) => recv,
+            Err(v) => v,
+        };
     }
     mark_frame_line(vm);
     let ty = with_host(|h| receiver_type_name(h, &recv));
@@ -2565,6 +2589,44 @@ fn b_mcall_recv_check(vm: &mut VM, _: u8) -> Value {
         "Error",
         &format!("Call to a member function {method}() on {ty}"),
     )
+}
+
+/// `[class, method] -> class` — the whole callee decision of `C::m(...)`, run
+/// BEFORE the arguments and leaving the class name for the call itself.
+///
+/// [`static_method_plan`] is the same predicate `SCALL` runs a moment later, and
+/// it is pure — no PHP body executes inside it — so asking it twice can change
+/// nothing but the point at which the program stops. It subsumes
+/// [`ops::CALL_CLASS_CHECK`] here: "class not found" is its first arm.
+/// `[callable, is_instance_form] -> callable` — the callee decision of
+/// `callee(...)`, made where the syntax is written and leaving the callable for
+/// the closure that wraps it.
+fn b_fcc_check(vm: &mut VM, _: u8) -> Value {
+    let instance = matches!(vm.pop(), Value::Bool(true));
+    let callable = vm.pop();
+    match host::fcc_refusal(&callable, instance) {
+        None => callable,
+        Some(e) => {
+            mark_frame_line(vm);
+            fail_or_throw(vm, e)
+        }
+    }
+}
+
+fn b_scall_callee_check(vm: &mut VM, _: u8) -> Value {
+    let method = pop_name(vm);
+    let class = pop_name(vm);
+    // `SCALL` reads `$this` the same way, and no argument can rebind it, so the
+    // magic fallback this picks is the one the call will pick.
+    let this = with_host(|h| {
+        let t = h.get_var("this");
+        matches!(t, Value::Obj(_)).then_some(t)
+    });
+    mark_frame_line(vm);
+    match static_method_plan(vm, &class, &method, &this) {
+        Ok(_) => Value::Str(class),
+        Err(v) => v,
+    }
 }
 
 /// `[name] -> name` — reject a call to a function that does not exist BEFORE its
@@ -2631,7 +2693,7 @@ fn b_mcall(vm: &mut VM, argc: u8) -> Value {
     if with_host(|h| h.is_closure(&recv)) {
         return match host::call_closure_method(&recv, &method, args) {
             Ok(v) => bubbled(vm, v),
-            Err(e) => fail(vm, e),
+            Err(e) => fail_or_throw(vm, e),
         };
     }
     if with_host(|h| h.is_generator_val(&recv)) {

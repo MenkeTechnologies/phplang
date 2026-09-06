@@ -516,6 +516,21 @@ impl Compiler {
         self.emit_callee_check(b, ops::CALL_NAME_CHECK, argc);
     }
 
+    /// The callee guard `C::m(…)` needs when it HAS arguments, replacing the
+    /// bare class check: `ops::SCALL_CALLEE_CHECK` decides the class, the method
+    /// and its reachability in one op, and "class not found" is its first arm.
+    ///
+    /// Net-neutral on the stack — it consumes the class the call already pushed
+    /// plus a copy of the method name, and puts the class back — so it sits
+    /// between the class reference and the method name the call itself loads.
+    fn emit_scall_callee_check(&mut self, b: &mut ChunkBuilder, name_idx: u16, argc: usize) {
+        if argc == 0 {
+            return;
+        }
+        b.emit(Op::LoadConst(name_idx), 0);
+        b.emit(Op::CallBuiltin(ops::SCALL_CALLEE_CHECK, 2), self.cur_line);
+    }
+
     fn emit_byref_writeback(
         &mut self,
         b: &mut ChunkBuilder,
@@ -2357,6 +2372,7 @@ impl Compiler {
             Expr::Spread(_) => {
                 return Err("'...' argument unpacking is only valid in a function call".into())
             }
+            Expr::Fcc { callable, instance } => self.compile_fcc(b, callable, *instance)?,
             Expr::CallValue(callee, args) if needs_arg_pairs(args) => {
                 self.compile_expr(b, callee)?;
                 self.emit_callee_check(b, ops::CALLVALUE_CHECK, args.len());
@@ -2530,8 +2546,8 @@ impl Compiler {
             Expr::StaticCall(class, name, args) if needs_arg_pairs(args) => {
                 self.emit_lsb_forward(b, class);
                 self.emit_class_ref(b, class)?;
-                self.emit_callee_check(b, ops::CALL_CLASS_CHECK, args.len());
                 let nidx = b.add_constant(Value::str(name.clone()));
+                self.emit_scall_callee_check(b, nidx, args.len());
                 b.emit(Op::LoadConst(nidx), 0);
                 self.compile_arg_pairs(b, args)?;
                 b.emit(
@@ -2542,8 +2558,8 @@ impl Compiler {
             Expr::StaticCall(class, name, args) => {
                 self.emit_lsb_forward(b, class);
                 self.emit_class_ref(b, class)?;
-                self.emit_callee_check(b, ops::CALL_CLASS_CHECK, args.len());
                 let nidx = b.add_constant(Value::str(name.clone()));
+                self.emit_scall_callee_check(b, nidx, args.len());
                 b.emit(Op::LoadConst(nidx), 0);
                 for a in args {
                     self.compile_expr(b, a)?;
@@ -3658,6 +3674,73 @@ impl Compiler {
         Ok(())
     }
 
+    /// Lower PHP 8.1 first-class callable syntax, `callee(...)`, to a real
+    /// `Closure` over the callable — with the callable settled HERE.
+    ///
+    /// Two things have to happen at the syntax, not at the eventual call, and
+    /// both are why this is not simply the desugared arrow function the parser
+    /// used to build:
+    ///
+    /// * the callable expression is evaluated ONCE, so `f()->m(...)` runs `f`
+    ///   exactly once however often the closure is later invoked (the arrow
+    ///   function rebuilt `[f(), "m"]` on every call);
+    /// * the callee is CHECKED, so `$o->nope(...)` raises where it is written
+    ///   even though nothing calls the closure.
+    ///
+    /// The value is parked in a temporary, which the arrow function then
+    /// captures by name like any other free variable — so the closure body,
+    /// `fn(...$args) => call_user_func_array($tmp, $args)`, holds the settled
+    /// value rather than the expression that produced it.
+    fn compile_fcc(
+        &mut self,
+        b: &mut ChunkBuilder,
+        callable: &Expr,
+        instance: bool,
+    ) -> Result<(), String> {
+        let tmp = self.tmp_name("fcc");
+        self.emit_set_var(b, &tmp, |c, b| {
+            c.compile_expr(b, callable)?;
+            b.emit(
+                if instance {
+                    Op::LoadTrue
+                } else {
+                    Op::LoadFalse
+                },
+                0,
+            );
+            b.emit(Op::CallBuiltin(ops::FCC_CHECK, 2), c.cur_line);
+            Ok(())
+        })?;
+        let param = Param {
+            name: "args".to_string(),
+            line: self.cur_line,
+            ty: None,
+            default: None,
+            variadic: true,
+            promoted: false,
+            readonly: false,
+            by_ref: false,
+        };
+        // `call_user_func_array` reads an integer key as a positional argument
+        // and a string key as a named one, which is what carries `$f(b: 2)`
+        // through to the parameter it names.
+        let body = Expr::Call(
+            "call_user_func_array".to_string(),
+            vec![Expr::Var(tmp), Expr::Var("args".to_string())],
+        );
+        self.compile_expr(
+            b,
+            &Expr::ArrowFn {
+                params: vec![param],
+                body: Box::new(body),
+                ret: None,
+                // The closure the reference synthesizes for `f(...)` is written
+                // where the syntax is, so that is the line its frames name.
+                line: self.cur_line,
+            },
+        )
+    }
+
     /// Lower an anonymous function / arrow function to a closure-creating
     /// sequence: compile the body into its own chunk (registered under a synthetic
     /// name in the function table, with its parameters so defaults/variadics bind),
@@ -4360,6 +4443,9 @@ pub(crate) fn collect_free_vars(e: &Expr, out: &mut Vec<String>) {
             collect_free_vars(b, out);
             collect_free_vars(c, out);
         }
+        // The callable is an ordinary expression evaluated at the syntax, so the
+        // variables it reads are free variables of whatever encloses it.
+        Expr::Fcc { callable, .. } => collect_free_vars(callable, out),
         Expr::Match { subj, arms } => {
             collect_free_vars(subj, out);
             for arm in arms {

@@ -406,3 +406,190 @@ fn is_callable_agrees_with_function_exists() {
         "nn"
     );
 }
+
+// ── first-class callable syntax `callee(...)` ────────────────────────────────
+
+/// The callee is settled where `(...)` is WRITTEN, not where the closure is
+/// invoked — so every one of these raises even though nothing calls `$f`.
+///
+/// The syntax used to desugar to `fn(...$a) => call_user_func_array(<callable>,
+/// $a)`, which touched the callable for the first time at the eventual call:
+/// each of these built a closure and printed nothing.
+#[test]
+fn fcc_settles_its_callee_where_it_is_written() {
+    for (src, want) in [
+        (
+            "$f = nosuchfunction(...);",
+            "Error|Call to undefined function nosuchfunction()",
+        ),
+        (
+            "class C { function m() {} } $f = (new C)->nope(...);",
+            "Error|Call to undefined method C::nope()",
+        ),
+        (
+            "class C { function m() {} } $f = C::nope(...);",
+            "Error|Call to undefined method C::nope()",
+        ),
+        ("$f = Nope::m(...);", "Error|Class \"Nope\" not found"),
+        (
+            "class C { private function p() {} } $f = (new C)->p(...);",
+            "Error|Call to private method C::p() from global scope",
+        ),
+        (
+            "class C { protected function p() {} } $f = (new C)->p(...);",
+            "Error|Call to protected method C::p() from global scope",
+        ),
+        (
+            "class C { private static function p() {} } $f = C::p(...);",
+            "Error|Call to private method C::p() from global scope",
+        ),
+        (
+            "$n = null; $f = $n->m(...);",
+            "Error|Call to a member function m() on null",
+        ),
+        (
+            "$s = \"C\"; $f = $s->m(...);",
+            "Error|Call to a member function m() on string",
+        ),
+    ] {
+        assert_eq!(
+            run(&format!(
+                "<?php try {{ {src} }} \
+                 catch (Throwable $e) {{ echo get_class($e), \"|\", $e->getMessage(); }}"
+            )),
+            want,
+            "{src}"
+        );
+    }
+}
+
+/// The refusal is by the RECEIVER's type for `->` and by the class for `::`,
+/// which the value alone cannot distinguish: `$s = "C"` makes both spellings
+/// build the array `["C", "m"]`, and only the first is refused.
+#[test]
+fn fcc_instance_and_static_forms_are_told_apart() {
+    let decl = "class C { static function s($a) { return \"s$a\"; } }";
+    assert_eq!(
+        run(&format!(
+            "<?php {decl} $s = \"C\"; $f = $s::s(...); echo $f(7);"
+        )),
+        "s7"
+    );
+    assert_eq!(
+        run(&format!(
+            "<?php {decl} $s = \"C\"; try {{ $f = $s->s(...); }} \
+             catch (Throwable $e) {{ echo $e->getMessage(); }}"
+        )),
+        "Call to a member function s() on string"
+    );
+}
+
+/// The closure binds a NAMED argument to the parameter it names. The desugaring
+/// spread the variadic's values positionally, so `$f(b: 2, a: 1)` filled `$a`
+/// with `2` — the argument list was reordered by the call, silently.
+#[test]
+fn fcc_closure_binds_named_arguments_by_name() {
+    let decl = "class C { function m($a, $b = 5) { return \"$a/$b\"; } }";
+    assert_eq!(
+        run(&format!(
+            "<?php {decl} $f = (new C)->m(...); echo $f(b: 2, a: 1), \"|\", $f(1, b: 9), \"|\", $f(3);"
+        )),
+        "1/2|1/9|3/5"
+    );
+}
+
+/// The receiver expression is evaluated ONCE, at the syntax. The desugaring left
+/// it inside the closure body, so `mk()->m(...)` re-ran `mk` on every call.
+#[test]
+fn fcc_evaluates_its_receiver_exactly_once() {
+    assert_eq!(
+        run("<?php class C { function m() { return \"R\"; } } \
+             function mk() { echo \"MK\"; return new C; } \
+             $f = mk()->m(...); echo $f(), $f(), $f();"),
+        "MKRRR"
+    );
+}
+
+/// A callee the class answers through `__call` is NOT refused: the catch-all is
+/// consulted before the access error, exactly as it is for a direct call.
+#[test]
+fn fcc_accepts_a_callee_the_magic_catch_all_answers() {
+    assert_eq!(
+        run(
+            "<?php class C { function __call($n, $a) { return \"call:$n:\" . count($a); } } \
+             $f = (new C)->zz(...); echo $f(1, 2);"
+        ),
+        "call:zz:2"
+    );
+}
+
+// ── call_user_func_array named arguments ─────────────────────────────────────
+
+/// A STRING key is a named argument bound to the parameter it spells; an INTEGER
+/// key is positional. Every value used to be taken positionally, in array order,
+/// so `["b" => 2, "a" => 1]` filled `$a` with `2`.
+#[test]
+fn call_user_func_array_binds_string_keys_by_name() {
+    let decl = "function g($a, $b, $c = 9) { return \"$a/$b/$c\"; }";
+    assert_eq!(
+        run(&format!(
+            "<?php {decl} echo call_user_func_array('g', ['b' => 2, 'a' => 1]);"
+        )),
+        "1/2/9"
+    );
+    assert_eq!(
+        run(&format!(
+            "<?php {decl} echo call_user_func_array('g', [1, 'c' => 3, 'b' => 2]);"
+        )),
+        "1/2/3"
+    );
+    // A purely positional array is unchanged.
+    assert_eq!(
+        run(&format!(
+            "<?php {decl} echo call_user_func_array('g', [1, 2, 3]);"
+        )),
+        "1/2/3"
+    );
+}
+
+/// A name no parameter carries is an `Error`, not a silently-positional
+/// argument — which is what it became when the keys were discarded.
+#[test]
+fn call_user_func_array_rejects_an_unknown_parameter_name() {
+    assert_eq!(
+        run("<?php function g($a, $b) { return \"$a/$b\"; } \
+             try { echo call_user_func_array('g', ['z' => 1, 'a' => 2]); } \
+             catch (Throwable $e) { echo get_class($e), '|', $e->getMessage(); }"),
+        "Error|Unknown named parameter $z"
+    );
+}
+
+// ── a callable VALUE naming a method ─────────────────────────────────────────
+
+/// `$n = "Nope::m"; $n(1)` and `[$obj, "nope"]` are catchable `Error`s, and the
+/// undeclared class is reported as the missing CLASS. Both used to stop the
+/// program with the uncatchable scaffold message `php: Call to undefined method
+/// …`, which no `try` block could see.
+#[test]
+fn a_callable_value_naming_a_missing_method_is_catchable() {
+    for (src, want) in [
+        ("$n = \"Nope::m\"; $n(1);", "Error|Class \"Nope\" not found"),
+        (
+            "class C {} $o = new C; $n = [$o, \"nope\"]; $n(1);",
+            "Error|Call to undefined method C::nope()",
+        ),
+        (
+            "class C { private function p() {} } $o = new C; $n = [$o, \"p\"]; $n();",
+            "Error|Call to private method C::p() from global scope",
+        ),
+    ] {
+        assert_eq!(
+            run(&format!(
+                "<?php try {{ {src} }} \
+                 catch (Throwable $e) {{ echo get_class($e), \"|\", $e->getMessage(); }}"
+            )),
+            want,
+            "{src}"
+        );
+    }
+}

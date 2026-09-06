@@ -277,3 +277,107 @@ fn the_callee_check_leaves_a_working_call_alone() {
         "11"
     );
 }
+
+// ── the callee is settled before the arguments ───────────────────────────────
+
+/// PHP decides a method call is impossible before it evaluates a single
+/// argument, so an argument that prints must not print. Round 2 closed the
+/// receiver half of this; these two forms need the METHOD TABLE walked first,
+/// and each used to run its argument and print `A` ahead of the fatal the
+/// reference reaches having printed nothing.
+///
+/// The screen is affordable because it asks `PhpHost::method_declared`, a
+/// `contains_key` per class in the chain — the existence question used to be
+/// answered by cloning the whole `FuncDef`, method body included.
+#[test]
+fn an_undefined_or_unreachable_method_is_refused_before_its_arguments() {
+    for (src, want) in [
+        (
+            "class C { function m() {} } $o = new C; $o->nope(print(\"A\"));",
+            "Call to undefined method C::nope()",
+        ),
+        (
+            "class C { function m() {} } C::nope(print(\"A\"));",
+            "Call to undefined method C::nope()",
+        ),
+        (
+            "class C { private function p() {} } $o = new C; $o->p(print(\"A\"));",
+            "Call to private method C::p() from global scope",
+        ),
+        (
+            "class C { protected function p() {} } $o = new C; $o->p(print(\"A\"));",
+            "Call to protected method C::p() from global scope",
+        ),
+        (
+            "class C { private static function p() {} } C::p(print(\"A\"));",
+            "Call to private method C::p() from global scope",
+        ),
+        (
+            "$c = function ($x) { return $x; }; $c->nope(print(\"A\"));",
+            "Call to undefined method Closure::nope()",
+        ),
+    ] {
+        assert_eq!(
+            run(&format!(
+                "<?php try {{ {src} }} catch (Throwable $e) {{ echo $e->getMessage(); }}"
+            )),
+            want,
+            "{src} must print nothing before the diagnostic"
+        );
+    }
+}
+
+/// A call the magic catch-all answers is NOT refused by that screen, and its
+/// argument runs — the check may only refuse what the call would have refused.
+#[test]
+fn the_early_screen_lets_a_magic_call_through() {
+    assert_eq!(
+        run(
+            "<?php class C { function __call($n, $a) { echo \"|$n:\", $a[0]; } } \
+             $o = new C; $o->nope(print(\"A\"));"
+        ),
+        "A|nope:1"
+    );
+    assert_eq!(
+        run(
+            "<?php class C { static function __callStatic($n, $a) { echo \"|$n:\", $a[0]; } } \
+             C::nope(print(\"A\"));"
+        ),
+        "A|nope:1"
+    );
+    // A private method plus a `__call` is the catch-all's business, not an
+    // access error — the screen must reach the same verdict the call does.
+    assert_eq!(
+        run(
+            "<?php class C { private function p() {} function __call($n, $a) { echo \"|$n\"; } } \
+             $o = new C; $o->p(print(\"A\"));"
+        ),
+        "A|p"
+    );
+}
+
+/// An undefined method on a `Closure` or a `Generator` is a catchable `Error`.
+/// Neither has a PHP class for the method table to answer for, and both used to
+/// stop the program with the uncatchable `php: call to undefined method …`.
+#[test]
+fn an_undefined_engine_method_is_catchable() {
+    assert_eq!(
+        run("<?php $c = function () {}; \
+             try { $c->m(); } catch (Throwable $e) { echo get_class($e), '|', $e->getMessage(); }"),
+        "Error|Call to undefined method Closure::m()"
+    );
+    assert_eq!(
+        run("<?php function g() { yield 1; } $x = g(); \
+             try { $x->m(); } catch (Throwable $e) { echo get_class($e), '|', $e->getMessage(); }"),
+        "Error|Call to undefined method Generator::m()"
+    );
+    // The methods each of them DOES answer still dispatch.
+    assert_eq!(
+        run("<?php $c = function () { return 3; }; echo $c->call(new stdClass);"),
+        "3"
+    );
+    assert_eq!(
+        run("<?php function g() { yield 7; } $x = g(); echo $x->current();"),
+        "7"
+    );
+}
