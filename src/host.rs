@@ -6523,7 +6523,12 @@ fn call_library_throwing(name: &str, args: Vec<Value>, how: Dispatch) -> Result<
     // the CALLER's frame, because no call was ever made (see
     // `compiles_to_an_opcode`).
     let opcode = how == Dispatch::Compiled && compiles_to_an_opcode(name, args.len());
-    if let Err(e) = crate::argtypes::check_call(name, &args) {
+    // The COUNT is checked before the types: `strtolower([1], "x")` is refused
+    // for having two arguments, not for the array in the first (see
+    // `crate::argsig`).
+    let refusal = crate::argsig::check_argc(name, args.len())
+        .and_then(|()| crate::argtypes::check_call(name, &args));
+    if let Err(e) = refusal {
         return if opcode {
             throw_frameless_typed(&e)
         } else {
@@ -6609,9 +6614,42 @@ pub fn call_function_named(
             &def.locals,
         );
     }
+    // A builtin binds by name too — the table in `crate::argsig` is what says
+    // which parameter a name means, which slot it fills, and what belongs in the
+    // slots a name jumped over. Only a name the table does not describe (an FFI
+    // export, `__cast_array`) still falls back to appending positionally.
+    if crate::argsig::sig_of(name).is_some() {
+        let shown: Vec<Value> = args.clone();
+        return match crate::argsig::bind_named(name, args, named) {
+            Err(e) => raise_bind_refusal(name, &shown, e),
+            Ok(bound) => {
+                if bound.unplaced_name {
+                    return raise_bind_refusal(
+                        name,
+                        &bound.args,
+                        crate::argsig::unknown_named_for_variadic(name),
+                    );
+                }
+                call_function(name, bound.args)
+            }
+        };
+    }
     let mut all = args;
     all.extend(named.into_iter().map(|(_, v)| v));
     call_function(name, all)
+}
+
+/// Raise a refusal from [`crate::argsig`], which is tagged for the frame the
+/// reference gives it: a `throws_bare` one is raised at the CALLER's frame
+/// (the reference refuses it at send time, before any call exists), and a
+/// `throws` one carries a frame for the callee like any other library error.
+fn raise_bind_refusal(name: &str, args: &[Value], e: String) -> Result<Value, String> {
+    if let Some((class, message)) = crate::builtins::untag_bare_throw(&e) {
+        let exc = new_object(class, vec![Value::str(message.to_string())])?;
+        set_pending_throw(exc);
+        return Ok(Value::Undef);
+    }
+    throw_from_internal_typed(name, args, e)
 }
 
 /// Run a user-defined function or closure body: push a call frame named `frame`,
