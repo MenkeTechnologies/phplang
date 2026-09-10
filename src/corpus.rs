@@ -4874,7 +4874,7 @@ pub const CORPUS: &[Entry] = &[
         "Closure::fromCallable",
         "Built-in object methods",
         "Closure::fromCallable(callable $callback): Closure",
-        "DIVERGENCE: it returns its argument UNCHANGED rather than wrapping it. That works because a callable string is already dispatchable through the runtime's `call_value`, but it means `Closure::fromCallable(\"strlen\")` yields the string `\"strlen\"`, not a `Closure` — so `is_object()` on the result is false.",
+        "Builds a real `Closure` over the callable — a variadic forwarder holding it, so `instanceof Closure` and `get_class()` both answer `Closure` and the arguments reach the callable by name as well as by position. A `Closure` argument is handed straight back rather than wrapped again. Anything that names nothing invocable is `TypeError: Failed to create closure from callable: …`, whose reason clause is the one a `callable` library parameter quotes.",
         "$c = Closure::fromCallable(\"strlen\"); echo $c(\"abcd\");   // => 4",
     ),
     (
@@ -6008,7 +6008,7 @@ pub const CORPUS: &[Entry] = &[
         "function_exists",
         "Callables",
         "function_exists(string $function): bool",
-        "Exact for USER functions, which are looked up in the real function table. DIVERGENCE: builtin coverage is a hand-maintained allow-list of 314 names, so it is wrong in both directions — an implemented function absent from the list (`assert`, `error_log`, `class_alias`, `debug_backtrace`, `filter_has_var`, …) reports false, while `interface_exists`, `trait_exists`, and `enum_exists` report true even though all three are hardcoded stubs.",
+        "Exact for USER functions, which are looked up in the real function table. Builtin coverage is derived from the corpus — the registry a stdlib function is already required to be listed in — so it answers for every name this build dispatches, minus the handful the corpus itself documents as absent from reference PHP (`__cast_array`, `__cast_object`, `gmp_pow2`), which a PHP program must not see.",
         "function myFn() {} var_dump(function_exists(\"myFn\"), function_exists(\"strlen\"));   // => bool(true) bool(true)",
     ),
     // ══ Constants (stdlib::constants) ═══════════════════════════════════════

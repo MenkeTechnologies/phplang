@@ -276,8 +276,6 @@ Sampled, all reproduced; the reference throws and phplang continues:
 | call | reference | phplang |
 |---|---|---|
 | `iterator_to_array(1)` | `TypeError: … must be of type Traversable\|array, int given` | `array(0) {}` |
-| `call_user_func_array("strlen", ["a","b"])` | `ArgumentCountError: strlen() expects exactly 1 argument, 2 given` | `int(1)` — the extra argument is dropped |
-| `call_user_func("nope")` | `TypeError: … must be a valid callback, function "nope" not found or invalid function name` | `Error: Call to undefined function nope()` — right failure, wrong class |
 | `reset($undefined)` | `TypeError: reset(): Argument #1 ($array) must be of type array, null given` | `Warning: Undefined variable`, then `false` |
 | `usort($undefined, …)` | `TypeError: usort(): Argument #1 ($array) must be of type array, null given` | `Warning: Undefined variable`, then `true` |
 | `array_splice($undefined, 0)` | `TypeError: array_splice(): Argument #1 ($array) must be of type array, null given` | no diagnostic |
@@ -286,6 +284,15 @@ Sampled, all reproduced; the reference throws and phplang continues:
 This is a systematic gap — `crate::argtypes` covers the names it has entries for
 and nothing else — rather than a handful of sites, so it is left for a round that
 can widen the table.
+
+CORRECTED: two rows left this table when execution stopped reproducing them.
+`call_user_func_array("strlen", ["a","b"])` now raises the reference's
+`ArgumentCountError`, because every builtin has a declared arity
+(`crate::argsig`); `call_user_func("nope")` now raises the reference's
+`TypeError: … must be a valid callback, function "nope" not found or invalid
+function name`, because a `callable` parameter is checked against the same
+decision tree `is_callable` answers from. The five rows left are all a MISSING
+TYPE, which is still `crate::argtypes`' gap.
 
 CORRECTED: this table used to open with `strlen([])` answering `int(5)`. It now
 raises the reference's `TypeError` with the reference's message, and (since this

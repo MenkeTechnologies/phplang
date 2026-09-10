@@ -297,10 +297,60 @@ pub fn unknown_named_for_variadic(name: &str) -> String {
     )
 }
 
+/// Every refusal PHP 8 makes about a call's ARGUMENTS, in the reference's order:
+/// the count first, then the parameters left to right, each of them judged by
+/// its declared type ([`crate::argtypes`]) or, for a `callable`, by whether the
+/// value names something invocable.
+///
+/// The two per-parameter checks live in different tables, so they are merged by
+/// POSITION rather than run one after the other —
+/// `array_map("nofunc", "notarray")` reports the callback in #1, not the string
+/// in #2.
+pub fn check_args(name: &str, args: &[Value]) -> Result<(), String> {
+    check_argc(name, args.len())?;
+    let callable = check_callable(name, args);
+    let stop_at = callable
+        .as_ref()
+        .err()
+        .map_or(u32::MAX, |(argno, _)| *argno);
+    crate::argtypes::check_call(name, args, stop_at)?;
+    callable.map_err(|(_, e)| e)
+}
+
+/// Whether the value in `name`'s `callable` parameter names something invocable,
+/// and the reference's refusal — with its 1-based position — when it does not.
+///
+/// A `?callable` parameter takes null as well, which is why `array_map(null,
+/// [1], [2])` zips rather than throwing.
+fn check_callable(name: &str, args: &[Value]) -> Result<(), (u32, String)> {
+    let Some((argno, pname, nullable)) = callable_param(name) else {
+        return Ok(());
+    };
+    let Some(v) = args.get(argno - 1) else {
+        return Ok(());
+    };
+    if nullable && matches!(v, Value::Undef) {
+        return Ok(());
+    }
+    let Some(reason) = crate::stdlib::callable::callable_reason(v) else {
+        return Ok(());
+    };
+    let orn = if nullable { " or null" } else { "" };
+    Err((
+        argno as u32,
+        throws(
+            "TypeError",
+            format!(
+                "{name}(): Argument #{argno} (${pname}) must be a valid callback{orn}, {reason}"
+            ),
+        ),
+    ))
+}
+
 /// The 1-based position and name of `name`'s `callable` parameter, and whether
 /// it also accepts null — the shape the reference's
 /// `must be a valid callback[ or null]` message needs.
-pub fn callable_param(name: &str) -> Option<(usize, &'static str, bool)> {
+fn callable_param(name: &str) -> Option<(usize, &'static str, bool)> {
     let sig = sig_of(name)?;
     sig.params.iter().enumerate().find_map(|(i, p)| {
         let nullable = p.ty.starts_with('?');

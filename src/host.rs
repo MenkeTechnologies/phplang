@@ -588,6 +588,12 @@ pub struct ClassDef {
     pub readonly_props: FxHashSet<String>,
     /// Declared visibility of methods declared in THIS class, by lowercased name.
     pub method_vis: FxHashMap<String, Visibility>,
+    /// Methods THIS class declares `static`, by lowercased name. Looked up along
+    /// the parent chain by [`PhpHost::method_is_static`], which is what tells a
+    /// `["C", "m"]` callable apart from a `[$obj, "m"]` one: the reference
+    /// refuses `["C", "m"]` for a non-static `m` with
+    /// `non-static method C::m() cannot be called statically`.
+    pub static_methods: FxHashSet<String>,
     /// Whether this class is an `enum` (PHP 8.1).
     pub is_enum: bool,
     /// Whether the class is `abstract` or an `interface` — either way, `new` on it
@@ -4236,7 +4242,7 @@ impl PhpHost {
 
     /// A class name as declared, recovered from the lowercased key the class
     /// table is indexed by, so a diagnostic prints `MyClass` and not `myclass`.
-    fn class_display_name(&self, lowered: &str) -> String {
+    pub fn class_display_name(&self, lowered: &str) -> String {
         let name = self
             .classes
             .get(lowered)
@@ -4258,22 +4264,7 @@ impl PhpHost {
     /// Enforce method visibility for `$obj->method()`. Same policy as properties;
     /// the message matches PHP's `Call to <vis> method C::m() from <scope>`.
     pub fn check_method_access(&self, class: &str, method: &str) -> Result<(), String> {
-        let method_l = method.to_ascii_lowercase();
-        // Walk the chain to the declaring class and its visibility.
-        let mut cur = Some(class.to_ascii_lowercase());
-        let found = loop {
-            let Some(c) = cur else {
-                break None;
-            };
-            let Some(def) = self.classes.get(&c) else {
-                break None;
-            };
-            if let Some(v) = def.method_vis.get(&method_l) {
-                break Some((c, *v));
-            }
-            cur = def.parent.as_ref().map(|p| p.to_ascii_lowercase());
-        };
-        let Some((declaring, vis)) = found else {
+        let Some((declaring, vis)) = self.declaring_method_vis(class, method) else {
             return Ok(());
         };
         if self.visibility_allows(vis, &declaring) {
@@ -4291,6 +4282,48 @@ impl PhpHost {
         Err(format!(
             "Call to {vname} method {class}::{method}() from {scope}"
         ))
+    }
+
+    /// The class up `class`'s chain that DECLARED `method`, and the visibility it
+    /// declared it with. `None` when no class on the chain declares it — which is
+    /// how an inherited-but-undeclared method stays reachable.
+    fn declaring_method_vis(&self, class: &str, method: &str) -> Option<(String, Visibility)> {
+        let method_l = method.to_ascii_lowercase();
+        let mut cur = Some(class.to_ascii_lowercase());
+        while let Some(c) = cur {
+            let def = self.classes.get(&c)?;
+            if let Some(v) = def.method_vis.get(&method_l) {
+                return Some((c, *v));
+            }
+            cur = def.parent.as_ref().map(|p| p.to_ascii_lowercase());
+        }
+        None
+    }
+
+    /// The visibility `class` (or an ancestor) declared `method` with, as the
+    /// reference spells it in a message. `None` for a public or undeclared one.
+    pub fn method_visibility_name(&self, class: &str, method: &str) -> Option<&'static str> {
+        match self.declaring_method_vis(class, method) {
+            Some((_, Visibility::Private)) => Some("private"),
+            Some((_, Visibility::Protected)) => Some("protected"),
+            _ => None,
+        }
+    }
+
+    /// Whether `class` (or an ancestor) declared `method` `static`.
+    pub fn method_is_static(&self, class: &str, method: &str) -> bool {
+        let method_l = method.to_ascii_lowercase();
+        let mut cur = Some(class.to_ascii_lowercase());
+        while let Some(c) = cur {
+            let Some(def) = self.classes.get(&c) else {
+                return false;
+            };
+            if def.methods.contains_key(&method_l) {
+                return def.static_methods.contains(&method_l);
+            }
+            cur = def.parent.as_ref().map(|p| p.to_ascii_lowercase());
+        }
+        false
     }
 
     /// The magic catch-all a call to `class::method` would fall back to, if any:
@@ -6523,12 +6556,9 @@ fn call_library_throwing(name: &str, args: Vec<Value>, how: Dispatch) -> Result<
     // the CALLER's frame, because no call was ever made (see
     // `compiles_to_an_opcode`).
     let opcode = how == Dispatch::Compiled && compiles_to_an_opcode(name, args.len());
-    // The COUNT is checked before the types: `strtolower([1], "x")` is refused
-    // for having two arguments, not for the array in the first (see
-    // `crate::argsig`).
-    let refusal = crate::argsig::check_argc(name, args.len())
-        .and_then(|()| crate::argtypes::check_call(name, &args));
-    if let Err(e) = refusal {
+    // The COUNT is checked before the types, and a `callable` parameter is
+    // judged in its own position among them — see `crate::argsig::check_args`.
+    if let Err(e) = crate::argsig::check_args(name, &args) {
         return if opcode {
             throw_frameless_typed(&e)
         } else {
@@ -7977,11 +8007,42 @@ fn call_closure_static(method_l: &str, mut args: Vec<Value>) -> Result<Value, St
             };
             closure_bind(&closure, obj, scope)
         }
+        // `Closure::fromCallable($c)` — a real `Closure` over `$c`, which is
+        // what makes `instanceof Closure` and `get_class()` answer the way the
+        // reference does. It used to return its argument unchanged, so a string
+        // callable stayed a string.
         "fromcallable" => {
-            // A closure passes through; a callable string wraps to a closure-like
-            // handle. The scaffold returns the argument unchanged (a string is
-            // already dispatchable through `call_value`).
-            Ok(args.into_iter().next().unwrap_or(Value::Undef))
+            const FRAME: &str = "Closure::fromCallable";
+            if args.len() != 1 {
+                let msg = format!(
+                    "Closure::fromCallable() expects exactly 1 argument, {} given",
+                    args.len()
+                );
+                return throw_from_internal(FRAME, &args, "ArgumentCountError", &msg);
+            }
+            let callable = args.into_iter().next().unwrap_or(Value::Undef);
+            // A `Closure` is already one; the reference hands the same object
+            // back rather than wrapping it.
+            if with_host(|h| h.is_closure(&callable)) {
+                return Ok(callable);
+            }
+            // The refusal quotes the same reason a `callable` library parameter
+            // does, under a heading of its own.
+            if let Some(why) = crate::stdlib::callable::callable_reason(&callable) {
+                let msg = format!("Failed to create closure from callable: {why}");
+                return throw_from_internal(
+                    FRAME,
+                    std::slice::from_ref(&callable),
+                    "TypeError",
+                    &msg,
+                );
+            }
+            Ok(with_host(|h| {
+                h.make_closure(
+                    crate::FROM_CALLABLE_FORWARDER,
+                    vec![("c".to_string(), callable)],
+                )
+            }))
         }
         other => Err(format!("call to undefined method Closure::{other}()")),
     }

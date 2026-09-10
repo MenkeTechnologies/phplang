@@ -83,18 +83,25 @@ fn params_of(name: &str) -> Option<Params> {
 }
 
 /// Check the arguments of a call to `name` and report the first one the
-/// reference would refuse.
+/// reference would refuse, considering only parameters BEFORE `stop_at` — the
+/// 1-based position of a refusal another check already found, or `u32::MAX`.
 ///
 /// Returns the tagged `TypeError` for the caller to raise, or `Ok(())` when
 /// every argument is acceptable. A `null` in a SCALAR parameter is acceptable
 /// and merely deprecated, so it is reported here as a diagnostic rather than as
 /// an error — but a `null` in an `array` parameter is a plain type failure and
 /// falls through to the message below.
-pub fn check_call(name: &str, args: &[Value]) -> Result<(), String> {
+pub fn check_call(name: &str, args: &[Value], stop_at: u32) -> Result<(), String> {
     let Some(params) = params_of(name) else {
         return Ok(());
     };
     for &(argno, pname, ty) in params {
+        // A refusal already found at `stop_at` wins, and the reference never
+        // reaches the parameters past it — so neither does the deprecation this
+        // loop would otherwise emit on the way.
+        if argno >= stop_at {
+            break;
+        }
         let Some(v) = args.get(argno as usize - 1) else {
             continue;
         };

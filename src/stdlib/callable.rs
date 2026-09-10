@@ -95,62 +95,111 @@ pub(crate) fn dispatches(name: &str) -> bool {
         || fusevm::ffi::is_registered(name)
 }
 
-/// Whether `class::method` is reachable from the current scope, either directly
-/// or through the magic catch-all. `has_this` distinguishes the instance form
-/// (`[$obj, "m"]`, which may fall back to `__call`) from the static one
-/// (`["C", "m"]` / `"C::m"`, which falls back to `__callStatic`).
-fn method_resolves(class: &str, method: &str, has_this: bool) -> bool {
-    with_host(|h| {
-        matches!(
-            h.method_dispatch(class, method, has_this),
-            crate::host::MethodDispatch::Direct | crate::host::MethodDispatch::Magic
-        )
-    })
-}
-
 /// `is_callable($v)` — whether the value names something invocable.
 ///
 /// The rules are the reference's, and the two that are easy to miss are that a
 /// method out of reach is NOT callable while one backed by `__call` IS, and that
 /// an object is callable exactly when its class defines `__invoke`. A closure
 /// handle is always callable.
+///
+/// One decision tree, shared with [`callable_reason`], which answers the same
+/// question and also says WHY — a library function that declares a `callable`
+/// parameter has to quote the reason.
 fn callable_resolves(v: &Value) -> bool {
+    callable_reason(v).is_none()
+}
+
+/// Why `v` is not a valid callback, as the reference's message spells the reason
+/// after the comma, or `None` when it IS one.
+///
+/// Every clause was measured off the reference through `array_map`, which
+/// declares `?callable` and so reports each of them:
+///
+/// ```text
+/// $ php -r 'array_map("nofunc", [1]);'
+/// TypeError: array_map(): Argument #1 ($callback) must be a valid callback or
+///            null, function "nofunc" not found or invalid function name
+/// ```
+pub(crate) fn callable_reason(v: &Value) -> Option<String> {
+    const NOT_A_CALLABLE: &str = "no array or string given";
     if with_host(|h| h.is_closure(v)) {
-        return true;
+        return None;
     }
-    // Array callable: PHP requires exactly two elements, [target, method].
+    // Array callable: PHP requires exactly two elements at indices 0 and 1,
+    // [target, method].
     if with_host(|h| h.is_array(v)) {
         let pairs = with_host(|h| h.array_pairs(v)).unwrap_or_default();
         if pairs.len() != 2 {
-            return false;
+            return Some("array callback must have exactly two members".to_string());
+        }
+        if !matches!(pairs[0].0, Value::Int(0)) || !matches!(pairs[1].0, Value::Int(1)) {
+            return Some("array callback has to contain indices 0 and 1".to_string());
         }
         let target = pairs[0].1.clone();
         let method = with_host(|h| h.to_str(&pairs[1].1));
         if with_host(|h| h.is_object(&target)) {
             let Some(class) = with_host(|h| h.object_class(&target)) else {
-                return false;
+                return Some(NOT_A_CALLABLE.to_string());
             };
-            return method_resolves(&class, &method, true);
+            return method_reason(&class, &method, true);
+        }
+        // Only a class NAME can stand in for an instance; an int or a bool in
+        // the first member is refused before the class table is consulted.
+        if !matches!(target, Value::Str(_)) {
+            return Some("first array member is not a valid class name or object".to_string());
         }
         let class = with_host(|h| h.to_str(&target));
-        return with_host(|h| h.class_exists(&class)) && method_resolves(&class, &method, false);
+        return class_reason(&class).or_else(|| method_reason(&class, &method, false));
     }
-    // A non-array object is callable through `__invoke`.
+    // A non-array object is callable through `__invoke`; one without it is not a
+    // callable of any kind, which is the same refusal an int gets.
     if with_host(|h| h.is_object(v)) {
-        return with_host(|h| {
+        let invokable = with_host(|h| {
             h.object_class(v)
                 .is_some_and(|c| h.class_has_method(&c, "__invoke"))
         });
+        return (!invokable).then(|| NOT_A_CALLABLE.to_string());
     }
     // Only a string can name a function; every other scalar is not callable.
     let Value::Str(s) = v else {
-        return false;
+        return Some(NOT_A_CALLABLE.to_string());
     };
     match s.as_str().split_once("::") {
         Some((class, method)) => {
-            with_host(|h| h.class_exists(class)) && method_resolves(class, method, false)
+            class_reason(class).or_else(|| method_reason(class, method, false))
         }
-        None => function_resolves(s.as_str()),
+        None => (!function_resolves(s.as_str()))
+            .then(|| format!("function \"{s}\" not found or invalid function name")),
+    }
+}
+
+/// The reference's reason for a class name that names no class.
+fn class_reason(class: &str) -> Option<String> {
+    with_host(|h| (!h.class_exists(class)).then(|| format!("class \"{class}\" not found")))
+}
+
+/// The reference's reason for a method that cannot be reached — undeclared, out
+/// of visibility, or an instance method named without an instance.
+fn method_reason(class: &str, method: &str, has_this: bool) -> Option<String> {
+    let shown = with_host(|h| h.class_display_name(&class.to_ascii_lowercase()));
+    match with_host(|h| h.method_dispatch(class, method, has_this)) {
+        // `__call`/`__callStatic` makes any name callable.
+        crate::host::MethodDispatch::Magic => None,
+        crate::host::MethodDispatch::Direct => {
+            // `["C", "m"]` names no instance, so a non-static `m` has no `$this`
+            // to run against.
+            let statically = !has_this && !with_host(|h| h.method_is_static(class, method));
+            statically.then(|| {
+                format!("non-static method {shown}::{method}() cannot be called statically")
+            })
+        }
+        crate::host::MethodDispatch::Denied(_) => {
+            let vis = with_host(|h| h.method_visibility_name(class, method)).unwrap_or("private");
+            Some(format!("cannot access {vis} method {shown}::{method}()"))
+        }
+        crate::host::MethodDispatch::Undefined => {
+            Some(format!("class {shown} does not have a method \"{method}\""))
+        }
     }
 }
 

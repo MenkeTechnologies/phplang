@@ -1412,6 +1412,7 @@ impl Compiler {
         let mut prop_vis: FxHashMap<String, Visibility> = FxHashMap::default();
         let mut readonly_props: FxHashSet<String> = FxHashSet::default();
         let mut method_vis: FxHashMap<String, Visibility> = FxHashMap::default();
+        let mut static_methods: FxHashSet<String> = FxHashSet::default();
         let mut order: Vec<String> = Vec::new();
         match self.seed_from_traits(
             decl,
@@ -1422,6 +1423,7 @@ impl Compiler {
             &mut prop_vis,
             &mut readonly_props,
             &mut method_vis,
+            &mut static_methods,
             &mut order,
         ) {
             Ok(()) => {}
@@ -1490,6 +1492,9 @@ impl Compiler {
 
         for m in &decl.methods {
             method_vis.insert(m.name.to_ascii_lowercase(), m.visibility);
+            if m.is_static {
+                static_methods.insert(m.name.to_ascii_lowercase());
+            }
             order.retain(|n| !n.eq_ignore_ascii_case(&m.name));
             order.push(m.name.clone());
             let cparams = self.compile_params(&m.params)?;
@@ -1591,6 +1596,7 @@ impl Compiler {
                 prop_vis,
                 readonly_props,
                 method_vis,
+                static_methods,
                 is_enum: decl.is_enum,
                 is_abstract: decl.is_abstract,
                 is_interface: decl.is_interface,
@@ -1632,6 +1638,7 @@ impl Compiler {
         prop_vis: &mut FxHashMap<String, Visibility>,
         readonly_props: &mut FxHashSet<String>,
         method_vis: &mut FxHashMap<String, Visibility>,
+        static_methods: &mut FxHashSet<String>,
         order: &mut Vec<String>,
     ) -> Result<(), LinkError> {
         if decl.uses.is_empty() {
@@ -1732,6 +1739,9 @@ impl Compiler {
             if let Some(v) = winner.method_vis.get(m) {
                 method_vis.insert(m.clone(), *v);
             }
+            if winner.static_methods.contains(m) {
+                static_methods.insert(m.clone());
+            }
             order.push(self.method_spelling(&winner.name, m));
         }
 
@@ -1790,7 +1800,10 @@ impl Compiler {
                         .visibility
                         .or_else(|| source.method_vis.get(&key).copied())
                         .unwrap_or(Visibility::Public);
-                    method_vis.insert(ak, vis);
+                    method_vis.insert(ak.clone(), vis);
+                    if source.static_methods.contains(&key) {
+                        static_methods.insert(ak);
+                    }
                     order.push(alias.clone());
                 }
                 // Without one, only the visibility of the existing binding moves.

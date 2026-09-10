@@ -390,6 +390,22 @@ class SplMinHeap extends SplHeap {
 }
 "#;
 
+/// The function-table key the `Closure` a `Closure::fromCallable($c)` builds
+/// runs out of: a variadic forwarder holding the callable it was made from.
+///
+/// Spelled with a leading `@` so no PHP program can declare, call, or see a
+/// function by this name — the same convention the compiler's own synthetic
+/// closure definitions use — and with a name of its own rather than the
+/// `@closureN` the snippet below compiles to, because a user program's Nth
+/// closure would otherwise be merged over it.
+pub const FROM_CALLABLE_FORWARDER: &str = "@__from_callable";
+
+/// The body of that forwarder, as PHP: everything the closure is given goes to
+/// the captured callable, positional and named alike — which is exactly what
+/// `f(...)` already lowers to, so the two forms of "a Closure over a callable"
+/// forward identically.
+const FROM_CALLABLE_SRC: &str = r#"<?php $f = fn(...$args) => call_user_func_array($c, $args);"#;
+
 /// A compiled program's installable definitions: `(functions, classes)`.
 type PreludeDefs = (Vec<(String, host::FuncDef)>, Vec<(String, host::ClassDef)>);
 
@@ -407,7 +423,19 @@ fn prelude_defs() -> &'static PreludeDefs {
         // the sort, so it has no facts of its own to apply.
         let stmts = parser::parse(&src).expect("prelude parses");
         let prog = compiler::compile(&stmts, false).expect("prelude compiles");
-        (prog.functions, prog.classes)
+        let mut functions = prog.functions;
+        // The forwarder is compiled from its own snippet — the closure literal
+        // is the only definition it produces — and re-keyed to a name of its
+        // own before it joins the table.
+        let snippet = parser::parse(FROM_CALLABLE_SRC).expect("forwarder parses");
+        let fwd = compiler::compile(&snippet, false).expect("forwarder compiles");
+        let (_, def) = fwd
+            .functions
+            .into_iter()
+            .next()
+            .expect("the forwarder snippet defines one closure");
+        functions.push((FROM_CALLABLE_FORWARDER.to_string(), def));
+        (functions, prog.classes)
     })
 }
 
