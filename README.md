@@ -450,6 +450,12 @@ documented in-code:
   — `sscanf`'s trailing arguments are the one that remains, so
   `sscanf($s, "%d %s", $a, $b)` returns the parsed array where the reference
   returns the count and fills `$a`/`$b`. The two-argument form is exact.
+- An argument that cannot supply a by-reference binding is refused where the
+  callee is NAMED — a free function or a library function — with the reference's
+  `Error: f(): Argument #1 ($a) could not be passed by reference`, and a call's
+  temporary with its `Notice: Only variables should be passed by reference`. A
+  METHOD, a closure and a `$f(…)` call reach a callee only the run knows, and
+  those still bind a literal silently.
 - A diagnostic names the *statement's* line. PHP names the line of the
   expression, so a statement spanning several lines reports its first.
 - A `preg_*` pattern the REFERENCE also rejects reproduces its `Warning` and its

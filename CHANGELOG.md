@@ -26,6 +26,90 @@ comment above it.
 
 ---
 
+## Round 12 — what a by-reference parameter refuses, and what a trace already converted
+
+Measured under `PHP 8.5.10 (cli) (built: Aug 25 2026 21:09:32) (NTS)`; ini state
+and environment as recorded in the oracle table above.
+
+The previous round landed `src/argsig.rs` — the declared arity and parameter
+names of every builtin — and was cut off before it could measure anything. That
+measurement is the first half of this round, on 12,000 seeds with the corpus
+held fixed and only the binary swapped: **193 divergences in 144 gap classes
+before the signature table, 71 in 30 after**, 0 skipped, and every seed that
+diverged after also diverged before. Each of the 71 replays byte-identically
+from the seed it reports (`--once --seed S`), and `--mode NAME --count 600`
+generates 600 cases of that mode and compares 600 of them.
+
+The cost of that table was also never measured, and it is real. On a loop
+saturated with builtin calls (instructions retired, three reps, A/A spread
+0.3%): 8.243e9 before, 9.979e9 after at 40,000 iterations; 24.453e9 and
+29.676e9 at 120,000. The deltas are 1.736e9 and 5.223e9 for an exactly 3×
+workload — a ratio of 3.009, so the whole of it is per-call and none of it is
+fixed startup. That is +21% on a builtin-saturated loop in a debug build, where
+a table lookup pays for every uninlined string comparison twice over.
+
+The fixes this round are the three gaps the 12,000-seed sweep then reported, all
+in how a call judges its arguments.
+
+**A user function's `&$a` bound whatever it was given.** `function f(&$a) {}
+f(1)` ran, where the reference refuses the call: `Error: f(): Argument #1 ($a)
+could not be passed by reference`. The by-reference BUILTINS already had the
+three groups — a location binds silently, a call's temporary binds with
+`Notice: Only variables should be passed by reference`, a literal or constant or
+operator result is the Error — so the pre-pass that records each user function's
+by-reference positions now records their names too, and the existing
+`BYREF_ARG_DIAG` path renders the verdict. The message carries the DECLARED
+spelling: `function Foo(&$a)` called as `FOO(1)` is `Foo()`.
+
+Two orderings around it were measured rather than assumed. A named argument that
+binds NOWHERE is reported before a by-reference refusal written after it, because
+the reference sends arguments in written order: `f(b: 2, a: 1)` is `Unknown named
+parameter $b` while `f(a: 1, b: 2)` is the by-reference Error. And a named
+argument that lands in a VARIADIC by-reference tail is refused as `Argument #1`
+however many arguments precede it and whichever of the names is the offender.
+
+An argument written before a `...` spread lands in a known position, so it is
+judged there too — and the by-reference WRITE-BACK follows it: `f($q, ...[2, 3])`
+on `function f(&$a)` left `$q` at its old value while `f($q)` updated it.
+
+**A stack trace showed a builtin's arguments as written.** The reference's
+argument parser converts in the argument SLOT for two of the types, so the frame
+shows the converted value: `str_pad(5, [])` reports `str_pad('5', Array)`,
+`explode(null, [], [])` reports `explode('', Array, Array)`, and
+`number_format("1.5", [])` reports `number_format(1.5, Array)`. A plain `int`,
+`float` or `bool` parameter converts into a local instead and leaves the slot
+alone (`substr('abc', '1', Array)`, `array_chunk(Array, 0, NULL)`), and so does
+the `array|string` union (`implode(5, 'x')`). An ARITY refusal precedes all of it
+and reports its arguments untouched (`strtolower(5, 6)`). Each rule was probed
+per type, because it is a property of the parser function rather than of the
+type system.
+
+That conversion is computed only where a trace is actually built. A library
+function that runs a PHP callback pushes its frame on the hot path, and none of
+those sixteen functions declares a parameter that converts — which is now a unit
+test rather than an assumption.
+
+**`count(true)` said `bool given`**, where every PHP says `true given`: the
+message reached for `get_debug_type` instead of the value namer they are kept
+apart for.
+
+After: **71 divergences in 30 classes → 61 in 20**, same 12,000 seeds, same
+oracle, 0 skipped, no seed clean before and diverging after. The builtin-call
+workload is unchanged by this round (+0.12%, inside the A/A spread) and the
+callback workload is +0.08%, also inside it.
+
+What the sweep still reports, and why each is out of this round's scope: a
+generator's `finally` on abandonment (18 of the 61) needs object destruction and
+refcounting, the same absent substrate as `__destruct`; a parse error names the
+unexpected token but not the expected one (10); `[1, ..."foo"]` is a
+COMPILE-time constant-expression fatal in the reference, uncatchable and raised
+even in dead code, where phplang throws a catchable `Error` at run time (10); a
+clone reports a different object handle, and a closure's clone is a distinct
+object rather than a shared one (14); and a by-reference refusal on a METHOD
+(`$o->f(1)`) needs the check at run time, where the callee is known (5).
+
+---
+
 ## Round 11 — a closure is an object, and `endif` is a keyword
 
 Measured under `PHP 8.5.10 (cli) (built: Aug 25 2026 21:09:32) (NTS)`; ini state
