@@ -6598,7 +6598,18 @@ fn call_library_throwing(name: &str, args: Vec<Value>, how: Dispatch) -> Result<
         return if opcode {
             throw_frameless_typed(&e)
         } else {
-            throw_from_internal_typed(name, &args, e)
+            // The frame renders the arguments the parser had already CONVERTED
+            // when it stopped (see `crate::argtypes::trace_args`). An arity
+            // refusal is raised before any argument is parsed, so that one
+            // reports them exactly as written: `strtolower(5, 6)`.
+            let arity = crate::builtins::untag_throw(&e)
+                .is_some_and(|(class, _)| class == "ArgumentCountError");
+            let targs = if arity {
+                args.clone()
+            } else {
+                crate::argtypes::trace_args(name, &args)
+            };
+            throw_from_internal_typed(name, &targs, e)
         };
     }
     // A library function that runs a PHP callback IS a frame in the reference's
@@ -6608,10 +6619,13 @@ fn call_library_throwing(name: &str, args: Vec<Value>, how: Dispatch) -> Result<
     // for the rest of the library.
     let framed = calls_back(name);
     if framed {
+        // Converted the way the trace reports them, and computed BEFORE the
+        // host is borrowed: `trace_args` borrows it too.
+        let targs = crate::argtypes::trace_args(name, &args);
         with_host(|h| {
             let line = h.cur_frame_line();
             let argsarr = h.new_array();
-            for a in &args {
+            for a in &targs {
                 h.arr_push_auto(&argsarr, a.clone());
             }
             h.push_internal_frame(name, line, argsarr);
@@ -6623,6 +6637,8 @@ fn call_library_throwing(name: &str, args: Vec<Value>, how: Dispatch) -> Result<
     }
     match out {
         Err(e) => {
+            // Every frame below renders the arguments as the parser left them.
+            let targs = crate::argtypes::trace_args(name, &args);
             // A frameless throw is raised from the caller's own frame: no scope
             // is pushed, so the trace starts where the call was written.
             if let Some((class, message)) = crate::builtins::untag_bare_throw(&e) {
@@ -6634,12 +6650,12 @@ fn call_library_throwing(name: &str, args: Vec<Value>, how: Dispatch) -> Result<
             // trace a throw would carry but never routed through `catch`, and
             // the program stops.
             if let Some(message) = crate::builtins::untag_fatal(&e) {
-                return Err(fatal_from_internal(name, &args, message));
+                return Err(fatal_from_internal(name, &targs, message));
             }
             if let Some((class, code, message)) = crate::builtins::untag_throw_code(&e) {
                 return throw_from_internal_args(
                     name,
-                    &args,
+                    &targs,
                     class,
                     vec![Value::str(message.to_string()), Value::int(code)],
                 );
@@ -6648,7 +6664,7 @@ fn call_library_throwing(name: &str, args: Vec<Value>, how: Dispatch) -> Result<
                 return throw_frameless_typed(&e);
             }
             match crate::builtins::untag_throw(&e) {
-                Some((class, message)) => throw_from_internal(name, &args, class, message),
+                Some((class, message)) => throw_from_internal(name, &targs, class, message),
                 None => Err(e),
             }
         }

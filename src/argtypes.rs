@@ -139,6 +139,76 @@ pub fn check_call(name: &str, args: &[Value], stop_at: u32) -> Result<(), String
     Ok(())
 }
 
+/// The arguments of a call to `name` as a STACK TRACE renders them, which is not
+/// always as they were written.
+///
+/// The reference's argument parser converts a value into the declared parameter
+/// type *in the argument slot itself* for two of the types, so a trace taken
+/// from inside the call — or from the refusal of a LATER argument — shows the
+/// converted value rather than the original:
+///
+/// * `string` (`zend_parse_arg_str`): `str_pad(5, [])` reports
+///   `str_pad('5', Array)`, and `explode(null, [], [])` reports `explode('', …)`.
+/// * the `int|float` union (`zend_parse_arg_number`): `number_format("1.5", [])`
+///   reports `number_format(1.5, Array)`.
+///
+/// A plain `int`, `float` or `bool` parameter writes its conversion to a local
+/// and leaves the slot alone — `substr('abc', '1', [])` keeps the `'1'`, and
+/// `array_chunk([1], 0, null)` keeps the `NULL` — and so does the `array|string`
+/// union, where `implode(5, 'x')` keeps the `5`. Both were probed against the
+/// reference rather than assumed, because the rule is per parser function.
+///
+/// Parsing stops at the first argument it refuses, so that argument and every
+/// one after it is reported exactly as written. An ARITY refusal happens before
+/// any parsing at all, which is why its caller passes the arguments untouched:
+/// `strtolower(5, 6)` reports `strtolower(5, 6)`.
+///
+/// An OBJECT in a `string` parameter is left alone here even though the
+/// reference converts one that has `__toString`. Rendering a trace must not run
+/// user code, and calling the method a second time to print a frame is a worse
+/// error than printing `Object(S)` where the reference prints `'S!'`.
+pub fn trace_args(name: &str, args: &[Value]) -> Vec<Value> {
+    let mut out = args.to_vec();
+    let Some(params) = params_of(name) else {
+        return out;
+    };
+    host::with_host(|h| {
+        for &(argno, _, ty) in params {
+            let Some(v) = out.get(argno as usize - 1) else {
+                continue;
+            };
+            let nullable = ty.starts_with('?');
+            let bare = ty.trim_start_matches('?');
+            if matches!(v, Value::Undef) {
+                // A nullable parameter keeps the null; a scalar one coerces it
+                // (the deprecation `check_call` already reported); anything else
+                // refuses it, and parsing stops there.
+                if nullable {
+                    continue;
+                }
+                if !bare
+                    .split('|')
+                    .any(|m| matches!(m, "string" | "int" | "float" | "bool"))
+                {
+                    break;
+                }
+            } else if !satisfies(h, ty, v) {
+                break;
+            }
+            match bare {
+                "string" if !matches!(v, Value::Obj(_)) => {
+                    out[argno as usize - 1] = Value::str(h.to_str(v));
+                }
+                "int|float" if !matches!(v, Value::Obj(_)) => {
+                    out[argno as usize - 1] = h.to_number(v);
+                }
+                _ => {}
+            }
+        }
+    });
+    out
+}
+
 /// Two entries were corrected against the reference's own message, which does
 /// not always agree with its reflection: `number_format`'s `$num` reflects as
 /// `float` but is reported as `int|float`.

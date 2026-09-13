@@ -255,6 +255,33 @@ fn is_direct_minmax2(name: &str, args: &[Expr]) -> bool {
     bare.eq_ignore_ascii_case("min") || bare.eq_ignore_ascii_case("max")
 }
 
+/// A call's by-reference argument slots: the callee's DECLARED spelling, and
+/// one `(0-based index, 1-based argument number, parameter name)` per position
+/// the callee writes through. The name is empty for a variadic position, which
+/// the reference's message leaves unnamed.
+type ByRefSlots = (String, Vec<(usize, u32, String)>);
+
+/// What the pre-pass records about a USER function that takes a parameter BY
+/// REFERENCE, which is everything a call site needs to judge its arguments
+/// without having compiled the declaration yet.
+struct ByRefFn {
+    /// The DECLARED spelling: `function Foo(&$a)` called as `FOO(1)` is refused
+    /// as `Foo()`.
+    spelled: String,
+    /// `(position, parameter name)` per by-reference parameter. The name is
+    /// empty for a variadic one, which the reference's message leaves unnamed.
+    byref: Vec<(usize, String)>,
+    /// EVERY parameter name, in order — needed to tell a named argument that
+    /// binds somewhere from one that binds nowhere. The reference sends the
+    /// arguments in written order, so an unknown name earlier in the call is
+    /// reported before a by-reference refusal later in it: `f(b: 2, a: 1)` is
+    /// `Unknown named parameter $b` even though `$a` is by reference.
+    params: Vec<String>,
+    /// Whether the function is variadic, in which case NO name binds nowhere —
+    /// the variadic parameter collects the ones no other parameter claims.
+    variadic: bool,
+}
+
 /// What [`Compiler::enter_scope`] hands back so the enclosing scope can be
 /// restored: its host slot map, its slot order, and its promoted-local map.
 type SavedScope = (
@@ -291,6 +318,15 @@ pub struct Compiler {
     /// in a pre-pass so a call can write the callee's final by-ref values back to
     /// the caller's variables even when the function is declared later.
     byref_fns: FxHashMap<String, Vec<usize>>,
+    /// The same pre-pass' by-reference parameters of every USER function, as
+    /// `(declared spelling, [(position, parameter name)])`, which is what the
+    /// refusal `f(): Argument #1 ($a) could not be passed by reference` needs and
+    /// [`Compiler::byref_fns`] does not carry. Kept apart from that map because
+    /// it also holds the by-ref BUILTINS, whose refusals come from the
+    /// [`BYREF_ARG_DIAG`] table instead, and a name in both would be judged
+    /// twice. The spelling is the DECLARED one: `function Foo(&$a)` called as
+    /// `FOO(1)` is refused as `Foo()`.
+    byref_user_fns: FxHashMap<String, ByRefFn>,
     /// Emit per-statement DAP line markers (`php --dap`). Off for normal runs so
     /// the compiled chunk carries zero extra ops.
     debug: bool,
@@ -629,6 +665,35 @@ impl Compiler {
             .map(|&(_, from)| ((from..nargs).collect(), true))
     }
 
+    /// The by-reference positions of a call to the USER function `name` that this
+    /// call's `nargs` arguments actually fill, as `(declared spelling, [(0-based
+    /// index, 1-based argument number, parameter name)])`.
+    ///
+    /// An argument in one of these positions has to be a location the callee can
+    /// write through; a literal is refused outright and a call's temporary is
+    /// allowed with a notice, exactly as for the by-reference BUILTINS (see
+    /// [`byref_diag_slots`], whose table this is the user-declared counterpart
+    /// of). A VARIADIC by-reference parameter covers every argument from its own
+    /// position on, and names none of them.
+    ///
+    /// Only a call that names its callee is judged here. `$o->m(1)`, `$f(1)` and
+    /// `call_user_func('f', 1)` reach a callee the compiler does not know, and the
+    /// reference judges those at run time — `call_user_func` does not even raise
+    /// the same diagnostic, but a `Warning: … must be passed by reference, value
+    /// given`.
+    fn byref_user_slots(&self, name: &str, nargs: usize) -> Option<ByRefSlots> {
+        let f = self.byref_user_fns.get(&name.to_ascii_lowercase())?;
+        let mut slots = Vec::new();
+        for (pos, pname) in &f.byref {
+            if pname.is_empty() {
+                slots.extend((*pos..nargs).map(|i| (i, i as u32 + 1, String::new())));
+            } else if *pos < nargs {
+                slots.push((*pos, *pos as u32 + 1, pname.clone()));
+            }
+        }
+        Some((f.spelled.clone(), slots))
+    }
+
     /// Pre-pass: record the by-reference parameter positions of every `function`
     /// declaration (recursing into nested bodies) so call sites can write the
     /// callee's finals back to the caller — even for forward references.
@@ -652,6 +717,32 @@ impl Compiler {
                         .map(|(i, _)| i)
                         .collect();
                     if !positions.is_empty() {
+                        let named = positions
+                            .iter()
+                            // A VARIADIC by-reference parameter has no name to
+                            // print — the reference writes `Argument #2 could
+                            // not be passed by reference` with no `($…)` — and
+                            // it covers every position from its own on.
+                            .map(|&i| {
+                                (
+                                    i,
+                                    if params[i].variadic {
+                                        String::new()
+                                    } else {
+                                        params[i].name.clone()
+                                    },
+                                )
+                            })
+                            .collect();
+                        self.byref_user_fns.insert(
+                            name.to_ascii_lowercase(),
+                            ByRefFn {
+                                spelled: name.clone(),
+                                byref: named,
+                                params: params.iter().map(|p| p.name.clone()).collect(),
+                                variadic: params.iter().any(|p| p.variadic),
+                            },
+                        );
                         self.byref_fns.insert(name.to_ascii_lowercase(), positions);
                     }
                     self.collect_byref(body);
@@ -2351,6 +2442,10 @@ impl Compiler {
                     self.emit_call_name_check(b, name, args.len());
                     let byref = self.byref_positions(name, args.len());
                     let diag = byref_diag_slots(name, args.len());
+                    // A USER function declares its own by-reference parameters,
+                    // and the reference refuses an argument that cannot supply
+                    // one there exactly as it does for a library function.
+                    let user = self.byref_user_slots(name, args.len());
                     for (i, a) in args.iter().enumerate() {
                         // An argument in a by-reference position is an output
                         // location, not a value the call reads, so an unset one is
@@ -2367,6 +2462,21 @@ impl Compiler {
                         // one it is about to reject.
                         if let Some(&(_, argno, param)) = diag.iter().find(|(p, ..)| *p == i) {
                             self.emit_byref_arg_diag(b, name, argno, param, byref_arg_class(a));
+                        } else if let Some((spelled, argno, param)) =
+                            user.as_ref().and_then(|(s, slots)| {
+                                slots
+                                    .iter()
+                                    .find(|(p, ..)| *p == i)
+                                    .map(|(_, n, pn)| (s.clone(), *n, pn.clone()))
+                            })
+                        {
+                            self.emit_byref_arg_diag(
+                                b,
+                                &spelled,
+                                argno,
+                                &param,
+                                byref_arg_class(a),
+                            );
                         }
                     }
                     b.emit(
@@ -4165,14 +4275,65 @@ impl Compiler {
         callee: &str,
         args: &[Expr],
     ) -> Result<(), String> {
-        let diag = byref_diag_slots(callee, args.len().max(BYREF_MAX_ARGNO));
+        // A USER function's own by-reference parameters, when the callee is one;
+        // the library table otherwise. A name cannot be in both — redeclaring a
+        // library function is a fatal — so the two never have to be merged.
+        let (shown, diag) = match self.byref_user_slots(callee, args.len().max(BYREF_MAX_ARGNO)) {
+            Some((spelled, slots)) => (spelled, slots),
+            None => (
+                callee.to_string(),
+                byref_diag_slots(callee, args.len().max(BYREF_MAX_ARGNO))
+                    .into_iter()
+                    .map(|(p, argno, param)| (p, argno, param.to_string()))
+                    .collect(),
+            ),
+        };
+        // A named argument that binds NOWHERE stops the judgement of every
+        // argument written after it: the reference sends arguments in written
+        // order and fails on the unknown name first, so `f(b: 2, a: 1)` is
+        // `Unknown named parameter $b` even though `$a` is by reference. Only a
+        // user function has its parameter names here; a library one keeps its
+        // table-driven judgement, which the reference reaches the same way.
+        let known = self
+            .byref_user_fns
+            .get(&callee.to_ascii_lowercase())
+            .map(|f| {
+                (
+                    f.params
+                        .iter()
+                        .cloned()
+                        .collect::<std::collections::HashSet<_>>(),
+                    f.variadic,
+                )
+            });
+        let mut blocked = false;
         for (i, a) in args.iter().enumerate() {
             let slot = match a {
                 Expr::NamedArg(n, v) => {
                     let idx = b.add_constant(Value::str(n.clone()));
                     b.emit(Op::LoadConst(idx), 0);
                     self.compile_expr(b, v)?;
-                    diag.iter().find(|(_, _, param)| param == n).copied()
+                    // A name binds to the parameter it spells; on a VARIADIC
+                    // by-reference callee it binds to the variadic tail
+                    // instead, which has no name, so the slot is the one this
+                    // argument's own position falls in.
+                    let found = diag
+                        .iter()
+                        .find(|(_, _, param)| param == n)
+                        .cloned()
+                        .or_else(|| {
+                            known.as_ref().and_then(|_| {
+                                diag.iter()
+                                    .find(|(p, _, param)| *p == i && param.is_empty())
+                                    .map(|(p, _, param)| (*p, 1, param.clone()))
+                            })
+                        });
+                    if let Some((names, variadic)) = &known {
+                        if !variadic && !names.contains(n) {
+                            blocked = true;
+                        }
+                    }
+                    found
                 }
                 // `...$spread`: `true` in the name slot, flattened by the
                 // host at the call. A spread contributes an unknown number of
@@ -4186,15 +4347,15 @@ impl Compiler {
                 _ => {
                     b.emit(Op::LoadUndef, 0);
                     self.compile_expr(b, a)?;
-                    diag.iter().find(|(p, ..)| *p == i).copied()
+                    diag.iter().find(|(p, ..)| *p == i).cloned()
                 }
             };
-            if let Some((_, argno, param)) = slot {
+            if let Some((_, argno, param)) = slot.filter(|_| !blocked) {
                 let inner = match a {
                     Expr::NamedArg(_, v) => v,
                     _ => a,
                 };
-                self.emit_byref_arg_diag(b, callee, argno, param, byref_arg_class(inner));
+                self.emit_byref_arg_diag(b, &shown, argno, &param, byref_arg_class(inner));
             }
         }
         Ok(())

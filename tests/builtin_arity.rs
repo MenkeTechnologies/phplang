@@ -217,3 +217,70 @@ fn null_in_a_union_that_offers_a_scalar_is_only_deprecated() {
          is deprecated in Command line code on line 1\nstring(1) \"0\"\n"
     );
 }
+
+/// The trace a failure renders, with the frame's arguments as they stand when
+/// the argument parser stopped.
+fn trace(expr: &str) -> String {
+    let src =
+        format!("<?php try {{ {expr}; }} catch (Throwable $e) {{ echo $e->getTraceAsString(); }}");
+    eval_capture(&src).unwrap_or_else(|e| panic!("eval error for {expr:?}: {e}"))
+}
+
+#[test]
+fn a_string_parameter_converts_its_argument_in_the_trace() {
+    // `zend_parse_arg_str` writes the converted string back into the argument
+    // slot, so the frame shows `'5'` for the 5 that was written.
+    assert!(
+        trace("str_pad(5, [])").contains("str_pad('5', Array)"),
+        "got: {}",
+        trace("str_pad(5, [])")
+    );
+    // Including the null a scalar parameter merely deprecates.
+    let t = trace("explode(null, [], [])");
+    assert!(t.contains("explode('', Array, Array)"), "got: {t}");
+}
+
+#[test]
+fn an_int_parameter_leaves_its_argument_alone_in_the_trace() {
+    // `zend_parse_arg_long` converts into a local, not into the slot, so the
+    // numeric STRING is still a string in the frame — the opposite of the
+    // `string` parameter above, and the reason this is a table of two types
+    // rather than a blanket coercion.
+    let t = trace(r#"substr("abc", "1", [])"#);
+    assert!(t.contains("substr('abc', '1', Array)"), "got: {t}");
+    // A `bool` parameter likewise: the null stays a null.
+    let t = trace("array_chunk([1], 0, null)");
+    assert!(t.contains("array_chunk(Array, 0, NULL)"), "got: {t}");
+}
+
+#[test]
+fn an_int_float_union_converts_its_argument_in_the_trace() {
+    // `zend_parse_arg_number` DOES write back, and picks the member the string
+    // spells: `"1.5"` becomes a float, `null` becomes an int 0.
+    let t = trace(r#"number_format("1.5", [])"#);
+    assert!(t.contains("number_format(1.5, Array)"), "got: {t}");
+    let t = trace("number_format(null, [])");
+    assert!(t.contains("number_format(0, Array)"), "got: {t}");
+}
+
+#[test]
+fn an_arity_refusal_reports_its_arguments_as_written() {
+    // The count is checked before any argument is parsed, so nothing has been
+    // converted yet — `strtolower(5, 6)`, not `strtolower('5', 6)`.
+    let t = trace("strtolower(5, 6)");
+    assert!(t.contains("strtolower(5, 6)"), "got: {t}");
+}
+
+#[test]
+fn a_type_refusal_names_a_boolean_by_its_value() {
+    // `zend_zval_value_name`: a diagnostic spells a bool `true`/`false`, which
+    // is the one place it disagrees with `get_debug_type`.
+    assert_eq!(
+        caught("count(true)"),
+        "TypeError: count(): Argument #1 ($value) must be of type Countable|array, true given"
+    );
+    assert_eq!(
+        caught("count(false)"),
+        "TypeError: count(): Argument #1 ($value) must be of type Countable|array, false given"
+    );
+}

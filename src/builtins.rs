@@ -3739,7 +3739,9 @@ pub fn call_library(name: &str, args: &[Value]) -> Result<Value, String> {
                 let n = host::call_method(&class, "count", Some(a), Vec::new())?;
                 Value::int(n.to_int())
             } else {
-                let t = with_host(|h| crate::stdlib::types::debug_type(h, &a));
+                // `type_name_for_error`, not `debug_type`: a diagnostic names a
+                // boolean by its VALUE, so `count(true)` reports `true given`.
+                let t = with_host(|h| h.type_name_for_error(&a));
                 return Err(throws(
                     "TypeError",
                     format!(
