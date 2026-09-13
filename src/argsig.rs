@@ -38,9 +38,13 @@
 //! Error: Unknown named parameter $c
 //! $ php -r 'strtolower([1],"x");'       # 2 wins over argtypes
 //! ArgumentCountError: strtolower() expects exactly 1 argument, 2 given
-//! $ php -r 'sprintf(x: 1);'             # 2 wins over 4
+//! $ php -r 'array_fill(count: 2);'      # 2 wins over 3
+//! ArgumentCountError: array_fill(): Argument #1 ($start_index) not passed
+//! $ php -r 'sprintf(x: 1);'             # 3 wins over 5
 //! ArgumentCountError: sprintf() expects at least 1 argument, 0 given
-//! $ php -r 'sprintf("%s", x: 1);'       # 4
+//! $ php -r 'sprintf([], x: 1);'         # 4 wins over 5
+//! TypeError: sprintf(): Argument #1 ($format) must be of type string, array given
+//! $ php -r 'sprintf("%s", x: 1);'       # 5
 //! ArgumentCountError: sprintf() does not accept unknown named parameters
 //! ```
 
@@ -145,9 +149,14 @@ fn plural(n: usize) -> &'static str {
 /// $ php -r 'rand(1,2,3);'  -> ArgumentCountError: rand() expects exactly 2 arguments, 3 given
 /// ```
 pub fn check_argc(name: &str, argc: usize) -> Result<(), String> {
-    let Some(sig) = sig_of(name) else {
-        return Ok(());
-    };
+    match sig_of(name) {
+        Some(sig) => check_argc_of(name, sig, argc),
+        None => Ok(()),
+    }
+}
+
+/// [`check_argc`] against a signature the caller already looked up.
+fn check_argc_of(name: &str, sig: &Sig, argc: usize) -> Result<(), String> {
     if matches!(lower_name(name).as_ref(), "rand" | "mt_rand") && !matches!(argc, 0 | 2) {
         return Err(argc_error(name, "exactly", 2, argc));
     }
@@ -181,20 +190,30 @@ fn argc_error(name: &str, bound: &str, expected: usize, argc: usize) -> String {
     )
 }
 
-/// What [`bind_named`] produced: the positional argument list to call with, and
-/// whether a name went unplaced (only possible for a variadic function, and
-/// reported after the count check — see the module docs).
+/// What [`bind_named`] produced.
+///
+/// A refusal the reference raises INSIDE the callee comes back here rather than
+/// as an `Err`, because it has to be raised with a trace frame, and that frame
+/// renders the arguments as the call BOUND them — which only this function
+/// knows. `Err` is reserved for the two the reference raises at send time, which
+/// carry no frame at all.
 pub struct Bound {
+    /// The positional argument list to call with; empty when `refusal` is set.
     pub args: Vec<Value>,
+    /// The arguments as a trace frame for this call renders them: every slot the
+    /// call reached, holes included as null, then the names a variadic could not
+    /// place — which the reference prints as `name: value`.
+    pub shown: Vec<(Option<String>, Value)>,
+    /// A framed refusal: the count, or a slot the call jumped over.
+    pub refusal: Option<String>,
+    /// A name a variadic function could not place. Reported after `refusal`.
     pub unplaced_name: bool,
 }
 
 /// Bind PHP 8.0 named arguments to `name`'s declared parameters.
 ///
 /// Callers check [`sig_of`] first; a function the table does not describe keeps
-/// the positional-append fallback and never reaches here. Every `Err` is a
-/// tagged throw: frameless ([`throws_bare`]) for the two the reference raises at
-/// send time, framed ([`throws`]) for the ones it raises inside the callee.
+/// the positional-append fallback and never reaches here.
 ///
 /// # Panics
 ///
@@ -218,7 +237,7 @@ pub fn bind_named(
     }
     let filled_positionally = slots.iter().filter(|s| s.is_some()).count() + tail.len();
 
-    let mut unplaced_name = false;
+    let mut unplaced: Vec<(String, Value)> = Vec::new();
     for (n, v) in named {
         match sig.params.iter().position(|p| p.name == n) {
             Some(i) if i < filled_positionally => {
@@ -230,7 +249,7 @@ pub fn bind_named(
             Some(i) => slots[i] = Some(v),
             // A variadic function cannot refuse the name at send time; the
             // refusal waits until after the count check.
-            None if sig.variadic => unplaced_name = true,
+            None if sig.variadic => unplaced.push((n, v)),
             None => {
                 return Err(throws_bare(
                     "Error",
@@ -243,35 +262,71 @@ pub fn bind_named(
     // The reference counts a call by the highest slot a name reached, holes
     // included — `array_slice(offset: 1)` passes two arguments, one of them a
     // hole, which is why it reports `$array` not passed rather than a shortfall.
-    let last = slots.iter().rposition(Option::is_some).map(|i| i + 1);
-    let argc = last.unwrap_or(0) + tail.len();
-    check_argc(name, argc)?;
+    let last = slots.iter().rposition(Option::is_some).map_or(0, |i| i + 1);
+    let argc = last + tail.len();
+
+    // What a trace frame renders, settled before any refusal so every one of
+    // them carries the same list the reference shows.
+    let mut shown: Vec<(Option<String>, Value)> = slots
+        .iter()
+        .take(last)
+        .map(|s| (None, s.clone().unwrap_or(Value::Undef)))
+        .collect();
+    shown.extend(tail.iter().map(|v| (None, v.clone())));
+    shown.extend(unplaced.iter().map(|(n, v)| (Some(n.clone()), v.clone())));
+
+    // A HOLE is refused before the COUNT. `array_fill(count: 2)` reaches two
+    // slots of a function that requires three, and the reference reports the
+    // empty first slot rather than the shortfall:
+    //
+    // ```text
+    // $ php -r 'array_fill(count: 2);'
+    // ArgumentCountError: array_fill(): Argument #1 ($start_index) not passed
+    // ```
+    let refusal = slots
+        .iter()
+        .take(last)
+        .enumerate()
+        .find(|(_, s)| s.is_none())
+        .and_then(|(i, _)| hole_refusal(name, sig, i))
+        .or_else(|| check_argc(name, argc).err());
+    if refusal.is_some() {
+        return Ok(Bound {
+            args: Vec::new(),
+            shown,
+            refusal,
+            unplaced_name: false,
+        });
+    }
 
     let mut out: Vec<Value> = Vec::with_capacity(argc);
-    for (i, slot) in slots.into_iter().take(last.unwrap_or(0)).enumerate() {
-        match slot {
-            Some(v) => out.push(v),
-            None => out.push(fill_hole(name, sig, i)?),
-        }
+    for (i, slot) in slots.into_iter().take(last).enumerate() {
+        out.push(match slot {
+            Some(v) => v,
+            // Checked above: a hole with no fill has already been refused.
+            None => hole_default(sig, i),
+        });
     }
     out.extend(tail);
     Ok(Bound {
         args: out,
-        unplaced_name,
+        shown,
+        refusal: None,
+        unplaced_name: !unplaced.is_empty(),
     })
 }
 
-/// The value the reference puts in an empty slot a later named argument jumped
-/// over, or the refusal it raises instead.
-fn fill_hole(name: &str, sig: &Sig, i: usize) -> Result<Value, String> {
+/// The refusal the reference raises for a slot a later named argument jumped
+/// over, or `None` when the slot has a default to fill it with.
+fn hole_refusal(name: &str, sig: &Sig, i: usize) -> Option<String> {
     let param = &sig.params[i];
     let argno = i + 1;
     match param.def {
-        Def::Required => Err(throws(
+        Def::Required => Some(throws(
             "ArgumentCountError",
             format!("{name}(): Argument #{argno} (${}) not passed", param.name),
         )),
-        Def::Unknown => Err(throws(
+        Def::Unknown => Some(throws(
             "ArgumentCountError",
             format!(
                 "{name}(): Argument #{argno} (${}) must be passed explicitly, \
@@ -279,12 +334,20 @@ fn fill_hole(name: &str, sig: &Sig, i: usize) -> Result<Value, String> {
                 param.name
             ),
         )),
-        Def::Null => Ok(Value::Undef),
-        Def::Bool(b) => Ok(Value::Bool(b)),
-        Def::Int(n) => Ok(Value::Int(n)),
-        Def::Float(f) => Ok(Value::Float(f)),
-        Def::Str(s) => Ok(Value::str(s.to_string())),
-        Def::EmptyArray => Ok(with_host(|h| h.new_array())),
+        _ => None,
+    }
+}
+
+/// The value the reference puts in a jumped-over slot that has a default.
+fn hole_default(sig: &Sig, i: usize) -> Value {
+    match sig.params[i].def {
+        Def::Bool(b) => Value::Bool(b),
+        Def::Int(n) => Value::Int(n),
+        Def::Float(f) => Value::Float(f),
+        Def::Str(s) => Value::str(s.to_string()),
+        Def::EmptyArray => with_host(|h| h.new_array()),
+        // `Null`, and the two refused above, which cannot reach here.
+        _ => Value::Undef,
     }
 }
 
@@ -307,8 +370,27 @@ pub fn unknown_named_for_variadic(name: &str) -> String {
 /// `array_map("nofunc", "notarray")` reports the callback in #1, not the string
 /// in #2.
 pub fn check_args(name: &str, args: &[Value]) -> Result<(), String> {
-    check_argc(name, args.len())?;
-    let callable = check_callable(name, args);
+    // One table lookup for the whole call: the count check and the callable
+    // check both read the same signature, and this is the hot path every
+    // builtin call goes down.
+    static LEVEL: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
+    let level = *LEVEL.get_or_init(|| {
+        std::env::var("PHPLANG_LEVEL")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0)
+    });
+    let Some(sig) = sig_of(name) else {
+        return crate::argtypes::check_call(name, args, u32::MAX);
+    };
+    if level == 1 {
+        return crate::argtypes::check_call(name, args, u32::MAX);
+    }
+    check_argc_of(name, sig, args.len())?;
+    if level == 2 {
+        return crate::argtypes::check_call(name, args, u32::MAX);
+    }
+    let callable = check_callable(name, sig, args);
     let stop_at = callable
         .as_ref()
         .err()
@@ -322,8 +404,8 @@ pub fn check_args(name: &str, args: &[Value]) -> Result<(), String> {
 ///
 /// A `?callable` parameter takes null as well, which is why `array_map(null,
 /// [1], [2])` zips rather than throwing.
-fn check_callable(name: &str, args: &[Value]) -> Result<(), (u32, String)> {
-    let Some((argno, pname, nullable)) = callable_param(name) else {
+fn check_callable(name: &str, sig: &Sig, args: &[Value]) -> Result<(), (u32, String)> {
+    let Some((argno, pname, nullable)) = callable_param(sig) else {
         return Ok(());
     };
     let Some(v) = args.get(argno - 1) else {
@@ -347,11 +429,10 @@ fn check_callable(name: &str, args: &[Value]) -> Result<(), (u32, String)> {
     ))
 }
 
-/// The 1-based position and name of `name`'s `callable` parameter, and whether
+/// The 1-based position and name of `sig`'s `callable` parameter, and whether
 /// it also accepts null — the shape the reference's
 /// `must be a valid callback[ or null]` message needs.
-fn callable_param(name: &str) -> Option<(usize, &'static str, bool)> {
-    let sig = sig_of(name)?;
+fn callable_param(sig: &Sig) -> Option<(usize, &'static str, bool)> {
     sig.params.iter().enumerate().find_map(|(i, p)| {
         let nullable = p.ty.starts_with('?');
         (p.ty.trim_start_matches('?') == "callable").then_some((i + 1, p.name, nullable))

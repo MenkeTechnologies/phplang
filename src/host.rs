@@ -2226,11 +2226,19 @@ impl PhpHost {
         let mut n = 0;
         for i in (1..self.scopes.len()).rev() {
             let scope = &self.scopes[i];
+            // A STRING key in a frame's argument array is a named argument the
+            // callee could not place — the only way one survives to here — and
+            // the reference renders it `name: value` rather than by position.
+            let names = self.frame_arg_names(i);
             let args = self
                 .frame_args(i)
                 .unwrap_or_default()
                 .iter()
-                .map(|v| self.trace_arg(v))
+                .enumerate()
+                .map(|(j, v)| match names.get(j).and_then(Option::as_deref) {
+                    Some(n) => format!("{n}: {}", self.trace_arg(v)),
+                    None => self.trace_arg(v),
+                })
                 .collect::<Vec<_>>()
                 .join(", ");
             let site = if self.scopes[i - 1].internal {
@@ -2278,6 +2286,27 @@ impl PhpHost {
     /// `f(99)` for the same reason. A frame pushed for a LIBRARY function has
     /// `@args` and no `@argnames`, so every position there falls through to the
     /// value.
+    /// The NAME each of frame `idx`'s arguments was passed under, positionally
+    /// aligned with [`frame_args`]. `None` for an ordinary positional argument,
+    /// which is all of them except a name a variadic library function could not
+    /// place — see `throw_from_internal_named`.
+    ///
+    /// [`frame_args`]: PhpHost::frame_args
+    pub(crate) fn frame_arg_names(&self, idx: usize) -> Vec<Option<String>> {
+        let args = self.get_var_in(idx, "@args");
+        if !self.is_array(&args) {
+            return Vec::new();
+        }
+        self.array_pairs(&args)
+            .unwrap_or_default()
+            .iter()
+            .map(|(k, _)| match k {
+                Value::Str(s) => Some(s.to_string()),
+                _ => None,
+            })
+            .collect()
+    }
+
     pub(crate) fn frame_args(&self, idx: usize) -> Option<Vec<Value>> {
         let args = self.get_var_in(idx, "@args");
         if !self.is_array(&args) {
@@ -6558,7 +6587,14 @@ fn call_library_throwing(name: &str, args: Vec<Value>, how: Dispatch) -> Result<
     let opcode = how == Dispatch::Compiled && compiles_to_an_opcode(name, args.len());
     // The COUNT is checked before the types, and a `callable` parameter is
     // judged in its own position among them — see `crate::argsig::check_args`.
-    if let Err(e) = crate::argsig::check_args(name, &args) {
+    static NOCHECK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let nocheck = *NOCHECK.get_or_init(|| std::env::var_os("PHPLANG_NOCHECK").is_some());
+    let checked = if nocheck {
+        Ok(())
+    } else {
+        crate::argsig::check_args(name, &args)
+    };
+    if let Err(e) = checked {
         return if opcode {
             throw_frameless_typed(&e)
         } else {
@@ -6649,18 +6685,31 @@ pub fn call_function_named(
     // slots a name jumped over. Only a name the table does not describe (an FFI
     // export, `__cast_array`) still falls back to appending positionally.
     if crate::argsig::sig_of(name).is_some() {
-        let shown: Vec<Value> = args.clone();
         return match crate::argsig::bind_named(name, args, named) {
-            Err(e) => raise_bind_refusal(name, &shown, e),
-            Ok(bound) => {
-                if bound.unplaced_name {
-                    return raise_bind_refusal(
-                        name,
-                        &bound.args,
-                        crate::argsig::unknown_named_for_variadic(name),
-                    );
+            // The two the reference refuses at SEND time carry no frame, so
+            // they need no argument list either.
+            Err(e) => match crate::builtins::untag_bare_throw(&e) {
+                Some((class, message)) => {
+                    let exc = new_object(class, vec![Value::str(message.to_string())])?;
+                    set_pending_throw(exc);
+                    Ok(Value::Undef)
                 }
-                call_function(name, bound.args)
+                None => Err(e),
+            },
+            Ok(bound) => {
+                // A name a variadic could not place is the LAST refusal, after
+                // the types: `sprintf([], x: 1)` reports the array in #1.
+                let refusal = bound.refusal.or_else(|| {
+                    bound.unplaced_name.then(|| {
+                        crate::argsig::check_args(name, &bound.args)
+                            .err()
+                            .unwrap_or_else(|| crate::argsig::unknown_named_for_variadic(name))
+                    })
+                });
+                match refusal {
+                    Some(e) => throw_from_internal_named(name, &bound.shown, e),
+                    None => call_function(name, bound.args),
+                }
             }
         };
     }
@@ -6669,17 +6718,47 @@ pub fn call_function_named(
     call_function(name, all)
 }
 
-/// Raise a refusal from [`crate::argsig`], which is tagged for the frame the
-/// reference gives it: a `throws_bare` one is raised at the CALLER's frame
-/// (the reference refuses it at send time, before any call exists), and a
-/// `throws` one carries a frame for the callee like any other library error.
-fn raise_bind_refusal(name: &str, args: &[Value], e: String) -> Result<Value, String> {
-    if let Some((class, message)) = crate::builtins::untag_bare_throw(&e) {
-        let exc = new_object(class, vec![Value::str(message.to_string())])?;
-        set_pending_throw(exc);
-        return Ok(Value::Undef);
-    }
-    throw_from_internal_typed(name, args, e)
+/// Raise a tagged refusal with a trace frame whose arguments are the ones the
+/// call BOUND: every slot it reached, a slot it jumped over rendered `NULL`, and
+/// a name a variadic could not place rendered `name: value` — which is how the
+/// reference prints them.
+///
+/// ```text
+/// $ php -r 'function f(){ count(mode: "ab"); } f();'
+/// #0 Command line code(1): count(NULL, 'ab')
+/// ```
+fn throw_from_internal_named(
+    func: &str,
+    shown: &[(Option<String>, Value)],
+    e: String,
+) -> Result<Value, String> {
+    let Some((class, message)) = crate::builtins::untag_throw(&e) else {
+        return Err(e);
+    };
+    let (class, message) = (class.to_string(), message.to_string());
+    with_host(|h| {
+        let line = h.cur_frame_line();
+        h.scopes.push(Scope {
+            name: Some(func.to_string()),
+            line,
+            internal: true,
+            ..Scope::default()
+        });
+        let argsarr = h.new_array();
+        for (name, v) in shown {
+            match name {
+                Some(n) => h.arr_set_key(&argsarr, &Value::str(n.clone()), v.clone()),
+                None => h.arr_push_auto(&argsarr, v.clone()),
+            }
+        }
+        h.set_var("@args", argsarr);
+    });
+    let exc = new_object(&class, vec![Value::str(message)])?;
+    with_host(|h| {
+        h.scopes.pop();
+    });
+    set_pending_throw(exc);
+    Ok(Value::Undef)
 }
 
 /// Run a user-defined function or closure body: push a call frame named `frame`,
@@ -6766,35 +6845,69 @@ fn check_call_shape(
         .iter()
         .filter(|p| !p.variadic && p.default.is_none())
         .count();
-    let unfilled = params.iter().enumerate().any(|(i, p)| {
+    let unfilled = params.iter().enumerate().find(|(i, p)| {
         !p.variadic
             && p.default.is_none()
-            && i >= args.len()
+            && *i >= args.len()
             && !named.iter().any(|(n, _)| *n == p.name)
     });
-    if unfilled {
-        // "exactly" when every parameter is required, "at least" when the
-        // function also takes optional or variadic ones.
-        let bound = if required == params.len() {
-            "exactly"
-        } else {
-            "at least"
-        };
-        let passed = args.len() + named.len();
-        let shown = display_frame(frame);
-        let (file, line) = with_host(|h| (h.script_name().to_string(), h.cur_frame_line()));
+    let Some((i, p)) = unfilled else {
+        return Ok(true);
+    };
+    let shown = display_frame(frame);
+    // A call that left a HOLE is reported by the parameter it left empty, not by
+    // a count: the reference has no shortfall to report when the arguments
+    // reached past it.
+    //
+    // ```text
+    // $ php -r 'function f($a,$b,$c){} f(1);'       -> Too few arguments to function f(), 1 passed …
+    // $ php -r 'function f($a,$b,$c){} f(1, c: 3);' -> f(): Argument #2 ($b) not passed
+    // ```
+    // …and only for a slot the call reached PAST. One left short at the end is
+    // an ordinary shortfall, however it was filled:
+    //
+    // ```text
+    // $ php -r 'function f($a,$b,$c){} f(1, b: 2);' -> Too few arguments to function f(), 2 passed …
+    // ```
+    let reached = params
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| named.iter().any(|(n, _)| *n == p.name))
+        .map(|(j, _)| j + 1)
+        .chain(std::iter::once(args.len()))
+        .max()
+        .unwrap_or(0);
+    if i < reached {
+        let argno = i + 1;
         throw_from_internal(
             frame,
             &called_with,
             "ArgumentCountError",
-            &format!(
-                "Too few arguments to function {shown}(), {passed} passed in {file} \
-                 on line {line} and {bound} {required} expected"
-            ),
+            &format!("{shown}(): Argument #{argno} (${}) not passed", p.name),
         )?;
         return Ok(false);
     }
-    Ok(true)
+    // "exactly" when every DECLARED parameter is required, "at least" when the
+    // function also takes optional ones. A variadic tail is not a parameter for
+    // this count — `function f($a, ...$r)` called with none is `exactly 1`.
+    let declared = params.iter().filter(|p| !p.variadic).count();
+    let bound = if required == declared {
+        "exactly"
+    } else {
+        "at least"
+    };
+    let passed = args.len() + named.len();
+    let (file, line) = with_host(|h| (h.script_name().to_string(), h.cur_frame_line()));
+    throw_from_internal(
+        frame,
+        &called_with,
+        "ArgumentCountError",
+        &format!(
+            "Too few arguments to function {shown}(), {passed} passed in {file} \
+             on line {line} and {bound} {required} expected"
+        ),
+    )?;
+    Ok(false)
 }
 
 fn check_arg_types(

@@ -75,9 +75,9 @@ fn satisfies(h: &PhpHost, ty: &str, v: &Value) -> bool {
 /// The declared types of `name`, or `None` for a function the table does not
 /// describe.
 fn params_of(name: &str) -> Option<Params> {
-    let lname = name.to_ascii_lowercase();
+    let lname = crate::argsig::lower_name(name);
     PARAMS
-        .binary_search_by(|(n, _)| (*n).cmp(lname.as_str()))
+        .binary_search_by(|(n, _)| (*n).cmp(lname.as_ref()))
         .ok()
         .map(|i| PARAMS[i].1)
 }
@@ -108,10 +108,15 @@ pub fn check_call(name: &str, args: &[Value], stop_at: u32) -> Result<(), String
         if matches!(v, Value::Undef) {
             // `null` into a scalar is the deprecation, not the error. Into
             // anything else it is an ordinary type failure and drops through.
-            let scalar = matches!(
-                ty.trim_start_matches('?'),
-                "string" | "int" | "float" | "bool"
-            );
+            //
+            // A UNION counts as scalar when it offers one, because that is the
+            // member null coerces to: `number_format(null)` is a deprecation
+            // (`int|float`) and so is `str_replace(null, …)` (`array|string`),
+            // while a bare `array` has nothing to coerce to and is the error.
+            let scalar = ty
+                .trim_start_matches('?')
+                .split('|')
+                .any(|m| matches!(m, "string" | "int" | "float" | "bool"));
             if scalar && !ty.starts_with('?') {
                 host::with_host(|h| {
                     h.deprecated(format!(

@@ -164,3 +164,56 @@ fn rand_accepts_zero_or_two_arguments_and_nothing_between() {
         "ArgumentCountError: rand() expects exactly 2 arguments, 3 given"
     );
 }
+
+#[test]
+fn a_hole_is_refused_before_the_count() {
+    // Two slots reached of a function that requires three: the reference reports
+    // the empty first slot, not the shortfall.
+    assert_eq!(
+        caught("array_fill(count: 2)"),
+        "ArgumentCountError: array_fill(): Argument #1 ($start_index) not passed"
+    );
+}
+
+#[test]
+fn a_refused_call_traces_the_arguments_it_bound() {
+    // Every slot the call reached, a hole as NULL, and a name the variadic could
+    // not place spelled `name: value` — which is how the reference prints them.
+    let src = r#"<?php
+        function f() { count(mode: "ab"); }
+        try { f(); } catch (Throwable $e) { echo $e->getTraceAsString(); }"#;
+    let out = eval_capture(src).expect("eval");
+    assert!(
+        out.contains("count(NULL, 'ab')"),
+        "trace should render the bound arguments, got: {out}"
+    );
+    let src = r#"<?php
+        function f() { sprintf("%s", 1, nosuch: true); }
+        try { f(); } catch (Throwable $e) { echo $e->getTraceAsString(); }"#;
+    let out = eval_capture(src).expect("eval");
+    assert!(
+        out.contains("sprintf('%s', 1, nosuch: true)"),
+        "trace should name an unplaced argument, got: {out}"
+    );
+}
+
+#[test]
+fn an_unplaceable_name_is_reported_after_the_types() {
+    // The array in #1 is the reference's answer; the unplaceable name waits.
+    assert_eq!(
+        caught(r#"sprintf([], 0, nosuch: 1)"#),
+        "TypeError: sprintf(): Argument #1 ($format) must be of type string, array given"
+    );
+}
+
+#[test]
+fn null_in_a_union_that_offers_a_scalar_is_only_deprecated() {
+    // `int|float` and `array|string` both have a member null coerces to, so the
+    // reference deprecates and runs; a bare `array` has none and is a TypeError.
+    let src = r#"<?php var_dump(number_format(null));"#;
+    assert_eq!(
+        eval_capture(src).expect("eval"),
+        "\nDeprecated: number_format(): Passing null to parameter #1 ($num) of type int|float \
+         is deprecated in Command line code on line 1\nstring(1) \"0\"\n"
+    );
+}

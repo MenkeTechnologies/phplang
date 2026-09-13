@@ -108,3 +108,49 @@ fn named_arg_on_closure() {
         echo $f(b: 3, a: 10);"#;
     assert_eq!(run(src), "7");
 }
+
+#[test]
+fn a_named_argument_that_leaves_a_hole_names_the_parameter() {
+    // A user function reports the slot the call jumped over, not a shortfall —
+    // the same distinction a builtin makes.
+    let src = r#"<?php
+        function f($a, $b, $c) {}
+        try { f(1, c: 3); } catch (Throwable $e) { echo get_class($e), "|", $e->getMessage(); }"#;
+    assert_eq!(
+        run(src),
+        "ArgumentCountError|f(): Argument #2 ($b) not passed"
+    );
+    let src = r#"<?php
+        class C { function m($a, $b, $c) {} }
+        try { (new C)->m(1, c: 3); } catch (Throwable $e) { echo get_class($e), "|", $e->getMessage(); }"#;
+    assert_eq!(
+        run(src),
+        "ArgumentCountError|C::m(): Argument #2 ($b) not passed"
+    );
+}
+
+#[test]
+fn a_call_left_short_at_the_end_is_still_a_count() {
+    // `b: 2` fills the slot next to the positional, so `$c` is a shortfall
+    // rather than a hole and the reference counts instead of naming.
+    let src = r#"<?php
+        function f($a, $b, $c) {}
+        try { f(1, b: 2); } catch (Throwable $e) { echo get_class($e), "|", $e->getMessage(); }"#;
+    let out = run(src);
+    assert!(
+        out.starts_with("ArgumentCountError|Too few arguments to function f(), 2 passed in ")
+            && out.ends_with(" and exactly 3 expected"),
+        "got: {out}"
+    );
+}
+
+#[test]
+fn a_variadic_tail_is_not_counted_among_the_expected() {
+    // `function f($a, ...$r)` called with none expects EXACTLY one, not at least
+    // one: the variadic is not a parameter for this count.
+    let src = r#"<?php
+        function f($a, ...$r) {}
+        try { f(); } catch (Throwable $e) { echo $e->getMessage(); }"#;
+    let out = run(src);
+    assert!(out.ends_with("and exactly 1 expected"), "got: {out}");
+}

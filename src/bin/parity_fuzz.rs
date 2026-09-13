@@ -1940,6 +1940,122 @@ fn gen_errlevel(seed: u64) -> Vec<String> {
     }
 }
 
+/// Builtin ARITY and named parameters — the half of a library signature that had
+/// no representation at all until `crate::argsig` was generated, and which this
+/// generator therefore emitted zero of: `expects exactly`, `expects at least`,
+/// `expects at most`, `Unknown named parameter`, `not passed`,
+/// `must be passed explicitly` and `does not accept unknown named parameters`
+/// all had a zero count across the whole file.
+///
+/// Three axes, mixed per case: how many positional arguments a call passes
+/// (deliberately including too few and too many), whether a named argument
+/// follows and whether it names a real parameter, a bogus one, or one a
+/// positional already filled, and — for the functions that declare a `callable`
+/// — what shape of broken callback it is handed.
+fn gen_builtinargs(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    // `(function, a real parameter name, the position it sits at)`. The pool
+    // spans the shapes the checks distinguish: all-required, an optional tail, a
+    // variadic, and a declared `callable`.
+    const FNS: &[(&str, &str, usize)] = &[
+        ("strtolower", "string", 1),
+        ("strrev", "string", 1),
+        ("str_repeat", "times", 2),
+        ("substr", "offset", 2),
+        ("implode", "separator", 1),
+        ("array_slice", "offset", 2),
+        ("str_pad", "pad_string", 3),
+        ("in_array", "strict", 3),
+        ("number_format", "decimals", 2),
+        ("explode", "limit", 3),
+        ("array_keys", "strict", 3),
+        ("count", "mode", 2),
+        ("str_replace", "subject", 3),
+        ("array_search", "needle", 1),
+        ("array_fill", "count", 2),
+        ("htmlspecialchars", "double_encode", 4),
+        ("ucwords", "separators", 2),
+        ("sprintf", "format", 1),
+        ("array_map", "callback", 1),
+        ("array_filter", "callback", 2),
+        ("str_word_count", "format", 2),
+        ("substr_count", "length", 4),
+    ];
+    // Values a position may hold. Kept deterministic and side-effect free, and
+    // wide enough that the TYPE check still has something to say when the count
+    // is right.
+    const VALS: &[&str] = &[
+        "\"ab\"", "\"a\"", "1", "0", "2", "[1, 2]", "[]", "true", "null", "$arr",
+    ];
+    // Callbacks, valid and broken, for the `callable` positions.
+    const CALLBACKS: &[&str] = &[
+        "\"strtoupper\"",
+        "\"nofunc\"",
+        "null",
+        "1",
+        "[1, 2]",
+        "[\"C\"]",
+        "[\"C\", \"nope\"]",
+        "[\"C\", \"m\"]",
+        "[\"C\", \"s\"]",
+        "[$o, \"m\"]",
+        "[$o, \"p\"]",
+        "\"C::m\"",
+        "\"C::s\"",
+        "fn($v) => $v",
+        "$o",
+    ];
+    const DECL: &str = "class C { public function m($v = 1) { return $v; } \
+                        private function p($v = 1) { return $v; } \
+                        public static function s($v = 1) { return $v; } } \
+                        $arr = [3, 1, 2]; $o = new C();";
+
+    let (func, pname, ppos) = *r.pick(FNS);
+    let takes_callback = matches!(func, "array_map" | "array_filter");
+    // 0..=4 positional arguments, so both ends of the declared range are
+    // crossed for every function in the pool.
+    let npos = r.below(5);
+    let mut args: Vec<String> = Vec::new();
+    for i in 0..npos {
+        let at_callback = takes_callback && (i + 1 == if func == "array_map" { 1 } else { 2 });
+        args.push(if at_callback {
+            (*r.pick(CALLBACKS)).to_string()
+        } else {
+            (*r.pick(VALS)).to_string()
+        });
+    }
+    // The named tail: a real name (which may fill a slot a positional already
+    // took, or leave a hole under it), or one that names nothing.
+    match r.below(4) {
+        0 => {}
+        1 => args.push(format!("{pname}: {}", r.pick(VALS))),
+        2 => args.push(format!("nosuch: {}", r.pick(VALS))),
+        _ => {
+            // A name for the position AFTER the last positional, which is the
+            // hole case when it skips one.
+            let _ = ppos;
+            args.push(format!("{pname}: {}", r.pick(VALS)));
+        }
+    }
+    let call = format!("{func}({})", args.join(", "));
+    match r.below(4) {
+        0 => vec![format!(
+            "{DECL} try {{ var_dump({call}); }} catch (Throwable $e) {{ \
+             echo get_class($e), \"|\", $e->getMessage(); }}"
+        )],
+        1 => vec![format!(
+            "{DECL} try {{ {call}; }} catch (Throwable $e) {{ \
+             echo $e->getLine(), \"|\", $e->getTraceAsString(); }}"
+        )],
+        // Uncaught, one frame down, so the trace carries a user frame under the
+        // internal one.
+        2 => vec![format!(
+            "{DECL} function f() {{ global $arr, $o; return {call}; }} var_dump(f());"
+        )],
+        _ => vec![format!("{DECL} var_dump({call});")],
+    }
+}
+
 /// Library argument errors: a standard-library function given arguments it
 /// rejects throws a catchable exception whose `#0` trace frame is the library
 /// call itself. Half the cases catch it (class + message + line), half let it
@@ -4358,6 +4474,10 @@ const MODES: &[Mode] = &[
         gen: gen_libargerr,
     },
     Mode {
+        name: "builtinargs",
+        gen: gen_builtinargs,
+    },
+    Mode {
         name: "pregerr",
         gen: gen_pregerr,
     },
@@ -4777,6 +4897,11 @@ fn main() {
     // against `ran`: a case that reached a worker and landed in none of them was
     // lost, and a lost case must not shrink the denominator in silence.
     let scored = Arc::new(AtomicUsize::new(0));
+    // The same count BY MODE, which is the only number that answers "did this
+    // mode measure anything?". A mode can run its full share of cases and score
+    // almost none of them — every program failing to compile, or printing
+    // nothing — and the global total hides that behind the modes that work.
+    let scored_modes: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
 
     let mut handles = Vec::new();
     for _ in 0..args.jobs {
@@ -4785,6 +4910,7 @@ fn main() {
         let ran = Arc::clone(&ran);
         let barren = Arc::clone(&barren);
         let scored = Arc::clone(&scored);
+        let scored_modes = Arc::clone(&scored_modes);
         let skipped = Arc::clone(&skipped);
         let bin = bin.clone();
         let timeout = args.timeout;
@@ -4803,6 +4929,7 @@ fn main() {
             let (o, r) = match verdict {
                 Verdict::Same => {
                     scored.fetch_add(1, Ordering::Relaxed);
+                    scored_modes.lock().unwrap().push(mode.name);
                     continue;
                 }
                 Verdict::Barren => {
@@ -4866,6 +4993,20 @@ fn main() {
 
     let barren = Arc::try_unwrap(barren).unwrap().into_inner().unwrap();
     let skipped = Arc::try_unwrap(skipped).unwrap().into_inner().unwrap();
+    let scored_modes = Arc::try_unwrap(scored_modes).unwrap().into_inner().unwrap();
+    // How many cases a mode was HANDED, recomputed from the seeds rather than
+    // counted in the workers: `case_from_seed` is pure, so this cannot drift
+    // from what actually ran.
+    let ran_by_mode = |name: &str| {
+        (0..args.count)
+            .filter(|i| {
+                forced.map_or_else(
+                    || case_from_seed(case_seed(args.base_seed, *i), None).0.name,
+                    |m| m.name,
+                ) == name
+            })
+            .count()
+    };
 
     println!("\n=== parity-fuzz summary ===");
     println!("ran        : {ran} cases in {:.1}s", elapsed.as_secs_f64());
@@ -4925,16 +5066,6 @@ fn main() {
             }
         }
         by_mode.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
-        let ran_by_mode = |name: &str| {
-            (0..args.count)
-                .filter(|i| {
-                    forced.map_or_else(
-                        || case_from_seed(case_seed(args.base_seed, *i), None).0.name,
-                        |m| m.name,
-                    ) == name
-                })
-                .count()
-        };
         println!("  barren by mode (share of that mode's cases):");
         for (name, n) in by_mode {
             let total = ran_by_mode(name);
@@ -4948,6 +5079,31 @@ fn main() {
     }
     let scored = scored.load(Ordering::Relaxed);
     println!("scored     : {scored} (agreed on a non-empty reference output)");
+    // The real compare rate, per mode. A mode whose rate is far below the run's
+    // is discarding most of its programs before they prove anything — a
+    // generator fault, not a parity result — and only this table says so.
+    {
+        let mut rows: Vec<(&str, usize, usize, usize)> = Vec::new();
+        for m in MODES {
+            let handed = ran_by_mode(m.name);
+            if handed == 0 {
+                continue;
+            }
+            let ok = scored_modes.iter().filter(|n| **n == m.name).count();
+            let found = divs.iter().filter(|d| d.mode == m.name).count();
+            rows.push((m.name, handed, ok, found));
+        }
+        rows.sort_by(|a, b| {
+            let ra = a.2 as f64 / a.1 as f64;
+            let rb = b.2 as f64 / b.1 as f64;
+            ra.partial_cmp(&rb).unwrap().then(a.0.cmp(b.0))
+        });
+        println!("  scored by mode (of the cases the mode was handed), worst first:");
+        for (name, handed, ok, found) in rows {
+            let pct = 100.0 * ok as f64 / handed as f64;
+            println!("    {name:<14} {ok:>5} of {handed:<6} ({pct:5.1}%)  {found} divergences");
+        }
+    }
     // Reconcile: every case handed to a worker must have landed in exactly one
     // bucket. Anything unaccounted for was lost — a panicked worker, or a
     // verdict arm that forgot to count itself — and a lost case silently makes

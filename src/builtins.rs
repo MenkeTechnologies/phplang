@@ -3650,14 +3650,16 @@ pub fn untag_bare_throw(e: &str) -> Option<(&str, &str)> {
 /// PHP equivalent. The decoding deliberately lives in the CALLER, which still
 /// owns the argument list the trace frame has to print.
 pub fn call_library(name: &str, args: &[Value]) -> Result<Value, String> {
-    let lname = name.to_ascii_lowercase();
+    // Borrowed rather than allocated when the name is already lower case, which
+    // is how a PHP program spells one essentially always.
+    let lname = crate::argsig::lower_name(name);
     let coerced = coerce_stringable_args(&lname, args);
     let args: &[Value] = coerced.as_deref().unwrap_or(args);
     // A builtin with a by-reference OUT parameter publishes its value for the
     // call site to write back (see `BYREF_BUILTINS`); clearing first means a
     // call that writes none cannot be read as having written the last one's.
     with_host(|h| h.byref_out_clear());
-    let v = match lname.as_str() {
+    let v = match lname.as_ref() {
         // `exit` / `die` — end the request. PHP 8.4 turned both into real
         // functions (`function_exists("exit")` answers true), and the scanner
         // folds `die` onto `exit`, so both spellings arrive here under the one
