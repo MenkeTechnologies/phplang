@@ -7523,7 +7523,7 @@ fn callable_method_refusal(class: &str, method: &str, this: &Option<Value>) -> O
 /// The reference settles the callee where the syntax is written: `$o->nope(...)`
 /// raises `Call to undefined method C::nope()` on the spot, even though the
 /// closure is never invoked. Every refusal is worded exactly as the CALL would
-/// have been worded, which is why this delegates to [`callvalue_refusal`] rather
+/// have been worded, which is why this delegates to `callvalue_refusal` rather
 /// than inventing a second set of messages.
 ///
 /// `instance` says the syntax was spelled with `->`. It cannot be recovered from

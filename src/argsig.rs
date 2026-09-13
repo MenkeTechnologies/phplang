@@ -74,7 +74,7 @@ pub enum Def {
 
 /// One declared parameter: its name, its default, and its declared type.
 ///
-/// The type is carried for the callable check ([`callable_param`]); the
+/// The type is carried for the callable check (`callable_param`); the
 /// accept/reject decision for every other type stays in [`crate::argtypes`],
 /// whose table has hand-corrections this generated one deliberately does not.
 pub struct Param {
