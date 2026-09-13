@@ -6554,26 +6554,32 @@ fn throw_frameless_typed(e: &str) -> Result<Value, String> {
 /// The list is the set of callback-taking functions this engine implements —
 /// every `host::call_value` reached from `builtins::call_library` — so a new one
 /// has to be added here along with its dispatch arm.
+/// The library functions that run a PHP callback, named as a slice so the
+/// invariant `call_library_throwing` leans on can be TESTED: none of these
+/// declares a parameter the argument parser converts in the slot, so the frame
+/// they push may record its arguments as written (see
+/// `crate::argtypes::converts_in_place`, and the test beside it).
+pub(crate) const CALLS_BACK: &[&str] = &[
+    "array_map",
+    "array_filter",
+    "array_reduce",
+    "array_walk",
+    "array_walk_recursive",
+    "array_find",
+    "array_find_key",
+    "array_any",
+    "array_all",
+    "array_udiff",
+    "array_uintersect",
+    "usort",
+    "uasort",
+    "uksort",
+    "preg_replace_callback",
+    "iterator_apply",
+];
+
 fn calls_back(name: &str) -> bool {
-    matches!(
-        name,
-        "array_map"
-            | "array_filter"
-            | "array_reduce"
-            | "array_walk"
-            | "array_walk_recursive"
-            | "array_find"
-            | "array_find_key"
-            | "array_any"
-            | "array_all"
-            | "array_udiff"
-            | "array_uintersect"
-            | "usort"
-            | "uasort"
-            | "uksort"
-            | "preg_replace_callback"
-            | "iterator_apply"
-    )
+    CALLS_BACK.contains(&name)
 }
 
 fn call_library_throwing(name: &str, args: Vec<Value>, how: Dispatch) -> Result<Value, String> {
@@ -6605,7 +6611,7 @@ fn call_library_throwing(name: &str, args: Vec<Value>, how: Dispatch) -> Result<
             let arity = crate::builtins::untag_throw(&e)
                 .is_some_and(|(class, _)| class == "ArgumentCountError");
             let targs = if arity {
-                args.clone()
+                std::borrow::Cow::Borrowed(&args[..])
             } else {
                 crate::argtypes::trace_args(name, &args)
             };
@@ -6619,13 +6625,10 @@ fn call_library_throwing(name: &str, args: Vec<Value>, how: Dispatch) -> Result<
     // for the rest of the library.
     let framed = calls_back(name);
     if framed {
-        // Converted the way the trace reports them, and computed BEFORE the
-        // host is borrowed: `trace_args` borrows it too.
-        let targs = crate::argtypes::trace_args(name, &args);
         with_host(|h| {
             let line = h.cur_frame_line();
             let argsarr = h.new_array();
-            for a in &targs {
+            for a in &args {
                 h.arr_push_auto(&argsarr, a.clone());
             }
             h.push_internal_frame(name, line, argsarr);

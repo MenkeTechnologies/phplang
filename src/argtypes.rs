@@ -17,6 +17,7 @@
 
 use crate::host::{self, PhpHost};
 use fusevm::Value;
+use std::borrow::Cow;
 
 /// `(function, [(1-based argument number, parameter name, declared type)])`.
 ///
@@ -167,9 +168,15 @@ pub fn check_call(name: &str, args: &[Value], stop_at: u32) -> Result<(), String
 /// reference converts one that has `__toString`. Rendering a trace must not run
 /// user code, and calling the method a second time to print a frame is a worse
 /// error than printing `Object(S)` where the reference prints `'S!'`.
-pub fn trace_args(name: &str, args: &[Value]) -> Vec<Value> {
-    let mut out = args.to_vec();
-    let Some(params) = params_of(name) else {
+pub fn trace_args<'a>(name: &str, args: &'a [Value]) -> Cow<'a, [Value]> {
+    let mut out = Cow::Borrowed(args);
+    // A function whose parameters convert NOTHING — which is most of them, and
+    // every callback-taking one the hot path pushes a frame for — leaves the
+    // arguments borrowed, so the common call copies no values at all.
+    let Some(params) = params_of(name).filter(|ps| {
+        ps.iter()
+            .any(|(_, _, ty)| matches!(ty.trim_start_matches('?'), "string" | "int|float"))
+    }) else {
         return out;
     };
     host::with_host(|h| {
@@ -195,15 +202,12 @@ pub fn trace_args(name: &str, args: &[Value]) -> Vec<Value> {
             } else if !satisfies(h, ty, v) {
                 break;
             }
-            match bare {
-                "string" if !matches!(v, Value::Obj(_)) => {
-                    out[argno as usize - 1] = Value::str(h.to_str(v));
-                }
-                "int|float" if !matches!(v, Value::Obj(_)) => {
-                    out[argno as usize - 1] = h.to_number(v);
-                }
-                _ => {}
-            }
+            let converted = match bare {
+                "string" if !matches!(v, Value::Obj(_)) => Value::str(h.to_str(v)),
+                "int|float" if !matches!(v, Value::Obj(_)) => h.to_number(v),
+                _ => continue,
+            };
+            out.to_mut()[argno as usize - 1] = converted;
         }
     });
     out
@@ -1448,3 +1452,37 @@ static PARAMS: &[(&str, Params)] = &[
         ],
     ),
 ];
+
+/// Whether `name` has a parameter the argument parser converts IN THE SLOT, so
+/// a frame recording its arguments as written would report them wrongly. See
+/// [`trace_args`] for which two types those are.
+///
+/// Only the test below asks: production code never needs the question answered
+/// per call, which is the point — the hot path skips the conversion outright.
+#[cfg(test)]
+pub(crate) fn converts_in_place(name: &str) -> bool {
+    params_of(name).is_some_and(|ps| {
+        ps.iter()
+            .any(|(_, _, ty)| matches!(ty.trim_start_matches('?'), "string" | "int|float"))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    /// A library function that runs a PHP callback pushes a trace frame on the
+    /// HOT path, and records its arguments as written rather than paying
+    /// [`super::trace_args`] per call. That is only correct while no such
+    /// function declares a converting parameter — this is the check, so the day
+    /// one does, a test fails instead of a trace quietly reporting the wrong
+    /// argument.
+    #[test]
+    fn no_callback_taking_builtin_converts_an_argument_in_place() {
+        for name in crate::host::CALLS_BACK {
+            assert!(
+                !super::converts_in_place(name),
+                "{name} declares a parameter the parser converts in the slot, so \
+                 the frame it pushes has to convert too"
+            );
+        }
+    }
+}
