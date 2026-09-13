@@ -205,3 +205,23 @@ fn a_named_argument_in_a_variadic_by_reference_tail_is_refused_as_the_first() {
         "v"
     );
 }
+
+#[test]
+fn an_argument_before_a_spread_is_still_judged() {
+    // The spread's own length is a run-time fact, but everything written before
+    // it lands in a known position — so the literal in #1 is refused.
+    assert_eq!(
+        caught("function f(&$a) {} f(1, ...[2, 3]);"),
+        "Error: f(): Argument #1 ($a) could not be passed by reference"
+    );
+    // A location there is fine, and the spread itself carries no refusal: the
+    // reference binds a spread element by value.
+    assert_eq!(
+        run(r#"<?php function f(&$a) { $a = 9; return "ok"; } $q = 1; echo f($q, ...[2, 3]), $q;"#),
+        "ok9"
+    );
+    assert_eq!(
+        run(r#"<?php function f(&$a) { return "ok"; } echo f(...[1, 2]);"#),
+        "ok"
+    );
+}

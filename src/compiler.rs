@@ -2408,15 +2408,37 @@ impl Compiler {
                     // can flatten spread arrays into the positional argument list.
                     let idx = b.add_constant(Value::str(name.clone()));
                     b.emit(Op::LoadConst(idx), 0);
-                    for a in args {
+                    // An argument written BEFORE the first spread still lands in a
+                    // known position, so a by-reference parameter there is judged
+                    // exactly as in a call with no spread at all: `f(1, ...[2, 3])`
+                    // on `function f(&$a)` is refused. From the spread on, how many
+                    // arguments it contributes is a run-time fact, so no position
+                    // after it can be judged here.
+                    let (shown, diag) = self.byref_slots_for(name, args.len());
+                    let mut seen_spread = false;
+                    for (i, a) in args.iter().enumerate() {
                         match a {
                             Expr::Spread(inner) => {
+                                seen_spread = true;
                                 b.emit(Op::LoadTrue, 0);
                                 self.compile_expr(b, inner)?;
                             }
                             _ => {
                                 b.emit(Op::LoadFalse, 0);
                                 self.compile_expr(b, a)?;
+                                if !seen_spread {
+                                    if let Some((_, argno, param)) =
+                                        diag.iter().find(|(p, ..)| *p == i).cloned()
+                                    {
+                                        self.emit_byref_arg_diag(
+                                            b,
+                                            &shown,
+                                            argno,
+                                            &param,
+                                            byref_arg_class(a),
+                                        );
+                                    }
+                                }
                             }
                         }
                     }
@@ -2424,6 +2446,22 @@ impl Compiler {
                         Op::CallBuiltin(ops::CALL_SPREAD, (args.len() * 2 + 1) as u8),
                         self.cur_line,
                     );
+                    // The by-reference write-back reaches the positions BEFORE the
+                    // first spread, for the same reason the refusal above does:
+                    // those are the ones whose argument number is known here.
+                    // Without it `f($q, ...[2, 3])` on `function f(&$a)` left $q
+                    // at its old value while `f($q)` updated it.
+                    let first_spread = args
+                        .iter()
+                        .position(|a| matches!(a, Expr::Spread(_)))
+                        .unwrap_or(args.len());
+                    if let Some((positions, guarded)) = self.byref_positions(name, args.len()) {
+                        let known: Vec<usize> = positions
+                            .into_iter()
+                            .filter(|p| *p < first_spread)
+                            .collect();
+                        self.emit_byref_writeback(b, args, &known, guarded)?;
+                    }
                 } else if is_direct_minmax2(name, args) {
                     // A literal two-argument `min`/`max`. The reference compiles
                     // exactly this shape to its FRAMELESS implementation, which
@@ -4269,25 +4307,31 @@ impl Compiler {
     /// one does, so `sort(array: [1, 2])` is the same error as `sort([1, 2])`.
     /// Which slot it lands in is found by NAME rather than by position, which is
     /// the whole point of the syntax.
+    /// The by-reference slots to judge a call to `callee` against: the USER
+    /// function's own parameters when it is one, the library table otherwise. A
+    /// name cannot be in both — redeclaring a library function is a fatal — so
+    /// the two never have to be merged. The first half is the spelling the
+    /// refusal names, which is the DECLARED one for a user function.
+    fn byref_slots_for(&self, callee: &str, nargs: usize) -> ByRefSlots {
+        match self.byref_user_slots(callee, nargs) {
+            Some(slots) => slots,
+            None => (
+                callee.to_string(),
+                byref_diag_slots(callee, nargs)
+                    .into_iter()
+                    .map(|(p, argno, param)| (p, argno, param.to_string()))
+                    .collect(),
+            ),
+        }
+    }
+
     fn compile_arg_pairs_for(
         &mut self,
         b: &mut ChunkBuilder,
         callee: &str,
         args: &[Expr],
     ) -> Result<(), String> {
-        // A USER function's own by-reference parameters, when the callee is one;
-        // the library table otherwise. A name cannot be in both — redeclaring a
-        // library function is a fatal — so the two never have to be merged.
-        let (shown, diag) = match self.byref_user_slots(callee, args.len().max(BYREF_MAX_ARGNO)) {
-            Some((spelled, slots)) => (spelled, slots),
-            None => (
-                callee.to_string(),
-                byref_diag_slots(callee, args.len().max(BYREF_MAX_ARGNO))
-                    .into_iter()
-                    .map(|(p, argno, param)| (p, argno, param.to_string()))
-                    .collect(),
-            ),
-        };
+        let (shown, diag) = self.byref_slots_for(callee, args.len().max(BYREF_MAX_ARGNO));
         // A named argument that binds NOWHERE stops the judgement of every
         // argument written after it: the reference sends arguments in written
         // order and fails on the unknown name first, so `f(b: 2, a: 1)` is
