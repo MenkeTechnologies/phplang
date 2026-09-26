@@ -274,7 +274,9 @@ end-to-end (see `tests/basic.rs`):
   offsets past the end, the `++`/`--` cases that have no effect, and PHP 8.2's
   `Creation of dynamic property C::$p is deprecated`. `isset()`, `empty()` and
   `??` read in PHP's isset mode and stay silent, as do writes, auto-vivification
-  and by-reference output arguments. `@` is separate and dynamic: the operand is
+  and by-reference arguments — an unset variable passed to `sort` or
+  `array_push` binds as null without a warning, and the refusal is the
+  `TypeError` for that null. `@` is separate and dynamic: the operand is
   evaluated normally and every diagnostic raised while it runs is dropped,
   including those raised from inside the library functions it calls
   (`@preg_match('/[a', $s)`). Which of them are

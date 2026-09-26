@@ -12,8 +12,11 @@
 //! is absent, and an absent parameter is not checked at all: this narrows what
 //! reaches a builtin, and never widens it.
 //!
-//! By-reference parameters are absent too. Those are written rather than read,
-//! so an unset variable in one is normal and carries no type to check.
+//! By-reference parameters are absent too, with one exception. An OUT
+//! parameter is written rather than read, so an unset variable in one is normal
+//! and carries no type to check; but the sort family and `array_walk` take
+//! their `array` by reference to MUTATE it, and the reference checks that one
+//! like any other — an unset variable there is `null given`. Those are listed.
 
 use crate::host::{self, PhpHost};
 use fusevm::Value;
@@ -52,6 +55,7 @@ fn satisfies(h: &PhpHost, ty: &str, v: &Value) -> bool {
     let is_object = matches!(v, Value::Obj(_)) && !is_array;
     match ty {
         "array" => is_array,
+        "object" => is_object,
         "string" => match v {
             _ if is_array => false,
             // An object stands in for a string only through `__toString`.
@@ -145,7 +149,13 @@ pub fn check_call(name: &str, args: &[Value], stop_at: u32) -> Result<(), String
             continue;
         }
         let given = host::with_host(|h| h.type_name_for_error(v));
-        let ty = if ty == "stream" { "resource" } else { ty };
+        // `end`/`reset`/`next`/`prev` still accept an object (deprecated), but
+        // their refusal names only `array`, as the reference's does.
+        let ty = match ty {
+            "stream" => "resource",
+            "array|object" => "array",
+            other => other,
+        };
         return Err(crate::builtins::throws(
             "TypeError",
             format!("{name}(): Argument #{argno} (${pname}) must be of type {ty}, {given} given"),
@@ -248,6 +258,7 @@ static PARAMS: &[(&str, Params)] = &[
     // generated: 374 functions, plus the `stream`/`resource` first parameters
     // of the stream family and `get_resource_*`, added by hand: reflection
     // declares those parameters untyped, so the generator cannot see them.
+    // Likewise the by-reference `array` of the sort family and `array_walk`.
     ("abs", &[(1, "num", "int|float")]),
     ("acos", &[(1, "num", "float")]),
     ("acosh", &[(1, "num", "float")]),
@@ -337,10 +348,12 @@ static PARAMS: &[(&str, Params)] = &[
         &[(1, "array", "array"), (2, "flags", "int")],
     ),
     ("array_values", &[(1, "array", "array")]),
-    ("arsort", &[(2, "flags", "int")]),
+    ("array_walk", &[(1, "array", "array")]),
+    ("array_walk_recursive", &[(1, "array", "array")]),
+    ("arsort", &[(1, "array", "array"), (2, "flags", "int")]),
     ("asin", &[(1, "num", "float")]),
     ("asinh", &[(1, "num", "float")]),
-    ("asort", &[(2, "flags", "int")]),
+    ("asort", &[(1, "array", "array"), (2, "flags", "int")]),
     ("assert_options", &[(1, "option", "int")]),
     ("atan", &[(1, "num", "float")]),
     ("atan2", &[(1, "y", "float"), (2, "x", "float")]),
@@ -521,6 +534,7 @@ static PARAMS: &[(&str, Params)] = &[
     ("disk_free_space", &[(1, "directory", "string")]),
     ("disk_total_space", &[(1, "directory", "string")]),
     ("diskfreespace", &[(1, "directory", "string")]),
+    ("end", &[(1, "array", "array|object")]),
     (
         "enum_exists",
         &[(1, "enum", "string"), (2, "autoload", "bool")],
@@ -833,8 +847,8 @@ static PARAMS: &[(&str, Params)] = &[
         ],
     ),
     ("key_exists", &[(2, "array", "array")]),
-    ("krsort", &[(2, "flags", "int")]),
-    ("ksort", &[(2, "flags", "int")]),
+    ("krsort", &[(1, "array", "array"), (2, "flags", "int")]),
+    ("ksort", &[(1, "array", "array"), (2, "flags", "int")]),
     ("lcfirst", &[(1, "string", "string")]),
     (
         "levenshtein",
@@ -1038,6 +1052,9 @@ static PARAMS: &[(&str, Params)] = &[
     ),
     ("mt_rand", &[(1, "min", "int"), (2, "max", "int")]),
     ("mt_srand", &[(1, "seed", "?int"), (2, "mode", "int")]),
+    ("natcasesort", &[(1, "array", "array")]),
+    ("natsort", &[(1, "array", "array")]),
+    ("next", &[(1, "array", "array|object")]),
     (
         "nl2br",
         &[(1, "string", "string"), (2, "use_xhtml", "bool")],
@@ -1119,6 +1136,7 @@ static PARAMS: &[(&str, Params)] = &[
             (4, "flags", "int"),
         ],
     ),
+    ("prev", &[(1, "array", "array|object")]),
     ("print_r", &[(2, "return", "bool")]),
     ("printf", &[(1, "format", "string")]),
     ("property_exists", &[(2, "property", "string")]),
@@ -1146,10 +1164,11 @@ static PARAMS: &[(&str, Params)] = &[
     ),
     ("realpath", &[(1, "path", "string")]),
     ("rename", &[(1, "from", "string"), (2, "to", "string")]),
+    ("reset", &[(1, "array", "array|object")]),
     ("rewind", &[(1, "stream", "stream")]),
     ("rmdir", &[(1, "directory", "string")]),
     ("round", &[(1, "num", "int|float"), (2, "precision", "int")]),
-    ("rsort", &[(2, "flags", "int")]),
+    ("rsort", &[(1, "array", "array"), (2, "flags", "int")]),
     (
         "rtrim",
         &[(1, "string", "string"), (2, "characters", "string")],
@@ -1166,6 +1185,7 @@ static PARAMS: &[(&str, Params)] = &[
         "sha1_file",
         &[(1, "filename", "string"), (2, "binary", "bool")],
     ),
+    ("shuffle", &[(1, "array", "array")]),
     (
         "similar_text",
         &[(1, "string1", "string"), (2, "string2", "string")],
@@ -1174,7 +1194,7 @@ static PARAMS: &[(&str, Params)] = &[
     ("sinh", &[(1, "num", "float")]),
     ("sizeof", &[(2, "mode", "int")]),
     ("sleep", &[(1, "seconds", "int")]),
-    ("sort", &[(2, "flags", "int")]),
+    ("sort", &[(1, "array", "array"), (2, "flags", "int")]),
     ("soundex", &[(1, "string", "string")]),
     (
         "spl_autoload_register",
@@ -1464,11 +1484,13 @@ static PARAMS: &[(&str, Params)] = &[
         "trim",
         &[(1, "string", "string"), (2, "characters", "string")],
     ),
+    ("uasort", &[(1, "array", "array")]),
     ("ucfirst", &[(1, "string", "string")]),
     (
         "ucwords",
         &[(1, "string", "string"), (2, "separators", "string")],
     ),
+    ("uksort", &[(1, "array", "array")]),
     (
         "uniqid",
         &[(1, "prefix", "string"), (2, "more_entropy", "bool")],
@@ -1485,6 +1507,7 @@ static PARAMS: &[(&str, Params)] = &[
         &[(1, "message", "string"), (2, "error_level", "int")],
     ),
     ("usleep", &[(1, "microseconds", "int")]),
+    ("usort", &[(1, "array", "array")]),
     ("utf8_decode", &[(1, "string", "string")]),
     ("utf8_encode", &[(1, "string", "string")]),
     ("var_export", &[(2, "return", "bool")]),

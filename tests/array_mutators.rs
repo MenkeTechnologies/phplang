@@ -18,11 +18,14 @@ fn push_returns_count_and_appends() {
     );
 }
 
+/// The array is a by-reference parameter that is READ, so an unset variable is
+/// not auto-vivified: it binds as null and the reference refuses it. (This
+/// test used to assert the vivification, which no PHP 8 does.)
 #[test]
-fn push_autovivifies_unset_var() {
+fn push_onto_an_unset_var_is_a_type_error() {
     assert_eq!(
-        run("<?php array_push($a, 'x'); echo implode(',', $a);"),
-        "x"
+        run("<?php try { array_push($a, 'x'); } catch (TypeError $e) { echo $e->getMessage(); }"),
+        "array_push(): Argument #1 ($array) must be of type array, null given"
     );
 }
 
@@ -131,5 +134,34 @@ fn splice_negative_offset_and_default_length() {
     assert_eq!(
         run("<?php $a = [1, 2, 3, 4, 5]; array_splice($a, -2); echo implode(',', $a);"),
         "1,2,3"
+    );
+}
+
+/// Every library function that takes its array by reference to MUTATE it checks
+/// that argument's type, as the reference does: an unset variable binds as null
+/// WITHOUT an "Undefined variable" warning and is then refused, and so is a
+/// string. Expectations are the reference's output for the same program.
+#[test]
+fn by_reference_array_arguments_are_type_checked_and_read_quietly() {
+    let src = r#"<?php
+        try { sort($u1); } catch (TypeError $e) { echo $e->getMessage(), "\n"; }
+        try { ksort($u2); } catch (TypeError $e) { echo $e->getMessage(), "\n"; }
+        try { shuffle($u3); } catch (TypeError $e) { echo $e->getMessage(), "\n"; }
+        try { end($u4); } catch (TypeError $e) { echo $e->getMessage(), "\n"; }
+        $s = "x";
+        try { sort($s); } catch (TypeError $e) { echo $e->getMessage(), "\n"; }
+        try { usort($n, fn($a, $b) => 0); } catch (TypeError $e) { echo $e->getMessage(), "\n"; }
+        try { array_pop($u5); } catch (TypeError $e) { echo $e->getMessage(), "\n"; }
+        $a = [2, 1]; sort($a); echo implode(",", $a);"#;
+    assert_eq!(
+        run(src),
+        "sort(): Argument #1 ($array) must be of type array, null given\n\
+         ksort(): Argument #1 ($array) must be of type array, null given\n\
+         shuffle(): Argument #1 ($array) must be of type array, null given\n\
+         end(): Argument #1 ($array) must be of type array, null given\n\
+         sort(): Argument #1 ($array) must be of type array, string given\n\
+         usort(): Argument #1 ($array) must be of type array, null given\n\
+         array_pop(): Argument #1 ($array) must be of type array, null given\n\
+         1,2"
     );
 }

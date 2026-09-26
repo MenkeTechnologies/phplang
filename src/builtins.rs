@@ -2154,6 +2154,32 @@ fn b_arr_mut(vm: &mut VM, argc: u8) -> Value {
     let name = with_host(|h| h.to_str(&args[0]));
     let sub = args[1].to_int();
     let extra: Vec<Value> = args.split_off(2);
+    // The array is taken by reference to be mutated, so it is type-checked like
+    // any other argument: an unset variable binds as null, and null — like any
+    // other non-array — is the `TypeError`, with the call's frame in its trace.
+    let target = with_host(|h| h.get_var(&name));
+    if !with_host(|h| h.is_array(&target)) {
+        let func = match sub {
+            arrmut::PUSH => "array_push",
+            arrmut::POP => "array_pop",
+            arrmut::SHIFT => "array_shift",
+            arrmut::UNSHIFT => "array_unshift",
+            _ => "array_splice",
+        };
+        let given = with_host(|h| h.type_name_for_error(&target));
+        let mut shown = vec![target];
+        shown.extend(extra);
+        mark_frame_line(vm);
+        return match host::throw_from_internal(
+            func,
+            &shown,
+            "TypeError",
+            &format!("{func}(): Argument #1 ($array) must be of type array, {given} given"),
+        ) {
+            Ok(v) => bubbled(vm, v),
+            Err(e) => fail(vm, e),
+        };
+    }
     let r = with_host(|h| match sub {
         arrmut::PUSH => h.arr_push_var(&name, extra),
         arrmut::POP => Ok(h.arr_pop_var(&name)),

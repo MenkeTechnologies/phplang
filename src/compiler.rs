@@ -2639,7 +2639,10 @@ impl Compiler {
                         self.compile_expr(b, a)?;
                     }
                     // argc = name + subop + the remaining value arguments.
-                    b.emit(Op::CallBuiltin(ops::ARR_MUT, (args.len() + 1) as u8), 0);
+                    b.emit(
+                        Op::CallBuiltin(ops::ARR_MUT, (args.len() + 1) as u8),
+                        self.cur_line,
+                    );
                 } else if has_spread {
                     // Any `...$arr` argument switches to the spread dispatch: each
                     // argument is pushed as a `(is_spread, value)` pair so the host
@@ -2727,8 +2730,14 @@ impl Compiler {
                         // location, not a value the call reads, so an unset one is
                         // not a mistake and PHP raises no diagnostic for it —
                         // `preg_match($re, $s, $m)` with a fresh `$m` is the norm.
+                        // The same holds for a library function that takes its
+                        // array by reference to mutate it: `sort($unset)` binds
+                        // the variable to null silently, and the refusal is the
+                        // `TypeError` for that null.
+                        let in_diag = diag.iter().any(|(p, ..)| *p == i);
                         match &byref {
                             Some((p, _)) if p.contains(&i) => self.compile_quiet(b, a)?,
+                            _ if in_diag => self.compile_quiet(b, a)?,
                             _ => self.compile_expr(b, a)?,
                         }
                         // Whether that position can actually be WRITTEN back to is
