@@ -233,10 +233,12 @@ end-to-end (see `tests/basic.rs`):
   composes — `{closure:{closure:f():3}:4}`). The two answers a parse cannot settle
   come from the running frame: `__CLASS__` inside a trait method is the class that
   USED the trait, and inside an anonymous class it is the generated
-  `class@anonymous` name `get_class` reports. `__FILE__` is whatever the entry
-  point named the script — a resolved path, `Command line code` for `-r`, or
-  `Standard input code` for a script on stdin — and `__DIR__` falls back to the
-  working directory when there is no file. In the flat namespace model
+  `class@anonymous` name `get_class` reports. `__FILE__` is the file the code
+  came from: for the main script whatever the entry point named it — a resolved
+  path, `Command line code` for `-r`, or `Standard input code` for a script on
+  stdin — for included code its resolved path, for `eval()`'d code
+  `<file>(<line>) : eval()'d code` — and `__DIR__` falls back to the working
+  directory when there is no file. In the flat namespace model
   `__NAMESPACE__` is the declared namespace in full, while class and function
   names stay unqualified.
 - **Enums** (PHP 8.1): pure enums (`enum Suit { case Hearts; … }` with
@@ -358,12 +360,34 @@ end-to-end (see `tests/basic.rs`):
   it — a redefinition through either spelling warns and keeps the first value);
   and superglobals (`$_SERVER`, `$_ENV`, `$_GET`/`$_POST`/…, `$GLOBALS`, `$argv`/
   `$argc`) auto-global across every scope.
+- **`include` / `require` / `include_once` / `require_once` and `eval()`**:
+  the loaded file or code is compiled when the construct runs and executes in
+  the CURRENT scope, its functions and classes becoming global. The construct
+  evaluates to the code's `return` value (`1` for a file that returns nothing,
+  null for `eval`), a repeated `_once` to `true`, a failed `include` to `false`
+  after the reference's two warnings, and a failed `require` throws `Error`. A
+  syntax error in loaded code throws `ParseError` (reported as `Parse error:` if
+  uncaught). Loaded code names its own file in diagnostics, exception
+  `getFile()`, `__FILE__`/`__DIR__` and stack traces, where each include or eval
+  is a frame of its own (`#1 main.php(3): include('/path/to/f…')`).
+  `get_included_files()` lists what was loaded.
+- **Stream resources**: `fopen` on files and on `php://memory`, `php://temp`,
+  `php://stdin`/`stdout`/`stderr`/`output`, `tmpfile()`, and the `STDIN`/
+  `STDOUT`/`STDERR` constants. A resource is numbered as the reference numbers
+  it (the standard streams 1–3, the first stream a script opens 5, numbers never
+  reused) and renders as it does everywhere — `var_dump`'s
+  `resource(5) of type (stream)`, `Resource id #5`, `gettype`, `(int)`, array
+  keys, comparisons — including after `fclose`, when it is of type `Unknown`.
+  `feof` answers whether a read came up short, seeking past the end and writing
+  there zero-fills, append modes append, and the stream functions refuse a
+  non-resource or a closed stream with the reference's `TypeError`.
 - The `DateTime`/`DateTimeImmutable`/`DateInterval` classes and the SPL data
   structures (`SplStack`, `SplQueue`, `SplDoublyLinkedList`, `SplFixedArray`,
   `ArrayObject`, `SplObjectStorage`, `SplPriorityQueue`, `SplMinHeap`/`SplMaxHeap`)
   plus `stdClass`, all as PHP preludes; output buffering (`ob_start`/`ob_get_clean`/…),
-  variadic introspection (`func_get_args`/`func_num_args`), `fopen` file streams
-  (`fread`/`fwrite`/`fgets`/`fseek`/`fclose`), the `unset()` construct, `spl_object_id`,
+  variadic introspection (`func_get_args`/`func_num_args`), the stream functions
+  (`fread`/`fwrite`/`fgets`/`fgetc`/`fseek`/`ftruncate`/`fstat`/`fclose`/…), the
+  `unset()` construct, `spl_object_id`,
   and the `@` error-suppression operator.
 - **`exit` / `die`** — the request ends where they stand. Parentheses and the
   argument are both optional; an int becomes the process exit status (modulo
@@ -418,7 +442,8 @@ end-to-end (see `tests/basic.rs`):
     — `filter_var` (`VALIDATE_INT`/`FLOAT`/`BOOLEAN`/`EMAIL`/`URL`/`IP`/`DOMAIN`/
     `REGEXP`, `SANITIZE_*`). **mbstring** — `mb_str_split`, `mb_convert_case`,
     `mb_strpos`/`rpos`, `mb_ord`/`chr`, `mb_convert_encoding`, `mb_detect_encoding`.
-  - **fileio** — `file_get_contents`/`put_contents`, `file`, `fopen`-free file ops
+  - **fileio** — `file_get_contents`/`put_contents`, `file`, `readfile` (all of
+    which also take `php://` URLs), and the path-level file ops
     (`file_exists`, `is_file`/`dir`, `unlink`, `mkdir`, `scandir`, `copy`,
     `basename`/`dirname`/`pathinfo`, `realpath`, `getcwd`, …).
   - **reflection** — `class_exists`, `method_exists`, `property_exists`,
@@ -441,11 +466,11 @@ documented in-code:
   a class name, `array`, `iterable`, `callable`, `mixed`, `object`, and the
   return-only `void`/`never`/`static`. A value that would not satisfy one of
   those passes through where the reference raises a `TypeError`.
-- `declare(strict_types=1)` is whole-program rather than per-file. Upstream reads
-  the mode from the file containing the CALL, so a strict file calling a
-  non-strict file's function still checks strictly; phplang has no `include`, so
-  a run is exactly one file and the two readings coincide. If `include` is added,
-  this becomes a real divergence and the flag has to move onto the call site.
+- `declare(strict_types=1)` is whole-program rather than per-file: the main
+  script's declaration sets the mode for every call, and one in an `include`d
+  file or `eval()`'d code is ignored. Upstream reads the mode from the file
+  containing the CALL, so a strict included file calling into a non-strict one
+  still checks strictly there; phplang does not.
 - A callback invoked BY a library function (`array_map`, `usort`) is checked in
   whatever mode the program declared. Upstream treats an internal caller as
   having no strict-mode file and so coerces, while `call_user_func` forwards the

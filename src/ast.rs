@@ -381,6 +381,14 @@ pub enum Expr {
     /// `$a ?: print "y"` are both legal. Its precedence sits between assignment
     /// and `yield`, which is why it is read where `yield` is.
     Print(Box<Expr>),
+    /// `include`/`require`/`include_once`/`require_once EXPR` — load, compile
+    /// and run another file in the CURRENT scope. An expression: its value is
+    /// the file's `return` value, `1`, `true` for a repeated `_once`, or `false`
+    /// for a failed `include`. Read where `print` is, taking everything to its
+    /// right at assignment precedence.
+    Include(IncludeKind, Box<Expr>),
+    /// `eval(EXPR)` — compile and run a string of PHP in the current scope.
+    Eval(Box<Expr>),
 }
 
 /// The run-time half of PHP's magic constants.
@@ -858,4 +866,47 @@ pub struct SwitchCase {
 pub struct Capture {
     pub name: String,
     pub by_ref: bool,
+}
+
+/// Which of the four file-inclusion constructs an [`Expr::Include`] is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IncludeKind {
+    Include,
+    IncludeOnce,
+    Require,
+    RequireOnce,
+}
+
+impl IncludeKind {
+    /// The construct as the reference names it in diagnostics and traces.
+    pub fn name(self) -> &'static str {
+        match self {
+            IncludeKind::Include => "include",
+            IncludeKind::IncludeOnce => "include_once",
+            IncludeKind::Require => "require",
+            IncludeKind::RequireOnce => "require_once",
+        }
+    }
+
+    /// The number the compiler bakes into the `INCLUDE` call.
+    pub fn code(self) -> i64 {
+        self as i64
+    }
+
+    pub fn from_code(n: i64) -> Self {
+        match n {
+            1 => IncludeKind::IncludeOnce,
+            2 => IncludeKind::Require,
+            3 => IncludeKind::RequireOnce,
+            _ => IncludeKind::Include,
+        }
+    }
+
+    pub fn once(self) -> bool {
+        matches!(self, IncludeKind::IncludeOnce | IncludeKind::RequireOnce)
+    }
+
+    pub fn required(self) -> bool {
+        matches!(self, IncludeKind::Require | IncludeKind::RequireOnce)
+    }
 }

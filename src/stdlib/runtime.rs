@@ -164,7 +164,7 @@ fn user_error_fatal(msg: &str, args: &[Value]) -> Result<Value, String> {
         h.push_internal_frame("trigger_error", line, argsarr);
         let body = format!(
             "{msg} in {} on line {line}\nStack trace:\n{}",
-            h.script_name(),
+            h.current_file(),
             h.backtrace()
         );
         h.pop_internal_frame();

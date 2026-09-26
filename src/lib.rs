@@ -117,6 +117,8 @@ class TypeError extends Error {}
 class ArgumentCountError extends TypeError {}
 class ValueError extends Error {}
 class JsonException extends Exception {}
+class CompileError extends Error {}
+class ParseError extends CompileError {}
 class UnhandledMatchError extends Error {}
 "#;
 
@@ -450,6 +452,7 @@ pub fn load_merged(prog: compiler::Program) -> fusevm::Chunk {
         classes,
         try_defs,
         diags: _,
+        counters,
     } = prog;
     let (prelude_fns, prelude_classes) = prelude_defs();
     host::with_host(|h| {
@@ -459,6 +462,8 @@ pub fn load_merged(prog: compiler::Program) -> fusevm::Chunk {
         h.load_program(functions);
         h.load_classes(classes);
         h.load_try_defs(try_defs);
+        // A later `include` or `eval` continues this program's numbering.
+        h.set_compile_counters(counters);
         // Reserve the global frame's slots before the chunk that numbered them
         // runs. An `include`/`eval` later in the same frame keeps the by-name
         // path, which reaches these same slots.

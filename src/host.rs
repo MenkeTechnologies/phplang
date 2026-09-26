@@ -411,6 +411,11 @@ pub mod ops {
     /// as null instead of throwing (`zend_fetch_static_property_address` with
     /// `BP_VAR_IS`). An unknown CLASS still throws, as it does in the reference.
     pub const SPROP_GET_Q: u16 = 135;
+    /// `[path, kind]` -> value. `include`/`require` and their `_once` forms:
+    /// load, compile and run a file in the current frame (`host::run_include`).
+    pub const INCLUDE: u16 = 136;
+    /// `[code]` -> value. `eval()`: compile and run a string in the current frame.
+    pub const EVAL: u16 = 137;
 }
 
 /// The capture name a `static` closure carries from its creation site.
@@ -866,6 +871,26 @@ struct Scope {
     /// source. A trace prints the call site of the frame ABOVE such a frame as
     /// `[internal function]`, because there is no PHP line to name.
     internal: bool,
+    /// The file this frame's code was compiled from, when it is not the main
+    /// script: a function declared in an `include`d file, or a closure written
+    /// in `eval()`'d code. Taken from the body chunk's `source` at the call.
+    /// `None` for the main script's code — and, for an `internal` frame, "the
+    /// caller's", which is where its diagnostics point.
+    file: Option<std::sync::Arc<str>>,
+}
+
+/// One running `include`/`require`/`eval`: the code it loaded executes on the
+/// frame at `depth` (an index into the scope stack), so a stack trace shows it
+/// as a frame of its own between that one and whatever it calls.
+struct IncludeFrame {
+    depth: usize,
+    /// The file the loaded code came from — for `eval`, the synthetic
+    /// `<file>(<line>) : eval()'d code` name the reference gives it.
+    file: std::sync::Arc<str>,
+    /// How a trace names the frame: `include('/path/to/f.php')`, `eval()`.
+    label: String,
+    /// The line of the construct in the code that reached it.
+    call_line: u32,
 }
 
 /// The PHP runtime state for one thread.
@@ -904,6 +929,17 @@ pub struct PhpHost {
     constants: FxHashMap<String, Value>,
     /// The next resource number to hand out. Numbers are never reused.
     next_resource_id: i64,
+    /// The `include`/`require`/`eval` constructs currently running, innermost
+    /// last. Each runs on the frame it was reached from rather than on one of
+    /// its own, so it is recorded here instead of on the scope stack.
+    includes: Vec<IncludeFrame>,
+    /// Every file an `include`/`require` has loaded, resolved, in load order —
+    /// `get_included_files()` and what the `_once` forms test against.
+    included_files: Vec<String>,
+    /// Where the next run-time compilation (`include`, `eval`) starts its
+    /// per-compilation counters, so the names it mints never collide with those
+    /// of the code already loaded.
+    compile_counters: crate::compiler::Counters,
     /// Shared storage cells for reference bindings (`$b = &$a`). A scope's `refs`
     /// map points names at these slots.
     ref_cells: Vec<Value>,
@@ -1302,6 +1338,9 @@ impl PhpHost {
             try_defs: Vec::new(),
             constants: predefined_constants(),
             next_resource_id: 1,
+            includes: Vec::new(),
+            included_files: Vec::new(),
+            compile_counters: crate::compiler::Counters::default(),
             ob_stack: Vec::new(),
             ref_cells: Vec::new(),
             byref_out: Vec::new(),
@@ -1708,12 +1747,51 @@ impl PhpHost {
     /// `"Command line code"` for `php -r` (which is the default).
     pub fn set_script_name(&mut self, name: impl Into<String>) {
         self.script_name = name.into();
+        // A script that is a FILE is the first of `get_included_files()`, and
+        // an `include_once` of it is a repeat.
+        self.included_files = if self.script_name.starts_with('/') {
+            vec![self.script_name.clone()]
+        } else {
+            Vec::new()
+        };
     }
 
     /// What a diagnostic names as the source — the script path, or
     /// `"Command line code"` for `php -r`.
     pub fn script_name(&self) -> &str {
         &self.script_name
+    }
+
+    /// The file the code at scope `i` belongs to, ignoring any include running
+    /// on it: the frame's own file, the caller's for an internal frame, the
+    /// main script's otherwise.
+    fn scope_file(&self, i: usize) -> &str {
+        let scope = &self.scopes[i];
+        if scope.internal && i > 0 {
+            return self.scope_file(i - 1);
+        }
+        scope.file.as_deref().unwrap_or(&self.script_name)
+    }
+
+    /// The file the code running now belongs to — what a diagnostic, an
+    /// exception's `getFile()`, `__FILE__` and `__DIR__` name. The innermost
+    /// `include`/`eval` on the current frame wins over the frame's own file.
+    pub fn current_file(&self) -> &str {
+        let top = self.scopes.len() - 1;
+        match self.includes.last() {
+            Some(f) if f.depth == top => &f.file,
+            _ => {
+                // An internal frame pushed over an include inherits it too.
+                let mut i = top;
+                while self.scopes[i].internal && i > 0 {
+                    i -= 1;
+                }
+                match self.includes.last() {
+                    Some(f) if f.depth == i => &f.file,
+                    _ => self.scope_file(top),
+                }
+            }
+        }
     }
 
     /// The line the innermost frame is executing — where an exception created
@@ -2044,7 +2122,7 @@ impl PhpHost {
         if self.suppress > 0 || self.error_reporting & level == 0 {
             return;
         }
-        let body = format!("{msg} in {} on line {line}", self.script_name);
+        let body = format!("{msg} in {} on line {line}", self.current_file());
         if self.ini_flag("display_errors") {
             self.write_out(&format!("\n{severity}: {body}\n"));
         }
@@ -2218,11 +2296,14 @@ impl PhpHost {
         if let Some(site) = &scope.closure_site {
             let rendered = match site {
                 DeclSite::Closure(inner, line) => {
-                    format!("{{closure:{}:{line}}}", inner.render(&self.script_name))
+                    format!(
+                        "{{closure:{}:{line}}}",
+                        inner.render(scope.file.as_deref().unwrap_or(&self.script_name))
+                    )
                 }
                 // A closure body always carries a `Closure` site; anything else
                 // is a frame that was handed one it should not have.
-                other => other.render(&self.script_name),
+                other => other.render(scope.file.as_deref().unwrap_or(&self.script_name)),
             };
             return match name.split_once("::") {
                 Some((class, _)) => {
@@ -2271,33 +2352,65 @@ impl PhpHost {
     /// A closure frame is named the way PHP 8.4 names it — see
     /// `trace_frame_name`.
     pub fn backtrace(&self) -> String {
+        // The frames outermost first, each with the file and line its code is
+        // at: a scope, then any include running on it. A frame's line is where
+        // it called deeper — an include's own line for a scope that is running
+        // one, the scope's live line otherwise.
+        struct Frame<'a> {
+            label: Option<String>,
+            file: &'a str,
+            line: u32,
+            internal: bool,
+        }
+        let mut frames: Vec<Frame<'_>> = Vec::new();
+        for (i, scope) in self.scopes.iter().enumerate() {
+            let incs: Vec<&IncludeFrame> = self.includes.iter().filter(|f| f.depth == i).collect();
+            let label = (i > 0).then(|| {
+                // A STRING key in a frame's argument array is a named argument
+                // the callee could not place — the only way one survives to
+                // here — and the reference renders it `name: value`.
+                let names = self.frame_arg_names(i);
+                let args = self
+                    .frame_args(i)
+                    .unwrap_or_default()
+                    .iter()
+                    .enumerate()
+                    .map(|(j, v)| match names.get(j).and_then(Option::as_deref) {
+                        Some(n) => format!("{n}: {}", self.trace_arg(v)),
+                        None => self.trace_arg(v),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{}({args})", self.trace_frame_name(scope))
+            });
+            frames.push(Frame {
+                label,
+                file: self.scope_file(i),
+                line: incs.first().map_or(scope.line, |f| f.call_line),
+                internal: scope.internal,
+            });
+            for (k, inc) in incs.iter().enumerate() {
+                frames.push(Frame {
+                    label: Some(inc.label.clone()),
+                    file: &inc.file,
+                    line: incs.get(k + 1).map_or(scope.line, |f| f.call_line),
+                    internal: false,
+                });
+            }
+        }
         let mut out = String::new();
         let mut n = 0;
-        for i in (1..self.scopes.len()).rev() {
-            let scope = &self.scopes[i];
-            // A STRING key in a frame's argument array is a named argument the
-            // callee could not place — the only way one survives to here — and
-            // the reference renders it `name: value` rather than by position.
-            let names = self.frame_arg_names(i);
-            let args = self
-                .frame_args(i)
-                .unwrap_or_default()
-                .iter()
-                .enumerate()
-                .map(|(j, v)| match names.get(j).and_then(Option::as_deref) {
-                    Some(n) => format!("{n}: {}", self.trace_arg(v)),
-                    None => self.trace_arg(v),
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-            let site = if self.scopes[i - 1].internal {
+        for j in (1..frames.len()).rev() {
+            let caller = &frames[j - 1];
+            let site = if caller.internal {
                 "[internal function]".to_string()
             } else {
-                format!("{}({})", self.script_name, self.scopes[i - 1].line)
+                format!("{}({})", caller.file, caller.line)
             };
+            let label = frames[j].label.as_deref().unwrap_or_default();
             out.push_str(&format!(
-                "#{n} {site}: {}({args})\n",
-                self.trace_frame_name(scope)
+                "#{n} {site}: {label}
+"
             ));
             n += 1;
         }
@@ -4011,7 +4124,7 @@ impl PhpHost {
     /// for it; the same goes for a script read from standard input. Both are
     /// recognised by [`PhpHost::script_name`] not being a path.
     pub fn magic_dir(&self) -> String {
-        let name = self.script_name();
+        let name = self.current_file();
         if name.starts_with('/') {
             if let Some(parent) = std::path::Path::new(name).parent() {
                 return parent.display().to_string();
@@ -6552,6 +6665,28 @@ pub fn run_main(chunk: Chunk) -> Result<Value, String> {
     // stdout, inside any open output buffer — and the returned string is the
     // stderr log copy, which the CLI wrapper reports without re-displaying.
     if let Some(exc) = with_host(|h| h.pending_throw.take()) {
+        // An uncaught `ParseError` — a syntax error in `include`d or `eval()`'d
+        // code — is reported the way a syntax error in the script itself is:
+        // `Parse error: <message> in <file> on line <n>`, with no trace.
+        let parse = with_host(|h| {
+            h.object_class(&exc)
+                .is_some_and(|c| c.eq_ignore_ascii_case("ParseError"))
+                .then(|| {
+                    format!(
+                        "{} in {} on line {}",
+                        h.to_str(&h.prop_get(&exc, "message")),
+                        h.to_str(&h.prop_get(&exc, "file")),
+                        h.prop_get(&exc, "line").to_int()
+                    )
+                })
+        });
+        if let Some(body) = parse {
+            with_host(|h| {
+                h.fatal("Parse error", &body);
+                h.ob_flush_all();
+            });
+            return Err(format!("Parse error:  {body}"));
+        }
         let body = with_host(|h| {
             let class = h
                 .object_class(&exc)
@@ -7099,7 +7234,7 @@ fn check_call_shape(
         "at least"
     };
     let passed = args.len() + named.len();
-    let (file, line) = with_host(|h| (h.script_name().to_string(), h.cur_frame_line()));
+    let (file, line) = with_host(|h| (h.current_file().to_string(), h.cur_frame_line()));
     throw_from_internal(
         frame,
         &called_with,
@@ -7225,7 +7360,7 @@ fn arg_type_error(
         None => (String::new(), None),
     };
     let rendered = ty.map(|t| t.render()).unwrap_or_default();
-    let (file, line) = with_host(|h| (h.script_name().to_string(), h.cur_frame_line()));
+    let (file, line) = with_host(|h| (h.current_file().to_string(), h.cur_frame_line()));
     let shown = display_frame(frame);
     throw_from_internal(
         frame,
@@ -7324,6 +7459,9 @@ fn invoke_with_locals(
     // Which parameter positions a positional or named argument (or a null-fill for
     // a no-default omitted param) already bound — so the default pass below runs
     // only the chunks that are actually needed. Computed inside the binding closure.
+    // Code compiled from another file names that file; the main script's
+    // chunks carry no source, and their frames fall back to the script name.
+    let file = (!body.source.is_empty()).then(|| std::sync::Arc::from(body.source.as_str()));
     let bound = with_host(|h| {
         let scope = Scope {
             name: Some(frame.to_string()),
@@ -7331,6 +7469,7 @@ fn invoke_with_locals(
             closure_site: h.closure_site_take(),
             ..Scope::default()
         };
+        let scope = Scope { file, ..scope };
         h.scopes.push(scope);
         h.seed_slots(locals);
         // Captured bindings first, then parameters (a parameter of the same name
@@ -7929,7 +8068,7 @@ fn seed_throwable(class: &str, obj: &Value) {
         if !h.class_is_a(&cl, "exception") && !h.class_is_a(&cl, "error") {
             return;
         }
-        let file = h.script_name().to_string();
+        let file = h.current_file().to_string();
         let line = h.cur_frame_line() as i64;
         let trace = h.backtrace();
         h.prop_set(obj, "file", Value::str(file));
@@ -8007,7 +8146,7 @@ pub fn fatal_from_internal(func: &str, args: &[Value], message: &str) -> String 
         h.scopes.pop();
         let body = format!(
             "{message} in {} on line {line}\nStack trace:\n{trace}",
-            h.script_name()
+            h.current_file()
         );
         h.fatal("Fatal error", &body);
         h.ob_flush_all();
@@ -9586,4 +9725,264 @@ pub fn arith_type_name(h: &PhpHost, v: &Value) -> String {
         Value::Obj(_) => h.instance_class(v).unwrap_or_else(|| "object".into()),
         _ => "mixed".into(),
     }
+}
+
+// ── include / require / eval ────────────────────────────────────────────────
+
+/// The `include_path` a failed `include` quotes. phplang searches the working
+/// directory and then the including file's directory, and has no PEAR
+/// directory to add.
+pub const INCLUDE_PATH: &str = ".";
+
+impl PhpHost {
+    /// `(lowercased name, [(parameter, by_ref, variadic)])` for every loaded user
+    /// function — what a run-time compilation needs to write a by-reference
+    /// argument back at a call to a function it did not see declared.
+    pub fn user_function_params(&self) -> Vec<(String, Vec<(String, bool, bool)>)> {
+        self.functions
+            .iter()
+            .filter(|(_, def)| def.closure_site.is_none())
+            .map(|(name, def)| {
+                let params = def
+                    .params
+                    .iter()
+                    .map(|p| (p.name.clone(), p.by_ref, p.variadic))
+                    .collect();
+                (name.clone(), params)
+            })
+            .collect()
+    }
+
+    /// `get_included_files()`: the main script (when it is a file) and every
+    /// file loaded since, in load order.
+    pub fn included_files(&self) -> &[String] {
+        &self.included_files
+    }
+
+    /// Where the next run-time compilation continues numbering.
+    pub fn set_compile_counters(&mut self, c: crate::compiler::Counters) {
+        self.compile_counters = c;
+    }
+
+    /// Append a run-time compilation's `try` table; its ids were numbered to
+    /// follow the ones already loaded.
+    pub fn append_try_defs(&mut self, defs: Vec<TryDef>) {
+        self.try_defs.extend(defs);
+    }
+}
+
+/// Find the file an `include "name"` means: an absolute path as is; `./` and
+/// `../` against the working directory; anything else in each `include_path`
+/// directory, then in the directory of the file doing the including.
+fn resolve_include(name: &str) -> std::path::PathBuf {
+    let p = std::path::Path::new(name);
+    if p.is_absolute() || name.starts_with("./") || name.starts_with("../") {
+        return p.to_path_buf();
+    }
+    for dir in INCLUDE_PATH.split(':') {
+        let candidate = std::path::Path::new(dir).join(name);
+        if candidate.is_file() {
+            return candidate;
+        }
+    }
+    let here = with_host(|h| h.current_file().to_string());
+    if let Some(dir) = std::path::Path::new(&here)
+        .parent()
+        .filter(|_| here.starts_with('/'))
+    {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return candidate;
+        }
+    }
+    p.to_path_buf()
+}
+
+/// `include`/`require`/`include_once`/`require_once`.
+///
+/// A file that cannot be read warns `Failed to open stream`; `include` then
+/// warns `Failed opening … for inclusion` and yields `false`, while `require`
+/// throws `Error: Failed opening required …`. A `_once` form yields `true` for a
+/// file already loaded. Otherwise the file is compiled and run IN THE CURRENT
+/// FRAME, and the construct yields its `return` value, or `1`.
+pub fn run_include(kind: crate::ast::IncludeKind, path: &Value) -> Result<Value, String> {
+    let name = to_str_ext(path);
+    let construct = kind.name();
+    if name.is_empty() {
+        return Err(crate::builtins::throws_bare(
+            "ValueError",
+            "Path must not be empty",
+        ));
+    }
+    let target = resolve_include(&name);
+    let read = if target.is_dir() {
+        // What the reference's `open(2)` + `read(2)` of a directory reports.
+        Err(std::io::Error::from_raw_os_error(0))
+    } else {
+        std::fs::read(&target)
+    };
+    let src = match read {
+        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+        Err(e) => {
+            let shown = if target.is_dir() {
+                std::fs::canonicalize(&target)
+                    .map_or_else(|_| name.clone(), |p| p.display().to_string())
+            } else {
+                name.clone()
+            };
+            let reason = match e.raw_os_error() {
+                Some(0) => "Undefined error: 0".to_string(),
+                _ => {
+                    let s = e.to_string();
+                    s.find(" (os error")
+                        .map_or(s.clone(), |i| s[..i].to_string())
+                }
+            };
+            with_host(|h| {
+                h.warn(format!(
+                    "{construct}({shown}): Failed to open stream: {reason}"
+                ))
+            });
+            if kind.required() {
+                return Err(crate::builtins::throws_bare(
+                    "Error",
+                    format!("Failed opening required '{name}' (include_path='{INCLUDE_PATH}')"),
+                ));
+            }
+            with_host(|h| {
+                h.warn(format!(
+                    "{construct}(): Failed opening '{name}' for inclusion \
+                     (include_path='{INCLUDE_PATH}')"
+                ))
+            });
+            return Ok(Value::bool(false));
+        }
+    };
+    let real = std::fs::canonicalize(&target).map_or_else(
+        |_| target.display().to_string(),
+        |p| p.display().to_string(),
+    );
+    let seen = with_host(|h| h.included_files.iter().any(|f| *f == real));
+    if kind.once() && seen {
+        return Ok(Value::bool(true));
+    }
+    with_host(|h| {
+        // The stream the reference read the file through.
+        h.consume_resource_id();
+        if !seen {
+            h.included_files.push(real.clone());
+        }
+    });
+    let label = with_host(|h| format!("{construct}({})", h.trace_arg(&Value::str(real.clone()))));
+    run_loaded(&src, real, label, false)
+}
+
+/// `eval($code)`: compile and run `$code` in the current frame. The code is
+/// named `<file>(<line>) : eval()'d code` wherever a file would be, and yields
+/// its `return` value, or null.
+pub fn run_eval(code: &Value) -> Result<Value, String> {
+    let src = to_str_ext(code);
+    let file = with_host(|h| {
+        format!(
+            "{}({}) : eval()'d code",
+            h.current_file(),
+            h.cur_frame_line()
+        )
+    });
+    run_loaded(&format!("<?php {src}"), file, "eval()".to_string(), true)
+}
+
+/// Compile `src` as the file `file` and run it on the current frame.
+///
+/// The compile runs with the host's script name switched to `file`, so every
+/// message the lexer and parser raise — and the `ParseError` a syntax error
+/// becomes — names it. A syntax error is thrown as a catchable `ParseError`
+/// carrying that file and line, as the reference does.
+fn run_loaded(src: &str, file: String, label: String, eval: bool) -> Result<Value, String> {
+    let saved = with_host(|h| std::mem::replace(&mut h.script_name, file.clone()));
+    let counters = with_host(|h| h.compile_counters);
+    let compiled = crate::parser::parse_meta(src)
+        .map_err(|e| (e.severity, e.message))
+        .and_then(|(stmts, _meta)| {
+            crate::compiler::compile_nested(&stmts, counters, &file).map_err(|m| ("Fatal error", m))
+        });
+    with_host(|h| h.script_name = saved);
+    let prog = match compiled {
+        Ok(p) => p,
+        Err(("Parse error", msg)) => return throw_parse_error(&msg, &file),
+        Err((severity, msg)) => {
+            with_host(|h| {
+                h.fatal(severity, &msg);
+                h.ob_flush_all();
+            });
+            return Err(format!("{severity}:  {msg}"));
+        }
+    };
+    let crate::compiler::Program {
+        main,
+        functions,
+        classes,
+        try_defs,
+        diags,
+        counters,
+        ..
+    } = prog;
+    let arc: std::sync::Arc<str> = std::sync::Arc::from(file.as_str());
+    let call_line = with_host(|h| {
+        h.set_compile_counters(counters);
+        h.load_program(functions);
+        h.load_classes(classes);
+        h.append_try_defs(try_defs);
+        let call_line = h.cur_frame_line();
+        h.includes.push(IncludeFrame {
+            depth: h.scopes.len() - 1,
+            file: arc,
+            label,
+            call_line,
+        });
+        for d in &diags {
+            h.diagnose(d.severity, d.level, d.line, &d.msg);
+        }
+        call_line
+    });
+    let r = run_chunk_on(main);
+    with_host(|h| {
+        h.includes.pop();
+        if let Some(scope) = h.scopes.last_mut() {
+            scope.line = call_line;
+        }
+    });
+    r?;
+    Ok(with_host(|h| match h.signal.take() {
+        Some(Signal::Return(v)) => v,
+        other => {
+            h.signal = other;
+            if eval {
+                Value::Undef
+            } else {
+                Value::int(1)
+            }
+        }
+    }))
+}
+
+/// Raise a syntax error in loaded code as the `ParseError` the reference
+/// throws: the message without its ` in <file> on line <n>` tail, and the file
+/// and line from that tail rather than from where the loading construct ran.
+fn throw_parse_error(msg: &str, file: &str) -> Result<Value, String> {
+    let tail = format!(" in {file} on line ");
+    let (message, line) = match msg.rfind(&tail) {
+        Some(i) => (
+            msg[..i].to_string(),
+            msg[i + tail.len()..].trim().parse::<i64>().unwrap_or(0),
+        ),
+        None => (msg.to_string(), 0),
+    };
+    let exc = new_object("ParseError", vec![Value::str(message)])?;
+    with_host(|h| {
+        h.prop_set(&exc, "file", Value::str(file.to_string()));
+        h.prop_set(&exc, "line", Value::int(line));
+    });
+    set_pending_throw(exc);
+    Ok(Value::Undef)
 }

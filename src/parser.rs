@@ -2392,6 +2392,22 @@ impl Parser {
     }
 
     fn unary(&mut self) -> Result<Expr, String> {
+        // `include`/`require` and their `_once` forms are prefix operators that
+        // take everything to their right at assignment precedence, so
+        // `include "a" . ".php"` includes `a.php` — and, being expressions, they
+        // may stand wherever an operand may, `@include` included.
+        for (kw, kind) in [
+            ("include", IncludeKind::Include),
+            ("include_once", IncludeKind::IncludeOnce),
+            ("require", IncludeKind::Require),
+            ("require_once", IncludeKind::RequireOnce),
+        ] {
+            if self.at_kw(kw) {
+                self.pos += 1;
+                let operand = self.assignment()?;
+                return Ok(Expr::Include(kind, Box::new(operand)));
+            }
+        }
         // Type cast: `(int)`, `(float)`, `(string)`, `(bool)`, … — three tokens
         // `( ident )` where the identifier names a cast target. Desugars to the
         // matching conversion call so no new opcode is needed.
@@ -2860,6 +2876,10 @@ impl Parser {
                         return Ok(fcc);
                     }
                     let args = self.arg_list()?;
+                    // `eval()` is a construct too: it runs in the caller's scope.
+                    if name.eq_ignore_ascii_case("eval") && args.len() == 1 {
+                        return Ok(Expr::Eval(Box::new(args.into_iter().next().unwrap())));
+                    }
                     // `isset()`/`empty()` are language constructs, not functions:
                     // they must not error on an undefined variable/key. phplang
                     // returns `null` for a missing var/index silently, so both

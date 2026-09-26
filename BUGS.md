@@ -277,6 +277,31 @@ way, `Error: Call to undefined function nope()` where the reference raises a
 and message differ — since this round the trace frame is the reference's on all
 three.
 
+## `include`: the search path, and redeclaration
+
+```text
+$ php -r 'include "nope.php";'
+Warning: include(): Failed opening 'nope.php' for inclusion (include_path='.:/opt/homebrew/Cellar/php/8.5.11/share/php/pear') in Command line code on line 1
+$ target/debug/php -r 'include "nope.php";'
+Warning: include(): Failed opening 'nope.php' for inclusion (include_path='.') in Command line code on line 1
+```
+
+The reference's `include_path` names the PEAR directory its build was
+configured with; phplang has none and searches `.` and then the including
+file's directory. The same value is what `get_include_path()` returns.
+
+```text
+$ echo '<?php function f() {}' > f.php
+$ php -r 'include "f.php"; include "f.php";'
+Fatal error: Cannot redeclare function f() (previously declared in /…/f.php:1) in /…/f.php on line 1
+$ target/debug/php -r 'include "f.php"; include "f.php";'
+(no output; the second declaration replaces the first)
+```
+
+A function or class declared twice is not diagnosed, whether both
+declarations are in one file or one comes from an `include`: phplang records
+no declaration site to quote.
+
 ## Other measured gaps
 
 | form | reference | phplang |

@@ -44,6 +44,21 @@ pub struct Program {
     /// program rather than in a global is what guarantees the ordering, since the
     /// prelude is compiled after the user's source but must not interleave.
     pub diags: Vec<CompileDiag>,
+    /// Where this compilation's counters stopped; see [`Counters`].
+    pub counters: Counters,
+}
+
+/// The per-compilation counters that mint names and ids — temporaries,
+/// `static` storage keys, anonymous-class numbers, `try` ids. Code compiled at
+/// run time (`include`, `eval`) continues from where the code already loaded
+/// left off, so what it mints never collides with a name already in use in the
+/// same frame or the same function table.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Counters {
+    pub tmp: usize,
+    pub static_slot: usize,
+    pub anon_classes: usize,
+    pub try_defs: usize,
 }
 
 /// Break/continue jump fixups for the innermost loop.
@@ -356,6 +371,9 @@ pub struct Compiler {
     /// them from zero across the whole compilation unit, in source order, and
     /// bakes the number into the generated class name.
     anon_classes: usize,
+    /// The id the first `try` of this compilation takes: 0 for a program,
+    /// the number already loaded for a run-time compilation.
+    try_base: usize,
     /// The scope currently being lowered, as name → frame slot, when its
     /// variables were resolved to indices. Empty while lowering a chunk that
     /// runs in a frame it did not seed (a parameter default, an `include`, an
@@ -409,12 +427,14 @@ pub fn compile(stmts: &[Stmt], debug: bool) -> Result<Program, String> {
     let saved = c.enter_scope_promoting(scope_slots(&[], stmts), promoted);
     c.compile_seq(&mut b, stmts)?;
     let main_locals = c.leave_scope(saved);
+    let counters = c.counters();
     Ok(Program {
         main: b.build(),
         main_locals,
         functions: c.functions,
         classes: c.classes,
         try_defs: c.try_defs,
+        counters,
         // Drained here rather than in the lexer's caller: this is the last point
         // that still belongs to compiling THIS source, so no later compilation
         // (the prelude, an `eval`) can inherit or lose them.
@@ -422,7 +442,142 @@ pub fn compile(stmts: &[Stmt], debug: bool) -> Result<Program, String> {
     })
 }
 
+/// Compile code that runs in a frame it did not seed — an `include`d file or
+/// `eval()`'d code, both of which execute in the scope that reached them.
+///
+/// Its variables are therefore addressed by NAME (no slot numbering, no
+/// promotion), its counters continue from `start`, the by-reference signatures
+/// of the functions already loaded are known to its call sites, and every
+/// chunk it produces is stamped with `source` so the frames and diagnostics of
+/// its code name that file.
+pub fn compile_nested(stmts: &[Stmt], start: Counters, source: &str) -> Result<Program, String> {
+    let mut c = Compiler {
+        tmp: start.tmp,
+        static_slot: start.static_slot,
+        anon_classes: start.anon_classes,
+        try_base: start.try_defs,
+        ..Compiler::default()
+    };
+    c.seed_builtin_byref();
+    c.seed_loaded_byref();
+    c.collect_byref(stmts);
+    let mut b = ChunkBuilder::new();
+    let saved = c.enter_scope(Vec::new());
+    c.compile_seq(&mut b, stmts)?;
+    c.leave_scope(saved);
+    let counters = c.counters();
+    let mut prog = Program {
+        main: b.build(),
+        main_locals: Vec::new(),
+        functions: c.functions,
+        classes: c.classes,
+        try_defs: c.try_defs,
+        counters,
+        diags: crate::lexer::take_diags(),
+    };
+    stamp_source(&mut prog, source);
+    Ok(prog)
+}
+
+/// Mark every chunk of `prog` as compiled from `source`.
+fn stamp_source(prog: &mut Program, source: &str) {
+    fn chunk(c: &mut Chunk, source: &str) {
+        c.source = source.to_string();
+        for sub in &mut c.sub_chunks {
+            chunk(sub, source);
+        }
+    }
+    fn func(f: &mut FuncDef, source: &str) {
+        chunk(&mut f.chunk, source);
+        for p in &mut f.params {
+            if let Some(d) = &mut p.default {
+                chunk(d, source);
+            }
+        }
+    }
+    chunk(&mut prog.main, source);
+    for (_, f) in &mut prog.functions {
+        func(f, source);
+    }
+    for (_, class) in &mut prog.classes {
+        for m in class.methods.values_mut() {
+            func(m, source);
+        }
+        for (_, c) in class
+            .consts
+            .iter_mut()
+            .chain(class.prop_defaults.iter_mut())
+            .chain(class.static_prop_defaults.iter_mut())
+        {
+            chunk(c, source);
+        }
+        for (_, c) in &mut class.enum_cases {
+            if let Some(c) = c {
+                chunk(c, source);
+            }
+        }
+    }
+    for t in &mut prog.try_defs {
+        chunk(&mut t.try_chunk, source);
+        for c in &mut t.catches {
+            chunk(&mut c.chunk, source);
+        }
+        if let Some(f) = &mut t.finally_chunk {
+            chunk(f, source);
+        }
+    }
+}
+
 impl Compiler {
+    /// Where this compilation's counters stand.
+    fn counters(&self) -> Counters {
+        Counters {
+            tmp: self.tmp,
+            static_slot: self.static_slot,
+            anon_classes: self.anon_classes,
+            try_defs: self.try_base + self.try_defs.len(),
+        }
+    }
+
+    /// The by-reference parameters of the user functions ALREADY loaded, which a
+    /// run-time compilation calls without having seen their declarations.
+    fn seed_loaded_byref(&mut self) {
+        for (name, params) in host::with_host(|h| h.user_function_params()) {
+            let positions: Vec<usize> = params
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| p.1)
+                .map(|(i, _)| i)
+                .collect();
+            if positions.is_empty() {
+                continue;
+            }
+            self.byref_user_fns.insert(
+                name.clone(),
+                ByRefFn {
+                    spelled: name.clone(),
+                    byref: positions
+                        .iter()
+                        .map(|&i| {
+                            let (pname, _, variadic) = &params[i];
+                            (
+                                i,
+                                if *variadic {
+                                    String::new()
+                                } else {
+                                    pname.clone()
+                                },
+                            )
+                        })
+                        .collect(),
+                    params: params.iter().map(|p| p.0.clone()).collect(),
+                    variadic: params.iter().any(|p| p.2),
+                },
+            );
+            self.byref_fns.insert(name, positions);
+        }
+    }
+
     fn tmp_name(&mut self, tag: &str) -> String {
         self.tmp += 1;
         format!("@{tag}{}", self.tmp)
@@ -2186,7 +2341,7 @@ impl Compiler {
             Some(f) => Some(self.compile_detached(f)?),
             None => None,
         };
-        let id = self.try_defs.len() as i64;
+        let id = (self.try_base + self.try_defs.len()) as i64;
         self.try_defs.push(TryDef {
             try_chunk,
             catches: cc,
@@ -3002,6 +3157,19 @@ impl Compiler {
             Expr::YieldFrom(src) => {
                 self.compile_expr(b, src)?;
                 b.emit(Op::CallBuiltin(ops::YIELD_FROM, 1), 0);
+            }
+            // The file or code is compiled when the construct RUNS, and runs in
+            // this frame — see `host::run_include`.
+            Expr::Include(kind, path) => {
+                let line = self.cur_line;
+                self.compile_expr(b, path)?;
+                b.emit(Op::LoadInt(kind.code()), line);
+                b.emit(Op::CallBuiltin(ops::INCLUDE, 2), line);
+            }
+            Expr::Eval(code) => {
+                let line = self.cur_line;
+                self.compile_expr(b, code)?;
+                b.emit(Op::CallBuiltin(ops::EVAL, 1), line);
             }
         }
         Ok(())
@@ -4829,6 +4997,7 @@ pub(crate) fn collect_free_vars(e: &Expr, out: &mut Vec<String>) {
         }
         Expr::YieldFrom(src) => collect_free_vars(src, out),
         Expr::Print(a) => collect_free_vars(a, out),
+        Expr::Include(_, a) | Expr::Eval(a) => collect_free_vars(a, out),
         Expr::Null | Expr::Bool(_) | Expr::Int(_) | Expr::Float(_) | Expr::Str(_) => {}
     }
 }
@@ -4905,6 +5074,8 @@ fn expr_has_yield(e: &Expr) -> bool {
         | Expr::Throw(a)
         | Expr::Clone(a)
         | Expr::Print(a)
+        | Expr::Include(_, a)
+        | Expr::Eval(a)
         | Expr::InstanceOf(a, _)
         | Expr::NamedArg(_, a) => expr_has_yield(a),
         Expr::Binary(_, a, b)
@@ -5390,6 +5561,8 @@ impl SlotScan {
             | Expr::Throw(a)
             | Expr::Quiet(a)
             | Expr::Print(a)
+            | Expr::Include(_, a)
+            | Expr::Eval(a)
             | Expr::NamedArg(_, a)
             | Expr::InstanceOf(a, _) => self.expr(a),
             Expr::PropGet(a, m) | Expr::NullsafePropGet(a, m) => {

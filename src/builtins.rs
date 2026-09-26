@@ -14,6 +14,8 @@ use fusevm::{NumOp, NumericCall, Value, VM};
 /// Register every compiler-emitted builtin on a fresh VM.
 pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::ECHO, b_echo);
+    vm.register_builtin(ops::INCLUDE, b_include);
+    vm.register_builtin(ops::EVAL, b_eval);
     vm.register_builtin(ops::GETVAR, b_getvar);
     vm.register_builtin(ops::GETSLOT, b_getslot);
     vm.register_builtin(ops::INCDEC_SLOT, b_incdec_slot);
@@ -705,7 +707,7 @@ fn b_const_fetch(vm: &mut VM, _: u8) -> Value {
 fn b_magic_file(vm: &mut VM, _: u8) -> Value {
     let suffix = pop_name(vm);
     let prefix = pop_name(vm);
-    let file = with_host(|h| h.script_name().to_string());
+    let file = with_host(|h| h.current_file().to_string());
     Value::str(format!("{prefix}{file}{suffix}"))
 }
 
@@ -1932,7 +1934,7 @@ fn b_decl_fatal(vm: &mut VM, _: u8) -> Value {
         let trace = h.backtrace();
         format!(
             "{msg} in {} on line {line}\nStack trace:\n{trace}",
-            h.script_name()
+            h.current_file()
         )
     });
     with_host(|h| {
@@ -7255,4 +7257,25 @@ fn json_string(s: &str, flags: i64) -> String {
     }
     out.push('"');
     out
+}
+
+/// `INCLUDE`: `include`/`require` and their `_once` forms. Stack `[path, kind]`.
+fn b_include(vm: &mut VM, _: u8) -> Value {
+    let kind = crate::ast::IncludeKind::from_code(vm.pop().to_int());
+    let path = vm.pop();
+    mark_frame_line(vm);
+    match host::run_include(kind, &path) {
+        Ok(v) => bubbled(vm, v),
+        Err(e) => fail_or_throw(vm, e),
+    }
+}
+
+/// `EVAL`: `eval($code)`. Stack `[code]`.
+fn b_eval(vm: &mut VM, _: u8) -> Value {
+    let code = vm.pop();
+    mark_frame_line(vm);
+    match host::run_eval(&code) {
+        Ok(v) => bubbled(vm, v),
+        Err(e) => fail_or_throw(vm, e),
+    }
 }

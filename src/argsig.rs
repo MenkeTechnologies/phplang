@@ -448,7 +448,7 @@ use Def::{Bool, EmptyArray, Float, Int, Null, Required, Str, Unknown};
 /// default in this generated table is a literal too.
 #[allow(clippy::approx_constant)]
 static SIGS: &[(&str, Sig)] = &[
-    // generated: 521 functions
+    // generated: 523 functions
     (
         "abs",
         Sig {
@@ -2365,6 +2365,14 @@ static SIGS: &[(&str, Sig)] = &[
         },
     ),
     (
+        "get_included_files",
+        Sig {
+            req: 0,
+            params: &[],
+            variadic: false,
+        },
+    ),
+    (
         "get_object_vars",
         Sig {
             req: 1,
@@ -2377,6 +2385,14 @@ static SIGS: &[(&str, Sig)] = &[
         Sig {
             req: 0,
             params: &[p("object_or_class", Unknown, "object|string")],
+            variadic: false,
+        },
+    ),
+    (
+        "get_required_files",
+        Sig {
+            req: 0,
+            params: &[],
             variadic: false,
         },
     ),

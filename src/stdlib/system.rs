@@ -157,7 +157,22 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             let id = with_host(|h| h.object_id(&arg(args, 0))).unwrap_or(0);
             Value::str(format!("{id:032x}"))
         }
-        "php_ini_loaded_file" | "get_include_path" => Value::bool(false),
+        "php_ini_loaded_file" => Value::bool(false),
+        "get_include_path" => Value::str(crate::host::INCLUDE_PATH),
+        // The main script (when it is a file) and every file `include`d or
+        // `require`d since, in load order.
+        "get_included_files" | "get_required_files" => with_host(|h| {
+            let files: Vec<Value> = h
+                .included_files()
+                .iter()
+                .map(|f| Value::str(f.clone()))
+                .collect();
+            let arr = h.new_array();
+            for f in files {
+                h.arr_push_auto(&arr, f);
+            }
+            arr
+        }),
         "set_time_limit" | "ignore_user_abort" => Value::bool(true),
         // `error_reporting($level = null)`: read the mask, or set it and return
         // the PREVIOUS one. Passing null (or nothing) only reads — the two are

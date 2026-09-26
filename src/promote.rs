@@ -494,6 +494,12 @@ impl Scan<'_> {
                     self.expr(op);
                 }
             }
+            // Code compiled at run time reads and writes this scope's
+            // variables by name, so none of them can live in a frame slot.
+            Expr::Include(_, x) | Expr::Eval(x) => {
+                self.poison();
+                self.expr(x);
+            }
             Expr::Clone(x) | Expr::Throw(x) | Expr::YieldFrom(x) | Expr::Print(x) => self.expr(x),
             Expr::InstanceOf(x, _) => self.expr(x),
             Expr::Ternary(a, b, c) => {
@@ -778,6 +784,7 @@ impl Flow {
                     self.expr(d);
                 }
             }
+            Expr::Include(_, x) | Expr::Eval(x) => self.expr(x),
             Expr::Clone(x)
             | Expr::Throw(x)
             | Expr::YieldFrom(x)
@@ -1019,6 +1026,12 @@ impl GlobalScan {
             | Expr::Quiet(x)
             | Expr::Suppress(x)
             | Expr::VarVar(x) => self.expr(x),
+            // Code loaded at run time may say `global $anything`, so no
+            // top-level name can be shown to be out of its reach.
+            Expr::Include(_, x) | Expr::Eval(x) => {
+                self.any_globals_array = true;
+                self.expr(x);
+            }
             Expr::IncDec { target, .. } => self.expr(target),
             Expr::Call(_, args) | Expr::New(_, args) | Expr::NewAnon { args, .. } => {
                 self.exprs(args)
