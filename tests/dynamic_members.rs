@@ -30,7 +30,9 @@ $o->{"arr"}[] = 1; var_dump($o->arr);
 $o?->{"x y"};
 echo $o?->{"x y"}, "\n";
 "##;
-    assert_eq!(run(src), r##"22
+    assert_eq!(
+        run(src),
+        r##"22
 object(stdClass)#1 (2) {
   ["x y"]=>
   int(2)
@@ -48,7 +50,8 @@ array(1) {
   int(1)
 }
 2
-"##);
+"##
+    );
 }
 
 /// The name is evaluated once, after the receiver and before the value:
@@ -80,7 +83,9 @@ echo "{$o->a}\n";
 $name = "a"; echo $o->$name . "!", "\n";
 $nm = null; try { var_dump((new M)->$nm); } catch (Error $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
 "##;
-    assert_eq!(run(src), r##"n(a) xy
+    assert_eq!(
+        run(src),
+        r##"n(a) xy
 n(c) n(c) 2
 r n(a) 1
 xy
@@ -102,5 +107,6 @@ dflt
 xy
 xy!
 string(4) "get:"
-"##);
+"##
+    );
 }

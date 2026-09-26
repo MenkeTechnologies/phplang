@@ -628,8 +628,8 @@ impl TypeHint {
     /// `Traversable|array`, and a type covering everything is `mixed`.
     pub fn declared(&self, self_class: &str, parent: Option<&str>) -> String {
         const BUILTIN: [&str; 14] = [
-            "mixed", "static", "callable", "object", "array", "string", "int", "float",
-            "bool", "false", "true", "void", "never", "null",
+            "mixed", "static", "callable", "object", "array", "string", "int", "float", "bool",
+            "false", "true", "void", "never", "null",
         ];
         let mut classes: Vec<String> = Vec::new();
         let mut builtin = [false; BUILTIN.len()];
@@ -642,7 +642,6 @@ impl TypeHint {
                     classes.push("Traversable".to_string());
                     builtin[4] = true;
                 }
-| "double" | "boolean" => classes.push(p.clone()),
                 b => match BUILTIN.iter().position(|n| *n == b) {
                     Some(i) => builtin[i] = true,
                     None => classes.push(p.clone()),

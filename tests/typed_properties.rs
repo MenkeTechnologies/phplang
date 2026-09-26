@@ -33,7 +33,9 @@ foreach ($c as $k => $v) echo "$k ";
 echo "\n";
 var_dump($c->q ?? "dflt");
 "##;
-    assert_eq!(run(src), r##"object(C)#1 (2) {
+    assert_eq!(
+        run(src),
+        r##"object(C)#1 (2) {
   ["p"]=>
   uninitialized(int)
   ["q"]=>
@@ -76,7 +78,8 @@ Typed property C::$p must not be accessed before initialization
 O:1:"C":2:{s:1:"u";N;s:1:"d";i:3;}
 u d 
 string(4) "dflt"
-"##);
+"##
+    );
 }
 
 /// The declared type prints the way `zend_type_to_string` spells it: class
@@ -86,7 +89,9 @@ string(4) "dflt"
 fn declared_type_spelling() {
     let src = r##"<?php class A { public int|string $a; public ?Foo $b; public string|int|null $c; public Foo|Bar|null $d; public null|int $e; public INT $f; public mixed $h; public float|bool $i; public array|false $j; public self $k; public (A&B)|null $l; public iterable $m; public static $s; } var_dump(new A);
 "##;
-    assert_eq!(run(src), r##"object(A)#1 (0) {
+    assert_eq!(
+        run(src),
+        r##"object(A)#1 (0) {
   ["a"]=>
   uninitialized(string|int)
   ["b"]=>
@@ -112,7 +117,8 @@ fn declared_type_spelling() {
   ["m"]=>
   uninitialized(Traversable|array)
 }
-"##);
+"##
+    );
 }
 
 /// Inherited, trait-supplied, redeclared-with-default and promoted properties;
@@ -149,7 +155,9 @@ class Arr { public array $a; } $o = new Arr; $o->a[] = 1; $o->a["k"] = 2; var_du
 $g2 = new G; unset($g2->v); var_dump($g2->v); try { $g->v++; } catch (Error $e) { echo $e->getMessage(), "
 "; }
 "##;
-    assert_eq!(run(src), r##"object(K)#1 (2) {
+    assert_eq!(
+        run(src),
+        r##"object(K)#1 (2) {
   ["pp":protected]=>
   uninitialized(int)
   ["priv":"P":private]=>
@@ -263,7 +271,8 @@ object(Arr)#10 (1) {
 }
 int(42)
 Typed property G::$v must not be accessed before initialization
-"##);
+"##
+    );
 }
 
 /// The error names an anonymous class the way the reference displays it.

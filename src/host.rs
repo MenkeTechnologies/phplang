@@ -4518,7 +4518,10 @@ impl PhpHost {
     pub fn note_unset(&mut self, recv: &Value, name: &str) {
         if let (Value::Obj(id), Some(PhpObj::Object { class, .. })) = (recv, self.as_array(recv)) {
             if self.uninit_prop_decl(class, name).is_some() {
-                self.unset_typed.entry(*id).or_default().insert(name.to_string());
+                self.unset_typed
+                    .entry(*id)
+                    .or_default()
+                    .insert(name.to_string());
             }
         }
     }
@@ -8769,7 +8772,10 @@ pub fn static_prop_get(class: &str, name: &str) -> Result<Value, String> {
     if let Some(v) = with_host(|h| h.get_static_stored(&key)) {
         return Ok(v);
     }
-    let declaring = key.split_once("::").map_or(key.as_str(), |(c, _)| c).to_string();
+    let declaring = key
+        .split_once("::")
+        .map_or(key.as_str(), |(c, _)| c)
+        .to_string();
     let v = run_in_class_scope(&declaring, chunk)?;
     with_host(|h| h.set_static_stored(&key, v.clone()));
     Ok(v)

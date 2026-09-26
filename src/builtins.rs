@@ -2230,7 +2230,6 @@ fn plain_prop_read(vm: &mut VM, recv: &Value, name: &str) -> Value {
     with_host(|h| h.prop_get_warn(recv, name))
 }
 
-
 /// `$o->p` read with no missing-property diagnostic — see `ops::PROP_GET_Q`.
 ///
 /// This is the read `empty()` and `??` compile to. The reference does NOT raise
@@ -7006,7 +7005,10 @@ fn json_prepare_seen(v: &Value, prep: &mut JsonPrep) -> Result<Value, i64> {
     if with_host(|h| h.is_stream(v)) {
         // `php_json_encode_zval`'s default arm: a resource has no JSON
         // spelling, and partial output writes `null` in its place.
-        return prep.refuse(crate::stdlib::json::JSON_ERROR_UNSUPPORTED_TYPE, Value::Undef);
+        return prep.refuse(
+            crate::stdlib::json::JSON_ERROR_UNSUPPORTED_TYPE,
+            Value::Undef,
+        );
     }
     if with_host(|h| h.is_array(v)) {
         if !prep.seen.enter(v) {
@@ -7035,7 +7037,10 @@ fn json_prepare_seen(v: &Value, prep: &mut JsonPrep) -> Result<Value, i64> {
         prep.seen.leave();
         return match with_host(|h| h.enum_case_of(v)) {
             Some((_, Some(backing))) => Ok(backing),
-            _ => prep.refuse(crate::stdlib::json::JSON_ERROR_NON_BACKED_ENUM, Value::int(0)),
+            _ => prep.refuse(
+                crate::stdlib::json::JSON_ERROR_NON_BACKED_ENUM,
+                Value::int(0),
+            ),
         };
     }
     if with_host(|h| h.class_is_a_pub(&class, "JsonSerializable")) {

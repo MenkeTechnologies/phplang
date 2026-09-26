@@ -1655,9 +1655,8 @@ impl Compiler {
         // A class's own properties take their slots before the ones its traits
         // bring in: `zend_do_bind_traits` adds trait properties after the class
         // body is declared. The sort is stable, so each group keeps its order.
-        prop_defaults.sort_by_key(|(n, _)| {
-            !decl.props.iter().any(|p| !p.is_static && &p.name == n)
-        });
+        prop_defaults
+            .sort_by_key(|(n, _)| !decl.props.iter().any(|p| !p.is_static && &p.name == n));
 
         for m in &decl.methods {
             method_vis.insert(m.name.to_ascii_lowercase(), m.visibility);
