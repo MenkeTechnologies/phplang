@@ -289,7 +289,6 @@ three.
 | `pack()` / `unpack()` | implemented | `Call to undefined function` |
 | `LC_ALL` and the other `LC_*` constants | defined | `Undefined constant` |
 | `goto end; …; end: echo "done";` | `done` | `Parse error: syntax error, unexpected identifier "end"` |
-| `$o->{"x y"} = 2;` | property `x y` is written | `Parse error: syntax error, unexpected token "{"` |
 | `iconv_strlen("héllo")` | `int(5)` | `Call to undefined function iconv_strlen()` |
 | `usort($x, ["C", "m"])` for a non-static `C::m` | `TypeError: usort(): Argument #2 ($callback) must be a valid callback, non-static method C::m() cannot be called statically` | the call succeeds |
 

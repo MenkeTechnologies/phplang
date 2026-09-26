@@ -1215,6 +1215,28 @@ impl Parser {
         Ok(ForeachVal::Var(self.expect_var()?))
     }
 
+    /// The member after `->` / `?->`: a bare identifier, `$var`, or `{expr}`.
+    ///
+    /// Only a simple variable follows the arrow directly: `$o->$n[0]` is
+    /// `($o->$n)[0]` under the uniform variable syntax, so the subscript is left
+    /// for the postfix loop. A brace holding nothing but a string literal is the
+    /// literal name, exactly as if it had been written bare.
+    fn object_member(&mut self) -> Result<Member, String> {
+        if let Some(Tok::Var(n)) = self.peek().cloned() {
+            self.pos += 1;
+            return Ok(Member::Dyn(Box::new(Expr::Var(n))));
+        }
+        if self.eat_punct("{") {
+            let e = self.expression()?;
+            self.expect_punct("}")?;
+            return Ok(match e {
+                Expr::Str(s) => Member::Name(s),
+                e => Member::Dyn(Box::new(e)),
+            });
+        }
+        self.member_name().map(Member::Name)
+    }
+
     /// A property / method / constant name after `->` or `::` (a bare identifier).
     fn member_name(&mut self) -> Result<String, String> {
         match self.next() {
@@ -2482,12 +2504,16 @@ impl Parser {
                 }
             } else if self.eat_punct("->") {
                 // Instance member: `$o->prop` or `$o->method(args)`.
-                let member = self.member_name()?;
+                let member = self.object_member()?;
                 if self.eat_punct("(") {
+                    let name = match &member {
+                        Member::Name(n) => Expr::Str(n.clone()),
+                        Member::Dyn(d) => d.as_ref().clone(),
+                    };
                     if let Some(fcc) = self.try_fcc(
                         Expr::Array(vec![
                             ArrayElem::new(None, e.clone()),
-                            ArrayElem::new(None, Expr::Str(member.clone())),
+                            ArrayElem::new(None, name),
                         ]),
                         true,
                     )? {
@@ -2500,7 +2526,7 @@ impl Parser {
                 }
             } else if self.eat_punct("?->") {
                 // Nullsafe member: `$o?->prop` or `$o?->method(args)`.
-                let member = self.member_name()?;
+                let member = self.object_member()?;
                 if self.eat_punct("(") {
                     e = Expr::NullsafeMethodCall(Box::new(e), member, self.arg_list()?);
                 } else {

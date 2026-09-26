@@ -451,8 +451,11 @@ impl Scan<'_> {
                 self.expr(f);
                 self.call_args(None, args);
             }
-            Expr::MethodCall(r, _, args) | Expr::NullsafeMethodCall(r, _, args) => {
+            Expr::MethodCall(r, m, args) | Expr::NullsafeMethodCall(r, m, args) => {
                 self.expr(r);
+                if let Some(d) = m.operand() {
+                    self.expr(d);
+                }
                 self.call_args(None, args);
             }
             Expr::StaticCall(class, _, args) => {
@@ -480,7 +483,12 @@ impl Scan<'_> {
                     }
                 }
             }
-            Expr::PropGet(r, _) | Expr::NullsafePropGet(r, _) => self.expr(r),
+            Expr::PropGet(r, m) | Expr::NullsafePropGet(r, m) => {
+                self.expr(r);
+                if let Some(d) = m.operand() {
+                    self.expr(d);
+                }
+            }
             Expr::StaticProp(class, _) => {
                 if let Some(op) = class.operand() {
                     self.expr(op);
@@ -757,11 +765,19 @@ impl Flow {
                 self.expr(f);
                 self.exprs(args);
             }
-            Expr::MethodCall(r, _, args) | Expr::NullsafeMethodCall(r, _, args) => {
+            Expr::MethodCall(r, m, args) | Expr::NullsafeMethodCall(r, m, args) => {
                 self.expr(r);
+                if let Some(d) = m.operand() {
+                    self.expr(d);
+                }
                 self.exprs(args);
             }
-            Expr::PropGet(r, _) | Expr::NullsafePropGet(r, _) => self.expr(r),
+            Expr::PropGet(r, m) | Expr::NullsafePropGet(r, m) => {
+                self.expr(r);
+                if let Some(d) = m.operand() {
+                    self.expr(d);
+                }
+            }
             Expr::Clone(x)
             | Expr::Throw(x)
             | Expr::YieldFrom(x)
@@ -1020,11 +1036,19 @@ impl GlobalScan {
                 self.expr(f);
                 self.exprs(args);
             }
-            Expr::MethodCall(r, _, args) | Expr::NullsafeMethodCall(r, _, args) => {
+            Expr::MethodCall(r, m, args) | Expr::NullsafeMethodCall(r, m, args) => {
                 self.expr(r);
+                if let Some(d) = m.operand() {
+                    self.expr(d);
+                }
                 self.exprs(args);
             }
-            Expr::PropGet(r, _) | Expr::NullsafePropGet(r, _) => self.expr(r),
+            Expr::PropGet(r, m) | Expr::NullsafePropGet(r, m) => {
+                self.expr(r);
+                if let Some(d) = m.operand() {
+                    self.expr(d);
+                }
+            }
             Expr::Ternary(a, b, c) => {
                 self.expr(a);
                 self.expr(b);

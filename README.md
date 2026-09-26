@@ -136,6 +136,10 @@ end-to-end (see `tests/basic.rs`):
   `?->` inside an argument keeps its own extent), `!`, and
   `(int)`/`(float)`/`(string)`/`(bool)` casts. An object with `__toString`
   compared against a string is cast to it first, as `zend_compare` does.
+- Computed member names: `$o->$name`, `$o->{expr}` and `$o?->{expr}` for
+  property reads and writes, compound assignment, `++`/`--`, `&`, `isset`,
+  `unset` and method calls, the name evaluated once, after the receiver.
+  `$o->{"x y"}` names a property no bare identifier can spell.
 - Indexed, associative, and appended (`$a[] =`) arrays with PHP **value semantics**
   — assigning, passing, returning or storing one hands over a copy (deep through
   nested arrays; an object inside stays a handle), while `$b = &$a` and a `&$x`

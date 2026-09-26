@@ -510,12 +510,62 @@ impl Compiler {
     /// any argument, so an argument that echoes must not run first. With no
     /// arguments there is nothing to observe, so the guard is skipped and a
     /// zero-argument call — the hot shape — costs nothing.
-    fn emit_mcall_recv_check(&mut self, b: &mut ChunkBuilder, name_idx: u16, argc: usize) {
+    fn emit_mcall_recv_check(
+        &mut self,
+        b: &mut ChunkBuilder,
+        name: &Member,
+        argc: usize,
+    ) -> Result<(), String> {
         if argc == 0 {
-            return;
+            return Ok(());
         }
-        b.emit(Op::LoadConst(name_idx), 0);
+        self.emit_member(b, name, 0)?;
         b.emit(Op::CallBuiltin(ops::MCALL_RECV_CHECK, 2), self.cur_line);
+        Ok(())
+    }
+
+    /// Push the name of a `->` member: a literal as a constant, a computed one
+    /// (`$o->$n`, `$o->{expr}`) as its value. The access op converts that value
+    /// to a string itself, so nothing is coerced here.
+    fn emit_member(&mut self, b: &mut ChunkBuilder, m: &Member, line: u32) -> Result<(), String> {
+        match m {
+            Member::Name(n) => {
+                let idx = b.add_constant(Value::str(n.clone()));
+                b.emit(Op::LoadConst(idx), line);
+            }
+            Member::Dyn(e) => self.compile_expr(b, e)?,
+        }
+        Ok(())
+    }
+
+    /// A method call's name, stashed when the receiver check will push it a
+    /// second time — which it does only for a call WITH arguments.
+    fn method_member(
+        &mut self,
+        b: &mut ChunkBuilder,
+        m: &Member,
+        argc: usize,
+    ) -> Result<Member, String> {
+        if argc == 0 {
+            return Ok(m.clone());
+        }
+        self.stash_member(b, m)
+    }
+
+    /// A member about to be pushed more than once — a method call's receiver
+    /// check, a compound assignment's read and write. A computed name is
+    /// evaluated ONCE, here, into a temporary, and the member returned reads
+    /// that temporary, so `$o->{f()} .= "x"` calls `f` a single time. A literal
+    /// name comes back as it is.
+    fn stash_member(&mut self, b: &mut ChunkBuilder, m: &Member) -> Result<Member, String> {
+        match m {
+            Member::Name(_) => Ok(m.clone()),
+            Member::Dyn(e) => {
+                let t = self.tmp_name("mn");
+                self.emit_set_var(b, &t, |c, b| c.compile_expr(b, e))?;
+                Ok(Member::Dyn(Box::new(Expr::Var(t))))
+            }
+        }
     }
 
     /// Reject an undefined callee before the arguments run. Both checks are
@@ -1615,7 +1665,7 @@ impl Compiler {
                     promotions.push(Expr::Assign(
                         Box::new(Expr::PropGet(
                             Box::new(Expr::Var("this".to_string())),
-                            p.name.clone(),
+                            Member::Name(p.name.clone()),
                         )),
                         None,
                         Box::new(Expr::Var(p.name.clone())),
@@ -2646,15 +2696,14 @@ impl Compiler {
             }
             Expr::PropGet(recv, name) => {
                 self.compile_expr(b, recv)?;
-                let idx = b.add_constant(Value::str(name.clone()));
-                b.emit(Op::LoadConst(idx), 0);
+                self.emit_member(b, name, 0)?;
                 b.emit(Op::CallBuiltin(ops::PROP_GET, 2), self.cur_line);
             }
             Expr::MethodCall(recv, name, args) if needs_arg_pairs(args) => {
                 self.compile_expr(b, recv)?;
-                let idx = b.add_constant(Value::str(name.clone()));
-                self.emit_mcall_recv_check(b, idx, args.len());
-                b.emit(Op::LoadConst(idx), 0);
+                let name = &self.method_member(b, name, args.len())?;
+                self.emit_mcall_recv_check(b, name, args.len())?;
+                self.emit_member(b, name, 0)?;
                 self.compile_arg_pairs(b, args)?;
                 b.emit(
                     Op::CallBuiltin(ops::MCALL_NAMED, (args.len() * 2 + 2) as u8),
@@ -2663,9 +2712,9 @@ impl Compiler {
             }
             Expr::MethodCall(recv, name, args) => {
                 self.compile_expr(b, recv)?;
-                let idx = b.add_constant(Value::str(name.clone()));
-                self.emit_mcall_recv_check(b, idx, args.len());
-                b.emit(Op::LoadConst(idx), 0);
+                let name = &self.method_member(b, name, args.len())?;
+                self.emit_mcall_recv_check(b, name, args.len())?;
+                self.emit_member(b, name, 0)?;
                 for a in args {
                     self.compile_expr(b, a)?;
                 }
@@ -2789,8 +2838,7 @@ impl Compiler {
             Expr::IssetOf(inner) => match inner.as_ref() {
                 Expr::PropGet(recv, name) => {
                     self.compile_quiet(b, recv)?;
-                    let idx = b.add_constant(Value::str(name.clone()));
-                    b.emit(Op::LoadConst(idx), self.cur_line);
+                    self.emit_member(b, name, self.cur_line)?;
                     b.emit(Op::CallBuiltin(ops::PROP_ISSET, 2), self.cur_line);
                 }
                 // An index target gets its own opcode for the same reason a
@@ -2816,8 +2864,7 @@ impl Compiler {
             Expr::EmptyOf(inner) => match inner.as_ref() {
                 Expr::PropGet(recv, name) => {
                     self.compile_quiet(b, recv)?;
-                    let idx = b.add_constant(Value::str(name.clone()));
-                    b.emit(Op::LoadConst(idx), self.cur_line);
+                    self.emit_member(b, name, self.cur_line)?;
                     b.emit(Op::CallBuiltin(ops::PROP_GET_EMPTY, 2), self.cur_line);
                 }
                 // An index target reads like `??` does, but an offset the
@@ -2982,8 +3029,7 @@ impl Compiler {
             }
             Expr::PropGet(recv, name) => {
                 self.compile_quiet(b, recv)?;
-                let idx = b.add_constant(Value::str(name.clone()));
-                b.emit(Op::LoadConst(idx), line);
+                self.emit_member(b, name, line)?;
                 b.emit(Op::CallBuiltin(ops::PROP_GET_Q, 2), line);
             }
             Expr::StaticProp(class, name) => {
@@ -3055,8 +3101,7 @@ impl Compiler {
             }
             Expr::PropGet(recv, prop) => {
                 self.compile_expr(b, recv)?;
-                let pi = b.add_constant(Value::str(prop.clone()));
-                b.emit(Op::LoadConst(pi), 0);
+                self.emit_member(b, prop, 0)?;
                 self.compile_ref_slot(b, rhs)?;
                 b.emit(Op::CallBuiltin(ops::REF_TO_PROP, 3), 0);
             }
@@ -3100,8 +3145,7 @@ impl Compiler {
             }
             Expr::PropGet(recv, prop) => {
                 self.compile_expr(b, recv)?;
-                let pi = b.add_constant(Value::str(prop.clone()));
-                b.emit(Op::LoadConst(pi), 0);
+                self.emit_member(b, prop, 0)?;
                 b.emit(Op::CallBuiltin(ops::REF_SLOT_PROP, 2), 0);
             }
             // `$r = &f()` / `&$o->m()` — the cell a `function &f()` published on
@@ -3134,8 +3178,7 @@ impl Compiler {
                 let (recv, prop) = (recv.as_ref().clone(), prop.clone());
                 self.emit_set_var(b, &tmp, |c, b| {
                     c.compile_expr(b, &recv)?;
-                    let pi = b.add_constant(Value::str(prop));
-                    b.emit(Op::LoadConst(pi), 0);
+                    c.emit_member(b, &prop, 0)?;
                     b.emit(Op::CallBuiltin(ops::PROP_ENSURE_ARRAY, 2), c.cur_line);
                     Ok(())
                 })?;
@@ -3152,8 +3195,7 @@ impl Compiler {
         match t {
             Expr::PropGet(recv, prop) => {
                 self.compile_expr(b, recv)?;
-                let pi = b.add_constant(Value::str(prop.clone()));
-                b.emit(Op::LoadConst(pi), self.cur_line);
+                self.emit_member(b, prop, self.cur_line)?;
                 b.emit(Op::CallBuiltin(ops::PROP_UNSET, 2), self.cur_line);
                 b.emit(Op::Pop, self.cur_line);
             }
@@ -3478,27 +3520,24 @@ impl Compiler {
                 match op {
                     None => {
                         self.compile_expr(b, recv)?;
-                        let nidx = b.add_constant(Value::str(name.clone()));
-                        b.emit(Op::LoadConst(nidx), 0);
+                        self.emit_member(b, name, 0)?;
                         self.compile_rhs(b, rhs)?;
                         b.emit(Op::CallBuiltin(ops::PROP_SET, 3), self.cur_line);
                     }
                     Some(cop) => {
                         let r = self.tmp_name("pr");
                         self.emit_set_var(b, &r, |c, b| c.compile_expr(b, recv))?;
+                        let name = &self.stash_member(b, name)?;
                         // Fetch-for-write comes FIRST, so `$o->missing .= "x"`
                         // deprecates the dynamic property before the read below
                         // warns that it is undefined — the reference order.
                         self.emit_get_var(b, &r);
-                        let tidx = b.add_constant(Value::str(name.clone()));
-                        b.emit(Op::LoadConst(tidx), 0);
+                        self.emit_member(b, name, 0)?;
                         b.emit(Op::CallBuiltin(ops::PROP_TOUCH, 2), self.cur_line);
-                        let nidx = b.add_constant(Value::str(name.clone()));
-                        b.emit(Op::LoadConst(nidx), 0);
+                        self.emit_member(b, name, 0)?;
                         // value = @r->name op rhs
                         self.emit_get_var(b, &r);
-                        let gidx = b.add_constant(Value::str(name.clone()));
-                        b.emit(Op::LoadConst(gidx), 0);
+                        self.emit_member(b, name, 0)?;
                         b.emit(Op::CallBuiltin(ops::PROP_GET, 2), self.cur_line);
                         self.compile_rhs(b, rhs)?;
                         self.emit_binop(b, cop);
@@ -3518,8 +3557,7 @@ impl Compiler {
                         let t = self.tmp_name("po");
                         self.emit_set_var(b, &t, |c, b| {
                             c.compile_expr(b, recv)?;
-                            let idx = b.add_constant(Value::str(prop.clone()));
-                            b.emit(Op::LoadConst(idx), 0);
+                            c.emit_member(b, prop, 0)?;
                             b.emit(Op::CallBuiltin(ops::PROP_ENSURE_ARRAY, 2), c.cur_line);
                             Ok(())
                         })?;
@@ -4075,8 +4113,7 @@ impl Compiler {
             Expr::PropGet(recv, name) => {
                 // `$o->p++` — read-modify-write a scalar property.
                 self.compile_expr(b, recv)?;
-                let nidx = b.add_constant(Value::str(name.clone()));
-                b.emit(Op::LoadConst(nidx), 0);
+                self.emit_member(b, name, 0)?;
                 b.emit(Op::LoadInt(code), 0);
                 b.emit(Op::CallBuiltin(ops::PROP_INCDEC, 3), self.cur_line);
             }
@@ -4105,8 +4142,7 @@ impl Compiler {
                         let t = self.tmp_name("po");
                         self.emit_set_var(b, &t, |c, b| {
                             c.compile_expr(b, recv)?;
-                            let idx = b.add_constant(Value::str(prop.clone()));
-                            b.emit(Op::LoadConst(idx), 0);
+                            c.emit_member(b, prop, 0)?;
                             b.emit(Op::CallBuiltin(ops::PROP_ENSURE_ARRAY, 2), c.cur_line);
                             Ok(())
                         })?;
@@ -4262,8 +4298,7 @@ impl Compiler {
         let line = self.cur_line;
         match link {
             Expr::PropGet(_, name) | Expr::NullsafePropGet(_, name) => {
-                let idx = b.add_constant(Value::str(name.clone()));
-                b.emit(Op::LoadConst(idx), line);
+                self.emit_member(b, name, line)?;
                 let op = if quiet {
                     ops::PROP_GET_Q
                 } else {
@@ -4283,13 +4318,13 @@ impl Compiler {
             // A method CALL is never quietened: `isset()` asks about a storage
             // location, and the call that produced the value already ran.
             Expr::MethodCall(_, name, args) | Expr::NullsafeMethodCall(_, name, args) => {
-                let idx = b.add_constant(Value::str(name.clone()));
+                let name = &self.method_member(b, name, args.len())?;
                 // The receiver is judged before the arguments here too — a `?->`
                 // short-circuits only on NULL, so a `false`/int/array receiver
                 // still reaches the call and must reject it before an argument
                 // has the chance to print anything.
-                self.emit_mcall_recv_check(b, idx, args.len());
-                b.emit(Op::LoadConst(idx), line);
+                self.emit_mcall_recv_check(b, name, args.len())?;
+                self.emit_member(b, name, line)?;
                 if needs_arg_pairs(args) {
                     self.compile_arg_pairs(b, args)?;
                     b.emit(
@@ -4725,9 +4760,17 @@ pub(crate) fn collect_free_vars(e: &Expr, out: &mut Vec<String>) {
                 collect_free_vars(a, out);
             }
         }
-        Expr::PropGet(recv, _) | Expr::NullsafePropGet(recv, _) => collect_free_vars(recv, out),
-        Expr::MethodCall(recv, _, args) | Expr::NullsafeMethodCall(recv, _, args) => {
+        Expr::PropGet(recv, m) | Expr::NullsafePropGet(recv, m) => {
             collect_free_vars(recv, out);
+            if let Some(d) = m.operand() {
+                collect_free_vars(d, out);
+            }
+        }
+        Expr::MethodCall(recv, m, args) | Expr::NullsafeMethodCall(recv, m, args) => {
+            collect_free_vars(recv, out);
+            if let Some(d) = m.operand() {
+                collect_free_vars(d, out);
+            }
             for a in args {
                 collect_free_vars(a, out);
             }
@@ -4837,8 +4880,6 @@ fn expr_has_yield(e: &Expr) -> bool {
         | Expr::Spread(a)
         | Expr::Index(a, _)
         | Expr::Append(a)
-        | Expr::PropGet(a, _)
-        | Expr::NullsafePropGet(a, _)
         | Expr::Throw(a)
         | Expr::Clone(a)
         | Expr::Print(a)
@@ -4861,8 +4902,13 @@ fn expr_has_yield(e: &Expr) -> bool {
             class.operand().is_some_and(expr_has_yield)
         }
         Expr::CallValue(c, args) => expr_has_yield(c) || args.iter().any(expr_has_yield),
-        Expr::MethodCall(r, _, args) | Expr::NullsafeMethodCall(r, _, args) => {
-            expr_has_yield(r) || args.iter().any(expr_has_yield)
+        Expr::PropGet(r, m) | Expr::NullsafePropGet(r, m) => {
+            expr_has_yield(r) || m.operand().is_some_and(expr_has_yield)
+        }
+        Expr::MethodCall(r, m, args) | Expr::NullsafeMethodCall(r, m, args) => {
+            expr_has_yield(r)
+                || m.operand().is_some_and(expr_has_yield)
+                || args.iter().any(expr_has_yield)
         }
         Expr::Array(items) => items
             .iter()
@@ -5323,9 +5369,13 @@ impl SlotScan {
             | Expr::Quiet(a)
             | Expr::Print(a)
             | Expr::NamedArg(_, a)
-            | Expr::PropGet(a, _)
-            | Expr::NullsafePropGet(a, _)
             | Expr::InstanceOf(a, _) => self.expr(a),
+            Expr::PropGet(a, m) | Expr::NullsafePropGet(a, m) => {
+                self.expr(a);
+                if let Some(d) = m.operand() {
+                    self.expr(d);
+                }
+            }
             Expr::Assign(a, _, b) | Expr::RefAssign(a, b) | Expr::Elvis(a, b) => {
                 self.expr(a);
                 self.expr(b);
@@ -5342,8 +5392,11 @@ impl SlotScan {
                 self.expr(f);
                 self.exprs(args);
             }
-            Expr::MethodCall(r, _, args) | Expr::NullsafeMethodCall(r, _, args) => {
+            Expr::MethodCall(r, m, args) | Expr::NullsafeMethodCall(r, m, args) => {
                 self.expr(r);
+                if let Some(d) = m.operand() {
+                    self.expr(d);
+                }
                 self.exprs(args);
             }
             Expr::StaticCall(_, _, args) => self.exprs(args),

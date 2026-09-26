@@ -130,6 +130,38 @@ impl ArrayElem {
     }
 }
 
+/// The member named after `->` or `?->`.
+///
+/// `$o->p` and `$o->{"p"}` (a string literal between the braces) are the same
+/// static name. `$o->$n` and `$o->{expr}` compute the name at run time: the
+/// expression is evaluated after the receiver and converted to a string by the
+/// access itself, as `ZEND_FETCH_OBJ_*` / `ZEND_INIT_METHOD_CALL` do with a
+/// non-constant op2.
+#[derive(Debug, Clone)]
+pub enum Member {
+    Name(String),
+    Dyn(Box<Expr>),
+}
+
+impl Member {
+    /// The name when it is spelled in the source, `None` when it is computed.
+    pub fn name(&self) -> Option<&str> {
+        match self {
+            Member::Name(n) => Some(n),
+            Member::Dyn(_) => None,
+        }
+    }
+
+    /// The expression a computed name evaluates, for walkers that visit every
+    /// subexpression.
+    pub fn operand(&self) -> Option<&Expr> {
+        match self {
+            Member::Name(_) => None,
+            Member::Dyn(e) => Some(e),
+        }
+    }
+}
+
 /// An expression.
 #[derive(Debug, Clone)]
 pub enum Expr {
@@ -243,16 +275,16 @@ pub enum Expr {
         line: u32,
     },
     /// `$obj->prop` — instance property read.
-    PropGet(Box<Expr>, String),
+    PropGet(Box<Expr>, Member),
     /// `$obj->method(args)` — instance method call.
-    MethodCall(Box<Expr>, String, Vec<Expr>),
+    MethodCall(Box<Expr>, Member, Vec<Expr>),
     /// `$obj?->prop` — nullsafe property read: the receiver is evaluated once and,
     /// if it is null, the access short-circuits to null (the property is never
     /// read). Otherwise it behaves like `PropGet`.
-    NullsafePropGet(Box<Expr>, String),
+    NullsafePropGet(Box<Expr>, Member),
     /// `$obj?->method(args)` — nullsafe method call: short-circuits to null when
     /// the receiver is null (the arguments are not evaluated), else like `MethodCall`.
-    NullsafeMethodCall(Box<Expr>, String, Vec<Expr>),
+    NullsafeMethodCall(Box<Expr>, Member, Vec<Expr>),
     /// A named call argument `name: value` (PHP 8.0). Only valid inside a call's
     /// argument list; the compiler binds it to the parameter of that name.
     NamedArg(String, Box<Expr>),
