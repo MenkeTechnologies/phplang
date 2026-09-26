@@ -3718,6 +3718,12 @@ impl PhpHost {
         )
     }
 
+    /// A stream resource, open or closed: a closed one is still of type
+    /// resource, just no longer usable.
+    pub fn is_stream(&self, v: &Value) -> bool {
+        matches!(self.as_array(v), Some(PhpObj::Resource { .. }))
+    }
+
     /// At-or-past end of the stream (`feof`).
     pub fn res_eof(&self, v: &Value) -> bool {
         match self.as_array(v) {
@@ -5675,6 +5681,9 @@ fn predefined_constants() -> FxHashMap<String, Value> {
     si("JSON_UNESCAPED_SLASHES", 64);
     si("JSON_PRETTY_PRINT", 128);
     si("JSON_UNESCAPED_UNICODE", 256);
+    si("JSON_PARTIAL_OUTPUT_ON_ERROR", 512);
+    si("JSON_PRESERVE_ZERO_FRACTION", 1024);
+    si("JSON_UNESCAPED_LINE_TERMINATORS", 2048);
     si("JSON_THROW_ON_ERROR", 4194304);
     si("JSON_OBJECT_AS_ARRAY", 1);
     si("JSON_BIGINT_AS_STRING", 2);
@@ -5684,6 +5693,12 @@ fn predefined_constants() -> FxHashMap<String, Value> {
     si("JSON_ERROR_CTRL_CHAR", 3);
     si("JSON_ERROR_SYNTAX", 4);
     si("JSON_ERROR_UTF8", 5);
+    si("JSON_ERROR_RECURSION", 6);
+    si("JSON_ERROR_INF_OR_NAN", 7);
+    si("JSON_ERROR_UNSUPPORTED_TYPE", 8);
+    si("JSON_ERROR_INVALID_PROPERTY_NAME", 9);
+    si("JSON_ERROR_UTF16", 10);
+    si("JSON_ERROR_NON_BACKED_ENUM", 11);
     // url — `parse_url()`'s `$component` selectors (ext/standard/url.h).
     si("PHP_URL_SCHEME", 0);
     si("PHP_URL_HOST", 1);

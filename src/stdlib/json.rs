@@ -9,8 +9,8 @@
 //!   `stdClass` unless `$associative` (or `JSON_OBJECT_AS_ARRAY`) asks for an
 //!   array, exactly as `ext/json` does.
 //! * Integral numbers become `int`, everything with a `.`/`e`/`E` (or that
-//!   overflows `i64`) becomes `float`, matching PHP's default (no
-//!   `JSON_BIGINT_AS_STRING`).
+//!   overflows `i64`) becomes `float` — or, under `JSON_BIGINT_AS_STRING`, an
+//!   overflowing integer literal stays the string of its digits.
 //! * `\uXXXX` escapes and UTF-16 surrogate pairs are decoded to UTF-8.
 //! * `$depth` is honored (default 512): exceeding it yields `JSON_ERROR_DEPTH`.
 //! * On any failure `json_decode` returns `null` and records the error code,
@@ -31,6 +31,11 @@ const JSON_ERROR_NONE: i64 = 0;
 const JSON_ERROR_DEPTH: i64 = 1;
 const JSON_ERROR_CTRL_CHAR: i64 = 3;
 const JSON_ERROR_SYNTAX: i64 = 4;
+/// `JSON_ERROR_UNSUPPORTED_TYPE` — `json_encode` met a value with no JSON
+/// spelling (a resource).
+pub const JSON_ERROR_UNSUPPORTED_TYPE: i64 = 8;
+/// `JSON_ERROR_INVALID_PROPERTY_NAME` — a decoded object key starts with NUL.
+const JSON_ERROR_INVALID_PROPERTY_NAME: i64 = 9;
 const JSON_ERROR_UTF16: i64 = 10;
 /// `JSON_ERROR_RECURSION` — `json_encode` found a structure that contains
 /// itself. JSON has no way to spell a cycle, so the encode fails outright.
@@ -87,6 +92,8 @@ fn error_msg(code: i64) -> &'static str {
         JSON_ERROR_RECURSION => "Recursion detected",
         JSON_ERROR_UTF16 => "Single unpaired UTF-16 surrogate in unicode escape",
         JSON_ERROR_INF_OR_NAN => "Inf and NaN cannot be JSON encoded",
+        JSON_ERROR_UNSUPPORTED_TYPE => "Type is not supported",
+        JSON_ERROR_INVALID_PROPERTY_NAME => "The decoded property name is invalid",
         JSON_ERROR_NON_BACKED_ENUM => "Non-backed enums have no default serialization",
         _ => "Unknown error",
     }
@@ -168,13 +175,15 @@ const NATIVE_DEPTH_CEILING: usize = 1024;
 /// when `$associative` is left `null`, which is `ext/json`'s own precedence
 /// (`php_json_decode_ex` ORs the flag in only for a null `$assoc`).
 const JSON_OBJECT_AS_ARRAY: i64 = 1;
+/// `JSON_BIGINT_AS_STRING` — keep an out-of-range integer literal as a string.
+const JSON_BIGINT_AS_STRING: i64 = 2;
 
 /// `json_decode($json, $associative = null, $depth = 512, $flags = 0)`.
 ///
 /// `$associative` selects the container a JSON **object** decodes into: `true`
 /// gives a PHP array, `false` a `stdClass`. Left `null` (the default) the
 /// `JSON_OBJECT_AS_ARRAY` bit of `$flags` decides, defaulting to `stdClass`.
-/// `$flags` beyond that and `JSON_THROW_ON_ERROR` are ignored.
+/// `JSON_BIGINT_AS_STRING` and `JSON_THROW_ON_ERROR` are honoured too.
 fn json_decode(args: &[Value]) -> Result<Value, String> {
     let json = crate::host::with_host(|h| h.to_str(&args.first().cloned().unwrap_or(Value::Undef)));
     // 3rd argument is depth; default 512 (see `decode_depth`).
@@ -190,6 +199,7 @@ fn json_decode(args: &[Value]) -> Result<Value, String> {
     let parsed = crate::host::with_host(|h| {
         let mut p = Parser::new(json.as_bytes(), depth, h);
         p.assoc = assoc;
+        p.bigint_as_string = flags & JSON_BIGINT_AS_STRING != 0;
         p.parse_document()
     });
     match parsed {
@@ -246,6 +256,9 @@ struct Parser<'a, 'h> {
     /// `json_decode`'s resolved `$associative`: a JSON object becomes a PHP array
     /// when set, a `stdClass` when clear. `json_validate` never reads it.
     assoc: bool,
+    /// `JSON_BIGINT_AS_STRING`: an integer literal too large for `int` decodes
+    /// as the string of its digits instead of the nearest float.
+    bigint_as_string: bool,
     h: &'h mut PhpHost,
 }
 
@@ -258,6 +271,7 @@ impl<'a, 'h> Parser<'a, 'h> {
             depth: 0,
             build: true,
             assoc: true,
+            bigint_as_string: false,
             h,
         }
     }
@@ -271,6 +285,7 @@ impl<'a, 'h> Parser<'a, 'h> {
             depth: 0,
             build: false,
             assoc: true,
+            bigint_as_string: false,
             h,
         }
     }
@@ -426,6 +441,13 @@ impl<'a, 'h> Parser<'a, 'h> {
             self.pos += 1; // ':'
             self.skip_ws();
             let v = self.parse_value()?;
+            // A NUL-led name is how PHP spells a mangled private or protected
+            // property, so `php_json_parser_object_update` refuses it on a
+            // stdClass (an array key is fine). Checked before the container is
+            // allocated so a refused first member burns no object handle.
+            if self.build && !self.assoc && key.starts_with('\0') {
+                return Err(JSON_ERROR_INVALID_PROPERTY_NAME);
+            }
             let container = match &arr {
                 Some(c) => c.clone(),
                 None => {
@@ -602,7 +624,10 @@ impl<'a, 'h> Parser<'a, 'h> {
         } else {
             match text.parse::<i64>() {
                 Ok(n) => Ok(Value::int(n)),
-                // Integer literal too large for i64: PHP returns a float here.
+                // Integer literal too large for i64: PHP returns a float here,
+                // or the literal itself under `JSON_BIGINT_AS_STRING`
+                // (`php_json_scanner` hands the digits to `ZVAL_STRINGL`).
+                Err(_) if self.bigint_as_string => Ok(Value::str(text.to_string())),
                 Err(_) => text
                     .parse::<f64>()
                     .map(Value::float)

@@ -401,7 +401,10 @@ end-to-end (see `tests/basic.rs`):
     `urlencode`/`rawurlencode` (+decode), `http_build_query`, `parse_url`,
     `parse_str` (with the `PHP_URL_*` component selectors).
   - **json** — `json_encode`, `json_decode` (objects to `stdClass`, or to arrays
-    under `$associative` / `JSON_OBJECT_AS_ARRAY`), `json_last_error`(`_msg`). **filter**
+    under `$associative` / `JSON_OBJECT_AS_ARRAY`; oversized integers as strings
+    under `JSON_BIGINT_AS_STRING`), `json_validate`, `json_last_error`(`_msg`) with
+    every `JSON_ERROR_*` code, and the encode flags through
+    `JSON_PARTIAL_OUTPUT_ON_ERROR` and `JSON_PRESERVE_ZERO_FRACTION`. **filter**
     — `filter_var` (`VALIDATE_INT`/`FLOAT`/`BOOLEAN`/`EMAIL`/`URL`/`IP`/`DOMAIN`/
     `REGEXP`, `SANITIZE_*`). **mbstring** — `mb_str_split`, `mb_convert_case`,
     `mb_strpos`/`rpos`, `mb_ord`/`chr`, `mb_convert_encoding`, `mb_detect_encoding`.

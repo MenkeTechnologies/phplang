@@ -469,3 +469,88 @@ fn numeric_check_converts_exactly_the_numeric_strings() {
         r#"["5","1e3"]"#
     );
 }
+
+/// `JSON_PRESERVE_ZERO_FRACTION` appends `.0` to an integral float — and to a
+/// numeric string `JSON_NUMERIC_CHECK` turns into one — but never to a spelling
+/// that already has a fraction or an exponent. `JSON_UNESCAPED_UNICODE` still
+/// escapes U+2028/U+2029 unless `JSON_UNESCAPED_LINE_TERMINATORS` is also set.
+/// Expected output recorded from `php` 8.5.10.
+#[test]
+fn encode_zero_fraction_and_line_terminator_flags() {
+    let src = r#"<?php
+        echo json_encode(["1.0", 2.0, -0.0, 1e25, 1.5, 3], JSON_NUMERIC_CHECK|JSON_PRESERVE_ZERO_FRACTION), "\n";
+        echo json_encode(["a" => 1.0, "b" => [0.0]], JSON_PRESERVE_ZERO_FRACTION|JSON_PRETTY_PRINT), "\n";
+        echo json_encode(["1.0", 2.0]), "\n";
+        echo json_encode(["\u{2028}x\u{2029}"], JSON_UNESCAPED_UNICODE),
+             json_encode(["\u{2028}x"], JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_LINE_TERMINATORS),
+             json_encode(["\u{2028}"]);"#;
+    assert_eq!(
+        run(src),
+        "[1.0,2.0,-0.0,1.0e+25,1.5,3]\n{\n    \"a\": 1.0,\n    \"b\": [\n        0.0\n    ]\n}\n[\"1.0\",2]\n[\"\\u2028x\\u2029\"][\"\u{2028}x\"][\"\\u2028\"]"
+    );
+}
+
+/// `JSON_PARTIAL_OUTPUT_ON_ERROR` substitutes where the value stands — a cycle
+/// as `null`, a non-finite float and a pure enum case as `0` — never fails or
+/// throws (not even with `JSON_THROW_ON_ERROR`), and leaves the LAST error met
+/// in document order in `json_last_error()`. Recorded from `php` 8.5.10.
+#[test]
+fn encode_partial_output_substitutes_and_reports_the_last_error() {
+    let src = r#"<?php
+        var_dump(json_encode([1, NAN, INF, "a"], JSON_PARTIAL_OUTPUT_ON_ERROR), json_last_error());
+        $a = [1]; $a[] = &$a;
+        var_dump(json_encode([$a, NAN], JSON_PARTIAL_OUTPUT_ON_ERROR), json_last_error());
+        var_dump(json_encode([NAN, $a], JSON_PARTIAL_OUTPUT_ON_ERROR), json_last_error());
+        enum E { case A; }
+        var_dump(json_encode([1, E::A, 2], JSON_PARTIAL_OUTPUT_ON_ERROR), json_last_error());
+        var_dump(json_encode([NAN], JSON_PARTIAL_OUTPUT_ON_ERROR|JSON_THROW_ON_ERROR), json_last_error());
+        var_dump(json_encode([1], JSON_PARTIAL_OUTPUT_ON_ERROR), json_last_error());"#;
+    assert_eq!(
+        run(src),
+        "string(11) \"[1,0,0,\"a\"]\"\nint(7)\n\
+         string(12) \"[[1,null],0]\"\nint(7)\n\
+         string(12) \"[0,[1,null]]\"\nint(6)\n\
+         string(7) \"[1,0,2]\"\nint(11)\n\
+         string(3) \"[0]\"\nint(7)\n\
+         string(3) \"[1]\"\nint(0)\n"
+    );
+}
+
+/// `JSON_BIGINT_AS_STRING` keeps an integer literal that overflows `int` as the
+/// string of its digits, sign included, at any depth; a float literal (even an
+/// overflowing one) is unaffected, and without the flag the literal is a float.
+#[test]
+fn decode_bigint_as_string() {
+    let src = r#"<?php
+        var_dump(json_decode("[-12345678901234567890123, 1.5e400, 12]", true, 512, JSON_BIGINT_AS_STRING));
+        var_dump(json_decode('{"n": 99999999999999999999}', false, 512, JSON_BIGINT_AS_STRING)->n);
+        var_dump(json_decode("12345678901234567890123"));"#;
+    assert_eq!(
+        run(src),
+        "array(3) {\n  [0]=>\n  string(24) \"-12345678901234567890123\"\n  [1]=>\n  float(INF)\n  [2]=>\n  int(12)\n}\n\
+         string(20) \"99999999999999999999\"\n\
+         float(1.2345678901234568E+22)\n"
+    );
+}
+
+/// A NUL-led object key is refused (`JSON_ERROR_INVALID_PROPERTY_NAME`) only
+/// when it would become a `stdClass` property; an array takes it and
+/// `json_validate` never checks it. A stream resource, open or closed, is
+/// `JSON_ERROR_UNSUPPORTED_TYPE`, spelled `null` under partial output.
+/// Recorded from `php` 8.5.11.
+#[test]
+fn invalid_property_name_and_unsupported_type() {
+    let src = r#"<?php
+        var_dump(json_decode('{"\u0000a":1}'), json_last_error_msg(), json_decode('{"\u0000a":1}', true), json_validate('{"\u0000a":1}'));
+        $f = fopen("Cargo.toml", "r");
+        var_dump(json_encode([$f]), json_last_error_msg(), json_encode([NAN, $f], JSON_PARTIAL_OUTPUT_ON_ERROR), json_last_error());
+        fclose($f);
+        var_dump(json_encode($f), json_last_error(), JSON_ERROR_UTF16, JSON_ERROR_NON_BACKED_ENUM);"#;
+    assert_eq!(
+        run(src),
+        "NULL\nstring(36) \"The decoded property name is invalid\"\n\
+         array(1) {\n  [\"\0a\"]=>\n  int(1)\n}\nbool(true)\n\
+         bool(false)\nstring(21) \"Type is not supported\"\nstring(8) \"[0,null]\"\nint(8)\n\
+         bool(false)\nint(8)\nint(10)\nint(11)\n"
+    );
+}

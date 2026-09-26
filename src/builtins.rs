@@ -4041,7 +4041,16 @@ pub fn call_library(name: &str, args: &[Value]) -> Result<Value, String> {
             // `jsonSerialize()` is PHP code and cannot run while the host is
             // borrowed. See `json_prepare`.
             let flags = arg(args, 1).to_int();
-            let prepared = match json_prepare(&arg(args, 0)) {
+            let partial = flags & JSON_PARTIAL_OUTPUT_ON_ERROR != 0;
+            let (prepared, partial_error) = json_prepare(&arg(args, 0), partial);
+            if let (true, Ok(doc)) = (partial, &prepared) {
+                // Nothing fails and nothing throws, `JSON_THROW_ON_ERROR`
+                // included: the substituted document is the result, and the
+                // last error substituted is what `json_last_error()` reports.
+                crate::stdlib::json::set_last_error(partial_error);
+                return Ok(with_host(|h| Value::str(php_json_encode(h, doc, flags, 0))));
+            }
+            let prepared = match prepared {
                 Ok(v) => v,
                 Err(code) => {
                     return match crate::stdlib::json::fail(code, flags) {
@@ -6912,24 +6921,70 @@ fn has_nonfinite_float(h: &host::PhpHost, v: &Value) -> bool {
 ///   protected state never reaches the encoder.
 ///
 /// `Err(code)` is a `JSON_ERROR_*` code: the encode yields `false`.
-fn json_prepare(v: &Value) -> Result<Value, i64> {
-    json_prepare_seen(v, &mut host::Visiting::default())
+///
+/// Under `JSON_PARTIAL_OUTPUT_ON_ERROR` nothing fails. Each value the encoder
+/// cannot spell is replaced where it stands, exactly as `php_json_encode_zval`
+/// (ext/json/json_encoder.c) writes it — a cycle as `null`, a non-finite float
+/// and a pure enum case as a bare `0` — and the LAST such error, in document
+/// order, is what `json_last_error()` reports afterwards. Non-finite floats are
+/// resolved here, not in the encoder, so that one walk sees every error in the
+/// order the reference meets them.
+fn json_prepare(v: &Value, partial: bool) -> (Result<Value, i64>, i64) {
+    let mut prep = JsonPrep {
+        seen: host::Visiting::default(),
+        partial,
+        last_error: 0,
+    };
+    let out = json_prepare_seen(v, &mut prep);
+    (out, prep.last_error)
 }
 
-/// [`json_prepare`] with the cycle guard threaded through. The guard lives HERE
-/// rather than in the encoder because this pass is what deep-copies the
-/// structure: by the time the encoder runs it is walking an acyclic copy.
-fn json_prepare_seen(v: &Value, seen: &mut host::Visiting) -> Result<Value, i64> {
+/// The state one [`json_prepare`] walk threads through its recursion.
+struct JsonPrep {
+    /// The cycle guard. It lives HERE rather than in the encoder because this
+    /// pass is what deep-copies the structure: by the time the encoder runs it
+    /// is walking an acyclic copy.
+    seen: host::Visiting,
+    /// `JSON_PARTIAL_OUTPUT_ON_ERROR`: substitute instead of failing.
+    partial: bool,
+    /// The last `JSON_ERROR_*` substituted under `partial`, `0` for none.
+    last_error: i64,
+}
+
+impl JsonPrep {
+    /// Fail with `code`, or — under `JSON_PARTIAL_OUTPUT_ON_ERROR` — record it
+    /// and stand `substitute` in for the value.
+    fn refuse(&mut self, code: i64, substitute: Value) -> Result<Value, i64> {
+        if self.partial {
+            self.last_error = code;
+            Ok(substitute)
+        } else {
+            Err(code)
+        }
+    }
+}
+
+fn json_prepare_seen(v: &Value, prep: &mut JsonPrep) -> Result<Value, i64> {
+    if let Value::Float(f) = v {
+        if !f.is_finite() && prep.partial {
+            return prep.refuse(crate::stdlib::json::JSON_ERROR_INF_OR_NAN, Value::int(0));
+        }
+    }
+    if with_host(|h| h.is_stream(v)) {
+        // `php_json_encode_zval`'s default arm: a resource has no JSON
+        // spelling, and partial output writes `null` in its place.
+        return prep.refuse(crate::stdlib::json::JSON_ERROR_UNSUPPORTED_TYPE, Value::Undef);
+    }
     if with_host(|h| h.is_array(v)) {
-        if !seen.enter(v) {
-            return Err(crate::stdlib::json::JSON_ERROR_RECURSION);
+        if !prep.seen.enter(v) {
+            return prep.refuse(crate::stdlib::json::JSON_ERROR_RECURSION, Value::Undef);
         }
         let pairs = with_host(|h| h.array_pairs(v)).unwrap_or_default();
         let mut out = Vec::with_capacity(pairs.len());
         for (k, val) in pairs {
-            out.push((k, json_prepare_seen(&val, seen)?));
+            out.push((k, json_prepare_seen(&val, prep)?));
         }
-        seen.leave();
+        prep.seen.leave();
         return Ok(with_host(|h| {
             let arr = h.new_array();
             h.arr_set_pairs(&arr, out);
@@ -6939,22 +6994,22 @@ fn json_prepare_seen(v: &Value, seen: &mut host::Visiting) -> Result<Value, i64>
     if !with_host(|h| h.is_object(v)) {
         return Ok(v.clone());
     }
-    if !seen.enter(v) {
-        return Err(crate::stdlib::json::JSON_ERROR_RECURSION);
+    if !prep.seen.enter(v) {
+        return prep.refuse(crate::stdlib::json::JSON_ERROR_RECURSION, Value::Undef);
     }
     let class = with_host(|h| h.object_class(v)).unwrap_or_default();
     if with_host(|h| h.is_enum_class(&class)) {
-        seen.leave();
+        prep.seen.leave();
         return match with_host(|h| h.enum_case_of(v)) {
             Some((_, Some(backing))) => Ok(backing),
-            _ => Err(crate::stdlib::json::JSON_ERROR_NON_BACKED_ENUM),
+            _ => prep.refuse(crate::stdlib::json::JSON_ERROR_NON_BACKED_ENUM, Value::int(0)),
         };
     }
     if with_host(|h| h.class_is_a_pub(&class, "JsonSerializable")) {
         let produced = host::call_method(&class, "jsonSerialize", Some(v.clone()), Vec::new())
             .map_err(|_| crate::stdlib::json::JSON_ERROR_NON_BACKED_ENUM)?;
-        let out = json_prepare_seen(&produced, seen);
-        seen.leave();
+        let out = json_prepare_seen(&produced, prep);
+        prep.seen.leave();
         return out;
     }
     let mut out = Vec::new();
@@ -6962,9 +7017,9 @@ fn json_prepare_seen(v: &Value, seen: &mut host::Visiting) -> Result<Value, i64>
         if with_host(|h| h.prop_visibility(&class, &name)).is_some() {
             continue;
         }
-        out.push((name, json_prepare_seen(&val, seen)?));
+        out.push((name, json_prepare_seen(&val, prep)?));
     }
-    seen.leave();
+    prep.seen.leave();
     Ok(with_host(|h| h.new_transient_object(out)))
 }
 
@@ -6982,6 +7037,25 @@ const JSON_HEX_APOS: i64 = 4;
 const JSON_HEX_QUOT: i64 = 8;
 /// Encode a NUMERIC STRING as the number it reads as.
 const JSON_NUMERIC_CHECK: i64 = 32;
+/// Substitute for a value that cannot be encoded instead of failing the encode.
+const JSON_PARTIAL_OUTPUT_ON_ERROR: i64 = 512;
+/// Spell an integral float with a `.0` so it decodes back as a float.
+const JSON_PRESERVE_ZERO_FRACTION: i64 = 1024;
+/// Leave U+2028/U+2029 raw under `JSON_UNESCAPED_UNICODE`; without it they are
+/// still escaped, because they end a line in JavaScript.
+const JSON_UNESCAPED_LINE_TERMINATORS: i64 = 2048;
+
+/// A finite float as JSON spells it: `serialize_precision`, lowercase exponent,
+/// and — under `JSON_PRESERVE_ZERO_FRACTION` — a `.0` appended when the digits
+/// carry neither a fraction nor an exponent, as `smart_str_append_double`
+/// (Zend/zend_smart_str.c) does with `zero_frac` set.
+fn json_float(f: f64, flags: i64) -> String {
+    let mut s = crate::stdlib::types::serialize_float(f).replace('E', "e");
+    if flags & JSON_PRESERVE_ZERO_FRACTION != 0 && f.is_finite() && !s.contains(['.', 'e']) {
+        s.push_str(".0");
+    }
+    s
+}
 
 /// `JSON_NUMERIC_CHECK`'s rendering of `s`, or `None` when the string is not
 /// numeric and must be encoded as a string after all.
@@ -6991,16 +7065,15 @@ const JSON_NUMERIC_CHECK: i64 = 32;
 /// not numeric. A string that reads as a non-finite double (`"1e999"`) has no
 /// JSON spelling and stays a string, which is the reference's own guard.
 ///
-/// The number is rendered by the same path a real float takes, so an integral
-/// value loses its fractional part exactly as PHP's `smart_str_append_double`
-/// does with `zero_frac` off: `json_encode(["1e3"], JSON_NUMERIC_CHECK)` is
-/// `[1000]`, matching `json_encode([1000.0])`.
-fn json_numeric_check(s: &str) -> Option<String> {
+/// The number is rendered by the same path a real float takes ([`json_float`]),
+/// so an integral value loses its fractional part unless
+/// `JSON_PRESERVE_ZERO_FRACTION` is set: `json_encode(["1e3"], JSON_NUMERIC_CHECK)`
+/// is `[1000]`, matching `json_encode([1000.0])`, and `["1.0"]` under both flags
+/// is `[1.0]`.
+fn json_numeric_check(s: &str, flags: i64) -> Option<String> {
     match host::parse_php_number_full(s)? {
         Value::Int(n) => Some(n.to_string()),
-        Value::Float(f) if f.is_finite() => {
-            Some(crate::stdlib::types::serialize_float(f).replace('E', "e"))
-        }
+        Value::Float(f) if f.is_finite() => Some(json_float(f, flags)),
         _ => None,
     }
 }
@@ -7015,9 +7088,9 @@ fn php_json_encode(h: &host::PhpHost, v: &Value, flags: i64, depth: usize) -> St
         Value::Int(n) => n.to_string(),
         // JSON uses serialize_precision too, but spells the exponent lowercase
         // (`1.0e+100`, where var_dump/serialize print `1.0E+100`).
-        Value::Float(f) => crate::stdlib::types::serialize_float(*f).replace('E', "e"),
+        Value::Float(f) => json_float(*f, flags),
         Value::Str(s) => match (flags & JSON_NUMERIC_CHECK != 0)
-            .then(|| json_numeric_check(s))
+            .then(|| json_numeric_check(s, flags))
             .flatten()
         {
             Some(n) => n,
@@ -7078,6 +7151,7 @@ fn php_json_encode(h: &host::PhpHost, v: &Value, flags: i64, depth: usize) -> St
 fn json_string(s: &str, flags: i64) -> String {
     let escape_slashes = flags & JSON_UNESCAPED_SLASHES == 0;
     let escape_unicode = flags & JSON_UNESCAPED_UNICODE == 0;
+    let escape_terminators = flags & JSON_UNESCAPED_LINE_TERMINATORS == 0;
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
     for c in s.chars() {
@@ -7096,6 +7170,8 @@ fn json_string(s: &str, flags: i64) -> String {
             '\u{c}' => out.push_str("\\f"),
             '/' if escape_slashes => out.push_str("\\/"),
             c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            '\u{2028}' if escape_terminators => out.push_str("\\u2028"),
+            '\u{2029}' if escape_terminators => out.push_str("\\u2029"),
             c if escape_unicode && !c.is_ascii() => {
                 // Above the BMP JSON needs an explicit UTF-16 surrogate pair.
                 let mut buf = [0u16; 2];
