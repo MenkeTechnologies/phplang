@@ -26,6 +26,50 @@ comment above it.
 
 ---
 
+## Round 13 — computed member names, uninitialized typed properties, and the rest of ext/json
+
+Measured under `PHP 8.5.11 (cli) (built: Sep 22 2026 13:32:06) (NTS)`; ini state
+and environment otherwise as recorded in the oracle table above. Every
+expectation below was byte-diffed against that binary.
+
+**`$o->$name` and `$o->{expr}` did not parse.** Only a bare identifier could
+follow `->`, so both forms were `Parse error: unexpected variable` / `unexpected
+token "{"`. The member after `->` and `?->` is now an identifier, a simple
+variable or a braced expression (a braced string literal is the literal name),
+and every access takes it: read, write, compound assignment, `++`/`--`, `&`,
+`isset`, `unset`, array writes through the property, method calls, first-class
+callables and the nullsafe chain. The name is evaluated once, after the receiver
+and before the value — `$o->{f()} .= "x"` calls `f` a single time — and a `?->`
+short-circuit skips it.
+
+**A typed property with no default read as `NULL`.** It now starts
+uninitialized, as in the reference: absent from `foreach`, `print_r`,
+`var_export`, `json_encode`, `serialize`, `(array)` and `get_object_vars`;
+listed by `var_dump` as `uninitialized(T)` in its declared slot but not counted
+in the header; and `Error: Typed property C::$p must not be accessed before
+initialization` on a read or `++` before the first write. `__get` answers for
+one only after an explicit `unset()`. The type prints the way
+`zend_type_to_string` spells it (class names first, builtins in the engine's
+fixed order, `?T`, `self` resolved, `iterable` as `Traversable|array`).
+Two slot-order bugs went with it: a declared property written back after
+`unset()` was appended after the dynamic ones, and a trait's properties were
+laid out before the class's own.
+
+**ext/json flags and codes.** `JSON_PARTIAL_OUTPUT_ON_ERROR` (substitute in
+place — `null` for a cycle or a resource, `0` for a non-finite float or a pure
+enum case — and report the last error), `JSON_PRESERVE_ZERO_FRACTION`,
+`JSON_UNESCAPED_LINE_TERMINATORS` and `JSON_BIGINT_AS_STRING` are honoured; a
+stream resource is `JSON_ERROR_UNSUPPORTED_TYPE` and a NUL-led `stdClass`
+property name `JSON_ERROR_INVALID_PROPERTY_NAME`; `JSON_ERROR_RECURSION` through
+`JSON_ERROR_NON_BACKED_ENUM` are seeded constants.
+
+Carried from the interrupted previous round: `new` on a trait raises `Cannot
+instantiate trait`, static properties enforce their visibility, and class
+constants enforce `private`/`protected` with initializers running in the
+declaring class's scope.
+
+---
+
 ## Round 12 — what a by-reference parameter refuses, and what a trace already converted
 
 Measured under `PHP 8.5.10 (cli) (built: Aug 25 2026 21:09:32) (NTS)`; ini state
