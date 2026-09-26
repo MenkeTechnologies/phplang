@@ -1,18 +1,17 @@
 //! PHP standard-library `fileio` functions. Part of the `stdlib` chain; see
 //! `src/stdlib/mod.rs`. `dispatch` returns `None` for names it does not handle.
 //!
-//! Filesystem access is done with `std::fs`/`std::path`. Failures return PHP's
-//! `false` (a `Value::Bool(false)`) rather than raising a warning, matching how
-//! these functions behave when warnings are suppressed with `@`.
-//!
-//! LIMITATION — no stream/resource handles. `fopen`/`fread`/`fwrite`/`fclose`
-//! are intentionally NOT implemented: a `resource` needs a persistent
-//! handle table on the host (off-limits for this module). Everything here is
+//! Filesystem access is done with `std::fs`/`std::path`. Everything here is
 //! whole-file (`file_get_contents`/`file_put_contents`/`file`/`readfile`) or a
-//! stateless path/stat operation, so no host changes are required.
+//! stateless path/stat operation; the stream handles live in `fileres`. The
+//! whole-file functions accept `php://` URLs through `fileres`, spend a
+//! resource number per successful open as the reference does, and raise its
+//! `Failed to open stream` warning when the open fails. The other functions
+//! return `false` silently on failure.
 
 use crate::host::with_host;
 use crate::stdlib::common::*;
+use crate::stdlib::fileres;
 use fusevm::Value;
 use std::ffi::CString;
 use std::fs;
@@ -329,7 +328,12 @@ fn has_flag(v: &Value, name: &str, bit: i64) -> bool {
 /// PHP's 26-entry `stat`/`lstat` array: the 13 fields under numeric keys `0..12`
 /// followed by the same values under their named keys, in PHP's order.
 fn stat_array(m: &fs::Metadata) -> Value {
-    let fields: [(&str, i64); 13] = [
+    stat_value(&stat_fields(m))
+}
+
+/// The thirteen `stat(2)` fields PHP reports, in its order.
+pub(crate) fn stat_fields(m: &fs::Metadata) -> [(&'static str, i64); 13] {
+    [
         ("dev", m.dev() as i64),
         ("ino", m.ino() as i64),
         ("mode", m.mode() as i64),
@@ -343,7 +347,11 @@ fn stat_array(m: &fs::Metadata) -> Value {
         ("ctime", m.ctime()),
         ("blksize", m.blksize() as i64),
         ("blocks", m.blocks() as i64),
-    ];
+    ]
+}
+
+/// `stat()`'s array: the fields by index 0–12, then again by name.
+pub(crate) fn stat_value(fields: &[(&str, i64); 13]) -> Value {
     let mut pairs: Vec<(Value, Value)> = Vec::with_capacity(26);
     for (i, (_, val)) in fields.iter().enumerate() {
         pairs.push((Value::int(i as i64), Value::int(*val)));
@@ -410,21 +418,43 @@ fn frsize(s: &libc::statvfs) -> f64 {
     }
 }
 
+/// The whole content of a file or `php://` URL for `file_get_contents`, `file`
+/// and `readfile`, with the reference's open-failure warning and the resource
+/// number its internal stream spends.
+fn read_whole(fname: &str, path: &str) -> Option<Vec<u8>> {
+    if fileres::is_php_url(path) {
+        return fileres::read_url(fname, path);
+    }
+    match fs::read(path) {
+        Ok(bytes) => {
+            fileres::note_file_opened();
+            Some(bytes)
+        }
+        Err(e) => {
+            fileres::warn_open_failed(fname, path, &e);
+            None
+        }
+    }
+}
+
 /// Dispatch a `fileio`-category PHP function by lowercased name.
 pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
     let v: Value = match name {
         // ── whole-file read/write ──────────────────────────────────────────
-        "file_get_contents" => {
-            let path = str_arg(args, 0);
-            match fs::read(&path) {
-                Ok(bytes) => Value::str(String::from_utf8_lossy(&bytes).into_owned()),
-                Err(_) => f(),
-            }
-        }
+        "file_get_contents" => match read_whole(name, &str_arg(args, 0)) {
+            Some(bytes) => Value::str(String::from_utf8_lossy(&bytes).into_owned()),
+            None => f(),
+        },
         "file_put_contents" => {
             let path = str_arg(args, 0);
             let data = put_data_string(args);
             let append = has_append_flag(&arg(args, 2));
+            if fileres::is_php_url(&path) {
+                return Some(Ok(match fileres::write_url(name, &path, data.as_bytes()) {
+                    Some(n) => Value::int(n as i64),
+                    None => f(),
+                }));
+            }
             let res = if append {
                 use std::io::Write;
                 fs::OpenOptions::new()
@@ -436,14 +466,20 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
                 fs::write(&path, data.as_bytes())
             };
             match res {
-                Ok(()) => Value::int(data.len() as i64),
-                Err(_) => f(),
+                Ok(()) => {
+                    fileres::note_file_opened();
+                    Value::int(data.len() as i64)
+                }
+                Err(e) => {
+                    fileres::warn_open_failed(name, &path, &e);
+                    f()
+                }
             }
         }
         "file" => {
             let path = str_arg(args, 0);
             let (ignore_nl, skip_empty) = file_flags(&arg(args, 1));
-            match fs::read(&path) {
+            match read_whole(name, &path).ok_or(()) {
                 Ok(bytes) => {
                     let text = String::from_utf8_lossy(&bytes);
                     let mut lines: Vec<Value> = Vec::new();
@@ -465,7 +501,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         }
         "readfile" => {
             let path = str_arg(args, 0);
-            match fs::read(&path) {
+            match read_whole(name, &path).ok_or(()) {
                 Ok(bytes) => {
                     let s = String::from_utf8_lossy(&bytes).into_owned();
                     with_host(|h| h.write_out(&s));

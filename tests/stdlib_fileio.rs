@@ -164,7 +164,9 @@ fn file_put_contents_array_data_is_concatenated() {
 fn file_get_contents_missing_returns_false() {
     let dir = unique_dir("missing");
     let file = child(&dir, "nope.txt");
-    let src = format!("<?php var_dump(file_get_contents('{file}'));");
+    // The reference also warns `Failed to open stream`; `@` keeps this test
+    // about the return value (tests/streams.rs pins the warning).
+    let src = format!("<?php var_dump(@file_get_contents('{file}'));");
     assert_eq!(run(&src), "bool(false)\n");
     std::fs::remove_dir_all(&dir).unwrap();
 }

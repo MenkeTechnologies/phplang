@@ -68,6 +68,9 @@ fn satisfies(h: &PhpHost, ty: &str, v: &Value) -> bool {
             _ => true,
         },
         "bool" => !is_array && !is_object,
+        // A resource of any kind; `stream` also demands it be OPEN, which
+        // [`check_call`] reports with its own wording.
+        "resource" | "stream" => h.is_stream(v),
         // Anything not in the table above was not probed, so it is not judged.
         _ => true,
     }
@@ -129,9 +132,20 @@ pub fn check_call(name: &str, args: &[Value], stop_at: u32) -> Result<(), String
                 continue;
             }
         } else if host::with_host(|h| satisfies(h, ty, v)) {
+            // `PHP_Z_PARAM_STREAM` fetches the stream while parsing, so a
+            // closed one is refused at ITS position, before later arguments.
+            if ty == "stream" && !host::with_host(|h| h.is_resource(v)) {
+                return Err(crate::builtins::throws(
+                    "TypeError",
+                    format!(
+                        "{name}(): Argument #{argno} (${pname}) must be an open stream resource"
+                    ),
+                ));
+            }
             continue;
         }
         let given = host::with_host(|h| h.type_name_for_error(v));
+        let ty = if ty == "stream" { "resource" } else { ty };
         return Err(crate::builtins::throws(
             "TypeError",
             format!("{name}(): Argument #{argno} (${pname}) must be of type {ty}, {given} given"),
@@ -231,7 +245,9 @@ pub fn trace_args<'a>(name: &str, args: &'a [Value]) -> Cow<'a, [Value]> {
 /// implements, so a type here is the one PHP declares rather than one inferred
 /// from phplang's implementation.
 static PARAMS: &[(&str, Params)] = &[
-    // generated: 374 functions
+    // generated: 374 functions, plus the `stream`/`resource` first parameters
+    // of the stream family and `get_resource_*`, added by hand: reflection
+    // declares those parameters untyped, so the generator cannot see them.
     ("abs", &[(1, "num", "int|float")]),
     ("acos", &[(1, "num", "float")]),
     ("acosh", &[(1, "num", "float")]),
@@ -531,8 +547,12 @@ static PARAMS: &[(&str, Params)] = &[
     ("expm1", &[(1, "num", "float")]),
     ("extension_loaded", &[(1, "extension", "string")]),
     ("extract", &[(2, "flags", "int"), (3, "prefix", "string")]),
+    ("fclose", &[(1, "stream", "stream")]),
     ("fdiv", &[(1, "num1", "float"), (2, "num2", "float")]),
-    ("fgets", &[(2, "length", "?int")]),
+    ("feof", &[(1, "stream", "stream")]),
+    ("fflush", &[(1, "stream", "stream")]),
+    ("fgetc", &[(1, "stream", "stream")]),
+    ("fgets", &[(1, "stream", "stream"), (2, "length", "?int")]),
     ("file", &[(1, "filename", "string"), (2, "flags", "int")]),
     ("file_exists", &[(1, "filename", "string")]),
     (
@@ -579,14 +599,45 @@ static PARAMS: &[(&str, Params)] = &[
             (3, "use_include_path", "bool"),
         ],
     ),
-    ("fprintf", &[(2, "format", "string")]),
-    ("fputs", &[(2, "data", "string"), (3, "length", "?int")]),
-    ("fread", &[(2, "length", "int")]),
-    ("fscanf", &[(2, "format", "string")]),
-    ("fseek", &[(2, "offset", "int"), (3, "whence", "int")]),
+    ("fpassthru", &[(1, "stream", "stream")]),
+    (
+        "fprintf",
+        &[(1, "stream", "stream"), (2, "format", "string")],
+    ),
+    (
+        "fputs",
+        &[
+            (1, "stream", "stream"),
+            (2, "data", "string"),
+            (3, "length", "?int"),
+        ],
+    ),
+    ("fread", &[(1, "stream", "stream"), (2, "length", "int")]),
+    (
+        "fscanf",
+        &[(1, "stream", "stream"), (2, "format", "string")],
+    ),
+    (
+        "fseek",
+        &[
+            (1, "stream", "stream"),
+            (2, "offset", "int"),
+            (3, "whence", "int"),
+        ],
+    ),
+    ("fstat", &[(1, "stream", "stream")]),
+    ("ftell", &[(1, "stream", "stream")]),
+    ("ftruncate", &[(1, "stream", "stream"), (2, "size", "int")]),
     ("func_get_arg", &[(1, "position", "int")]),
     ("function_exists", &[(1, "function", "string")]),
-    ("fwrite", &[(2, "data", "string"), (3, "length", "?int")]),
+    (
+        "fwrite",
+        &[
+            (1, "stream", "stream"),
+            (2, "data", "string"),
+            (3, "length", "?int"),
+        ],
+    ),
     ("get_class_vars", &[(1, "class", "string")]),
     ("get_defined_constants", &[(1, "categorize", "bool")]),
     (
@@ -597,6 +648,8 @@ static PARAMS: &[(&str, Params)] = &[
             (3, "encoding", "string"),
         ],
     ),
+    ("get_resource_id", &[(1, "resource", "resource")]),
+    ("get_resource_type", &[(1, "resource", "resource")]),
     ("getdate", &[(1, "timestamp", "?int")]),
     (
         "getenv",
@@ -1093,6 +1146,7 @@ static PARAMS: &[(&str, Params)] = &[
     ),
     ("realpath", &[(1, "path", "string")]),
     ("rename", &[(1, "from", "string"), (2, "to", "string")]),
+    ("rewind", &[(1, "stream", "stream")]),
     ("rmdir", &[(1, "directory", "string")]),
     ("round", &[(1, "num", "int|float"), (2, "precision", "int")]),
     ("rsort", &[(2, "flags", "int")]),
@@ -1224,7 +1278,11 @@ static PARAMS: &[(&str, Params)] = &[
     ),
     (
         "stream_get_contents",
-        &[(2, "length", "?int"), (3, "offset", "int")],
+        &[
+            (1, "stream", "stream"),
+            (2, "length", "?int"),
+            (3, "offset", "int"),
+        ],
     ),
     ("strip_tags", &[(1, "string", "string")]),
     ("stripcslashes", &[(1, "string", "string")]),
@@ -1432,7 +1490,11 @@ static PARAMS: &[(&str, Params)] = &[
     ("var_export", &[(2, "return", "bool")]),
     (
         "vfprintf",
-        &[(2, "format", "string"), (3, "values", "array")],
+        &[
+            (1, "stream", "stream"),
+            (2, "format", "string"),
+            (3, "values", "array"),
+        ],
     ),
     (
         "vprintf",

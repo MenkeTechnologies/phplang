@@ -448,7 +448,7 @@ use Def::{Bool, EmptyArray, Float, Int, Null, Required, Str, Unknown};
 /// default in this generated table is a literal too.
 #[allow(clippy::approx_constant)]
 static SIGS: &[(&str, Sig)] = &[
-    // generated: 515 functions
+    // generated: 521 functions
     (
         "abs",
         Sig {
@@ -1938,6 +1938,14 @@ static SIGS: &[(&str, Sig)] = &[
         },
     ),
     (
+        "fgetc",
+        Sig {
+            req: 1,
+            params: &[p("stream", Required, "")],
+            variadic: false,
+        },
+    ),
+    (
         "fgets",
         Sig {
             req: 1,
@@ -2117,6 +2125,14 @@ static SIGS: &[(&str, Sig)] = &[
         },
     ),
     (
+        "fpassthru",
+        Sig {
+            req: 1,
+            params: &[p("stream", Required, "")],
+            variadic: false,
+        },
+    ),
+    (
         "fprintf",
         Sig {
             req: 2,
@@ -2165,10 +2181,26 @@ static SIGS: &[(&str, Sig)] = &[
         },
     ),
     (
+        "fstat",
+        Sig {
+            req: 1,
+            params: &[p("stream", Required, "")],
+            variadic: false,
+        },
+    ),
+    (
         "ftell",
         Sig {
             req: 1,
             params: &[p("stream", Required, "")],
+            variadic: false,
+        },
+    ),
+    (
+        "ftruncate",
+        Sig {
+            req: 2,
+            params: &[p("stream", Required, ""), p("size", Required, "int")],
             variadic: false,
         },
     ),
@@ -2345,6 +2377,14 @@ static SIGS: &[(&str, Sig)] = &[
         Sig {
             req: 0,
             params: &[p("object_or_class", Unknown, "object|string")],
+            variadic: false,
+        },
+    ),
+    (
+        "get_resource_id",
+        Sig {
+            req: 1,
+            params: &[p("resource", Required, "")],
             variadic: false,
         },
     ),
@@ -5174,6 +5214,14 @@ static SIGS: &[(&str, Sig)] = &[
                 p("seconds", Required, "int"),
                 p("nanoseconds", Required, "int"),
             ],
+            variadic: false,
+        },
+    ),
+    (
+        "tmpfile",
+        Sig {
+            req: 0,
+            params: &[],
             variadic: false,
         },
     ),

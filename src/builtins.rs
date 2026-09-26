@@ -2997,9 +2997,26 @@ fn cmp_bool(vm: &mut VM, f: impl Fn(i32) -> bool) -> Value {
     Value::bool(f(with_host(|h| php_compare(h, &a, &b))))
 }
 
+/// A comparison with a resource on either side compares its NUMBER: `zend_compare`
+/// has no resource arm, so a resource reaches the scalar fallback and converts to
+/// its id there. `None` when neither operand is a resource.
+fn resources_as_ids(h: &host::PhpHost, a: &Value, b: &Value) -> Option<(Value, Value)> {
+    let id = |v: &Value| h.resource_info(v).map(|(id, _)| Value::int(id));
+    match (id(a), id(b)) {
+        (None, None) => None,
+        (x, y) => Some((
+            x.unwrap_or_else(|| a.clone()),
+            y.unwrap_or_else(|| b.clone()),
+        )),
+    }
+}
+
 /// PHP loose equality (`==`) over the scaffold's value set.
 fn loose_eq(h: &host::PhpHost, a: &Value, b: &Value) -> bool {
     use Value::*;
+    if let Some((a, b)) = resources_as_ids(h, a, b) {
+        return loose_eq(h, &a, &b);
+    }
     match (a, b) {
         // A bool operand compares by truthiness.
         (Bool(_), _) | (_, Bool(_)) => h.is_truthy(a) == h.is_truthy(b),
@@ -3139,6 +3156,9 @@ fn strict_eq(h: &host::PhpHost, a: &Value, b: &Value) -> bool {
 ///    (then byte comparison).
 fn php_compare(h: &host::PhpHost, a: &Value, b: &Value) -> i32 {
     use Value::*;
+    if let Some((a, b)) = resources_as_ids(h, a, b) {
+        return php_compare(h, &a, &b);
+    }
     match (a, b) {
         // 1. null vs string compares as "" vs the string.
         (Undef, Str(y)) => strcmp_i32("", y),
@@ -5768,6 +5788,12 @@ fn php_var_dump_body(
             crate::stdlib::types::serialize_float(*f)
         ),
         Value::Str(s) => format!("{pad}{amp}string({}) \"{s}\"\n", s.len()),
+        // `php_var_dump`'s IS_RESOURCE arm: the number, and the type name
+        // `zend_rsrc_list_get_rsrc_type` gives — `Unknown` once it is closed.
+        Value::Obj(_) if h.is_stream(v) => {
+            let s = h.stream_any(v).expect("checked by is_stream");
+            format!("{pad}{amp}resource({}) of type ({})\n", s.id, s.type_name())
+        }
         // A class instance prints as `object(Class)#n (count) { ... }` with its
         // properties, not as the bare array its handle would otherwise yield.
         // An `enum` case is one line naming the case, not the two-property

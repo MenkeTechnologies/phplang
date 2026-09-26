@@ -281,8 +281,6 @@ three.
 
 | form | reference | phplang |
 |---|---|---|
-| `fopen("/nonexistent/dir/x", "r")` | `Warning: fopen(…): Failed to open stream: No such file or directory` | no diagnostic |
-| `fread($closed, 1)`, `fclose($closed)` | `TypeError: … must be an open stream resource` | no diagnostic |
 | `new DateTime("not a date")` | `DateMalformedStringException` | no throw |
 | `new DateTimeZone("Nowhere/Nothing")` | `DateInvalidTimeZoneException` | class not declared |
 | `pack()` / `unpack()` | implemented | `Call to undefined function` |

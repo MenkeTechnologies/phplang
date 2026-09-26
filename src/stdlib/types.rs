@@ -138,6 +138,13 @@ pub fn debug_type(h: &crate::host::PhpHost, v: &Value) -> String {
         Value::Obj(_) => {
             if h.is_array(v) {
                 "array".to_string()
+            } else if let Some((_, closed)) = h.resource_info(v) {
+                if closed {
+                    "resource (closed)"
+                } else {
+                    "resource (stream)"
+                }
+                .to_string()
             } else {
                 // Reported the way a message reports a class name, so an
                 // anonymous class shows its readable head alone.
@@ -154,8 +161,8 @@ pub fn debug_type(h: &crate::host::PhpHost, v: &Value) -> String {
 // ── serialize ────────────────────────────────────────────────────────────────
 
 /// Render a value in PHP's serialization format: null, bool, int, float, string,
-/// and (recursively) arrays, objects and `enum` cases. A closure or a resource
-/// has no serializable form and falls back to `N;` (null).
+/// and (recursively) arrays, objects and `enum` cases. A resource serializes as
+/// `i:0;`, as the reference writes it.
 fn php_serialize(h: &crate::host::PhpHost, v: &Value) -> String {
     php_serialize_seen(h, v, &mut crate::host::Visiting::default())
 }
@@ -195,6 +202,8 @@ fn php_serialize_body(
         Value::Float(f) => format!("d:{};", serialize_float(*f)),
         // Length is the byte length, matching PHP's binary-safe strings.
         Value::Str(s) => format!("s:{}:\"{}\";", s.len(), s),
+        // `php_var_serialize_intern`'s IS_RESOURCE arm writes `i:0;`.
+        Value::Obj(_) if h.is_stream(v) => "i:0;".to_string(),
         Value::Obj(_) if h.is_array(v) => {
             let pairs = h.array_pairs(v).unwrap_or_default();
             let mut out = format!("a:{}:{{", pairs.len());

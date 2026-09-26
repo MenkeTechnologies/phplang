@@ -20,14 +20,6 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
     Some(r)
 }
 
-/// Flush a resource's buffered content to disk if it is dirty, so writes to a
-/// file stream persist without an explicit `fclose` (mirrors `fileres::flush`).
-fn flush(res: &Value) {
-    if let Some((path, buf)) = with_host(|h| h.res_flush_data(res)) {
-        let _ = std::fs::write(path, buf);
-    }
-}
-
 /// `fprintf($stream, $format, ...$args)` — format via `sprintf` and write the
 /// result to `$stream`, returning the number of bytes written (or `false`).
 fn fprintf(args: &[Value]) -> Result<Value, String> {
@@ -36,7 +28,7 @@ fn fprintf(args: &[Value]) -> Result<Value, String> {
     if args.len() > 2 {
         call_args.extend_from_slice(&args[2..]);
     }
-    write_formatted(&res, call_args)
+    write_formatted("fprintf", &res, call_args)
 }
 
 /// `vfprintf($stream, $format, $args)` — like `fprintf` but the arguments arrive
@@ -48,15 +40,14 @@ fn vfprintf(args: &[Value]) -> Result<Value, String> {
     for (_, v) in pairs {
         call_args.push(v);
     }
-    write_formatted(&res, call_args)
+    write_formatted("vfprintf", &res, call_args)
 }
 
 /// Run `sprintf(...call_args)` and write the bytes to `$res`.
-fn write_formatted(res: &Value, call_args: Vec<Value>) -> Result<Value, String> {
+fn write_formatted(fname: &str, res: &Value, call_args: Vec<Value>) -> Result<Value, String> {
     let s = crate::builtins::call_library("sprintf", &call_args)?;
     let bytes = with_host(|h| h.to_str(&s)).into_bytes();
-    let written = with_host(|h| h.res_write(res, &bytes));
-    flush(res);
+    let written = crate::stdlib::fileres::write_bytes(fname, res, &bytes);
     Ok(match written {
         Some(n) => Value::int(n as i64),
         None => Value::bool(false),
@@ -70,7 +61,7 @@ fn write_formatted(res: &Value, call_args: Vec<Value>) -> Result<Value, String> 
 fn fscanf(args: &[Value]) -> Result<Value, String> {
     let res = arg(args, 0);
     let fmt = arg(args, 1);
-    let line = match with_host(|h| h.res_gets(&res, None)) {
+    let line = match crate::stdlib::fileres::read_line("fscanf", &res) {
         Some(l) => l,
         // At EOF the 2-arg form returns false (not -1); returning a truthy -1
         // would make the idiomatic `while ($r = fscanf(...))` loop spin forever.

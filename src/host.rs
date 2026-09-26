@@ -717,17 +717,10 @@ pub enum PhpObj {
     /// closure creation and consumed when the closure's frame is built, where
     /// it binds the frame's name to the cell instead of storing the handle.
     Ref { slot: usize },
-    /// An open file stream (`fopen`). Content is buffered in memory: read modes
-    /// load the file up front; write/append modes accumulate and flush to `path`
-    /// on `fclose`/`fflush`. `Value::Obj` handle, so the position is shared.
-    Resource {
-        path: String,
-        buf: Vec<u8>,
-        pos: usize,
-        writable: bool,
-        dirty: bool,
-        closed: bool,
-    },
+    /// A stream resource (`fopen`, `tmpfile`, `STDIN`, …). A `Value::Obj`
+    /// handle, so every copy of the value shares one cursor. Boxed to keep the
+    /// variant from dominating `PhpObj`'s size.
+    Resource(Box<crate::stdlib::fileres::Stream>),
 }
 
 /// A control-flow signal that unwinds out of a function body. `Throw` rides a
@@ -909,6 +902,8 @@ pub struct PhpHost {
     /// Named constants (`PHP_EOL`, `M_PI`, user `define`s), keyed case-sensitively.
     /// Seeded with the standard predefined constants on every fresh host.
     constants: FxHashMap<String, Value>,
+    /// The next resource number to hand out. Numbers are never reused.
+    next_resource_id: i64,
     /// Shared storage cells for reference bindings (`$b = &$a`). A scope's `refs`
     /// map points names at these slots.
     ref_cells: Vec<Value>,
@@ -1306,6 +1301,7 @@ impl PhpHost {
             last_break_level: 1,
             try_defs: Vec::new(),
             constants: predefined_constants(),
+            next_resource_id: 1,
             ob_stack: Vec::new(),
             ref_cells: Vec::new(),
             byref_out: Vec::new(),
@@ -1333,6 +1329,7 @@ impl PhpHost {
             strict_types: false,
         };
         h.init_superglobals();
+        h.init_stdio();
         // `-d` overrides land before the program is read, so a compile-time
         // notice is already tested against the level they set.
         for (name, value) in INITIAL_INI.lock().unwrap_or_else(|e| e.into_inner()).iter() {
@@ -1398,6 +1395,22 @@ impl PhpHost {
     /// Seed the superglobal arrays in the global scope: `$_ENV`/`$_SERVER` from
     /// the real process environment, empty `$_GET`/`$_POST`/… request arrays, and
     /// `$argv`/`$argc`. Visible from every scope via `is_superglobal` resolution.
+    /// The CLI's standard streams: `STDIN`, `STDOUT` and `STDERR` are
+    /// resources 1, 2 and 3. The reference's first stream a script opens is 5,
+    /// so the counter resumes there.
+    fn init_stdio(&mut self) {
+        use crate::stdlib::fileres::{Stream, StreamKind};
+        for (name, kind) in [
+            ("STDIN", StreamKind::Stdin),
+            ("STDOUT", StreamKind::Stdout),
+            ("STDERR", StreamKind::Stderr),
+        ] {
+            let v = self.new_stream(Stream::stdio(kind));
+            self.constants.insert(name.to_string(), v);
+        }
+        self.next_resource_id = 5;
+    }
+
     fn init_superglobals(&mut self) {
         let env: Vec<(String, String)> = std::env::vars().collect();
         let mkenv = |h: &mut PhpHost| -> Value {
@@ -1774,6 +1787,7 @@ impl PhpHost {
             Value::Str(_) => "string".to_string(),
             Value::Obj(_) => match self.as_array(v) {
                 Some(PhpObj::Array { .. }) => "array".to_string(),
+                Some(PhpObj::Resource(_)) => "resource".to_string(),
                 _ => self
                     .instance_class(v)
                     .unwrap_or_else(|| "object".to_string()),
@@ -1939,6 +1953,13 @@ impl PhpHost {
                 } else if f.fract() != 0.0 {
                     self.deprecated(format!(
                         "Implicit conversion from float {shown} to int loses precision"
+                    ));
+                }
+            }
+            Value::Obj(_) => {
+                if let Some((id, _)) = self.resource_info(key) {
+                    self.warn(format!(
+                        "Resource ID#{id} used as offset, casting to integer ({id})"
                     ));
                 }
             }
@@ -2141,6 +2162,7 @@ impl PhpHost {
             Value::Bool(false) => "false".to_string(),
             Value::Str(s) => format!("'{}'", escape_trace_string(s)),
             Value::Obj(_) if self.is_array(v) => "Array".to_string(),
+            Value::Obj(_) if self.is_stream(v) => self.to_str(v),
             Value::Obj(_) => match self.instance_class(v) {
                 Some(c) => format!("Object({c})"),
                 None => "Object(stdClass)".to_string(),
@@ -2173,7 +2195,7 @@ impl PhpHost {
             Value::Undef | Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::Str(_) => {
                 self.trace_arg(v)
             }
-            _ if self.is_resource(v) => "of type resource".to_string(),
+            _ if self.is_stream(v) => "of type resource".to_string(),
             _ => format!("of type {}", crate::stdlib::types::debug_type(self, v)),
         };
         format!("Unhandled match case {rendered}")
@@ -3703,160 +3725,94 @@ impl PhpHost {
         }
     }
 
-    // ── file resources (fopen family) ────────────────────────────────────────
+    // ── stream resources ─────────────────────────────────────────────────────
 
-    /// Allocate a file-stream resource. `buf`/`pos` seed the in-memory content
-    /// and cursor; `writable` marks write/append modes (flushed on close).
-    pub fn new_resource(&mut self, path: &str, buf: Vec<u8>, pos: usize, writable: bool) -> Value {
-        self.objs.push(PhpObj::Resource {
-            path: path.to_string(),
-            buf,
-            pos,
-            writable,
-            dirty: false,
-            closed: false,
-        });
+    /// Allocate a stream resource, numbering it from the resource counter.
+    /// `php://temp` takes two numbers — the reference opens an inner memory
+    /// stream behind it — and the outer stream gets the first.
+    pub fn new_stream(&mut self, mut s: crate::stdlib::fileres::Stream) -> Value {
+        s.id = self.next_resource_id;
+        self.next_resource_id += if s.kind == crate::stdlib::fileres::StreamKind::Temp {
+            2
+        } else {
+            1
+        };
+        self.objs.push(PhpObj::Resource(Box::new(s)));
         Value::Obj((self.objs.len() - 1) as u32)
     }
 
+    /// The stream behind `v`, open or closed.
+    pub fn stream_any(&self, v: &Value) -> Option<&crate::stdlib::fileres::Stream> {
+        match self.as_array(v) {
+            Some(PhpObj::Resource(s)) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// The OPEN stream behind `v`; a closed one answers `None`.
+    pub fn stream(&self, v: &Value) -> Option<&crate::stdlib::fileres::Stream> {
+        self.stream_any(v).filter(|s| !s.closed)
+    }
+
+    /// The open stream behind `v`, mutably.
+    pub fn stream_mut(&mut self, v: &Value) -> Option<&mut crate::stdlib::fileres::Stream> {
+        match self.as_array_mut(v) {
+            Some(PhpObj::Resource(s)) if !s.closed => Some(s),
+            _ => None,
+        }
+    }
+
+    /// Write into a buffered stream. A `php://temp` stream that reaches its
+    /// `maxmemory` moves to a temporary file in the reference, which opens one
+    /// more resource: the number is consumed here so later ones line up.
+    pub fn stream_write(&mut self, v: &Value, bytes: &[u8]) {
+        let mut spilled = false;
+        if let Some(s) = self.stream_mut(v) {
+            if let Some(limit) = s.spill_at {
+                if s.buf.len() + bytes.len() >= limit {
+                    s.spill_at = None;
+                    spilled = true;
+                }
+            }
+            s.write_at_cursor(bytes);
+        }
+        if spilled {
+            self.next_resource_id += 1;
+        }
+    }
+
+    /// Spend a resource number without keeping a stream: what a whole-file
+    /// function does when it opens, reads and closes one internally.
+    pub fn consume_resource_id(&mut self) {
+        self.next_resource_id += 1;
+    }
+
+    /// `(resource number, closed)` for a stream value.
+    pub fn resource_info(&self, v: &Value) -> Option<(i64, bool)> {
+        self.stream_any(v).map(|s| (s.id, s.closed))
+    }
+
+    /// Whether `v` is an open resource (`is_resource`).
     pub fn is_resource(&self, v: &Value) -> bool {
-        matches!(
-            self.as_array(v),
-            Some(PhpObj::Resource { closed: false, .. })
-        )
+        self.stream(v).is_some()
     }
 
     /// A stream resource, open or closed: a closed one is still of type
     /// resource, just no longer usable.
     pub fn is_stream(&self, v: &Value) -> bool {
-        matches!(self.as_array(v), Some(PhpObj::Resource { .. }))
+        self.stream_any(v).is_some()
     }
 
-    /// At-or-past end of the stream (`feof`).
-    pub fn res_eof(&self, v: &Value) -> bool {
-        match self.as_array(v) {
-            Some(PhpObj::Resource { buf, pos, .. }) => *pos >= buf.len(),
-            _ => true,
-        }
-    }
-
-    /// The current cursor (`ftell`), or `None` if `v` is not an open resource.
-    pub fn res_tell(&self, v: &Value) -> Option<i64> {
-        match self.as_array(v) {
-            Some(PhpObj::Resource {
-                pos, closed: false, ..
-            }) => Some(*pos as i64),
-            _ => None,
-        }
-    }
-
-    /// Read up to `n` bytes from the cursor, advancing it (`fread`).
-    pub fn res_read(&mut self, v: &Value, n: usize) -> Option<String> {
-        if let Some(PhpObj::Resource { buf, pos, .. }) = self.as_array_mut(v) {
-            let end = (*pos + n).min(buf.len());
-            let out = String::from_utf8_lossy(&buf[*pos..end]).into_owned();
-            *pos = end;
-            Some(out)
+    /// Write to the process's standard output, past any output buffering —
+    /// what `fwrite(STDOUT, …)` does. An embedding host's capture buffer still
+    /// receives it, since that buffer IS its standard output.
+    pub fn write_stdout_direct(&mut self, s: &str) {
+        if let Some(buf) = &mut self.capture {
+            buf.push_str(s);
         } else {
-            None
+            use std::io::Write;
+            let _ = std::io::stdout().write_all(s.as_bytes());
         }
-    }
-
-    /// Read one line (through the next `\n`, or `max` bytes) from the cursor
-    /// (`fgets`); `None` at EOF or on a non-resource.
-    pub fn res_gets(&mut self, v: &Value, max: Option<usize>) -> Option<String> {
-        if let Some(PhpObj::Resource { buf, pos, .. }) = self.as_array_mut(v) {
-            if *pos >= buf.len() {
-                return None;
-            }
-            let cap = max.map(|m| (*pos + m).min(buf.len())).unwrap_or(buf.len());
-            let mut end = *pos;
-            while end < cap && buf[end] != b'\n' {
-                end += 1;
-            }
-            if end < cap && buf[end] == b'\n' {
-                end += 1; // include the newline, as fgets does
-            }
-            let out = String::from_utf8_lossy(&buf[*pos..end]).into_owned();
-            *pos = end;
-            Some(out)
-        } else {
-            None
-        }
-    }
-
-    /// Write bytes at the cursor, extending the buffer (`fwrite`); returns the
-    /// number of bytes written, or `None` for a non-writable/closed resource.
-    pub fn res_write(&mut self, v: &Value, bytes: &[u8]) -> Option<usize> {
-        if let Some(PhpObj::Resource {
-            buf,
-            pos,
-            writable: true,
-            dirty,
-            closed: false,
-            ..
-        }) = self.as_array_mut(v)
-        {
-            if *pos > buf.len() {
-                buf.resize(*pos, 0);
-            }
-            for (i, b) in bytes.iter().enumerate() {
-                if *pos + i < buf.len() {
-                    buf[*pos + i] = *b;
-                } else {
-                    buf.push(*b);
-                }
-            }
-            *pos += bytes.len();
-            *dirty = true;
-            Some(bytes.len())
-        } else {
-            None
-        }
-    }
-
-    /// Reposition the cursor (`fseek`/`rewind`). `whence`: 0 SEEK_SET, 1 SEEK_CUR,
-    /// 2 SEEK_END. Returns `true` on a valid resource.
-    pub fn res_seek(&mut self, v: &Value, offset: i64, whence: i64) -> bool {
-        if let Some(PhpObj::Resource { buf, pos, .. }) = self.as_array_mut(v) {
-            let base = match whence {
-                1 => *pos as i64,
-                2 => buf.len() as i64,
-                _ => 0,
-            };
-            *pos = (base + offset).clamp(0, buf.len() as i64) as usize;
-            true
-        } else {
-            false
-        }
-    }
-
-    /// The data to flush to disk for a dirty resource, clearing the dirty flag —
-    /// the `fileio` module performs the actual write (keeping `fs` out of the
-    /// host). `None` when there is nothing to flush.
-    pub fn res_flush_data(&mut self, v: &Value) -> Option<(String, Vec<u8>)> {
-        if let Some(PhpObj::Resource {
-            path, buf, dirty, ..
-        }) = self.as_array_mut(v)
-        {
-            if *dirty {
-                *dirty = false;
-                return Some((path.clone(), buf.clone()));
-            }
-        }
-        None
-    }
-
-    /// Mark a resource closed (`fclose`); returns `false` if it was not an open
-    /// resource.
-    pub fn res_close(&mut self, v: &Value) -> bool {
-        if let Some(PhpObj::Resource { closed, .. }) = self.as_array_mut(v) {
-            if !*closed {
-                *closed = true;
-                return true;
-            }
-        }
-        false
     }
 
     /// `$obj->name` read (`Undef` if the object lacks the property).
@@ -4800,6 +4756,9 @@ impl PhpHost {
                 Some(n) => ArrayKey::Int(n),
                 None => ArrayKey::Str(String::clone(s)),
             },
+            Value::Obj(_) if self.is_stream(key) => {
+                ArrayKey::Int(self.resource_info(key).map_or(0, |(id, _)| id))
+            }
             Value::Obj(_) => ArrayKey::Str("Array".into()),
             _ => ArrayKey::Str(self.to_str(key)),
         }
@@ -5580,7 +5539,10 @@ impl PhpHost {
             Value::Int(n) => n.to_string(),
             Value::Float(f) => float_to_php_string(*f),
             Value::Str(s) => String::clone(s),
-            Value::Obj(_) => "Array".to_string(),
+            Value::Obj(_) => match self.resource_info(v) {
+                Some((id, _)) => format!("Resource id #{id}"),
+                None => "Array".to_string(),
+            },
             _ => String::new(),
         }
     }
@@ -5674,6 +5636,10 @@ impl PhpHost {
             Value::Bool(b) => Value::int(*b as i64),
             Value::Undef => Value::int(0),
             Value::Str(s) => parse_php_number(s),
+            // A resource casts to its number.
+            Value::Obj(_) if self.is_stream(v) => {
+                Value::int(self.resource_info(v).map_or(0, |(id, _)| id))
+            }
             // Empty array → 0, non-empty array → 1; a closure/object casts to 1.
             Value::Obj(_) => Value::int(if self.is_array(v) && self.array_len(v) == 0 {
                 0
@@ -5695,8 +5661,12 @@ impl PhpHost {
             Value::Obj(_) => {
                 if self.is_array(v) {
                     "array"
-                } else if self.is_resource(v) {
-                    "resource"
+                } else if let Some((_, closed)) = self.resource_info(v) {
+                    if closed {
+                        "resource (closed)"
+                    } else {
+                        "resource"
+                    }
                 } else {
                     "object"
                 }
@@ -5906,6 +5876,11 @@ fn predefined_constants() -> FxHashMap<String, Value> {
     si("LOCK_SH", 1);
     si("LOCK_EX", 2);
     si("LOCK_UN", 3);
+    si("LOCK_NB", 4);
+    // fseek whence
+    si("SEEK_SET", 0);
+    si("SEEK_CUR", 1);
+    si("SEEK_END", 2);
     si("SCANDIR_SORT_ASCENDING", 0);
     si("SCANDIR_SORT_DESCENDING", 1);
     si("SCANDIR_SORT_NONE", 2);
@@ -9607,6 +9582,7 @@ pub fn arith_type_name(h: &PhpHost, v: &Value) -> String {
         Value::Float(_) => "float".into(),
         Value::Str(_) => "string".into(),
         Value::Obj(_) if h.is_array(v) => "array".into(),
+        Value::Obj(_) if h.is_stream(v) => "resource".into(),
         Value::Obj(_) => h.instance_class(v).unwrap_or_else(|| "object".into()),
         _ => "mixed".into(),
     }
