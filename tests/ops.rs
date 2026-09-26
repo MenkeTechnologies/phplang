@@ -587,3 +587,13 @@ fn int_min_neighbours_stay_integers() {
         "int(-1)\nint(1)\nint(-1)\n"
     );
 }
+
+/// An operand the operator refuses throws from the operator's own line, even in
+/// a frame where nothing has stamped a line yet — the first statement of a
+/// function, or a constant operand that no call precedes. The reference
+/// prints `2|5`; the exception used to report line 0.
+#[test]
+fn a_refused_operand_throws_from_the_operators_line() {
+    let src = "<?php function f() {\n    return 1 + [];\n}\ntry { f(); } catch (TypeError $e) { echo $e->getLine(), \"|\"; }\ntry { $x = PHP_EOL - 1; } catch (TypeError $e) { echo $e->getLine(); }\n";
+    assert_eq!(run(src), "2|5");
+}

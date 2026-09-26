@@ -3383,7 +3383,14 @@ pub fn numeric_hook_sited(call: NumericCall<'_>, lines: &[u32]) -> Result<Value,
     if op == NumOp::Add && with_host(|h| h.is_array(a) && h.is_array(b)) {
         return Ok(array_union(a, b));
     }
-    host::set_warn_line(lines.get(call.ip).copied().unwrap_or(0));
+    let line = lines.get(call.ip).copied().unwrap_or(0);
+    host::set_warn_line(line);
+    // The frame line too: an operand the operator refuses is a `TypeError`,
+    // and an exception takes its line from the frame, which no call op may
+    // have stamped yet — `function f() { return 1 + []; }` would say line 0.
+    if line != 0 {
+        with_host(|h| h.set_cur_line(line));
+    }
     // A relational operator is NOT arithmetic: PHP orders strings as strings,
     // arrays by size then element-wise, and a bool against anything by
     // truthiness. fusevm only asks about the pairs it will not answer itself —
