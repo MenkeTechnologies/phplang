@@ -360,3 +360,58 @@ fn isset_on_a_static_property_is_quiet_about_undeclared_and_unreachable() {
         "bool(false)\nstring(1) \"d\"\nbool(false)\nbool(true)\nbool(false)\nbool(true)\nbool(true)\nClass \"Nope\" not found"
     );
 }
+
+/// `private`/`protected` class constants are enforced on every read path —
+/// `C::K`, `constant("C::K")` and `defined("C::K")` — naming the class written
+/// at the access site. A constant's own initializer, and a static or instance
+/// property default, runs in the DECLARING class's scope, so `const R = self::P
+/// + 1` may read a private `P` even when the first read of `R` is from outside.
+/// A trait's private constant belongs to the composing class. Expected output
+/// recorded from `php` 8.5.10.
+#[test]
+fn class_constant_visibility_is_enforced_and_initializers_run_in_class_scope() {
+    let src = r#"<?php
+        class A {
+            private const P = 1;
+            protected const Q = 2;
+            const R = self::P + 1;
+            static function f() { return static::Q . self::P; }
+        }
+        class B extends A {
+            static function g() { return self::Q . parent::Q; }
+            static function h() { return parent::P; }
+        }
+        foreach ([fn() => A::P, fn() => A::Q, fn() => B::Q, fn() => b::Q, fn() => A::R,
+                  fn() => A::f(), fn() => B::g(), fn() => B::h(),
+                  fn() => constant("A::P"), fn() => defined("A::P")] as $f) {
+            try { var_dump($f()); }
+            catch (\Error $e) { echo get_class($e), "|", $e->getMessage(), "\n"; }
+        }
+        trait T { private const TP = 7; public function tp() { return self::TP; } }
+        class U { use T; }
+        try { echo U::TP; } catch (\Error $e) { echo $e->getMessage(), "\n"; }
+        echo (new U)->tp(), "\n";
+        class S {
+            private const K = 3;
+            private static $s = self::K * 2;
+            public $i = self::K;
+            public static function s() { return self::$s; }
+        }
+        echo S::s(), (new S)->i, "\n";"#;
+    assert_eq!(
+        run(src),
+        "Error|Cannot access private constant A::P\n\
+         Error|Cannot access protected constant A::Q\n\
+         Error|Cannot access protected constant B::Q\n\
+         Error|Cannot access protected constant B::Q\n\
+         int(2)\n\
+         string(2) \"21\"\n\
+         string(2) \"22\"\n\
+         Error|Cannot access private constant A::P\n\
+         Error|Cannot access private constant A::P\n\
+         bool(false)\n\
+         Cannot access private constant U::TP\n\
+         7\n\
+         63\n"
+    );
+}

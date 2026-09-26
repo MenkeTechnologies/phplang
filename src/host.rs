@@ -576,6 +576,10 @@ pub struct ClassDef {
     /// extends. Consulted by `class_is_a`/`instanceof`/`catch`.
     pub interfaces: Vec<String>,
     pub consts: Vec<(String, Chunk)>,
+    /// Declared visibility of the `private`/`protected` constants declared in
+    /// THIS class (a trait's are copied in by the class that uses it). A name
+    /// absent here is `public`.
+    pub const_vis: FxHashMap<String, Visibility>,
     pub prop_defaults: Vec<(String, Chunk)>,
     /// `static` property declarations (`public static $n = 0;`). Kept apart from
     /// `prop_defaults` so they are never copied into an instance; each initializer
@@ -990,6 +994,11 @@ pub struct PhpHost {
     /// finds no property, sees `__get` already in progress for that name, and
     /// takes the ordinary undefined-property path instead of recursing.
     magic_in_progress: Vec<(u32, String, &'static str)>,
+    /// Classes whose constant or static-property INITIALIZER is running, innermost
+    /// last. A constant expression is evaluated in the scope of the class that
+    /// declares it, so `const R = self::P + 1;` may read a `private` `P` even when
+    /// the first read of `R` comes from outside the class.
+    init_class_scope: Vec<String>,
     /// Handles of objects a RENDERER allocated to stage a value (see
     /// [`PhpHost::new_transient_object`]). They are never reachable from PHP, so
     /// [`PhpHost::object_ordinal`] skips them — otherwise a `json_encode` would
@@ -1307,6 +1316,7 @@ impl PhpHost {
             cloning: None,
             readonly_init: FxHashMap::default(),
             magic_in_progress: Vec::new(),
+            init_class_scope: Vec::new(),
             transient_objs: FxHashSet::default(),
             strict_types: false,
         };
@@ -3984,6 +3994,9 @@ impl PhpHost {
     /// derived from the innermost frame's `Class::method` name. `None` in the
     /// global scope, a free function, or a closure (frame names without `::`).
     fn current_class_ctx(&self) -> Option<String> {
+        if let Some(c) = self.init_class_scope.last() {
+            return Some(c.clone());
+        }
         let name = self.scopes.last()?.name.as_ref()?;
         name.rsplit_once("::").map(|(cls, _)| cls.to_string())
     }
@@ -4396,27 +4409,29 @@ impl PhpHost {
     }
 
     /// The ordered property-default initializer chunks for a class, parent props
-    /// first and child declarations overriding by name. `None` if unknown class.
-    fn class_prop_default_chunks(&self, class: &str) -> Option<Vec<(String, Chunk)>> {
+    /// first and child declarations overriding by name, each with the class that
+    /// declares it (its initializer runs in that class's scope). `None` if
+    /// unknown class.
+    fn class_prop_default_chunks(&self, class: &str) -> Option<Vec<(String, (String, Chunk))>> {
         let cl = class.to_ascii_lowercase();
         if !self.classes.contains_key(&cl) {
             return None;
         }
         // Build the chain child → root, then apply root → child so a child's
         // redeclared default wins while parent props keep their leading position.
-        let mut chain: Vec<&ClassDef> = Vec::new();
+        let mut chain: Vec<(String, &ClassDef)> = Vec::new();
         let mut cur = Some(cl);
         while let Some(c) = cur {
             let Some(def) = self.classes.get(&c) else {
                 break;
             };
-            chain.push(def);
+            chain.push((c, def));
             cur = def.parent.as_ref().map(|p| p.to_ascii_lowercase());
         }
-        let mut map: IndexMap<String, Chunk> = IndexMap::new();
-        for def in chain.into_iter().rev() {
+        let mut map: IndexMap<String, (String, Chunk)> = IndexMap::new();
+        for (c, def) in chain.into_iter().rev() {
             for (name, chunk) in &def.prop_defaults {
-                map.insert(name.clone(), chunk.clone());
+                map.insert(name.clone(), (c.clone(), chunk.clone()));
             }
         }
         Some(map.into_iter().collect())
@@ -4546,7 +4561,34 @@ impl PhpHost {
     /// whole parent chain before any interface is what makes that hold at every
     /// depth. The visited set and bound guard a malformed cycle, as in
     /// [`Host::class_is_a`].
-    fn resolve_const_chunk(&self, class: &str, name: &str) -> Option<Chunk> {
+    /// The `Error` a `Class::NAME` read raises when the calling scope cannot
+    /// reach a `private`/`protected` constant, worded as `zend_get_class_constant_ex`
+    /// (Zend/zend_constants.c) words it: the visibility and the class NAMED at
+    /// the access site. Only the class chain can declare a non-public constant
+    /// (an interface constant is always public), so only it is walked.
+    fn const_access_denied(&self, class: &str, name: &str) -> Option<String> {
+        let mut cur = Some(class.to_ascii_lowercase());
+        while let Some(c) = cur {
+            let def = self.classes.get(&c)?;
+            if def.consts.iter().any(|(n, _)| n == name) {
+                let vis = *def.const_vis.get(name)?;
+                if self.visibility_allows(vis, &c) {
+                    return None;
+                }
+                let vname = match vis {
+                    Visibility::Private => "private",
+                    Visibility::Protected => "protected",
+                    Visibility::Public => return None,
+                };
+                let shown = self.class_display_name(&class.to_ascii_lowercase());
+                return Some(format!("Cannot access {vname} constant {shown}::{name}"));
+            }
+            cur = def.parent.as_ref().map(|p| p.to_ascii_lowercase());
+        }
+        None
+    }
+
+    fn resolve_const_chunk(&self, class: &str, name: &str) -> Option<(String, Chunk)> {
         let mut ifaces: Vec<String> = Vec::new();
         let mut cur = Some(class.to_ascii_lowercase());
         while let Some(c) = cur {
@@ -4554,7 +4596,7 @@ impl PhpHost {
                 break;
             };
             if let Some((_, chunk)) = def.consts.iter().find(|(n, _)| n == name) {
-                return Some(chunk.clone());
+                return Some((c, chunk.clone()));
             }
             ifaces.extend(def.interfaces.iter().map(|i| i.to_ascii_lowercase()));
             cur = def.parent.as_ref().map(|p| p.to_ascii_lowercase());
@@ -4567,7 +4609,7 @@ impl PhpHost {
             seen.push(i.clone());
             if let Some(def) = self.classes.get(&i) {
                 if let Some((_, chunk)) = def.consts.iter().find(|(n, _)| n == name) {
-                    return Some(chunk.clone());
+                    return Some((i.clone(), chunk.clone()));
                 }
                 ifaces.extend(def.interfaces.iter().map(|x| x.to_ascii_lowercase()));
                 if let Some(p) = &def.parent {
@@ -7902,8 +7944,8 @@ pub fn new_object(class: &str, args: Vec<Value>) -> Result<Value, String> {
     };
     // Evaluate each property default (a constant expression chunk).
     let mut props: IndexMap<String, Value> = IndexMap::new();
-    for (name, chunk) in defaults {
-        let v = run_chunk_on(chunk)?;
+    for (name, (declaring, chunk)) in defaults {
+        let v = run_in_class_scope(&declaring, chunk)?;
         props.insert(name, v);
     }
     // Allocate the instance. The class name is stored with its original casing
@@ -7946,8 +7988,8 @@ pub fn new_object_named(
         ));
     };
     let mut props: IndexMap<String, Value> = IndexMap::new();
-    for (name, chunk) in defaults {
-        let v = run_chunk_on(chunk)?;
+    for (name, (declaring, chunk)) in defaults {
+        let v = run_in_class_scope(&declaring, chunk)?;
         props.insert(name, v);
     }
     let obj = with_host(|h| {
@@ -8283,11 +8325,23 @@ pub fn clone_object(v: Value) -> Result<Value, String> {
     Ok(copy)
 }
 
+/// Run a constant or property initializer in the scope of the class that
+/// declares it — see [`PhpHost::init_class_scope`].
+fn run_in_class_scope(declaring: &str, chunk: Chunk) -> Result<Value, String> {
+    with_host(|h| h.init_class_scope.push(declaring.to_string()));
+    let r = run_chunk_on(chunk);
+    with_host(|h| h.init_class_scope.pop());
+    r
+}
+
 /// `Class::CONST` — evaluate the (inherited) constant initializer. On an `enum`, a
 /// name that is not a real constant is resolved as an enum case singleton.
 pub fn class_const(class: &str, name: &str) -> Result<Value, String> {
-    if let Some(chunk) = with_host(|h| h.resolve_const_chunk(class, name)) {
-        return run_chunk_on(chunk);
+    if let Some((declaring, chunk)) = with_host(|h| h.resolve_const_chunk(class, name)) {
+        if let Some(msg) = with_host(|h| h.const_access_denied(class, name)) {
+            return Err(crate::builtins::throws_bare("Error", msg));
+        }
+        return run_in_class_scope(&declaring, chunk);
     }
     if let Some(r) = enum_case(class, name) {
         return r;
@@ -8551,7 +8605,8 @@ pub fn static_prop_get(class: &str, name: &str) -> Result<Value, String> {
     if let Some(v) = with_host(|h| h.get_static_stored(&key)) {
         return Ok(v);
     }
-    let v = run_chunk_on(chunk)?;
+    let declaring = key.split_once("::").map_or(key.as_str(), |(c, _)| c).to_string();
+    let v = run_in_class_scope(&declaring, chunk)?;
     with_host(|h| h.set_static_stored(&key, v.clone()));
     Ok(v)
 }

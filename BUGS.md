@@ -178,23 +178,6 @@ CORRECTED: this entry used to read "Two coercion warnings are not raised" and
 listed `echo NAN` alongside. `echo NAN` agrees with the reference and did so
 before this round's work; the claim was stale, not fixed here.
 
-## Visibility is not enforced on constants or static properties
-
-```text
-$ php -r 'class C { private const K = 1; } try { echo C::K; } catch (\Throwable $e) { echo get_class($e),"|",$e->getMessage(); }'
-Error|Cannot access private constant C::K
-$ target/debug/php -r '… same …'
-1
-
-$ php -r 'class C { private static $s = 1; } try { echo C::$s; } catch (\Throwable $e) { echo get_class($e),"|",$e->getMessage(); }'
-Error|Cannot access private property C::$s
-$ target/debug/php -r '… same …'
-1
-```
-
-Instance properties and methods ARE enforced (`tests/visibility.rs`); constants
-and statics are read without a check.
-
 ## `&$a` inside an array literal is refused
 
 ```text

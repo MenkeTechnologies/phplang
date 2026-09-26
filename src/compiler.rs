@@ -1497,6 +1497,7 @@ impl Compiler {
         // Seed members from any used traits (declared earlier); the class's own
         // members below override them, matching PHP trait precedence.
         let mut consts: Vec<(String, Chunk)> = Vec::new();
+        let mut const_vis: FxHashMap<String, Visibility> = FxHashMap::default();
         let mut prop_defaults: Vec<(String, Chunk)> = Vec::new();
         let mut static_prop_defaults: Vec<(String, Chunk)> = Vec::new();
         let mut methods: FxHashMap<String, FuncDef> = FxHashMap::default();
@@ -1508,6 +1509,7 @@ impl Compiler {
         match self.seed_from_traits(
             decl,
             &mut consts,
+            &mut const_vis,
             &mut prop_defaults,
             &mut static_prop_defaults,
             &mut methods,
@@ -1553,6 +1555,10 @@ impl Compiler {
             self.in_other_frame(|c| c.compile_expr(&mut cb, expr))?;
             consts.retain(|(n, _)| n != name);
             consts.push((name.clone(), cb.build()));
+            const_vis.remove(name);
+        }
+        for (name, vis) in &decl.const_vis {
+            const_vis.insert(name.clone(), *vis);
         }
 
         for prop in &decl.props {
@@ -1681,6 +1687,7 @@ impl Compiler {
                 parent: decl.parent.clone(),
                 interfaces: decl.implements.clone(),
                 consts,
+                const_vis,
                 prop_defaults,
                 static_prop_defaults,
                 methods,
@@ -1723,6 +1730,7 @@ impl Compiler {
         &self,
         decl: &ClassDecl,
         consts: &mut Vec<(String, Chunk)>,
+        const_vis: &mut FxHashMap<String, Visibility>,
         prop_defaults: &mut Vec<(String, Chunk)>,
         static_prop_defaults: &mut Vec<(String, Chunk)>,
         methods: &mut FxHashMap<String, FuncDef>,
@@ -1767,6 +1775,9 @@ impl Compiler {
         // brought in (that override happens in the caller, after this).
         for tdef in &used {
             consts.extend(tdef.consts.iter().cloned());
+            for (n, v) in &tdef.const_vis {
+                const_vis.insert(n.clone(), *v);
+            }
             prop_defaults.extend(tdef.prop_defaults.iter().cloned());
             static_prop_defaults.extend(tdef.static_prop_defaults.iter().cloned());
             for (n, v) in &tdef.prop_vis {

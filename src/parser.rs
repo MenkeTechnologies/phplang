@@ -1885,6 +1885,7 @@ impl Parser {
         }
         self.expect_punct("{")?;
         let mut consts = Vec::new();
+        let mut const_vis = Vec::new();
         let mut props = Vec::new();
         let mut methods = Vec::new();
         let mut uses = Vec::new();
@@ -1958,6 +1959,9 @@ impl Parser {
                         _ => return Err(self.syntax_error_at(self.pos - 1)),
                     };
                     self.expect_punct("=")?;
+                    if visibility != Visibility::Public {
+                        const_vis.push((cname.clone(), visibility));
+                    }
                     consts.push((cname, self.expression()?));
                     if !self.eat_punct(",") {
                         break;
@@ -2044,6 +2048,7 @@ impl Parser {
             enum_backing,
             cases,
             consts,
+            const_vis,
             props,
             methods,
             attributes: Vec::new(),

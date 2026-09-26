@@ -688,6 +688,9 @@ pub struct ClassDecl {
     pub cases: Vec<EnumCase>,
     /// `const NAME = expr;` entries, in source order.
     pub consts: Vec<(String, Expr)>,
+    /// The declared visibility of each `private`/`protected` constant, by name.
+    /// A constant absent from this list is `public`.
+    pub const_vis: Vec<(String, Visibility)>,
     /// Property declarations, in source order (instance and static).
     pub props: Vec<PropDecl>,
     pub methods: Vec<Method>,
