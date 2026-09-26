@@ -3470,16 +3470,16 @@ impl PhpHost {
     }
 
     /// The PHP fatal-error message if `class` cannot be instantiated with `new`
-    /// (it is `abstract` or an `interface`), else `None`. The original casing is
+    /// (it is `abstract`, an `interface`, a `trait` or an `enum`), else `None`. The original casing is
     /// used in the message.
     fn class_instantiation_error(&self, class: &str) -> Option<String> {
         let def = self.classes.get(&class.to_ascii_lowercase())?;
-        // Three of the kinds this engine records cannot be instantiated, and the
-        // reference names each by its OWN keyword so a caller catching the
-        // `Error` can tell them apart. A `trait` is a fourth in the reference,
-        // but this engine does not keep traits in the class table at all.
+        // Four kinds cannot be instantiated, and the reference names each by
+        // its OWN keyword so a caller catching the `Error` can tell them apart
         let kind = if def.is_interface {
             "interface"
+        } else if def.is_trait {
+            "trait"
         } else if def.is_enum {
             "enum"
         } else if def.is_abstract {

@@ -816,3 +816,17 @@ fn the_clone_hook_is_the_one_place_a_readonly_property_reopens() {
         try { $r2->id = 50; } catch (Throwable $e) { echo $e->getMessage(); }"#;
     assert_eq!(run(src), "12|Cannot modify readonly property R::$id");
 }
+
+#[test]
+fn instantiating_a_trait_is_a_catchable_error_but_its_user_is_not() {
+    // PHP 8.5: `Error|Cannot instantiate trait T`, and the class composing the
+    // trait constructs normally (the check is on the trait itself, not on
+    // anything that merely `use`s it).
+    let src = r#"<?php
+        trait T { public function hi() { return "hi"; } }
+        class U { use T; }
+        try { new T; echo "constructed"; }
+        catch (\Error $e) { echo get_class($e), "|", $e->getMessage(); }
+        echo "|", (new U)->hi();"#;
+    assert_eq!(run(src), "Error|Cannot instantiate trait T|hi");
+}

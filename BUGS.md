@@ -195,19 +195,6 @@ $ target/debug/php -r '… same …'
 Instance properties and methods ARE enforced (`tests/visibility.rs`); constants
 and statics are read without a check.
 
-## `new` on a trait succeeds
-
-```text
-$ php -r 'trait T {} try { new T; } catch (\Throwable $e) { echo get_class($e),"|",$e->getMessage(); }'
-Error|Cannot instantiate trait T
-$ target/debug/php -r '… same …'
-(no output — an object was constructed)
-```
-
-The other three kinds now raise (`interface`, `enum`, `abstract class`).
-Traits are not kept in the class table at all, so there is nothing to test
-`class_instantiation_error` against.
-
 ## `&$a` inside an array literal is refused
 
 ```text
