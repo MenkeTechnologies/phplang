@@ -188,7 +188,13 @@ end-to-end (see `tests/basic.rs`):
   loop executes on the coroutine's stack, so `yield` suspends it with one stack
   switch and no VM change.
 - Classes/OOP: `new`, instance properties and methods, `$this`, constructors
-  (with property promotion), class constants, `::class`, static methods/constants,
+  (with property promotion), **typed properties without a default start
+  uninitialized** (absent until written; `var_dump` shows `uninitialized(T)` in
+  the declared slot with the type spelled as the engine spells it; a read or
+  `++` before the first write is the reference's `Error`, and `__get` answers
+  only after an explicit `unset()`), declared properties keep their declared
+  slot when written back after `unset()`, a trait's properties follow the
+  class's own, class constants, `::class`, static methods/constants,
   `self::`/`parent::` (inside a trait both name the COMPOSING class, and inside
   a closure the class it is bound to — `(function () { return self::K; })->call($o)`
   — both resolved when the code runs), constants inherited from an implemented

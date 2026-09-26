@@ -1553,6 +1553,7 @@ impl Compiler {
         let mut methods: FxHashMap<String, FuncDef> = FxHashMap::default();
         let mut prop_vis: FxHashMap<String, Visibility> = FxHashMap::default();
         let mut readonly_props: FxHashSet<String> = FxHashSet::default();
+        let mut uninit_props: FxHashMap<String, String> = FxHashMap::default();
         let mut method_vis: FxHashMap<String, Visibility> = FxHashMap::default();
         let mut static_methods: FxHashSet<String> = FxHashSet::default();
         let mut order: Vec<String> = Vec::new();
@@ -1611,9 +1612,24 @@ impl Compiler {
             const_vis.insert(name.clone(), *vis);
         }
 
+        // A trait's default-less typed properties arrive with it.
+        for tname in &decl.uses {
+            if let Some(t) = self.find_class(tname) {
+                uninit_props.extend(t.uninit_props.iter().map(|(n, ty)| (n.clone(), ty.clone())));
+            }
+        }
         for prop in &decl.props {
             let name = &prop.name;
             prop_vis.insert(name.clone(), prop.visibility);
+            match (&prop.ty, &prop.default, prop.is_static) {
+                (Some(ty), None, false) => {
+                    let display = ty.declared(&decl.name, decl.parent.as_deref());
+                    uninit_props.insert(name.clone(), display);
+                }
+                _ => {
+                    uninit_props.remove(name);
+                }
+            }
             // A static property cannot be readonly (PHP rejects the pair at
             // compile time), so only instance declarations register one.
             if prop.readonly && !prop.is_static {
@@ -1636,6 +1652,12 @@ impl Compiler {
                 prop_defaults.push((name.clone(), pb.build()));
             }
         }
+        // A class's own properties take their slots before the ones its traits
+        // bring in: `zend_do_bind_traits` adds trait properties after the class
+        // body is declared. The sort is stable, so each group keeps its order.
+        prop_defaults.sort_by_key(|(n, _)| {
+            !decl.props.iter().any(|p| !p.is_static && &p.name == n)
+        });
 
         for m in &decl.methods {
             method_vis.insert(m.name.to_ascii_lowercase(), m.visibility);
@@ -1743,6 +1765,7 @@ impl Compiler {
                 methods,
                 prop_vis,
                 readonly_props,
+                uninit_props,
                 method_vis,
                 static_methods,
                 is_enum: decl.is_enum,

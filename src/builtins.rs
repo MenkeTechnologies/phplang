@@ -2208,21 +2208,28 @@ fn b_prop_get(vm: &mut VM, _: u8) -> Value {
     let name = pop_name(vm);
     let recv = vm.pop();
     match prop_plan!(vm, recv, name, "__get") {
-        PropAccess::Direct => {
-            mark_warn_site(vm);
-            with_host(|h| h.prop_get_warn(&recv, &name))
-        }
+        PropAccess::Direct | PropAccess::Absent => plain_prop_read(vm, &recv, &name),
         PropAccess::Magic => {
+            if let Some(msg) = with_host(|h| h.uninit_magic_blocked(&recv, &name)) {
+                return throw_php(vm, "Error", &msg);
+            }
             let v = call_magic(&recv, &name, "__get", vec![Value::Str(name.clone())]);
             bubbled(vm, v)
         }
         PropAccess::Denied(msg) => throw_php(vm, "Error", &msg),
-        PropAccess::Absent => {
-            mark_warn_site(vm);
-            with_host(|h| h.prop_get_warn(&recv, &name))
-        }
     }
 }
+
+/// The plain `$o->p` read: an uninitialized typed property is an `Error`, any
+/// other missing property the "Undefined property" warning and null.
+fn plain_prop_read(vm: &mut VM, recv: &Value, name: &str) -> Value {
+    if let Some(msg) = with_host(|h| h.uninit_read_error(recv, name)) {
+        return throw_php(vm, "Error", &msg);
+    }
+    mark_warn_site(vm);
+    with_host(|h| h.prop_get_warn(recv, name))
+}
+
 
 /// `$o->p` read with no missing-property diagnostic — see `ops::PROP_GET_Q`.
 ///
@@ -2423,8 +2430,12 @@ fn b_prop_unset(vm: &mut VM, _: u8) -> Value {
             bubbled(vm, Value::Undef)
         }
         PropAccess::Denied(msg) => throw_php(vm, "Error", &msg),
-        // Unsetting a property that is not there is not an error.
-        PropAccess::Absent => Value::Undef,
+        // Unsetting a property that is not there is not an error, but an
+        // uninitialized typed one now answers through `__get`.
+        PropAccess::Absent => {
+            with_host(|h| h.note_unset(&recv, &name));
+            Value::Undef
+        }
     }
 }
 
@@ -2494,8 +2505,16 @@ fn b_prop_incdec(vm: &mut VM, _: u8) -> Value {
     let recv = vm.pop();
     let inc = code & 1 != 0;
     let prefix = code & 2 != 0;
+    let magic_blocked = with_host(|h| h.uninit_magic_blocked(&recv, &name));
+    let uninit = with_host(|h| h.uninit_read_error(&recv, &name));
     match prop_plan!(vm, recv, name, "__get") {
         PropAccess::Denied(msg) => throw_php(vm, "Error", &msg),
+        PropAccess::Magic if magic_blocked.is_some() => {
+            throw_php(vm, "Error", &magic_blocked.unwrap_or_default())
+        }
+        PropAccess::Direct | PropAccess::Absent if uninit.is_some() => {
+            throw_php(vm, "Error", &uninit.unwrap_or_default())
+        }
         // Same read-modify-write shape as `$o->p += 1`: `__get` supplies the old
         // value, and `__set` takes the new one back only if the class has both.
         PropAccess::Magic => {
@@ -5768,20 +5787,34 @@ fn php_var_dump_body(
                 h.object_ordinal(v),
                 props.len()
             );
-            for (name, val, pref) in props {
-                // A non-public property carries its visibility in the key, and a
-                // private one also names the class that declared it.
-                let label = match h.prop_visibility(&class, &name) {
-                    Some((_, crate::ast::Visibility::Protected)) => {
-                        format!("\"{name}\":protected")
-                    }
-                    Some((declaring, crate::ast::Visibility::Private)) => {
-                        format!("\"{name}\":\"{declaring}\":private")
-                    }
-                    _ => format!("\"{name}\""),
-                };
-                s.push_str(&format!("{}  [{label}]=>\n", "  ".repeat(depth)));
+            // A non-public property carries its visibility in the key, and a
+            // private one also names the class that declared it.
+            let label = |name: &str| match h.prop_visibility(&class, name) {
+                Some((_, crate::ast::Visibility::Protected)) => format!("\"{name}\":protected"),
+                Some((declaring, crate::ast::Visibility::Private)) => {
+                    format!("\"{name}\":\"{declaring}\":private")
+                }
+                _ => format!("\"{name}\""),
+            };
+            // An uninitialized typed property is not counted in the header, but
+            // its slot still prints, as `php_var_dump` walks the declared slots.
+            let mut uninit = h.uninit_slots(v).into_iter().peekable();
+            let inner = "  ".repeat(depth);
+            for (i, (name, val, pref)) in props.into_iter().enumerate() {
+                while let Some((_, uname, ty)) = uninit.next_if(|(at, _, _)| *at <= i) {
+                    s.push_str(&format!(
+                        "{inner}  [{}]=>\n{inner}  uninitialized({ty})\n",
+                        label(&uname)
+                    ));
+                }
+                s.push_str(&format!("{inner}  [{}]=>\n", label(&name)));
                 s.push_str(&php_var_dump_ref(h, &val, depth + 1, pref, seen));
+            }
+            for (_, uname, ty) in uninit {
+                s.push_str(&format!(
+                    "{inner}  [{}]=>\n{inner}  uninitialized({ty})\n",
+                    label(&uname)
+                ));
             }
             s.push_str(&format!("{pad}}}\n"));
             s

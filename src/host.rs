@@ -595,7 +595,12 @@ pub struct ClassDef {
     /// the class named in `Cannot modify readonly property C::$p` is the one
     /// that declared it, not the one the write went through.
     pub readonly_props: FxHashSet<String>,
-    /// Declared visibility of methods declared in THIS class, by lowercased name.
+    /// Typed instance properties THIS class declares with no default, by name,
+    /// each with its type as `var_dump` spells it. They start UNINITIALIZED —
+    /// absent from a new instance — and reading one before a write is an
+    /// `Error`. A trait's are copied in by the class that uses it.
+    pub uninit_props: FxHashMap<String, String>,
+    /// Declared visibility of methods declared in THIS class), by lowercased name.
     pub method_vis: FxHashMap<String, Visibility>,
     /// Methods THIS class declares `static`, by lowercased name. Looked up along
     /// the parent chain by [`PhpHost::method_is_static`], which is what tells a
@@ -987,6 +992,12 @@ pub struct PhpHost {
     /// may be initialized or may never have been assigned, and only these two
     /// states tell the two refusal messages apart.
     readonly_init: FxHashMap<u32, FxHashSet<String>>,
+    /// Typed properties `unset()` has removed, per object handle. An
+    /// uninitialized typed property is read through `__get` only after an
+    /// explicit `unset()`; before its first write it is an `Error` even when the
+    /// class has `__get`, which is how lazy-initialization idioms tell the two
+    /// apart.
+    unset_typed: FxHashMap<u32, FxHashSet<String>>,
     /// Magic property accesses currently on the stack, as
     /// `(object handle, property, magic method)`. PHP does not re-enter a magic
     /// method for a property already being handled by it, which is what lets
@@ -1315,6 +1326,7 @@ impl PhpHost {
             strtok_state: None,
             cloning: None,
             readonly_init: FxHashMap::default(),
+            unset_typed: FxHashMap::default(),
             magic_in_progress: Vec::new(),
             init_class_scope: Vec::new(),
             transient_objs: FxHashSet::default(),
@@ -2789,9 +2801,7 @@ impl PhpHost {
         let slot = self.ref_cells.len() - 1;
         self.objs.push(PhpObj::Ref { slot });
         let handle = Value::Obj((self.objs.len() - 1) as u32);
-        if let Some(PhpObj::Object { props, .. }) = self.as_array_mut(recv) {
-            props.insert(name.to_string(), handle);
-        }
+        self.obj_put_prop(recv, name, handle);
         slot
     }
 
@@ -2853,9 +2863,7 @@ impl PhpHost {
     pub fn bind_prop_to_slot(&mut self, recv: &Value, name: &str, slot: usize) {
         self.objs.push(PhpObj::Ref { slot });
         let handle = Value::Obj((self.objs.len() - 1) as u32);
-        if let Some(PhpObj::Object { props, .. }) = self.as_array_mut(recv) {
-            props.insert(name.to_string(), handle);
-        }
+        self.obj_put_prop(recv, name, handle);
     }
 
     /// The running frame's late-static-binding class, or `fallback` (the
@@ -3870,9 +3878,7 @@ impl PhpHost {
             self.ref_cell_set(slot, val);
             return;
         }
-        if let Some(PhpObj::Object { props, .. }) = self.as_array_mut(recv) {
-            props.insert(name.to_string(), val);
-        }
+        self.obj_put_prop(recv, name, val);
     }
 
     /// `$obj->name = val` from PHP source, with the PHP 8.2 deprecation for
@@ -4309,6 +4315,7 @@ impl PhpHost {
     ///
     /// [`prop_access`]: PhpHost::prop_access
     pub fn prop_remove(&mut self, recv: &Value, name: &str) {
+        self.note_unset(recv, name);
         if let Some(PhpObj::Object { props, .. }) = self.as_array_mut(recv) {
             props.shift_remove(name);
         }
@@ -4418,7 +4425,14 @@ impl PhpHost {
     /// first and child declarations overriding by name, each with the class that
     /// declares it (its initializer runs in that class's scope). `None` if
     /// unknown class.
-    fn class_prop_default_chunks(&self, class: &str) -> Option<Vec<(String, (String, Chunk))>> {
+    /// The third element is whether the property starts UNINITIALIZED (typed,
+    /// no default, as its final declaration along the chain says): its chunk is
+    /// not run and the instance is created without it.
+    #[allow(clippy::type_complexity)]
+    fn class_prop_default_chunks(
+        &self,
+        class: &str,
+    ) -> Option<Vec<(String, (String, Chunk, bool))>> {
         let cl = class.to_ascii_lowercase();
         if !self.classes.contains_key(&cl) {
             return None;
@@ -4434,13 +4448,142 @@ impl PhpHost {
             chain.push((c, def));
             cur = def.parent.as_ref().map(|p| p.to_ascii_lowercase());
         }
-        let mut map: IndexMap<String, (String, Chunk)> = IndexMap::new();
+        let mut map: IndexMap<String, (String, Chunk, bool)> = IndexMap::new();
         for (c, def) in chain.into_iter().rev() {
             for (name, chunk) in &def.prop_defaults {
-                map.insert(name.clone(), (c.clone(), chunk.clone()));
+                let uninit = def.uninit_props.contains_key(name);
+                map.insert(name.clone(), (c.clone(), chunk.clone(), uninit));
             }
         }
         Some(map.into_iter().collect())
+    }
+
+    /// The instance properties `class` declares, parent's first, in the slot
+    /// order a new instance lays them out in. Empty for an unknown class
+    /// (`stdClass`), whose every property is dynamic.
+    fn declared_prop_order(&self, class: &str) -> Vec<String> {
+        let mut chain: Vec<&ClassDef> = Vec::new();
+        let mut cur = Some(class.to_ascii_lowercase());
+        while let Some(c) = cur {
+            let Some(def) = self.classes.get(&c) else {
+                break;
+            };
+            chain.push(def);
+            cur = def.parent.as_ref().map(|p| p.to_ascii_lowercase());
+        }
+        let mut order: IndexMap<String, ()> = IndexMap::new();
+        for def in chain.into_iter().rev() {
+            for (name, _) in &def.prop_defaults {
+                order.insert(name.clone(), ());
+            }
+        }
+        order.into_keys().collect()
+    }
+
+    /// `(declaring class, type)` when `name`, as the nearest declaration along
+    /// `class`'s chain has it, is a typed property with no default — one that is
+    /// uninitialized whenever the instance does not hold it.
+    fn uninit_prop_decl(&self, class: &str, name: &str) -> Option<(String, String)> {
+        let mut cur = Some(class.to_ascii_lowercase());
+        while let Some(c) = cur {
+            let def = self.classes.get(&c)?;
+            if def.prop_defaults.iter().any(|(n, _)| n == name) {
+                return def
+                    .uninit_props
+                    .get(name)
+                    .map(|ty| (self.class_display_name(&c), ty.clone()));
+            }
+            cur = def.parent.as_ref().map(|p| p.to_ascii_lowercase());
+        }
+        None
+    }
+
+    /// The `Error` a read of `$recv->name` raises when the property is typed and
+    /// still uninitialized (never written, or `unset()`), or `None`.
+    pub fn uninit_read_error(&self, recv: &Value, name: &str) -> Option<String> {
+        let Some(PhpObj::Object { class, props }) = self.as_array(recv) else {
+            return None;
+        };
+        if props.contains_key(name) {
+            return None;
+        }
+        let (declaring, _) = self.uninit_prop_decl(class, name)?;
+        Some(format!(
+            "Typed property {declaring}::${name} must not be accessed before initialization"
+        ))
+    }
+
+    /// Record an `unset()` of `$recv->name`, whether or not it was set, when it
+    /// is a typed property with no default — see `unset_typed`.
+    pub fn note_unset(&mut self, recv: &Value, name: &str) {
+        if let (Value::Obj(id), Some(PhpObj::Object { class, .. })) = (recv, self.as_array(recv)) {
+            if self.uninit_prop_decl(class, name).is_some() {
+                self.unset_typed.entry(*id).or_default().insert(name.to_string());
+            }
+        }
+    }
+
+    /// [`Self::uninit_read_error`] for a class with `__get`: the magic method
+    /// answers for an uninitialized typed property only once `unset()` has
+    /// removed it, so a never-written one is still the `Error`.
+    pub fn uninit_magic_blocked(&self, recv: &Value, name: &str) -> Option<String> {
+        let Value::Obj(id) = recv else { return None };
+        if self.unset_typed.get(id).is_some_and(|s| s.contains(name)) {
+            return None;
+        }
+        self.uninit_read_error(recv, name)
+    }
+
+    /// The uninitialized typed properties of an object, for `var_dump`: each as
+    /// `(position, name, type)`, where `position` is the index into the object's
+    /// property list the entry prints BEFORE. Declared properties occupy fixed
+    /// slots ahead of every dynamic one, so an uninitialized slot prints where
+    /// its declaration puts it.
+    pub fn uninit_slots(&self, recv: &Value) -> Vec<(usize, String, String)> {
+        let Some(PhpObj::Object { class, props }) = self.as_array(recv) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        let mut present = 0;
+        for name in self.declared_prop_order(class) {
+            if props.contains_key(&name) {
+                present += 1;
+            } else if let Some((_, ty)) = self.uninit_prop_decl(class, &name) {
+                out.push((present, name, ty));
+            }
+        }
+        out
+    }
+
+    /// Store a property that may not be in the object yet. A DECLARED property
+    /// coming back after `unset()`, or taking its first write while
+    /// uninitialized, goes back into its declared slot rather than after the
+    /// dynamic ones — `foreach` and `var_dump` list it where the class declared
+    /// it, as the reference does. Anything else is appended.
+    fn obj_put_prop(&mut self, recv: &Value, name: &str, val: Value) {
+        let at = match self.as_array(recv) {
+            Some(PhpObj::Object { props, .. }) if props.contains_key(name) => None,
+            Some(PhpObj::Object { class, props }) => {
+                let order = self.declared_prop_order(class);
+                order.iter().position(|n| n == name).map(|mine| {
+                    props
+                        .keys()
+                        .filter(|k| order[..mine].iter().any(|d| d == *k))
+                        .count()
+                })
+            }
+            _ => return,
+        };
+        if let Some(PhpObj::Object { props, .. }) = self.as_array_mut(recv) {
+            match at {
+                Some(i) => {
+                    props.shift_insert(i, name.to_string(), val);
+                }
+                None => {
+                    props.insert(name.to_string(), val);
+                }
+            }
+        }
     }
 
     /// Resolve `Class::$name` to its storage key and initializer chunk, walking
@@ -7959,7 +8102,10 @@ pub fn new_object(class: &str, args: Vec<Value>) -> Result<Value, String> {
     };
     // Evaluate each property default (a constant expression chunk).
     let mut props: IndexMap<String, Value> = IndexMap::new();
-    for (name, (declaring, chunk)) in defaults {
+    for (name, (declaring, chunk, uninit)) in defaults {
+        if uninit {
+            continue;
+        }
         let v = run_in_class_scope(&declaring, chunk)?;
         props.insert(name, v);
     }
@@ -8003,7 +8149,10 @@ pub fn new_object_named(
         ));
     };
     let mut props: IndexMap<String, Value> = IndexMap::new();
-    for (name, (declaring, chunk)) in defaults {
+    for (name, (declaring, chunk, uninit)) in defaults {
+        if uninit {
+            continue;
+        }
         let v = run_in_class_scope(&declaring, chunk)?;
         props.insert(name, v);
     }

@@ -2017,13 +2017,9 @@ impl Parser {
                     by_ref_return,
                 });
             } else {
-                // Property declaration(s): an optional type hint precedes the $var.
-                if !matches!(self.peek(), Some(Tok::Var(_))) {
-                    self.eat_punct("?");
-                    if let Some(Tok::Ident(_)) = self.peek() {
-                        self.pos += 1;
-                    }
-                }
+                // Property declaration(s): an optional type precedes the $var, and
+                // applies to every name in a `public int $a, $b;` list.
+                let ty = self.type_hint()?;
                 loop {
                     let pname = self.expect_var()?;
                     let default = if self.eat_punct("=") {
@@ -2034,6 +2030,7 @@ impl Parser {
                     props.push(PropDecl {
                         name: pname,
                         default,
+                        ty: ty.clone(),
                         is_static,
                         visibility,
                         readonly,

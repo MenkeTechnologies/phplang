@@ -285,7 +285,6 @@ three.
 | `fread($closed, 1)`, `fclose($closed)` | `TypeError: … must be an open stream resource` | no diagnostic |
 | `new DateTime("not a date")` | `DateMalformedStringException` | no throw |
 | `new DateTimeZone("Nowhere/Nothing")` | `DateInvalidTimeZoneException` | class not declared |
-| `echo (new class { public int $p; })->p` | `Error: Typed property class@anonymous::$p must not be accessed before initialization` | no throw |
 | `pack()` / `unpack()` | implemented | `Call to undefined function` |
 | `LC_ALL` and the other `LC_*` constants | defined | `Undefined constant` |
 | `goto end; …; end: echo "done";` | `done` | `Parse error: syntax error, unexpected identifier "end"` |

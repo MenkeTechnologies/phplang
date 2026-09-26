@@ -618,6 +618,64 @@ impl TypeHint {
         self.parts.iter().any(|p| p.eq_ignore_ascii_case("null"))
     }
 
+    /// The type as the engine spells a DECLARED type back — what `var_dump`
+    /// prints inside `uninitialized(…)`. A port of `zend_type_to_string`
+    /// (Zend/zend_compile.c): class names first in declared order (an
+    /// intersection parenthesized when it is one member of a union), then the
+    /// builtin types in the engine's fixed order, whatever order they were
+    /// written in; `null` with exactly one other simple type becomes `?T`.
+    /// `self` and `parent` resolve to the classes they name, `iterable` to
+    /// `Traversable|array`, and a type covering everything is `mixed`.
+    pub fn declared(&self, self_class: &str, parent: Option<&str>) -> String {
+        const BUILTIN: [&str; 14] = [
+            "mixed", "static", "callable", "object", "array", "string", "int", "float",
+            "bool", "false", "true", "void", "never", "null",
+        ];
+        let mut classes: Vec<String> = Vec::new();
+        let mut builtin = [false; BUILTIN.len()];
+        for p in &self.parts {
+            let lower = p.to_ascii_lowercase();
+            match lower.as_str() {
+                "self" => classes.push(self_class.to_string()),
+                "parent" => classes.push(parent.unwrap_or("parent").to_string()),
+                "iterable" => {
+                    classes.push("Traversable".to_string());
+                    builtin[4] = true;
+                }
+| "double" | "boolean" => classes.push(p.clone()),
+                b => match BUILTIN.iter().position(|n| *n == b) {
+                    Some(i) => builtin[i] = true,
+                    None => classes.push(p.clone()),
+                },
+            }
+        }
+        if builtin[0] {
+            return "mixed".to_string();
+        }
+        let nullable = builtin[13];
+        let mut out: Vec<String> = Vec::new();
+        let members = classes.len() + builtin[..13].iter().filter(|b| **b).count();
+        for c in classes {
+            if c.contains('&') && members + usize::from(nullable) > 1 {
+                out.push(format!("({c})"));
+            } else {
+                out.push(c);
+            }
+        }
+        for (i, name) in BUILTIN.iter().enumerate().take(13) {
+            if builtin[i] {
+                out.push((*name).to_string());
+            }
+        }
+        if nullable {
+            if out.len() == 1 && !out[0].contains('&') {
+                return format!("?{}", out[0]);
+            }
+            out.push("null".to_string());
+        }
+        out.join("|")
+    }
+
     /// How the type reads in a `TypeError`. A nullable scalar renders `?int`, which
     /// is the spelling PHP uses for the single-type nullable form.
     pub fn render(&self) -> String {
@@ -671,6 +729,10 @@ pub enum Visibility {
 pub struct PropDecl {
     pub name: String,
     pub default: Option<Expr>,
+    /// The declared type, `None` for an untyped property. A typed property with
+    /// no default starts UNINITIALIZED: absent from the object until written,
+    /// and an error to read before that.
+    pub ty: Option<TypeHint>,
     pub is_static: bool,
     pub visibility: Visibility,
     /// `readonly` — writable exactly once, from inside the declaring class or a
