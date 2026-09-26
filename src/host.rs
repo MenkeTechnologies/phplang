@@ -6695,6 +6695,18 @@ pub fn run_main(chunk: Chunk) -> Result<Value, String> {
             let file = h.to_str(&h.prop_get(&exc, "file"));
             let line = h.prop_get(&exc, "line").to_int();
             let trace = h.to_str(&h.prop_get(&exc, "trace"));
+            // `Exception::__toString` reads a user function's argument-type
+            // refusal as `…, called in <site> and defined in <file>:<line>`:
+            // the exception's file and line are the DECLARATION's, so the
+            // message is extended to say so. Exactly these two classes.
+            let msg = if (class.eq_ignore_ascii_case("TypeError")
+                || class.eq_ignore_ascii_case("ArgumentCountError"))
+                && msg.contains(", called in ")
+            {
+                format!("{msg} and defined")
+            } else {
+                msg
+            };
             format!(
                 "Uncaught {class}: {msg} in {file}:{line}\nStack trace:\n{trace}\n  \
                  thrown in {file} on line {line}"

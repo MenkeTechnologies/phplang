@@ -176,3 +176,21 @@ fn a_user_fatals_trace_names_the_php_frames_above_it() {
     );
     assert_eq!(code, 255);
 }
+
+/// An uncaught argument-type refusal of a USER function is displayed the way
+/// `Exception::__toString` renders it: the message says where the call was,
+/// and the exception's own file and line are the declaration's, so the text
+/// reads `called in … and defined in …`. A `TypeError` thrown by hand with the
+/// same words gets the same treatment; a subclass does not.
+#[test]
+fn an_uncaught_user_argument_type_error_says_where_the_function_is_defined() {
+    let (out, _, status) = run(&["-d", "log_errors=0"], r#"function f(int $x){} f("abc");"#);
+    assert_eq!(
+        out,
+        "\nFatal error: Uncaught TypeError: f(): Argument #1 ($x) must be of type int, string \
+         given, called in Command line code on line 1 and defined in Command line code:1\n\
+         Stack trace:\n#0 Command line code(1): f('abc')\n#1 {main}\n  thrown in Command line code \
+         on line 1\n"
+    );
+    assert_eq!(status, 255);
+}
