@@ -304,3 +304,59 @@ fn an_uncaught_visibility_violation_fails_the_run() {
         "7"
     );
 }
+
+/// A static property is guarded like an instance one, but the message names the
+/// class WRITTEN at the access site (`zend_bad_property_access` is handed the
+/// class being fetched from), so `B::$q` for a `protected` declared on `A` says
+/// `B::$q`. Read, write and `++` are all checked; access from inside the line
+/// is not. Expected output recorded from `php -r` 8.5.10.
+#[test]
+fn static_property_visibility_is_enforced_and_names_the_accessed_class() {
+    let src = r#"<?php
+        class A {
+            private static $p = 1;
+            protected static $q = 2;
+            public static function get() { return self::$p + static::$q; }
+        }
+        class B extends A {
+            public static function q() { return static::$q; }
+            public static function p() { return parent::$p; }
+        }
+        foreach ([fn() => A::$p, fn() => A::$q, fn() => B::$q, fn() => B::p(),
+                  fn() => A::$p = 5, fn() => A::$q++, fn() => b::$q] as $f) {
+            try { var_dump($f()); }
+            catch (\Error $e) { echo get_class($e), "|", $e->getMessage(), "\n"; }
+        }
+        echo A::get(), B::q(), "\n";"#;
+    assert_eq!(
+        run(src),
+        "Error|Cannot access private property A::$p\n\
+         Error|Cannot access protected property A::$q\n\
+         Error|Cannot access protected property B::$q\n\
+         Error|Cannot access private property A::$p\n\
+         Error|Cannot access private property A::$p\n\
+         Error|Cannot access protected property A::$q\n\
+         Error|Cannot access protected property B::$q\n\
+         32\n"
+    );
+}
+
+/// `isset`/`empty`/`??` on a static property is a quiet read: an undeclared or
+/// out-of-reach property answers "not set" rather than throwing, while an
+/// unknown CLASS still throws. From inside the class the private one is set.
+#[test]
+fn isset_on_a_static_property_is_quiet_about_undeclared_and_unreachable() {
+    let src = r#"<?php
+        class A {
+            public static $n = null;
+            private static $p = 1;
+            static function inside() { return isset(self::$p) && !empty(static::$p); }
+        }
+        var_dump(isset(A::$nope), A::$nope ?? "d", isset(A::$n), empty(A::$nope),
+                 isset(A::$p), empty(A::$p), A::inside());
+        try { isset(Nope::$x); } catch (\Error $e) { echo $e->getMessage(); }"#;
+    assert_eq!(
+        run(src),
+        "bool(false)\nstring(1) \"d\"\nbool(false)\nbool(true)\nbool(false)\nbool(true)\nbool(true)\nClass \"Nope\" not found"
+    );
+}

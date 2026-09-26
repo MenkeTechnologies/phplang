@@ -132,6 +132,7 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::SPROP_GET, b_sprop_get);
     vm.register_builtin(ops::SPROP_SET, b_sprop_set);
     vm.register_builtin(ops::SPROP_INCDEC, b_sprop_incdec);
+    vm.register_builtin(ops::SPROP_GET_Q, b_sprop_get_q);
     vm.register_builtin(ops::STATIC_BIND, b_static_bind);
     vm.register_builtin(ops::CALL_NAMED, b_call_named);
     vm.register_builtin(ops::MCALL_NAMED, b_mcall_named);
@@ -406,6 +407,16 @@ fn b_sprop_get(vm: &mut VM, _: u8) -> Value {
     let name = pop_name(vm);
     let class = pop_name(vm);
     match host::static_prop_get(&class, &name) {
+        Ok(v) => v,
+        Err(e) => fail_or_throw(vm, e),
+    }
+}
+
+/// `Class::$prop` read for `isset`/`empty`/`??`. Stack `[class, name]`.
+fn b_sprop_get_q(vm: &mut VM, _: u8) -> Value {
+    let name = pop_name(vm);
+    let class = pop_name(vm);
+    match host::static_prop_get_quiet(&class, &name) {
         Ok(v) => v,
         Err(e) => fail_or_throw(vm, e),
     }

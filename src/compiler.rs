@@ -2975,6 +2975,12 @@ impl Compiler {
                 b.emit(Op::LoadConst(idx), line);
                 b.emit(Op::CallBuiltin(ops::PROP_GET_Q, 2), line);
             }
+            Expr::StaticProp(class, name) => {
+                self.emit_class_ref(b, class)?;
+                let nidx = b.add_constant(Value::str(name.clone()));
+                b.emit(Op::LoadConst(nidx), line);
+                b.emit(Op::CallBuiltin(ops::SPROP_GET_Q, 2), line);
+            }
             other => self.compile_expr(b, other)?,
         }
         Ok(())

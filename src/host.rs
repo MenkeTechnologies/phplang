@@ -406,6 +406,11 @@ pub mod ops {
     /// that point — the closure is never built — so none of it can wait for the
     /// call the closure may never receive.
     pub const FCC_CHECK: u16 = 134;
+    /// `[class, name]` -> value. `Class::$p` read in `BP_VAR_IS` mode, for
+    /// `isset`/`empty`/`??`: an undeclared or unreachable static property reads
+    /// as null instead of throwing (`zend_fetch_static_property_address` with
+    /// `BP_VAR_IS`). An unknown CLASS still throws, as it does in the reference.
+    pub const SPROP_GET_Q: u16 = 135;
 }
 
 /// The capture name a `static` closure carries from its creation site.
@@ -8510,6 +8515,27 @@ enum Coerced {
     Refused(Result<Value, String>),
 }
 
+/// The `Error` a `Class::$name` access raises when the calling scope cannot
+/// reach the static property, as `zend_std_get_static_property_with_info`
+/// (Zend/zend_object_handlers.c) reports it through `zend_bad_property_access`:
+/// the visibility and the class the access NAMED, so `B::$q` for a `protected`
+/// declared on parent `A` says `B::$q`, unlike the instance-property message.
+fn static_prop_denied(class: &str, name: &str) -> Option<String> {
+    with_host(|h| {
+        let (declaring, vis) = h.resolve_prop_vis(class, name)?;
+        if h.visibility_allows(vis, &declaring) {
+            return None;
+        }
+        let vname = match vis {
+            Visibility::Private => "private",
+            Visibility::Protected => "protected",
+            Visibility::Public => return None,
+        };
+        let shown = h.class_display_name(&class.to_ascii_lowercase());
+        Some(format!("Cannot access {vname} property {shown}::${name}"))
+    })
+}
+
 /// `Class::$prop` read. On first access the (constant) initializer runs once and
 /// is stored in the per-class static cell; subsequent reads return the cell.
 pub fn static_prop_get(class: &str, name: &str) -> Result<Value, String> {
@@ -8519,12 +8545,35 @@ pub fn static_prop_get(class: &str, name: &str) -> Result<Value, String> {
             format!("Access to undeclared static property {class}::${name}"),
         ));
     };
+    if let Some(msg) = static_prop_denied(class, name) {
+        return Err(crate::builtins::throws_bare("Error", msg));
+    }
     if let Some(v) = with_host(|h| h.get_static_stored(&key)) {
         return Ok(v);
     }
     let v = run_chunk_on(chunk)?;
     with_host(|h| h.set_static_stored(&key, v.clone()));
     Ok(v)
+}
+
+/// `Class::$prop` read in isset mode: an undeclared or unreachable static
+/// property is null rather than an `Error`. An unknown class is still the
+/// ordinary `Class "X" not found`.
+pub fn static_prop_get_quiet(class: &str, name: &str) -> Result<Value, String> {
+    let declared = with_host(|h| h.resolve_static_key(class, name).is_some());
+    if !declared {
+        if !with_host(|h| h.class_exists(class)) {
+            return Err(crate::builtins::throws_bare(
+                "Error",
+                format!("Class \"{}\" not found", display_class(class)),
+            ));
+        }
+        return Ok(Value::Undef);
+    }
+    if static_prop_denied(class, name).is_some() {
+        return Ok(Value::Undef);
+    }
+    static_prop_get(class, name)
 }
 
 /// `Class::$prop = val` — write the per-class static cell, initializing lazily.
@@ -8535,6 +8584,9 @@ pub fn static_prop_set(class: &str, name: &str, val: Value) -> Result<Value, Str
             format!("Access to undeclared static property {class}::${name}"),
         ));
     };
+    if let Some(msg) = static_prop_denied(class, name) {
+        return Err(crate::builtins::throws_bare("Error", msg));
+    }
     with_host(|h| h.set_static_stored(&key, val.clone()));
     Ok(val)
 }
