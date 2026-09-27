@@ -1468,7 +1468,7 @@ impl Compiler {
                         b,
                         |c| &mut c.classes,
                         ops::DECLARE_CLASS,
-                        &[decl.namespace.clone()],
+                        std::slice::from_ref(&decl.namespace),
                         line,
                     );
                 }
