@@ -277,6 +277,28 @@ way, `Error: Call to undefined function nope()` where the reference raises a
 and message differ — since this round the trace frame is the reference's on all
 three.
 
+## Object handles (`#N`, `spl_object_id`) are never reused, and closures take none
+
+```text
+$ php -r '$a = new stdClass; unset($a); var_dump(new stdClass);'
+object(stdClass)#1 (0) {
+$ target/debug/php -r '$a = new stdClass; unset($a); var_dump(new stdClass);'
+object(stdClass)#2 (0) {
+
+$ php -r '$f = function() {}; var_dump(new stdClass);'
+object(stdClass)#2 (0) {
+$ target/debug/php -r '$f = function() {}; var_dump(new stdClass);'
+object(stdClass)#1 (0) {
+```
+
+The reference frees an object's handle when its refcount reaches zero and
+hands the number to the next allocation; phplang's heap is append-only with no
+refcounts, so it cannot know when a handle became free. Numbering counts class
+instances only. Counting closures and generators too would fix the second case
+and break the far more common one where a temporary closure (`array_map(fn…)`)
+is freed at once and its number reused, so it is left alone. Both need
+refcounted handles.
+
 ## `include`: the search path, and redeclaration
 
 ```text
