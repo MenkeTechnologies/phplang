@@ -652,6 +652,27 @@ impl Parser {
         format!("{FATAL_MARK}{msg} in {file} on line {line}\nStack trace:\n#0 {{main}}")
     }
 
+    /// A COMPILE-time `Fatal error` raised by the grammar itself — a misplaced
+    /// modifier — which the reference prints with NO stack trace, unlike the
+    /// ones [`fatal_at`](Self::fatal_at) renders.
+    fn bare_fatal_at(&self, line: u32, msg: String) -> String {
+        let file = crate::host::with_host(|h| h.script_name().to_string());
+        format!("{FATAL_MARK}{msg} in {file} on line {line}")
+    }
+
+    /// Whether a run of class modifiers (`abstract`, `final`, `readonly`) that
+    /// ends in `class` starts here.
+    fn at_class_modifiers(&self) -> bool {
+        let mut i = self.pos;
+        let is_kw = |i: usize, kw: &str| {
+            matches!(self.toks.get(i).map(|s| &s.tok), Some(Tok::Ident(s)) if s.eq_ignore_ascii_case(kw))
+        };
+        while is_kw(i, "abstract") || is_kw(i, "final") || is_kw(i, "readonly") {
+            i += 1;
+        }
+        i > self.pos && is_kw(i, "class")
+    }
+
     /// Split a raised message back into the severity PHP prints it under.
     fn classify(&self, e: String) -> ParseFail {
         match e.strip_prefix(FATAL_MARK) {
@@ -880,9 +901,7 @@ impl Parser {
             _ if self.at_kw("class")
                 || self.at_kw("interface")
                 || self.at_kw("trait")
-                || ((self.at_kw("abstract") || self.at_kw("final") || self.at_kw("readonly"))
-                    && matches!(self.toks.get(self.pos + 1).map(|s| &s.tok),
-                        Some(Tok::Ident(s)) if s.eq_ignore_ascii_case("class"))) =>
+                || self.at_class_modifiers() =>
             {
                 self.class_stmt()?
             }
@@ -1803,13 +1822,35 @@ impl Parser {
         let is_interface = self.at_kw("interface");
         let is_trait = self.at_kw("trait");
         let is_enum = self.at_kw("enum");
-        // A leading `abstract` marks the class un-instantiable; `final` is accepted
-        // and ignored.
-        let is_abstract = self.at_kw("abstract");
-        // `readonly class C` (PHP 8.2) makes every declared property readonly.
-        let is_readonly_class = self.at_kw("readonly");
-        if !self.at_kw("class") && !is_interface && !is_trait && !is_enum {
-            self.pos += 1; // abstract / final / readonly
+        // `abstract` marks the class un-instantiable, `final` is recorded (not
+        // yet enforced on `extends`), and `readonly class C` (PHP 8.2) makes every declared
+        // property readonly. They may come in any order, each at most once.
+        let (mut is_abstract, mut is_final, mut is_readonly_class) = (false, false, false);
+        if !is_interface && !is_trait && !is_enum {
+            while !self.at_kw("class") {
+                let line = self.line();
+                let (flag, word) = if self.eat_kw("abstract") {
+                    (&mut is_abstract, "abstract")
+                } else if self.eat_kw("final") {
+                    (&mut is_final, "final")
+                } else if self.eat_kw("readonly") {
+                    (&mut is_readonly_class, "readonly")
+                } else {
+                    return Err(self.syntax_error());
+                };
+                if std::mem::replace(flag, true) {
+                    return Err(self.bare_fatal_at(
+                        line,
+                        format!("Multiple {word} modifiers are not allowed"),
+                    ));
+                }
+                if is_abstract && is_final {
+                    return Err(self.bare_fatal_at(
+                        line,
+                        "Cannot use the final modifier on an abstract class".to_string(),
+                    ));
+                }
+            }
         }
         self.pos += 1; // class / interface / trait / enum
         let name = match self.next() {
@@ -1859,6 +1900,7 @@ impl Parser {
         let decl = decl?;
         Ok(StmtKind::Class(ClassDecl {
             attributes,
+            is_final,
             namespace: self.magic.namespace.clone(),
             ..decl
         }))
@@ -1912,6 +1954,7 @@ impl Parser {
         }
         self.expect_punct("{")?;
         let mut consts = Vec::new();
+        let mut const_lines = Vec::new();
         let mut const_vis = Vec::new();
         let mut props = Vec::new();
         let mut methods = Vec::new();
@@ -1925,6 +1968,7 @@ impl Parser {
             // `case Name [= value];` — an enum case (only meaningful inside `enum`).
             if is_enum && self.at_kw("case") {
                 self.pos += 1;
+                let case_line = self.line();
                 let cname = match self.next() {
                     Some(Tok::Ident(n)) => n,
                     _ => return Err(self.syntax_error_at(self.pos - 1)),
@@ -1935,7 +1979,11 @@ impl Parser {
                     None
                 };
                 self.expect_punct(";")?;
-                cases.push(EnumCase { name: cname, value });
+                cases.push(EnumCase {
+                    name: cname,
+                    value,
+                    line: case_line,
+                });
                 continue;
             }
             // `use Trait1, Trait2;` — pull trait members into this class.
@@ -1957,30 +2005,66 @@ impl Parser {
                 }
                 continue;
             }
-            // Member modifiers: `static`, the visibility keyword and `readonly`
-            // are captured; `abstract`/`final`/`var` are accepted and ignored.
+            // Member modifiers: `static`, the visibility keyword, `readonly`,
+            // `abstract` and `final` are captured; `var` is accepted and ignored.
+            let mut m_abstract = false;
+            let mut m_final = false;
             let mut is_static = false;
             let mut readonly = is_readonly_class;
             let mut visibility = Visibility::Public;
+            // Each modifier may be written once (the three visibilities count as
+            // one); the reference rejects a repeat at the repeated word's line.
+            let (mut seen_vis, mut seen_readonly) = (false, false);
             loop {
-                if self.eat_kw("static") {
-                    is_static = true;
-                } else if self.eat_kw("public") {
-                    visibility = Visibility::Public;
-                } else if self.eat_kw("protected") {
-                    visibility = Visibility::Protected;
-                } else if self.eat_kw("private") {
-                    visibility = Visibility::Private;
+                let line = self.line();
+                let (repeated, word) = if self.eat_kw("static") {
+                    (std::mem::replace(&mut is_static, true), "static")
+                } else if let Some(v) = [
+                    ("public", Visibility::Public),
+                    ("protected", Visibility::Protected),
+                    ("private", Visibility::Private),
+                ]
+                .into_iter()
+                .find_map(|(kw, v)| self.eat_kw(kw).then_some(v))
+                {
+                    visibility = v;
+                    (std::mem::replace(&mut seen_vis, true), "access type")
                 } else if self.eat_kw("readonly") {
                     readonly = true;
-                } else if self.at_kw("abstract") || self.at_kw("final") || self.at_kw("var") {
-                    self.pos += 1;
+                    (std::mem::replace(&mut seen_readonly, true), "readonly")
+                } else if self.eat_kw("abstract") {
+                    (std::mem::replace(&mut m_abstract, true), "abstract")
+                } else if self.eat_kw("final") {
+                    (std::mem::replace(&mut m_final, true), "final")
+                } else if self.eat_kw("var") {
+                    (false, "var")
                 } else {
                     break;
+                };
+                if repeated {
+                    return Err(self.bare_fatal_at(line, format!("Multiple {word} modifiers are not allowed")));
                 }
+            }
+            let const_line = self.line();
+            let misplaced = if self.at_kw("const") {
+                // A constant takes a visibility and `final`, nothing else.
+                [(m_abstract, "abstract"), (is_static, "static"), (seen_readonly, "readonly")]
+                    .into_iter()
+                    .find(|(set, _)| *set)
+                    .map(|(_, word)| format!("Cannot use the {word} modifier on a class constant"))
+            } else if self.at_kw("function") && seen_readonly {
+                Some("Cannot use the readonly modifier on a method".to_string())
+            } else if self.at_kw("function") && m_abstract && m_final {
+                Some("Cannot use the final modifier on an abstract method".to_string())
+            } else {
+                None
+            };
+            if let Some(msg) = misplaced {
+                return Err(self.bare_fatal_at(const_line, msg));
             }
             if self.eat_kw("const") {
                 loop {
+                    const_lines.push(const_line);
                     let cname = match self.next() {
                         Some(Tok::Ident(n)) => n,
                         _ => return Err(self.syntax_error_at(self.pos - 1)),
@@ -1996,6 +2080,7 @@ impl Parser {
                 }
                 self.expect_punct(";")?;
             } else if self.at_kw("function") {
+                let fn_line = self.line();
                 self.pos += 1; // function
                 let by_ref_return = self.eat_punct("&"); // return-by-ref marker
                 let mname = match self.next() {
@@ -2006,11 +2091,8 @@ impl Parser {
                 let params = self.param_list()?;
                 let ret = self.return_type()?;
                 // An abstract/interface method has no body, just `;`.
-                let body = if self.eat_punct(";") {
-                    Vec::new()
-                } else {
-                    self.block()?
-                };
+                let has_body = !self.eat_punct(";");
+                let body = if has_body { self.block()? } else { Vec::new() };
                 self.magic = saved;
                 methods.push(Method {
                     name: mname,
@@ -2020,12 +2102,17 @@ impl Parser {
                     is_static,
                     visibility,
                     by_ref_return,
+                    is_abstract: m_abstract || is_interface,
+                    is_final: m_final,
+                    has_body,
+                    line: fn_line,
                 });
             } else {
                 // Property declaration(s): an optional type precedes the $var, and
                 // applies to every name in a `public int $a, $b;` list.
                 let ty = self.type_hint()?;
                 loop {
+                    let prop_line = self.line();
                     let pname = self.expect_var()?;
                     let default = if self.eat_punct("=") {
                         Some(self.expression()?)
@@ -2039,6 +2126,7 @@ impl Parser {
                         is_static,
                         visibility,
                         readonly,
+                        line: prop_line,
                     });
                     if !self.eat_punct(",") {
                         break;
@@ -2072,11 +2160,13 @@ impl Parser {
             enum_backing,
             cases,
             consts,
+            const_lines,
             const_vis,
             props,
             methods,
             attributes: Vec::new(),
             namespace: String::new(),
+            is_final: false,
         })
     }
 

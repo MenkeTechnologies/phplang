@@ -310,14 +310,14 @@ pub const CORPUS: &[Entry] = &[
         "abstract",
         "Keyword",
         "abstract class C { abstract function m(); }",
-        "On a class it marks it un-instantiable. On a method it is parsed and discarded; an abstract method is simply a method whose body is `;`, so calling an un-overridden one returns null instead of raising a fatal error.",
+        "On a class it marks it un-instantiable. On a method it means the declaration has no body. The reference's compile-time checks apply: an abstract method in a class not itself declared abstract, an abstract method with a body, a private or final abstract method, and a non-abstract method without a body are each a `Fatal error` before anything runs. DIVERGENCE: a concrete subclass that leaves an abstract method unimplemented is not diagnosed, and calling the method returns null.",
         "abstract class A { abstract function f(); } class B extends A { function f() { return 9; } }\necho (new B)->f();   // => 9",
     ),
     (
         "final",
         "Keyword",
         "final class C { … }   final function m() { … }",
-        "Parsed and discarded on both classes and methods. DIVERGENCE: a `final` class can still be extended and a `final` method still overridden.",
+        "A repeated `final`, or `final` together with `abstract`, is the reference's compile-time `Fatal error`. Otherwise it is parsed and discarded on both classes and methods. DIVERGENCE: a `final` class can still be extended and a `final` method still overridden.",
         "final class A {} class B extends A {} echo get_class(new B);   // => B   (PHP 8: fatal error)",
     ),
     (

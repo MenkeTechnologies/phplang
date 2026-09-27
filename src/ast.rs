@@ -750,6 +750,8 @@ pub struct PropDecl {
     ///
     /// [`PhpHost::readonly_write_error`]: crate::host::PhpHost::readonly_write_error
     pub readonly: bool,
+    /// The line of its `$name`, which is where a redeclaration is reported.
+    pub line: u32,
 }
 
 /// A parsed class declaration. Single inheritance only; interfaces/traits are
@@ -781,6 +783,8 @@ pub struct ClassDecl {
     pub is_readonly: bool,
     /// Whether the class is declared `abstract` (cannot be instantiated directly).
     pub is_abstract: bool,
+    /// Whether the class is declared `final` (cannot be extended).
+    pub is_final: bool,
     /// Whether this is an `enum` (PHP 8.1). An enum compiles like a class whose
     /// `cases` are singleton instances; `implements` gains `UnitEnum` (plus
     /// `BackedEnum` when `enum_backing` is set).
@@ -792,6 +796,8 @@ pub struct ClassDecl {
     pub cases: Vec<EnumCase>,
     /// `const NAME = expr;` entries, in source order.
     pub consts: Vec<(String, Expr)>,
+    /// The line of each entry of `consts`' name, index for index.
+    pub const_lines: Vec<u32>,
     /// The declared visibility of each `private`/`protected` constant, by name.
     /// A constant absent from this list is `public`.
     pub const_vis: Vec<(String, Visibility)>,
@@ -842,6 +848,8 @@ pub struct TraitAlias {
 pub struct EnumCase {
     pub name: String,
     pub value: Option<Expr>,
+    /// The line of its name.
+    pub line: u32,
 }
 
 /// A method of a class. `is_static` is retained but not enforced (a static call
@@ -857,6 +865,15 @@ pub struct Method {
     pub visibility: Visibility,
     /// `function &m()` — see `StmtKind::Function::by_ref_return`.
     pub by_ref_return: bool,
+    /// Declared `abstract` (or, in an interface, implicitly so).
+    pub is_abstract: bool,
+    /// Declared `final`.
+    pub is_final: bool,
+    /// Whether a `{ … }` body was written, as opposed to a bare `;`. Only an
+    /// abstract or interface method may omit it, and only they must.
+    pub has_body: bool,
+    /// The line the declaration starts on.
+    pub line: u32,
 }
 
 /// One `case`/`default` label of a `switch` plus its (fall-through) body. `test`

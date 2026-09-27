@@ -659,6 +659,7 @@ impl Compiler {
     /// its own chunk (run in the callee frame when the argument is omitted).
     /// Shared by named functions, closures, and methods.
     fn compile_params(&mut self, params: &[Param]) -> Result<Vec<host::Param>, String> {
+        self.check_params(params)?;
         let mut out = Vec::with_capacity(params.len());
         for p in params {
             let default = match &p.default {
@@ -1981,12 +1982,137 @@ impl Compiler {
         Ok(())
     }
 
+    /// The checks the reference makes while COMPILING a class body, member by
+    /// member in source order, each a compile-time `Fatal error` (the program
+    /// prints nothing): a member declared twice, a method whose body contradicts
+    /// its modifiers, a modifier its class kind forbids, and a parameter named
+    /// twice. For one method they run in that order — modifiers, then the body,
+    /// then the name, then the parameters — which is the order the reference
+    /// reports them in when a method breaks several.
+    ///
+    /// Members are visited in LINE order; two members on one line are visited
+    /// constants first, then properties, then methods.
+    fn check_class_members(&self, decl: &ClassDecl) -> Result<(), String> {
+        enum Member<'a> {
+            Const(&'a str, u32),
+            Prop(&'a PropDecl),
+            Method(&'a Method),
+        }
+        let class = host::display_class(&decl.name);
+        let mut members: Vec<(u32, Member)> = Vec::new();
+        for ((name, _), line) in decl.consts.iter().zip(&decl.const_lines) {
+            members.push((*line, Member::Const(name, *line)));
+        }
+        for case in &decl.cases {
+            members.push((case.line, Member::Const(&case.name, case.line)));
+        }
+        for p in &decl.props {
+            members.push((p.line, Member::Prop(p)));
+        }
+        for m in &decl.methods {
+            members.push((m.line, Member::Method(m)));
+        }
+        members.sort_by_key(|(line, _)| *line);
+
+        let mut consts: FxHashSet<&str> = FxHashSet::default();
+        let mut props: FxHashSet<&str> = FxHashSet::default();
+        let mut methods: FxHashSet<String> = FxHashSet::default();
+        for (_, member) in &members {
+            match member {
+                Member::Const(name, line) => {
+                    if !consts.insert(name) {
+                        return Err(self.compile_fatal(
+                            *line,
+                            &format!("Cannot redefine class constant {class}::{name}"),
+                        ));
+                    }
+                }
+                Member::Prop(p) => {
+                    if !props.insert(&p.name) {
+                        return Err(self.compile_fatal(p.line, &format!("Cannot redeclare {class}::${}", p.name)));
+                    }
+                    if p.readonly && p.ty.is_none() {
+                        let msg = format!("Readonly property {class}::${} must have type", p.name);
+                        return Err(self.compile_fatal(p.line, &msg));
+                    }
+                    if p.readonly && p.is_static {
+                        let msg = format!("Static property {class}::${} cannot be readonly", p.name);
+                        return Err(self.compile_fatal(p.line, &msg));
+                    }
+                }
+                Member::Method(m) => {
+                    let fatal = |msg: String| Err(self.compile_fatal(m.line, &msg));
+                    let name = &m.name;
+                    if decl.is_interface && m.visibility != Visibility::Public {
+                        return fatal(format!(
+                            "Access type for interface method {class}::{name}() must be public"
+                        ));
+                    }
+                    if decl.is_enum && m.is_abstract {
+                        return fatal(format!("Enum method {class}::{name}() must not be abstract"));
+                    }
+                    if m.is_abstract && !decl.is_interface && !decl.is_abstract && !decl.is_trait {
+                        return fatal(format!(
+                            "Class {class} declares abstract method {name}() and must therefore be declared abstract"
+                        ));
+                    }
+                    if m.is_abstract
+                        && !decl.is_interface
+                        && !decl.is_trait
+                        && m.visibility == Visibility::Private
+                    {
+                        return fatal(format!("Abstract function {class}::{name}() cannot be declared private"));
+                    }
+                    if decl.is_interface && m.has_body {
+                        return fatal(format!("Interface function {class}::{name}() cannot contain body"));
+                    }
+                    if !decl.is_interface && m.is_abstract && m.has_body {
+                        return fatal(format!("Abstract function {class}::{name}() cannot contain body"));
+                    }
+                    if !m.is_abstract && !m.has_body {
+                        return fatal(format!("Non-abstract method {class}::{name}() must contain body"));
+                    }
+                    if !methods.insert(name.to_ascii_lowercase()) {
+                        return fatal(format!("Cannot redeclare {class}::{name}()"));
+                    }
+                    self.check_params(&m.params)?;
+                    if name.eq_ignore_ascii_case("__construct") {
+                        for p in m.params.iter().filter(|p| p.promoted) {
+                            if !props.insert(&p.name) {
+                                return Err(self.compile_fatal(
+                                    p.line,
+                                    &format!("Cannot redeclare {class}::${}", p.name),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// A parameter list that names one parameter twice is the reference's
+    /// compile-time `Redefinition of parameter $x`, reported at the second.
+    fn check_params(&self, params: &[Param]) -> Result<(), String> {
+        let mut seen: FxHashSet<&str> = FxHashSet::default();
+        for p in params {
+            if !seen.insert(&p.name) {
+                return Err(self.compile_fatal(p.line, &format!("Redefinition of parameter ${}", p.name)));
+            }
+        }
+        Ok(())
+    }
+
     /// Lower a class declaration to a `ClassDef`: constant and property-default
     /// initializers become standalone expression chunks (each leaving its value
     /// on the stack), and each method body compiles like a free function. A
     /// constructor with promoted parameters (`public int $x`) gets a synthetic
     /// `$this->x = $x;` prepended for each promoted parameter.
     fn compile_class(&mut self, b: &mut ChunkBuilder, decl: &ClassDecl) -> Result<(), String> {
+        if !self.prelude {
+            self.check_class_members(decl)?;
+        }
         let prev_class = self.current_class.take();
         let prev_parent = self.current_parent.take();
         let prev_in_trait = std::mem::replace(&mut self.in_trait, decl.is_trait);
