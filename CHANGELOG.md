@@ -26,6 +26,73 @@ comment above it.
 
 ---
 
+## Round 14 — include/require/eval, stream resources, and the argument checks around them
+
+Measured under `PHP 8.5.11 (cli) (built: Sep 22 2026 13:32:06) (NTS)`; ini state
+and environment otherwise as recorded in the oracle table above. Every
+expectation below was byte-diffed against that binary.
+
+**`include`, `require`, `include_once`, `require_once` and `eval()` did not
+parse.** They were reserved words and nothing more, so no program of more than
+one file could run. Each now compiles its file or string when it runs and
+executes it in the CURRENT frame. The value is the code's `return` value, `1`
+(null for `eval`), `true` for a repeated `_once` (the main script counts), or
+`false` after the reference's `Failed to open stream` and `Failed opening …
+for inclusion` warnings; a failed `require` throws `Error`. A syntax error in
+loaded code throws `ParseError` (new, with `CompileError`), displayed as `Parse
+error:` when uncaught. Loaded code addresses variables by name, so a scope that
+includes or evals keeps its locals out of frame slots; it continues the loaded
+program's temporary, `static`, anonymous-class and `try` numbering, so a
+`foreach` in a file included inside a `foreach` no longer shares its iterator;
+and it knows the by-reference signatures of the functions already loaded. Every
+chunk it produces carries its file, so diagnostics, `getFile()`, `__FILE__`,
+`__DIR__` and traces name it, and each include or eval is a trace frame of its
+own (`#1 main.php(16): include('/path/to/f...')`, `#1 …: eval()`).
+`get_included_files()`/`get_required_files()` list what was loaded, and
+`get_include_path()` answers `.` (see BUGS.md for the one divergence there).
+
+**Traits.** A trait that uses no other trait is bound before the program runs,
+so a class may use one declared further down the file; one that uses traits is
+declared where it stands, as the reference does. A class in an included file
+may use a trait the includer declared.
+
+**Stream resources were arrays.** `fopen` returned a heap handle that
+`var_dump` showed as `array(0) {}`, `echo` as `Array` and `gettype` of a closed
+one as `object`. A stream is now numbered from a counter that never reuses a
+number — `STDIN`/`STDOUT`/`STDERR` (new) are 1–3, the first stream a script
+opens is 5, `php://temp` takes two numbers and a spill past `maxmemory` a
+third, and every successful open by `file_get_contents`/`file`/`readfile`/
+`file_put_contents`/`include` spends one — and renders as the reference renders
+it: `resource(5) of type (stream)`, `Resource id #5`, `(int)`, `gettype`,
+`get_debug_type`, `serialize` (`i:0;`), trace arguments, array keys (with the
+`used as offset` warning) and comparisons, which compare the number. A closed
+stream stays a resource of type `Unknown`. New: `php://memory`, `php://temp`
+(`/maxmemory:N`), `php://stdin`/`stdout`/`stderr`/`output`, `tmpfile`, `fgetc`,
+`fpassthru`, `ftruncate`, `fstat`, `get_resource_id`, `SEEK_SET`/`CUR`/`END`,
+`LOCK_NB`, and `stream_get_contents`' length and offset. `STDIN` is read lazily,
+a line at a time for `fgets`. `feof` answers whether a read came up short, not
+whether the cursor is at the end; `fseek` may pass the end and a write there
+zero-fills; `a` modes append while `ftell` counts from 0; a stream opened for one
+direction refuses the other with the `errno=9 Bad file descriptor` notice.
+`fopen` and the whole-file functions warn `Failed to open stream: …`.
+
+**Argument checks.** The stream family's first argument is checked as
+`PHP_Z_PARAM_STREAM` checks it — `must be of type resource, X given`, or `must
+be an open stream resource` at its own position, before later arguments. The
+by-reference array of the sort family, `usort`/`uasort`/`uksort`, `array_walk`,
+`end`/`reset`/`next`/`prev` and `array_push`/`pop`/`shift`/`unshift`/`splice`
+was never checked, and the latter auto-vivified an unset variable: an unset
+variable now binds as null without a warning and is refused with the
+reference's `TypeError`, like any other non-array. `fread`/`fgets` with a
+length below 1 and an empty `fopen` path are `ValueError`s.
+
+**Two display fixes.** An operand an operator refuses (`1 + []`) threw from line
+0 when no call had stamped the frame's line yet. And an uncaught argument-type
+`TypeError` from a user function now reads `…, called in X on line N and
+defined in Y:M`, the way `Exception::__toString` extends it.
+
+---
+
 ## Round 13 — computed member names, uninitialized typed properties, and the rest of ext/json
 
 Measured under `PHP 8.5.11 (cli) (built: Sep 22 2026 13:32:06) (NTS)`; ini state
