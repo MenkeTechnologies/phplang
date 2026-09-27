@@ -306,3 +306,34 @@ fn a_nullsafe_call_writes_back_only_when_it_actually_ran() {
         "int(9)\nint(1)\n"
     );
 }
+
+// ── `&` in an array literal ─────────────────────────────────────────────────
+// Expectations are the reference `php` 8.5.11's output for the same source.
+
+#[test]
+fn a_by_reference_element_of_a_literal_aliases_the_variable() {
+    let src = r#"<?php $x = 1; $arr = ["a" => &$x, 5 => &$x]; $arr["a"] = 7;
+        echo $x, "|", $arr[5];"#;
+    assert_eq!(run(src), "7|7");
+}
+
+#[test]
+fn a_nested_write_through_a_literal_reference_reaches_the_source() {
+    let src = r#"<?php $a = [1]; $b = [&$a]; $b[0][] = 2; echo count($a);"#;
+    assert_eq!(run(src), "2");
+}
+
+#[test]
+fn a_copy_of_the_literal_keeps_the_reference_element_shared() {
+    let src = r#"<?php $x = 1; $y = [1, &$x, "k" => 3]; $z = $y; $z[1] = 9;
+        echo $x, "|", $z[0], $z["k"];"#;
+    assert_eq!(run(src), "9|13");
+}
+
+#[test]
+fn a_literal_reference_inside_a_function_is_not_a_frame_slot() {
+    let src = r#"<?php function h() { $x = 1; $a = [&$x]; $a[0]++; return $x; }
+        function g(&$r) { $r = 5; }
+        $x = 0; $arr = [&$x]; g($arr[0]); echo h(), "|", $x;"#;
+    assert_eq!(run(src), "2|5");
+}

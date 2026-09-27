@@ -2794,18 +2794,12 @@ impl Compiler {
             }
             Expr::Interp(parts) => self.compile_interp(b, parts)?,
             Expr::Var(name) => self.emit_get_var(b, name),
+            // `&` in a VALUE array (`$arr = [&$a]`) makes the element and `$a`
+            // one slot; see `compile_array_with_refs`.
+            Expr::Array(elems) if elems.iter().any(|e| e.by_ref) => {
+                self.compile_array_with_refs(b, elems)?
+            }
             Expr::Array(elems) => {
-                // `&` in a VALUE array (`$arr = [&$a]`, which makes the element
-                // and `$a` one slot) is a different feature from the `&` target
-                // this compiler supports, and needs an array element that can
-                // hold a reference cell. Rejected rather than compiled as a
-                // plain copy, which would answer silently and wrongly.
-                if let Some(e) = elems.iter().find(|e| e.by_ref) {
-                    let _ = e;
-                    return Err("`&` in an array literal is supported only in a \
-                                destructuring target, not in a value array"
-                        .into());
-                }
                 // `CallBuiltin`'s operand count is a `u8`, so the pairs go out
                 // in chunks: one `MKARRAY` builds the array, and each further
                 // chunk extends it through `MKARRAY_ADD`.
@@ -3828,6 +3822,38 @@ impl Compiler {
         for j in body_ends {
             b.patch_jump(j, end);
         }
+        Ok(())
+    }
+
+    /// An array literal with a `&` element, `[1, 'k' => &$a]`.
+    ///
+    /// Built in a temporary, element by element in source order, exactly as the
+    /// equivalent sequence of writes would build it: `$t[k] = v` for a value and
+    /// `$t[k] = &lv` for a reference, which binds the element and the lvalue to
+    /// one slot. The literal's value is the temporary.
+    fn compile_array_with_refs(&mut self, b: &mut ChunkBuilder, elems: &[ArrayElem]) -> Result<(), String> {
+        let t = self.tmp_name("refarr");
+        let tv = || Box::new(Expr::Var(t.clone()));
+        let init = Expr::Assign(tv(), None, Box::new(Expr::Array(Vec::new())));
+        self.compile_expr(b, &init)?;
+        b.emit(Op::Pop, self.cur_line);
+        for e in elems {
+            if matches!(e.value, Expr::Spread(_)) {
+                return Err("`...` and `&` in the same array literal are not supported".into());
+            }
+            let slot = match &e.key {
+                Some(k) => Expr::Index(tv(), Box::new(k.clone())),
+                None => Expr::Append(tv()),
+            };
+            let write = if e.by_ref {
+                Expr::RefAssign(Box::new(slot), Box::new(e.value.clone()))
+            } else {
+                Expr::Assign(Box::new(slot), None, Box::new(e.value.clone()))
+            };
+            self.compile_expr(b, &write)?;
+            b.emit(Op::Pop, self.cur_line);
+        }
+        self.emit_get_var(b, &t);
         Ok(())
     }
 

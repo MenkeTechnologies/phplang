@@ -370,6 +370,11 @@ impl Scan<'_> {
                     if let Some(k) = &el.key {
                         self.expr(k);
                     }
+                    // `[&$x]` ties `$x` to an element cell, exactly as
+                    // `$t[] = &$x` does, so `$x` cannot be a frame slot.
+                    if el.by_ref {
+                        self.ban_path_root(&el.value);
+                    }
                     self.expr(&el.value);
                 }
             }
