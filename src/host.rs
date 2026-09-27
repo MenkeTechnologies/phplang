@@ -9998,3 +9998,14 @@ fn throw_parse_error(msg: &str, file: &str) -> Result<Value, String> {
     set_pending_throw(exc);
     Ok(Value::Undef)
 }
+
+impl PhpHost {
+    /// Every loaded `trait`, for a run-time compilation whose classes use one.
+    pub fn trait_defs(&self) -> Vec<(String, ClassDef)> {
+        self.classes
+            .iter()
+            .filter(|(_, d)| d.is_trait)
+            .map(|(k, d)| (k.clone(), d.clone()))
+            .collect()
+    }
+}

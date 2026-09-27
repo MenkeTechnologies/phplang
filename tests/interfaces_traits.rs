@@ -290,3 +290,27 @@ fn a_class_that_implements_nothing_still_has_no_such_constant() {
         try { echo C::K; } catch (Error $e) { echo $e->getMessage(); }"#;
     assert_eq!(run(src), "Undefined constant C::K");
 }
+
+/// A trait that uses no other trait is bound before the program runs, so a
+/// class may use one declared further down the file. One that itself uses
+/// traits is declared where it stands — even when those came first — so a
+/// class above it cannot see it yet. Expectations are the reference's.
+#[test]
+fn trait_declarations_are_hoisted_only_when_they_use_no_trait() {
+    assert_eq!(
+        run("<?php class T { use TT; } trait TT { function hi() { return __TRAIT__ . self::class; } } echo (new T)->hi();"),
+        "TTT"
+    );
+    assert_eq!(
+        run("<?php trait A { use B; function a() { return $this->b() . 'a'; } } trait B { function b() { return 'b'; } } class C { use A; } echo (new C)->a();"),
+        "ba"
+    );
+    let refused = eval_capture(
+        "<?php trait B { function b() { return 'b'; } } class C { use A; } trait A { use B; }",
+    );
+    let text = match refused {
+        Ok(out) => out,
+        Err(e) => e,
+    };
+    assert!(text.contains("Trait \"A\" not found"), "{text}");
+}

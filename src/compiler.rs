@@ -371,6 +371,9 @@ pub struct Compiler {
     /// them from zero across the whole compilation unit, in source order, and
     /// bakes the number into the generated class name.
     anon_classes: usize,
+    /// The traits already loaded when this compilation started, which a class
+    /// in `include`d code may `use` without declaring them itself.
+    known_traits: Vec<(String, ClassDef)>,
     /// The id the first `try` of this compilation takes: 0 for a program,
     /// the number already loaded for a run-time compilation.
     try_base: usize,
@@ -425,7 +428,7 @@ pub fn compile(stmts: &[Stmt], debug: bool) -> Result<Program, String> {
         None => promoted.names.clear(),
     }
     let saved = c.enter_scope_promoting(scope_slots(&[], stmts), promoted);
-    c.compile_seq(&mut b, stmts)?;
+    c.compile_top_level(&mut b, stmts)?;
     let main_locals = c.leave_scope(saved);
     let counters = c.counters();
     Ok(Program {
@@ -460,10 +463,11 @@ pub fn compile_nested(stmts: &[Stmt], start: Counters, source: &str) -> Result<P
     };
     c.seed_builtin_byref();
     c.seed_loaded_byref();
+    c.known_traits = host::with_host(|h| h.trait_defs());
     c.collect_byref(stmts);
     let mut b = ChunkBuilder::new();
     let saved = c.enter_scope(Vec::new());
-    c.compile_seq(&mut b, stmts)?;
+    c.compile_top_level(&mut b, stmts)?;
     c.leave_scope(saved);
     let counters = c.counters();
     let mut prog = Program {
@@ -989,6 +993,29 @@ impl Compiler {
                 _ => {}
             }
         }
+    }
+
+    /// A file's top level. The reference binds a trait that uses no other trait
+    /// EARLY — before any statement runs — which is why a class may `use` a
+    /// trait declared further down the file. A trait that uses traits is not
+    /// early-bound, even when those were declared above it, and is declared
+    /// where it stands, as is everything else.
+    fn compile_top_level(&mut self, b: &mut ChunkBuilder, stmts: &[Stmt]) -> Result<(), String> {
+        let mut hoisted: FxHashSet<usize> = FxHashSet::default();
+        for (i, s) in stmts.iter().enumerate() {
+            if let StmtKind::Class(d) = &s.kind {
+                if d.is_trait && d.uses.is_empty() {
+                    self.compile_stmt(b, s)?;
+                    hoisted.insert(i);
+                }
+            }
+        }
+        for (i, s) in stmts.iter().enumerate() {
+            if !hoisted.contains(&i) {
+                self.compile_stmt(b, s)?;
+            }
+        }
+        Ok(())
     }
 
     fn compile_seq(&mut self, b: &mut ChunkBuilder, body: &[Stmt]) -> Result<(), String> {
@@ -2038,8 +2065,18 @@ impl Compiler {
         // would reach.
         let mut seen: Vec<String> = Vec::new();
         for tdef in &used {
-            for spelling in self.declared_methods(&tdef.name) {
-                let key = spelling.to_ascii_lowercase();
+            // A trait loaded by an earlier compilation has no recorded
+            // declaration order here; its method table, sorted, stands in.
+            let mut keys: Vec<String> = self
+                .declared_methods(&tdef.name)
+                .iter()
+                .map(|s| s.to_ascii_lowercase())
+                .collect();
+            if keys.is_empty() {
+                keys = tdef.methods.keys().cloned().collect();
+                keys.sort();
+            }
+            for key in keys {
                 if !seen.contains(&key) {
                     seen.push(key);
                 }
@@ -2170,7 +2207,11 @@ impl Compiler {
     /// A declared class/interface/trait by name, case-insensitively.
     fn find_class(&self, name: &str) -> Option<&ClassDef> {
         let key = name.to_ascii_lowercase();
-        self.classes.iter().find(|(n, _)| *n == key).map(|(_, d)| d)
+        self.classes
+            .iter()
+            .chain(self.known_traits.iter())
+            .find(|(n, _)| *n == key)
+            .map(|(_, d)| d)
     }
 
     /// The method names a class declared, in their source spelling and source

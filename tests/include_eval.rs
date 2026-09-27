@@ -290,3 +290,30 @@ fn eval_is_a_frame_of_its_own_in_a_trace() {
          #3 {main}\n"
     );
 }
+
+/// A class in an included file may use a trait the including file declared:
+/// the trait is linked from what is already loaded. The reference prints
+/// `hi UsesIt`.
+#[test]
+fn an_included_class_uses_a_trait_the_includer_declared() {
+    let dir = std::env::temp_dir().join(format!("phplang_include_{}_trait", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    std::fs::write(
+        dir.join("main.php"),
+        "<?php\ntrait Greets { function hi() { return \"hi \" . static::class; } }\ninclude \"uses.php\";\necho (new UsesIt)->hi(), \"\\n\";\n",
+    )
+    .expect("write");
+    std::fs::write(
+        dir.join("uses.php"),
+        "<?php\nclass UsesIt { use Greets; }\n",
+    )
+    .expect("write");
+    let out = Command::new(env!("CARGO_BIN_EXE_php"))
+        .arg("main.php")
+        .current_dir(&dir)
+        .output()
+        .expect("spawn php");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "hi UsesIt\n");
+}
