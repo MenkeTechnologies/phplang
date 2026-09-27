@@ -448,7 +448,7 @@ use Def::{Bool, EmptyArray, Float, Int, Null, Required, Str, Unknown};
 /// default in this generated table is a literal too.
 #[allow(clippy::approx_constant)]
 static SIGS: &[(&str, Sig)] = &[
-    // generated: 523 functions
+    // generated: 525 functions
     (
         "abs",
         Sig {
@@ -1825,6 +1825,22 @@ static SIGS: &[(&str, Sig)] = &[
                 p("enum", Required, "string"),
                 p("autoload", Bool(true), "bool"),
             ],
+            variadic: false,
+        },
+    ),
+    (
+        "error_clear_last",
+        Sig {
+            req: 0,
+            params: &[],
+            variadic: false,
+        },
+    ),
+    (
+        "error_get_last",
+        Sig {
+            req: 0,
+            params: &[],
             variadic: false,
         },
     ),

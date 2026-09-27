@@ -1026,6 +1026,10 @@ pub struct PhpHost {
     /// bit is set here. Seeded from `-d error_reporting=…` (or `E_ALL`), then
     /// writable at run time through `error_reporting()` / `ini_set`.
     error_reporting: i64,
+    /// The last diagnostic raised, as `error_get_last()` reports it: `(level,
+    /// message, file, line)`. Recorded whether or not it was displayed — `@`
+    /// and `error_reporting` hide a diagnostic, they do not un-raise it.
+    last_error: Option<(i64, String, String, u32)>,
     /// `ini_set`/`ini_get` string store for settings with no dedicated field, so a
     /// value written by one is read back by the other unchanged.
     ini: FxHashMap<String, String>,
@@ -1385,6 +1389,7 @@ impl PhpHost {
             generators: Vec::new(),
             fatal_reported: false,
             error_reporting: errlevel::E_ALL,
+            last_error: None,
             ini: default_ini(),
             preg_error: 0,
             strtok_state: None,
@@ -2275,6 +2280,7 @@ impl PhpHost {
     /// default on, so the ordinary run emits both; `-d log_errors=0` leaves only
     /// the stdout copy and `-d display_errors=0` only the stderr one.
     pub fn diagnose(&mut self, severity: &str, level: i64, line: u32, msg: impl std::fmt::Display) {
+        self.last_error = Some((level, msg.to_string(), self.current_file().to_string(), line));
         if self.suppress > 0 || self.error_reporting & level == 0 {
             return;
         }
@@ -2330,6 +2336,29 @@ impl PhpHost {
     /// makes a later one-argument call answer `false` rather than restart.
     pub fn set_strtok_state(&mut self, state: Option<(String, usize)>) {
         self.strtok_state = state;
+    }
+
+    /// `error_get_last()`: an array of the last diagnostic's `type`, `message`,
+    /// `file` and `line`, or null when none was raised (or it was cleared).
+    pub fn error_get_last(&mut self) -> Value {
+        let Some((level, msg, file, line)) = self.last_error.clone() else {
+            return Value::Undef;
+        };
+        let arr = self.new_array();
+        for (k, v) in [
+            ("type", Value::int(level)),
+            ("message", Value::str(msg)),
+            ("file", Value::str(file)),
+            ("line", Value::int(line as i64)),
+        ] {
+            self.arr_set_key(&arr, &Value::str(k.to_string()), v);
+        }
+        arr
+    }
+
+    /// `error_clear_last()`.
+    pub fn error_clear_last(&mut self) {
+        self.last_error = None;
     }
 
     /// Set the `error_reporting` mask, returning the previous one — what

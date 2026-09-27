@@ -5884,6 +5884,20 @@ pub const CORPUS: &[Entry] = &[
         "error_reporting(E_ALL & ~E_WARNING); echo $undefined; echo \"quiet\";   // => quiet"
     ),
     (
+        "error_get_last",
+        "System and runtime environment",
+        "error_get_last(): ?array",
+        "The last diagnostic raised, as `[\"type\" => level, \"message\" => …, \"file\" => …, \"line\" => …]`, or null when none was raised since the start or since `error_clear_last()`. A diagnostic hidden by `@` or by `error_reporting` is still recorded, which is what makes `@f(); error_get_last()` the way to read a suppressed failure.",
+        "@file_get_contents(\"/nonexistent\"); echo error_get_last()[\"type\"];   // => 2"
+    ),
+    (
+        "error_clear_last",
+        "System and runtime environment",
+        "error_clear_last(): void",
+        "Forget the last diagnostic, so `error_get_last()` answers null until another is raised.",
+        "echo $u; error_clear_last(); var_dump(error_get_last());   // => NULL"
+    ),
+    (
         "ini_get",
         "System and runtime environment",
         "ini_get(string $option): string|false",

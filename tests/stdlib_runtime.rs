@@ -404,3 +404,33 @@ fn a_trace_frame_shows_a_parameter_s_current_value() {
         "#0 Command line code(1): f(99)\n#1 {main}"
     );
 }
+
+// ── error_get_last / error_clear_last ───────────────────────────────────────
+// Expectations are the reference `php` 8.5.11's output for the same source.
+
+#[test]
+fn error_get_last_reads_a_diagnostic_that_at_suppressed() {
+    let src = r#"<?php $r = @file_get_contents("/nonexistent-phplang");
+        $e = error_get_last();
+        echo $e["type"], "|", $e["message"], "|", $e["file"], "|", $e["line"];"#;
+    assert_eq!(
+        run(src),
+        "2|file_get_contents(/nonexistent-phplang): Failed to open stream: No such file or directory|Command line code|1"
+    );
+}
+
+#[test]
+fn error_get_last_records_what_error_reporting_hides_and_clear_forgets_it() {
+    let src = r#"<?php error_reporting(0); echo $u;
+        echo error_get_last()["message"], "|";
+        var_dump(error_clear_last(), error_get_last());"#;
+    assert_eq!(run(src), "Undefined variable $u|NULL\nNULL\n");
+}
+
+#[test]
+fn error_get_last_is_null_before_any_diagnostic_and_follows_trigger_error() {
+    let src = r#"<?php var_dump(error_get_last());
+        @trigger_error("hi", E_USER_WARNING);
+        echo error_get_last()["type"], error_get_last()["message"];"#;
+    assert_eq!(run(src), "NULL\n512hi");
+}

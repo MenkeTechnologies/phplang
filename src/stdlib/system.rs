@@ -178,6 +178,11 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         // the PREVIOUS one. Passing null (or nothing) only reads — the two are
         // indistinguishable here because a missing argument arrives as `Undef`,
         // which is also how an explicit `null` arrives, and PHP treats them alike.
+        "error_get_last" => with_host(|h| h.error_get_last()),
+        "error_clear_last" => {
+            with_host(|h| h.error_clear_last());
+            Value::Undef
+        }
         "error_reporting" => with_host(|h| match args.first() {
             Some(v) if !matches!(v, Value::Undef) => Value::int(h.set_error_reporting(v.to_int())),
             _ => Value::int(h.error_reporting()),
