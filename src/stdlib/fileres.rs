@@ -121,7 +121,7 @@ impl Stream {
         }
         if end < cap {
             end += 1; // the newline is part of the line
-        } else if end == self.buf.len() && max.is_none_or(|m| end - self.pos < m) {
+        } else if end == self.buf.len() && max.map_or(true, |m| end - self.pos < m) {
             self.eof = true;
         }
         let line = self.buf[self.pos..end].to_vec();
@@ -285,7 +285,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         }
         "feof" => {
             let res = arg(args, 0);
-            Value::bool(with_host(|h| h.stream(&res).is_none_or(|s| s.eof)))
+            Value::bool(with_host(|h| h.stream(&res).map_or(true, |s| s.eof)))
         }
         "ftell" => {
             let res = arg(args, 0);

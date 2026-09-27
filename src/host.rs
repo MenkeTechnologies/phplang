@@ -9741,6 +9741,9 @@ pub fn arith_type_name(h: &PhpHost, v: &Value) -> String {
 
 // ── include / require / eval ────────────────────────────────────────────────
 
+/// A parameter as a call site needs it: `(name, by_ref, variadic)`.
+pub type ParamShape = (String, bool, bool);
+
 /// The `include_path` a failed `include` quotes. phplang searches the working
 /// directory and then the including file's directory, and has no PEAR
 /// directory to add.
@@ -9750,7 +9753,7 @@ impl PhpHost {
     /// `(lowercased name, [(parameter, by_ref, variadic)])` for every loaded user
     /// function — what a run-time compilation needs to write a by-reference
     /// argument back at a call to a function it did not see declared.
-    pub fn user_function_params(&self) -> Vec<(String, Vec<(String, bool, bool)>)> {
+    pub fn user_function_params(&self) -> Vec<(String, Vec<ParamShape>)> {
         self.functions
             .iter()
             .filter(|(_, def)| def.closure_site.is_none())
@@ -9874,7 +9877,7 @@ pub fn run_include(kind: crate::ast::IncludeKind, path: &Value) -> Result<Value,
         |_| target.display().to_string(),
         |p| p.display().to_string(),
     );
-    let seen = with_host(|h| h.included_files.iter().any(|f| *f == real));
+    let seen = with_host(|h| h.included_files.contains(&real));
     if kind.once() && seen {
         return Ok(Value::bool(true));
     }
