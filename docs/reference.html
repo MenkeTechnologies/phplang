@@ -332,14 +332,14 @@ $c = new C; try { $c-&gt;x = 2; } catch (Error $e) { echo $e-&gt;getMessage(); }
         <article class="doc-entry" id="doc-keyword-39">
           <h3><a class="doc-anchor" href="#doc-keyword-39">#</a> <code>abstract</code></h3>
           <pre><code class="lang-php">abstract class C { abstract function m(); }</code></pre>
-          <p>On a class it marks it un-instantiable. On a method it is parsed and discarded; an abstract method is simply a method whose body is `;`, so calling an un-overridden one returns null instead of raising a fatal error.</p>
+          <p>On a class it marks it un-instantiable. On a method it means the declaration has no body. The reference's compile-time checks apply: an abstract method in a class not itself declared abstract, an abstract method with a body, a private or final abstract method, and a non-abstract method without a body are each a `Fatal error` before anything runs. DIVERGENCE: a concrete subclass that leaves an abstract method unimplemented is not diagnosed, and calling the method returns null.</p>
           <pre><code class="lang-php">abstract class A { abstract function f(); } class B extends A { function f() { return 9; } }
 echo (new B)-&gt;f();   // =&gt; 9</code></pre>
         </article>
         <article class="doc-entry" id="doc-keyword-40">
           <h3><a class="doc-anchor" href="#doc-keyword-40">#</a> <code>final</code></h3>
           <pre><code class="lang-php">final class C { … }   final function m() { … }</code></pre>
-          <p>Parsed and discarded on both classes and methods. DIVERGENCE: a `final` class can still be extended and a `final` method still overridden.</p>
+          <p>A repeated `final`, or `final` together with `abstract`, is the reference's compile-time `Fatal error`. Otherwise it is parsed and discarded on both classes and methods. DIVERGENCE: a `final` class can still be extended and a `final` method still overridden.</p>
           <pre><code class="lang-php">final class A {} class B extends A {} echo get_class(new B);   // =&gt; B   (PHP 8: fatal error)</code></pre>
         </article>
         <article class="doc-entry" id="doc-keyword-41">
@@ -5030,61 +5030,73 @@ echo implode(",", $a), "|", implode(",", $b);   // =&gt; 1,2,3|a,b,c</code></pre
           <pre><code class="lang-php">error_reporting(E_ALL &amp; ~E_WARNING); echo $undefined; echo "quiet";   // =&gt; quiet</code></pre>
         </article>
         <article class="doc-entry" id="doc-system-and-runtime-environment-29">
-          <h3><a class="doc-anchor" href="#doc-system-and-runtime-environment-29">#</a> <code>ini_get</code></h3>
+          <h3><a class="doc-anchor" href="#doc-system-and-runtime-environment-29">#</a> <code>error_get_last</code></h3>
+          <pre><code class="lang-php">error_get_last(): ?array</code></pre>
+          <p>The last diagnostic raised, as `["type" =&gt; level, "message" =&gt; …, "file" =&gt; …, "line" =&gt; …]`, or null when none was raised since the start or since `error_clear_last()`. A diagnostic hidden by `@` or by `error_reporting` is still recorded, which is what makes `@f(); error_get_last()` the way to read a suppressed failure.</p>
+          <pre><code class="lang-php">@file_get_contents("/nonexistent"); echo error_get_last()["type"];   // =&gt; 2</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-system-and-runtime-environment-30">
+          <h3><a class="doc-anchor" href="#doc-system-and-runtime-environment-30">#</a> <code>error_clear_last</code></h3>
+          <pre><code class="lang-php">error_clear_last(): void</code></pre>
+          <p>Forget the last diagnostic, so `error_get_last()` answers null until another is raised.</p>
+          <pre><code class="lang-php">echo $u; error_clear_last(); var_dump(error_get_last());   // =&gt; NULL</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-system-and-runtime-environment-31">
+          <h3><a class="doc-anchor" href="#doc-system-and-runtime-environment-31">#</a> <code>ini_get</code></h3>
           <pre><code class="lang-php">ini_get(string $option): string|false</code></pre>
           <p>The current value of an ini setting, always as a STRING, or false when the engine has no such setting. `error_reporting` reads back what was last written to it — the decimal mask after `error_reporting()` or `-d`, but the RAW string after an `ini_set`, which is why `ini_set("error_reporting", "12abc")` leaves `ini_get` reporting `"12abc"` while the mask is 12. The settings known here are PHP core plus `date` and `pcre` — the two extensions PHP 8 cannot be built without — carrying the values the reference reports for them with NO php.ini loaded, which is how each was established. DIVERGENCE: a name belonging to an optional extension the reference happened to be built with (`mysqli.default_host`), or one whose default is that build's install prefix (`extension_dir`, `include_path`), reports false rather than a value that would be wrong on another machine.</p>
           <pre><code class="lang-php">var_dump(ini_get("memory_limit"), ini_get("nosuch"));   // =&gt; string(4) "128M" bool(false)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-system-and-runtime-environment-30">
-          <h3><a class="doc-anchor" href="#doc-system-and-runtime-environment-30">#</a> <code>ini_set</code></h3>
+        <article class="doc-entry" id="doc-system-and-runtime-environment-32">
+          <h3><a class="doc-anchor" href="#doc-system-and-runtime-environment-32">#</a> <code>ini_set</code></h3>
           <pre><code class="lang-php">ini_set(string $option, mixed $value): string|false</code></pre>
           <p>Set an ini setting, returning its previous value as a string — or false, changing nothing, for a name the engine does not know (`ini_set` cannot invent settings) or one that is not runtime-changeable. That second group is PHP's `PHP_INI_PERDIR`/`PHP_INI_SYSTEM` set, which only a php.ini or `-d` may write while `ini_get` still reads it: `post_max_size`, `output_buffering`, `max_input_vars`, `expose_php`, `allow_url_fopen`, `arg_separator.input`, `disable_functions`, `hard_timeout`, `max_input_nesting_level`, `max_input_time`, `max_memory_limit`, `output_handler`, `register_argc_argv`, `zend.multibyte`, `zend.script_encoding`. Writing `error_reporting` also writes the mask, by ordinary string-to-int coercion and NOT the php.ini constant-expression scanner: `ini_set("error_reporting", "E_ALL &amp; ~E_NOTICE")` reads as 0 and mutes everything, exactly as in the reference. The symbolic spelling works only on the `php -d error_reporting=…` path. DIVERGENCE: per-setting VALUE validation is not modelled — the reference refuses a value a setting will not take, with a warning and false, but `date.timezone` needs a zone database this build does not carry and `memory_limit`'s refusal quotes the process's live memory usage, which is not a reproducible number. Such a write is accepted here.</p>
           <pre><code class="lang-php">var_dump(ini_set("error_reporting", "0"), ini_get("error_reporting"));   // =&gt; string(5) "30719" string(1) "0"</code></pre>
         </article>
-        <article class="doc-entry" id="doc-system-and-runtime-environment-31">
-          <h3><a class="doc-anchor" href="#doc-system-and-runtime-environment-31">#</a> <code>spl_object_id</code></h3>
+        <article class="doc-entry" id="doc-system-and-runtime-environment-33">
+          <h3><a class="doc-anchor" href="#doc-system-and-runtime-environment-33">#</a> <code>spl_object_id</code></h3>
           <pre><code class="lang-php">spl_object_id(object $object): int</code></pre>
           <p>The raw heap handle. It is STABLE for the process lifetime — the object table is push-only, so an id is never recycled after the value dies. DIVERGENCE: it is not object-only — arrays, closures, generators, and resources all get an id, and a non-heap value returns 0 rather than raising a `TypeError`.</p>
           <pre><code class="lang-php">$a = new stdClass; $b = new stdClass; var_dump(spl_object_id($a) !== spl_object_id($b));   // =&gt; bool(true)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-system-and-runtime-environment-32">
-          <h3><a class="doc-anchor" href="#doc-system-and-runtime-environment-32">#</a> <code>spl_object_hash</code></h3>
+        <article class="doc-entry" id="doc-system-and-runtime-environment-34">
+          <h3><a class="doc-anchor" href="#doc-system-and-runtime-environment-34">#</a> <code>spl_object_hash</code></h3>
           <pre><code class="lang-php">spl_object_hash(object $object): string</code></pre>
           <p>The same handle rendered as 32 zero-padded lowercase hex digits. DIVERGENCE: real PHP mixes in a per-process seed; this is trivially reversible to the id, so it must not be treated as opaque.</p>
           <pre><code class="lang-php">echo strlen(spl_object_hash(new stdClass));   // =&gt; 32</code></pre>
         </article>
-        <article class="doc-entry" id="doc-system-and-runtime-environment-33">
-          <h3><a class="doc-anchor" href="#doc-system-and-runtime-environment-33">#</a> <code>func_get_args</code></h3>
+        <article class="doc-entry" id="doc-system-and-runtime-environment-35">
+          <h3><a class="doc-anchor" href="#doc-system-and-runtime-environment-35">#</a> <code>func_get_args</code></h3>
           <pre><code class="lang-php">func_get_args(): array</code></pre>
           <p>The arguments AS PASSED to the enclosing call, read from a hidden frame variable. Variadic arguments ARE included; parameters filled from their defaults are not, matching PHP. DIVERGENCE: named arguments are appended in CALL order rather than placed at their parameter positions, and at global scope it returns an empty array rather than raising.</p>
           <pre><code class="lang-php">function f() { return count(func_get_args()); } echo f(1, 2, 3);   // =&gt; 3</code></pre>
         </article>
-        <article class="doc-entry" id="doc-system-and-runtime-environment-34">
-          <h3><a class="doc-anchor" href="#doc-system-and-runtime-environment-34">#</a> <code>func_num_args</code></h3>
+        <article class="doc-entry" id="doc-system-and-runtime-environment-36">
+          <h3><a class="doc-anchor" href="#doc-system-and-runtime-environment-36">#</a> <code>func_num_args</code></h3>
           <pre><code class="lang-php">func_num_args(): int</code></pre>
           <p>How many arguments the enclosing call received. DIVERGENCE: outside a function it silently reports 0 instead of raising PHP's error.</p>
           <pre><code class="lang-php">function f() { return func_num_args(); } echo f(1, 2);   // =&gt; 2</code></pre>
         </article>
-        <article class="doc-entry" id="doc-system-and-runtime-environment-35">
-          <h3><a class="doc-anchor" href="#doc-system-and-runtime-environment-35">#</a> <code>func_get_arg</code></h3>
+        <article class="doc-entry" id="doc-system-and-runtime-environment-37">
+          <h3><a class="doc-anchor" href="#doc-system-and-runtime-environment-37">#</a> <code>func_get_arg</code></h3>
           <pre><code class="lang-php">func_get_arg(int $position): mixed</code></pre>
           <p>One argument of the enclosing call by position. DIVERGENCE: an out-of-range or negative position returns null instead of raising `ArgumentCountError` or `ValueError`.</p>
           <pre><code class="lang-php">function f() { return func_get_arg(1); } echo f("a", "b");   // =&gt; b</code></pre>
         </article>
-        <article class="doc-entry" id="doc-system-and-runtime-environment-36">
-          <h3><a class="doc-anchor" href="#doc-system-and-runtime-environment-36">#</a> <code>iterator_to_array</code></h3>
+        <article class="doc-entry" id="doc-system-and-runtime-environment-38">
+          <h3><a class="doc-anchor" href="#doc-system-and-runtime-environment-38">#</a> <code>iterator_to_array</code></h3>
           <pre><code class="lang-php">iterator_to_array(mixed $iterator, bool $preserve_keys = true): array</code></pre>
           <p>Materializes an array, an `IteratorAggregate`, an object following the `Iterator` protocol, or a plain object's public properties. DIVERGENCE: a GENERATOR is not accepted — it is a distinct handle kind the iteration path does not recognize, so `iterator_to_array($gen)` silently returns an EMPTY array. A scalar does the same.</p>
           <pre><code class="lang-php">echo count(iterator_to_array([1, 2, 3]));   // =&gt; 3</code></pre>
         </article>
-        <article class="doc-entry" id="doc-system-and-runtime-environment-37">
-          <h3><a class="doc-anchor" href="#doc-system-and-runtime-environment-37">#</a> <code>iterator_count</code></h3>
+        <article class="doc-entry" id="doc-system-and-runtime-environment-39">
+          <h3><a class="doc-anchor" href="#doc-system-and-runtime-environment-39">#</a> <code>iterator_count</code></h3>
           <pre><code class="lang-php">iterator_count(mixed $iterator): int</code></pre>
           <p>Counts what `iterator_to_array` would produce, and carries the same gap: a generator counts as 0.</p>
           <pre><code class="lang-php">echo iterator_count([1, 2]);   // =&gt; 2</code></pre>
         </article>
-        <article class="doc-entry" id="doc-system-and-runtime-environment-38">
-          <h3><a class="doc-anchor" href="#doc-system-and-runtime-environment-38">#</a> <code>iterator_apply</code></h3>
+        <article class="doc-entry" id="doc-system-and-runtime-environment-40">
+          <h3><a class="doc-anchor" href="#doc-system-and-runtime-environment-40">#</a> <code>iterator_apply</code></h3>
           <pre><code class="lang-php">iterator_apply(mixed $iterator, callable $callback, ?array $args = null): int</code></pre>
           <p>DIVERGENCE: the subject is materialized ONLY to obtain a length, then the callback is invoked that many times with the elements of `$args` — it never receives the current element and the iterator is never advanced. Iteration stops early when the callback returns falsey. A generator yields a length of 0, so the callback never runs.</p>
           <pre><code class="lang-php">echo iterator_apply([1, 2, 3], fn() =&gt; true);   // =&gt; 3</code></pre>

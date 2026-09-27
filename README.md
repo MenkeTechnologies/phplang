@@ -209,7 +209,14 @@ end-to-end (see `tests/basic.rs`):
   **anonymous classes** (`new class(args) extends P implements I { … }`, named
   `Base@anonymous` after the parent, else the first interface, else `class`).
   `abstract` classes and interfaces reject direct instantiation
-  (`new` on either is a `Cannot instantiate …` error). **References** — `$b = &$a`,
+  (`new` on either is a `Cannot instantiate …` error). A class declaration gets the
+  reference's compile-time checks before anything runs: a repeated or misplaced
+  modifier, a member declared twice, an abstract method outside an abstract
+  class, a body that contradicts its modifiers, a non-public interface method, an
+  untyped readonly property, and a parameter named twice are each its `Fatal
+  error`. A top-level function declared twice or named like a library function
+  is `Cannot redeclare`, and a function or class declared inside a block is
+  bound when its statement runs, so `function_exists` answers false before then. **References** — `$b = &$a`,
   references to a container slot in either direction (`$r = &$a['x']['y']`,
   `$r = &$o->p`, `$a[] = &$v`, `$o->p = &$v`), return-by-reference
   (`function &f()`), `foreach ($a as &$v)`, by-reference parameters
@@ -220,9 +227,9 @@ end-to-end (see `tests/basic.rs`):
   variable `int(5)`), and by-reference destructuring targets (`[&$x, $y] = $a`
   in both spellings, keyed, nested, alongside holes, and inside `foreach`, each
   aliasing the subject's element so a write through the target reaches the
-  subject); a referenced element stays shared across an array copy and
-  `var_dump` marks it with `&`, as PHP does. A `&` inside a *value* array
-  (`$arr = [&$a]`) is a distinct feature and is rejected rather than copied.
+  subject), and `&` elements in an array literal (`[&$a]`, `['k' => &$x]`),
+  each bound to its variable; a referenced element stays shared across an array
+  copy and `var_dump` marks it with `&`, as PHP does.
   Namespaces are accepted in a flat model
   (`namespace X;` / `use A\B\C;`; qualified names fold to their short name).
 - The **magic constants** `__LINE__`, `__FILE__`, `__DIR__`, `__FUNCTION__`,

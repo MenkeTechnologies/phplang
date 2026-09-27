@@ -26,6 +26,42 @@ comment above it.
 
 ---
 
+## Round 15 — declaration-time diagnostics, `&` in array literals, `error_get_last`
+
+Measured under `PHP 8.5.11 (cli) (built: Sep 22 2026 13:32:06) (NTS)`; ini state
+and environment otherwise as recorded in the oracle table above. Every
+expectation below was byte-diffed against that binary.
+
+**Redeclaring a function was not diagnosed.** A top-level function declared
+twice, or named like a library function, is now the compile-time `Cannot
+redeclare function f()` fatal, so the program prints nothing. A function or
+class declared inside an `if`, a loop or another function's body is bound when
+its statement runs, so `function_exists`/`class_exists` answer false before then
+and a `function_exists`-guarded polyfill no longer replaces the library
+function. A type clash is reported where the reference binds it, naming the
+type already declared. Pinned in `tests/redeclaration.rs`.
+
+**Class declarations were not checked.** A repeated or misplaced modifier
+(`final final class`, `abstract final class`, `public public $x`,
+`static const`, `readonly function`, `abstract final function`) is the
+grammar's `Fatal error` without a stack trace. A constant, enum case, property
+or method declared twice, an abstract method in a class not declared abstract,
+an abstract method with a body or a concrete one without, a non-public
+interface method, an untyped or static `readonly` property, a promoted
+parameter that repeats a property, and a parameter named twice are the
+compile-time `Fatal error` with its trace. Pinned in
+`tests/class_member_diagnostics.rs`.
+
+**`&` in an array literal was refused.** `[&$a]` and `['k' => &$x]` now bind
+the element to the variable, through the same path as `$t[] = &$x`.
+
+**`error_get_last()` and `error_clear_last()` were missing.** Every diagnostic
+records its level, message, file and line before the `error_reporting` and `@`
+checks, as the reference does, so `@f(); error_get_last()` reads a suppressed
+failure.
+
+---
+
 ## Round 14 — include/require/eval, stream resources, and the argument checks around them
 
 Measured under `PHP 8.5.11 (cli) (built: Sep 22 2026 13:32:06) (NTS)`; ini state

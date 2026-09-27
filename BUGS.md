@@ -178,19 +178,7 @@ CORRECTED: this entry used to read "Two coercion warnings are not raised" and
 listed `echo NAN` alongside. `echo NAN` agrees with the reference and did so
 before this round's work; the claim was stale, not fixed here.
 
-## `&$a` inside an array literal is refused
-
-```text
-$ php -r '$a=[1]; $b=[&$a]; $a[]=$b; print_r($a);'
-Array ( [0] => 1 [1] => Array ( [0] => Array *RECURSION* ) )
-$ target/debug/php -r '… same …'
-php: `&` in an array literal is supported only in a destructuring target, not in a value array
-```
-
-A parser gap, and the message is a scaffold error rather than anything PHP
-emits.
-
-## `set_error_handler` is a no-op that `function_exists` denies
+## `set_error_handler` is a no-op
 
 ```text
 $ php -r 'set_error_handler(function($n,$s){ echo "LVL=$n MSG=$s\n"; return true; }); $a=[1]; echo $a[9]; echo "CONT\n";'
@@ -202,10 +190,8 @@ CONT
 ```
 
 The callback is accepted and discarded — already recorded as a DIVERGENCE in
-the `set_error_handler` corpus entry. What is NOT recorded is that
-`function_exists("set_error_handler")` answers `false` while the name is
-callable, and the same holds for `trigger_error`, `set_exception_handler`,
-`restore_error_handler` and `error_get_last`. Two answers to the same question.
+the `set_error_handler` corpus entry. `function_exists` answers `true` for it,
+as the reference does.
 
 Implementing the handler chain would make the `E_*` level of every diagnostic
 observable from PHP, which is the strongest available test for the level work
@@ -299,7 +285,7 @@ and break the far more common one where a temporary closure (`array_map(fn…)`)
 is freed at once and its number reused, so it is left alone. Both need
 refcounted handles.
 
-## `include`: the search path, and redeclaration
+## `include`: the search path
 
 ```text
 $ php -r 'include "nope.php";'
@@ -311,18 +297,6 @@ Warning: include(): Failed opening 'nope.php' for inclusion (include_path='.') i
 The reference's `include_path` names the PEAR directory its build was
 configured with; phplang has none and searches `.` and then the including
 file's directory. The same value is what `get_include_path()` returns.
-
-```text
-$ echo '<?php function f() {}' > f.php
-$ php -r 'include "f.php"; include "f.php";'
-Fatal error: Cannot redeclare function f() (previously declared in /…/f.php:1) in /…/f.php on line 1
-$ target/debug/php -r 'include "f.php"; include "f.php";'
-(no output; the second declaration replaces the first)
-```
-
-A function or class declared twice is not diagnosed, whether both
-declarations are in one file or one comes from an `include`: phplang records
-no declaration site to quote.
 
 ## Other measured gaps
 
