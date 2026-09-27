@@ -14,6 +14,17 @@ use crate::lexer::CompileDiag;
 use fusevm::{Chunk, ChunkBuilder, Op, Value};
 use rustc_hash::{FxHashMap, FxHashSet};
 
+/// What a class declares `final`, gathered from its own members and the
+/// traits it uses, plus where each of its methods was declared — the halves
+/// of [`ClassDef`] that [`host::final_violation`] reads.
+#[derive(Default)]
+struct Finals {
+    methods: FxHashSet<String>,
+    consts: FxHashSet<String>,
+    props: FxHashSet<String>,
+    method_sites: Vec<(String, u32)>,
+}
+
 /// Why a declaration the compiler could read cannot be LINKED, and in which of
 /// the reference's two shapes it says so.
 enum LinkError {
@@ -1442,7 +1453,8 @@ impl Compiler {
                 }
             }
             StmtKind::Class(decl) if top => {
-                if !self.early.contains(&(s as *const Stmt as usize)) {
+                let early = self.early.contains(&(s as *const Stmt as usize));
+                if !early {
                     // Declared where it stands, so a clash with a type bound
                     // before it is reported here, after whatever ran first.
                     if let Some(msg) = self.class_redeclare_msg(decl) {
@@ -1456,7 +1468,11 @@ impl Compiler {
                         self.bind_class(decl, line);
                     }
                 }
+                let before = self.classes.len();
                 self.compile_class(b, decl)?;
+                if self.classes.len() > before {
+                    self.check_finals(b, decl, early, line)?;
+                }
             }
             StmtKind::Class(decl) => {
                 let before = self.classes.len();
@@ -1471,6 +1487,7 @@ impl Compiler {
                         std::slice::from_ref(&decl.namespace),
                         line,
                     );
+                    self.check_finals(b, decl, false, line)?;
                 }
             }
             StmtKind::If {
@@ -2092,6 +2109,47 @@ impl Compiler {
         Ok(())
     }
 
+    /// The `final` rules the class just compiled from `decl` must keep against
+    /// what it inherits — see [`host::final_violation`]. An EARLY-bound class
+    /// links before the file runs, so a broken rule is a compile-time fatal;
+    /// any other links where its declaration runs, so the check is an op there
+    /// (`ops::FINAL_CHECK`), made against the class table as it is by then.
+    fn check_finals(
+        &mut self,
+        b: &mut ChunkBuilder,
+        decl: &ClassDecl,
+        early: bool,
+        line: u32,
+    ) -> Result<(), String> {
+        if self.prelude || (decl.parent.is_none() && decl.implements.is_empty()) {
+            return Ok(());
+        }
+        if early {
+            let def = &self
+                .classes
+                .last()
+                .expect("the class was just registered")
+                .1;
+            // Outside `with_host`: the first call compiles the prelude.
+            let prelude = crate::prelude_classes();
+            let local = |n: &str| {
+                let lname = n.to_ascii_lowercase();
+                self.find_class(n)
+                    .or_else(|| prelude.iter().find(|(k, _)| *k == lname).map(|(_, d)| d))
+            };
+            let broken = host::with_host(|h| h.final_check_with(def, |n| local(n)));
+            return match broken {
+                Some((msg, at)) => Err(self.compile_fatal(at.unwrap_or(line), &msg)),
+                None => Ok(()),
+            };
+        }
+        let idx = b.add_constant(Value::str(decl.name.to_ascii_lowercase()));
+        b.emit(Op::LoadConst(idx), line);
+        b.emit(Op::CallBuiltin(ops::FINAL_CHECK, 1), line);
+        b.emit(Op::Pop, line);
+        Ok(())
+    }
+
     /// A parameter list that names one parameter twice is the reference's
     /// compile-time `Redefinition of parameter $x`, reported at the second.
     fn check_params(&self, params: &[Param]) -> Result<(), String> {
@@ -2131,6 +2189,7 @@ impl Compiler {
         let mut uninit_props: FxHashMap<String, String> = FxHashMap::default();
         let mut method_vis: FxHashMap<String, Visibility> = FxHashMap::default();
         let mut static_methods: FxHashSet<String> = FxHashSet::default();
+        let mut finals = Finals::default();
         let mut order: Vec<String> = Vec::new();
         match self.seed_from_traits(
             decl,
@@ -2144,6 +2203,7 @@ impl Compiler {
             &mut method_vis,
             &mut static_methods,
             &mut order,
+            &mut finals,
         ) {
             Ok(()) => {}
             // A bad `use` is a *link*-time failure in PHP, not a compile-time
@@ -2182,7 +2242,9 @@ impl Compiler {
             consts.retain(|(n, _)| n != name);
             consts.push((name.clone(), cb.build()));
             const_vis.remove(name);
+            finals.consts.remove(name);
         }
+        finals.consts.extend(decl.final_consts.iter().cloned());
         for (name, vis) in &decl.const_vis {
             const_vis.insert(name.clone(), *vis);
         }
@@ -2196,6 +2258,11 @@ impl Compiler {
         for prop in &decl.props {
             let name = &prop.name;
             prop_vis.insert(name.clone(), prop.visibility);
+            if prop.is_final {
+                finals.props.insert(name.clone());
+            } else {
+                finals.props.remove(name);
+            }
             match (&prop.ty, &prop.default, prop.is_static) {
                 (Some(ty), None, false) => {
                     let display = ty.declared(&decl.name, decl.parent.as_deref());
@@ -2240,6 +2307,15 @@ impl Compiler {
             }
             order.retain(|n| !n.eq_ignore_ascii_case(&m.name));
             order.push(m.name.clone());
+            finals
+                .method_sites
+                .retain(|(n, _)| !n.eq_ignore_ascii_case(&m.name));
+            finals.method_sites.push((m.name.clone(), m.line));
+            if m.is_final {
+                finals.methods.insert(m.name.to_ascii_lowercase());
+            } else {
+                finals.methods.remove(&m.name.to_ascii_lowercase());
+            }
             let cparams = self.compile_params(&m.params)?;
             let mut mb = ChunkBuilder::new();
             // A method body has its own loop scope (as free functions do).
@@ -2324,6 +2400,11 @@ impl Compiler {
             enum_cases.push((case.name.clone(), chunk));
         }
 
+        // A private method is never inherited, so its `final` binds nothing —
+        // except on the constructor, which the reference checks regardless.
+        finals
+            .methods
+            .retain(|m| m == "__construct" || method_vis.get(m) != Some(&Visibility::Private));
         self.method_order
             .insert(decl.name.to_ascii_lowercase(), order);
         self.classes.push((
@@ -2352,6 +2433,11 @@ impl Compiler {
                     .iter()
                     .any(|a| a.eq_ignore_ascii_case("AllowDynamicProperties")),
                 enum_cases,
+                is_final: decl.is_final,
+                final_methods: finals.methods,
+                final_consts: finals.consts,
+                final_props: finals.props,
+                method_sites: finals.method_sites,
             },
         ));
 
@@ -2386,6 +2472,7 @@ impl Compiler {
         method_vis: &mut FxHashMap<String, Visibility>,
         static_methods: &mut FxHashSet<String>,
         order: &mut Vec<String>,
+        finals: &mut Finals,
     ) -> Result<(), LinkError> {
         if decl.uses.is_empty() {
             return Ok(());
@@ -2433,6 +2520,8 @@ impl Compiler {
             // A property a trait declares readonly stays readonly in the class
             // that uses it — the trait is where it was declared.
             readonly_props.extend(tdef.readonly_props.iter().cloned());
+            finals.consts.extend(tdef.final_consts.iter().cloned());
+            finals.props.extend(tdef.final_props.iter().cloned());
         }
 
         // `A::m insteadof B` drops B's `m` from consideration; A's is not
@@ -2502,6 +2591,16 @@ impl Compiler {
                 static_methods.insert(m.clone());
             }
             order.push(self.method_spelling(&winner.name, m));
+            if winner.final_methods.contains(m) {
+                finals.methods.insert(m.clone());
+            }
+            if let Some(site) = winner
+                .method_sites
+                .iter()
+                .find(|(s, _)| s.eq_ignore_ascii_case(m))
+            {
+                finals.method_sites.push(site.clone());
+            }
         }
 
         // Aliases resolve against each trait's OWN method table, not the merged
@@ -2560,6 +2659,16 @@ impl Compiler {
                         .or_else(|| source.method_vis.get(&key).copied())
                         .unwrap_or(Visibility::Public);
                     method_vis.insert(ak.clone(), vis);
+                    if source.final_methods.contains(&key) {
+                        finals.methods.insert(ak.clone());
+                    }
+                    if let Some((_, line)) = source
+                        .method_sites
+                        .iter()
+                        .find(|(s, _)| s.eq_ignore_ascii_case(&key))
+                    {
+                        finals.method_sites.push((alias.clone(), *line));
+                    }
                     if source.static_methods.contains(&key) {
                         static_methods.insert(ak);
                     }
@@ -3285,7 +3394,11 @@ impl Compiler {
                 // there reports that line, not the enclosing statement's — and
                 // the rest of the statement belongs to where it started.
                 let site = self.cur_line;
+                let before = self.classes.len();
                 self.compile_class(b, &named)?;
+                if self.classes.len() > before {
+                    self.check_finals(b, &named, false, *line)?;
+                }
                 self.cur_line = *line;
                 self.compile_expr(b, &Expr::New(name, args.clone()))?;
                 self.cur_line = site;

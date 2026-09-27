@@ -83,12 +83,12 @@ class Exception {
         $this->code = $code;
         $this->previous = $previous;
     }
-    public function getMessage() { return $this->message; }
-    public function getCode() { return $this->code; }
-    public function getPrevious() { return $this->previous; }
-    public function getFile() { return $this->file; }
-    public function getLine() { return $this->line; }
-    public function getTraceAsString() { return $this->trace; }
+    final public function getMessage() { return $this->message; }
+    final public function getCode() { return $this->code; }
+    final public function getPrevious() { return $this->previous; }
+    final public function getFile() { return $this->file; }
+    final public function getLine() { return $this->line; }
+    final public function getTraceAsString() { return $this->trace; }
     public function __toString() { return $this->message; }
 }
 class Error {
@@ -103,12 +103,12 @@ class Error {
         $this->code = $code;
         $this->previous = $previous;
     }
-    public function getMessage() { return $this->message; }
-    public function getCode() { return $this->code; }
-    public function getPrevious() { return $this->previous; }
-    public function getFile() { return $this->file; }
-    public function getLine() { return $this->line; }
-    public function getTraceAsString() { return $this->trace; }
+    final public function getMessage() { return $this->message; }
+    final public function getCode() { return $this->code; }
+    final public function getPrevious() { return $this->previous; }
+    final public function getFile() { return $this->file; }
+    final public function getLine() { return $this->line; }
+    final public function getTraceAsString() { return $this->trace; }
     public function __toString() { return $this->message; }
 }
 class RuntimeException extends Exception {}
@@ -473,6 +473,17 @@ static PRELUDE_TYPES: std::sync::OnceLock<rustc_hash::FxHashMap<String, (String,
 /// built-in type.
 pub(crate) fn prelude_type(lname: &str) -> Option<(String, &'static str)> {
     PRELUDE_TYPES.get()?.get(lname).cloned()
+}
+
+/// The classes the PHP-written prelude declares, keyed by lowercased name.
+/// The prelude is merged onto the host only once the user program has
+/// compiled, so a check made WHILE compiling (a class linking against
+/// `Exception`) reads the definitions from here.
+///
+/// Compiles the prelude on first use, so it must not be reached while the
+/// prelude itself is compiling, nor from inside `host::with_host`.
+pub(crate) fn prelude_classes() -> &'static [(String, host::ClassDef)] {
+    &prelude_defs().1
 }
 
 /// Merge an already-compiled program onto the current host (install the exception

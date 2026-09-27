@@ -80,6 +80,7 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::DECL_FATAL, b_decl_fatal);
     vm.register_builtin(ops::DECLARE_FN, b_declare_fn);
     vm.register_builtin(ops::DECLARE_CLASS, b_declare_class);
+    vm.register_builtin(ops::FINAL_CHECK, b_final_check);
     vm.register_builtin(ops::DYN_CLASS, b_dyn_class);
     vm.register_builtin(ops::DYN_CLASS_CONST, b_dyn_class_const);
     vm.register_builtin(ops::CLONE, b_clone);
@@ -1958,10 +1959,29 @@ fn b_decl_fatal(vm: &mut VM, _: u8) -> Value {
     runtime_decl_fatal(vm, &msg)
 }
 
+/// `ops::FINAL_CHECK`: a declaration that breaks a `final` rule of what it
+/// inherits is a [`b_decl_fatal`], reported at the overriding method when the
+/// rule is about a method.
+fn b_final_check(vm: &mut VM, _: u8) -> Value {
+    let class = with_host(|h| h.to_str(&vm.pop()));
+    match with_host(|h| h.final_check(&class)) {
+        None => Value::Undef,
+        Some((msg, line)) => {
+            let line = line.unwrap_or_else(|| cur_op_line(vm));
+            runtime_decl_fatal_at(vm, &msg, line)
+        }
+    }
+}
+
 /// Display `msg` as the declaration fatal [`b_decl_fatal`] describes, at the
 /// running op's line, and stop the program.
 fn runtime_decl_fatal(vm: &mut VM, msg: &str) -> Value {
     let line = cur_op_line(vm);
+    runtime_decl_fatal_at(vm, msg, line)
+}
+
+/// [`runtime_decl_fatal`] reported at `line`.
+fn runtime_decl_fatal_at(vm: &mut VM, msg: &str, line: u32) -> Value {
     let body = with_host(|h| {
         let trace = h.backtrace();
         format!(

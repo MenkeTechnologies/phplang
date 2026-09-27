@@ -242,7 +242,7 @@ list('k' =&gt; $v) = expr;</code></pre>
         <article class="doc-entry" id="doc-keyword-26">
           <h3><a class="doc-anchor" href="#doc-keyword-26">#</a> <code>class</code></h3>
           <pre><code class="lang-php">[abstract|final|readonly] class Name [extends Parent] [implements I, …] { members }</code></pre>
-          <p>Declares a class: constants, properties, static properties, and methods. `abstract` marks the class un-instantiable; `readonly` makes every property it declares readonly; `final` is parsed and ignored.</p>
+          <p>Declares a class: constants, properties, static properties, and methods. `abstract` marks the class un-instantiable; `readonly` makes every property it declares readonly; `final` forbids a subclass (see `final`).</p>
           <pre><code class="lang-php">class C { public $x = 1; } $o = new C; echo $o-&gt;x;   // =&gt; 1</code></pre>
         </article>
         <article class="doc-entry" id="doc-keyword-27">
@@ -339,8 +339,9 @@ echo (new B)-&gt;f();   // =&gt; 9</code></pre>
         <article class="doc-entry" id="doc-keyword-40">
           <h3><a class="doc-anchor" href="#doc-keyword-40">#</a> <code>final</code></h3>
           <pre><code class="lang-php">final class C { … }   final function m() { … }</code></pre>
-          <p>A repeated `final`, or `final` together with `abstract`, is the reference's compile-time `Fatal error`. Otherwise it is parsed and discarded on both classes and methods. DIVERGENCE: a `final` class can still be extended and a `final` method still overridden.</p>
-          <pre><code class="lang-php">final class A {} class B extends A {} echo get_class(new B);   // =&gt; B   (PHP 8: fatal error)</code></pre>
+          <p>A repeated `final`, or `final` together with `abstract`, is the reference's compile-time `Fatal error`. A `final` class cannot be extended, and a `final` method, constant or property cannot be redeclared by a subclass (or, for a constant, by an implementing class): each is the reference's `Fatal error` when the subclass links — before the program runs for an early-bound class, where its declaration runs otherwise — and an overriding method is reported at its own line. `final` on a trait method carries into the class that uses it. The engine's `Exception`/`Error` getters are final, as in PHP. DIVERGENCE: `final` on a private method is accepted without the reference's compile-time `Private methods cannot be final` warning.</p>
+          <pre><code class="lang-php">final class A {} class B extends A {}
+// =&gt; Fatal error: Class B cannot extend final class A</code></pre>
         </article>
         <article class="doc-entry" id="doc-keyword-41">
           <h3><a class="doc-anchor" href="#doc-keyword-41">#</a> <code>var</code></h3>
@@ -1803,8 +1804,8 @@ $o = new C; unset($o-&gt;zz);   // =&gt; unset:zz</code></pre>
     protected $message = ""; protected $code = 0; protected $previous = null;
     protected $file = ""; protected $line = 0; protected $trace = "";
     __construct($message = "", $code = 0, $previous = null)
-    getMessage(): string   getCode(): int   getPrevious(): ?Throwable
-    getFile(): string   getLine(): int   getTraceAsString(): string
+    final getMessage(): string   final getCode(): int   final getPrevious(): ?Throwable
+    final getFile(): string   final getLine(): int   final getTraceAsString(): string
     __toString(): string
 }</code></pre>
           <p>One of the two disjoint roots of the exception hierarchy. `catch (Throwable)` is special-cased in the host to match this root or `Error`. `file`, `line` and `trace` are recorded when the object is *constructed*, as the reference engine records them, so `getLine()` reports the `new` site even when the `throw` is on a later line. DIVERGENCE: `getTrace()` — the structured array form — is not declared; only the rendered `getTraceAsString()` is.</p>
@@ -1817,8 +1818,8 @@ catch (Exception $e) { echo $e-&gt;getMessage(), $e-&gt;getCode(); }   // =&gt; 
     protected $message = ""; protected $code = 0; protected $previous = null;
     protected $file = ""; protected $line = 0; protected $trace = "";
     __construct($message = "", $code = 0, $previous = null)
-    getMessage(): string   getCode(): int   getPrevious(): ?Throwable
-    getFile(): string   getLine(): int   getTraceAsString(): string
+    final getMessage(): string   final getCode(): int   final getPrevious(): ?Throwable
+    final getFile(): string   final getLine(): int   final getTraceAsString(): string
     __toString(): string
 }</code></pre>
           <p>The other root of the hierarchy, for engine-level failures. It does NOT extend `Exception` — the two roots are disjoint, exactly as in PHP, so `catch (Exception)` never catches an `Error`. A zero divisor throws `DivisionByZeroError`, and a method call on a non-object throws `Error`. Reaching the top uncaught prints the reference's `Fatal error: Uncaught &lt;Class&gt;: &lt;message&gt; in &lt;file&gt;:&lt;line&gt;` block, stack trace and all, on stdout. DIVERGENCE: most other runtime failures — a bad standard-library argument, a call to an undefined function — still abort with a host-level `php: &lt;message&gt;` on stderr that no `catch` block can intercept.</p>

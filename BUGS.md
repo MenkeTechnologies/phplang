@@ -309,6 +309,7 @@ file's directory. The same value is what `get_include_path()` returns.
 | `goto end; …; end: echo "done";` | `done` | `Parse error: syntax error, unexpected identifier "end"` |
 | `iconv_strlen("héllo")` | `int(5)` | `Call to undefined function iconv_strlen()` |
 | `usort($x, ["C", "m"])` for a non-static `C::m` | `TypeError: usort(): Argument #2 ($callback) must be a valid callback, non-static method C::m() cannot be called statically` | the call succeeds |
+| `class A { final private function f() {} }` | `Warning: Private methods cannot be final as they are never overridden by other classes`, at compile time | no warning (the `final` binds nothing either way) |
 
 ## `...` unpacking: what is modelled and what is not
 

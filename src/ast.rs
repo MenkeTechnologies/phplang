@@ -750,6 +750,8 @@ pub struct PropDecl {
     ///
     /// [`PhpHost::readonly_write_error`]: crate::host::PhpHost::readonly_write_error
     pub readonly: bool,
+    /// Declared `final` (PHP 8.4): a subclass may not redeclare it.
+    pub is_final: bool,
     /// The line of its `$name`, which is where a redeclaration is reported.
     pub line: u32,
 }
@@ -801,6 +803,9 @@ pub struct ClassDecl {
     /// The declared visibility of each `private`/`protected` constant, by name.
     /// A constant absent from this list is `public`.
     pub const_vis: Vec<(String, Visibility)>,
+    /// The constants declared `final`, by name: no subclass or implementing
+    /// class may redefine them.
+    pub final_consts: Vec<String>,
     /// Property declarations, in source order (instance and static).
     pub props: Vec<PropDecl>,
     pub methods: Vec<Method>,

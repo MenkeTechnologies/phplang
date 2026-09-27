@@ -1816,14 +1816,15 @@ impl Parser {
 
     /// `class Name [extends Parent] [implements ...] { members }`. Members are
     /// consts, properties (with visibility/static/type modifiers), and methods.
-    /// A leading `abstract`/`final` class modifier is accepted but not enforced.
+    /// A leading `abstract`/`final` class modifier is recorded; `final` is
+    /// enforced when a subclass links against it.
     fn class_stmt(&mut self) -> Result<StmtKind, String> {
         let attributes = std::mem::take(&mut self.pending_attrs);
         let is_interface = self.at_kw("interface");
         let is_trait = self.at_kw("trait");
         let is_enum = self.at_kw("enum");
-        // `abstract` marks the class un-instantiable, `final` is recorded (not
-        // yet enforced on `extends`), and `readonly class C` (PHP 8.2) makes every declared
+        // `abstract` marks the class un-instantiable, `final` forbids a
+        // subclass, and `readonly class C` (PHP 8.2) makes every declared
         // property readonly. They may come in any order, each at most once.
         let (mut is_abstract, mut is_final, mut is_readonly_class) = (false, false, false);
         if !is_interface && !is_trait && !is_enum {
@@ -1956,6 +1957,7 @@ impl Parser {
         let mut consts = Vec::new();
         let mut const_lines = Vec::new();
         let mut const_vis = Vec::new();
+        let mut final_consts = Vec::new();
         let mut props = Vec::new();
         let mut methods = Vec::new();
         let mut uses = Vec::new();
@@ -2073,6 +2075,9 @@ impl Parser {
                     if visibility != Visibility::Public {
                         const_vis.push((cname.clone(), visibility));
                     }
+                    if m_final {
+                        final_consts.push(cname.clone());
+                    }
                     consts.push((cname, self.expression()?));
                     if !self.eat_punct(",") {
                         break;
@@ -2126,6 +2131,7 @@ impl Parser {
                         is_static,
                         visibility,
                         readonly,
+                        is_final: m_final,
                         line: prop_line,
                     });
                     if !self.eat_punct(",") {
@@ -2162,6 +2168,7 @@ impl Parser {
             consts,
             const_lines,
             const_vis,
+            final_consts,
             props,
             methods,
             attributes: Vec::new(),

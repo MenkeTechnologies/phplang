@@ -26,6 +26,34 @@ comment above it.
 
 ---
 
+## Round 16 — `final` enforced
+
+Measured under `PHP 8.5.11 (cli) (built: Sep 22 2026 13:32:06) (NTS)`; ini state
+and environment otherwise as recorded in the oracle table above. Every
+expectation below was byte-diffed against that binary (stdout, stderr and exit
+status).
+
+**`final` was parsed and ignored.** A `final` class could be extended and a
+`final` method overridden. The link-time checks of `zend_do_inheritance` are
+now made, in its order — a final parent class, then properties, constants and
+methods, each in the order the ancestor declared them — with the reference's
+messages: `Class B cannot extend final class A`, `Cannot override final
+property A::$p`, `B::X cannot override final constant A::X` (an interface's
+final constant included, however far up it was declared) and `Cannot override
+final method A::f()` (spelled as the overriding method spells it, and reported
+at that method's line). The nearest ancestor declaring a member decides, and
+is the class named. A final method taken from a trait belongs to the class
+that uses it; a private method's `final` binds only on the constructor.
+
+An early-bound class links before the file runs, so the fatal comes before any
+output; any other class links where its declaration runs, after whatever ran
+first and with the stack trace of the frame declaring it. The prelude's
+`Exception`/`Error` getters are now `final`, as the engine's are, so
+`class E extends Exception { function getMessage() {} }` is the reference's
+`Cannot override final method Exception::getMessage()`.
+
+---
+
 ## Round 15 — declaration-time diagnostics, `&` in array literals, `error_get_last`
 
 Measured under `PHP 8.5.11 (cli) (built: Sep 22 2026 13:32:06) (NTS)`; ini state

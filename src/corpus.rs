@@ -219,7 +219,7 @@ pub const CORPUS: &[Entry] = &[
         "class",
         "Keyword",
         "[abstract|final|readonly] class Name [extends Parent] [implements I, …] { members }",
-        "Declares a class: constants, properties, static properties, and methods. `abstract` marks the class un-instantiable; `readonly` makes every property it declares readonly; `final` is parsed and ignored.",
+        "Declares a class: constants, properties, static properties, and methods. `abstract` marks the class un-instantiable; `readonly` makes every property it declares readonly; `final` forbids a subclass (see `final`).",
         "class C { public $x = 1; } $o = new C; echo $o->x;   // => 1",
     ),
     (
@@ -317,8 +317,8 @@ pub const CORPUS: &[Entry] = &[
         "final",
         "Keyword",
         "final class C { … }   final function m() { … }",
-        "A repeated `final`, or `final` together with `abstract`, is the reference's compile-time `Fatal error`. Otherwise it is parsed and discarded on both classes and methods. DIVERGENCE: a `final` class can still be extended and a `final` method still overridden.",
-        "final class A {} class B extends A {} echo get_class(new B);   // => B   (PHP 8: fatal error)",
+        "A repeated `final`, or `final` together with `abstract`, is the reference's compile-time `Fatal error`. A `final` class cannot be extended, and a `final` method, constant or property cannot be redeclared by a subclass (or, for a constant, by an implementing class): each is the reference's `Fatal error` when the subclass links — before the program runs for an early-bound class, where its declaration runs otherwise — and an overriding method is reported at its own line. `final` on a trait method carries into the class that uses it. The engine's `Exception`/`Error` getters are final, as in PHP. DIVERGENCE: `final` on a private method is accepted without the reference's compile-time `Private methods cannot be final` warning.",
+        "final class A {} class B extends A {}\n// => Fatal error: Class B cannot extend final class A",
     ),
     (
         "var",
@@ -2183,14 +2183,14 @@ pub const CORPUS: &[Entry] = &[
     (
         "Exception",
         "Prelude class",
-        "class Exception {\n    protected $message = \"\"; protected $code = 0; protected $previous = null;\n    protected $file = \"\"; protected $line = 0; protected $trace = \"\";\n    __construct($message = \"\", $code = 0, $previous = null)\n    getMessage(): string   getCode(): int   getPrevious(): ?Throwable\n    getFile(): string   getLine(): int   getTraceAsString(): string\n    __toString(): string\n}",
+        "class Exception {\n    protected $message = \"\"; protected $code = 0; protected $previous = null;\n    protected $file = \"\"; protected $line = 0; protected $trace = \"\";\n    __construct($message = \"\", $code = 0, $previous = null)\n    final getMessage(): string   final getCode(): int   final getPrevious(): ?Throwable\n    final getFile(): string   final getLine(): int   final getTraceAsString(): string\n    __toString(): string\n}",
         "One of the two disjoint roots of the exception hierarchy. `catch (Throwable)` is special-cased in the host to match this root or `Error`. `file`, `line` and `trace` are recorded when the object is *constructed*, as the reference engine records them, so `getLine()` reports the `new` site even when the `throw` is on a later line. DIVERGENCE: `getTrace()` — the structured array form — is not declared; only the rendered `getTraceAsString()` is.",
         "try { throw new Exception(\"boom\", 7); }\ncatch (Exception $e) { echo $e->getMessage(), $e->getCode(); }   // => boom7",
     ),
     (
         "Error",
         "Prelude class",
-        "class Error {\n    protected $message = \"\"; protected $code = 0; protected $previous = null;\n    protected $file = \"\"; protected $line = 0; protected $trace = \"\";\n    __construct($message = \"\", $code = 0, $previous = null)\n    getMessage(): string   getCode(): int   getPrevious(): ?Throwable\n    getFile(): string   getLine(): int   getTraceAsString(): string\n    __toString(): string\n}",
+        "class Error {\n    protected $message = \"\"; protected $code = 0; protected $previous = null;\n    protected $file = \"\"; protected $line = 0; protected $trace = \"\";\n    __construct($message = \"\", $code = 0, $previous = null)\n    final getMessage(): string   final getCode(): int   final getPrevious(): ?Throwable\n    final getFile(): string   final getLine(): int   final getTraceAsString(): string\n    __toString(): string\n}",
         "The other root of the hierarchy, for engine-level failures. It does NOT extend `Exception` — the two roots are disjoint, exactly as in PHP, so `catch (Exception)` never catches an `Error`. A zero divisor throws `DivisionByZeroError`, and a method call on a non-object throws `Error`. Reaching the top uncaught prints the reference's `Fatal error: Uncaught <Class>: <message> in <file>:<line>` block, stack trace and all, on stdout. DIVERGENCE: most other runtime failures — a bad standard-library argument, a call to an undefined function — still abort with a host-level `php: <message>` on stderr that no `catch` block can intercept.",
         "try { throw new TypeError(\"t\"); }\ncatch (Exception $e) { echo \"E\"; } catch (Error $e) { echo \"R\"; }   // => R",
     ),

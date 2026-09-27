@@ -426,6 +426,11 @@ pub mod ops {
     /// `[key, name, namespace]` -> null. [`DECLARE_FN`] for a class, interface,
     /// trait or enum declared inside a block.
     pub const DECLARE_CLASS: u16 = 139;
+    /// `[class]` -> null. The `final` rules a class declared where it stands
+    /// must keep against what it inherits (see [`final_violation`]), checked
+    /// when the declaration RUNS: until then its parent may not be declared.
+    /// A broken rule stops the program like [`DECL_FATAL`].
+    pub const FINAL_CHECK: u16 = 140;
 }
 
 /// The capture name a `static` closure carries from its creation site.
@@ -647,6 +652,23 @@ pub struct ClassDef {
     /// Consulted to build the singleton case instances (`E::Case`, `E::cases()`,
     /// `E::from()`, `E::tryFrom()`).
     pub enum_cases: Vec<(String, Option<Chunk>)>,
+    /// Declared `final`: no class may extend it.
+    pub is_final: bool,
+    /// Methods THIS class (or a trait it uses) declares `final`, by lowercased
+    /// name. A `private` one is left out unless it is the constructor: the
+    /// reference never checks an override of a private method, since a
+    /// private method is not inherited.
+    pub final_methods: FxHashSet<String>,
+    /// Constants THIS class (or interface, or used trait) declares `final`.
+    pub final_consts: FxHashSet<String>,
+    /// Properties THIS class (or a used trait) declares `final`.
+    pub final_props: FxHashSet<String>,
+    /// Every method THIS class declares or takes from a trait, as
+    /// `(declared spelling, line of its declaration)`, in declaration order.
+    /// A broken `final` rule names the overriding method's spelling and is
+    /// reported at its line, and the reference checks the parent's methods in
+    /// the order the parent declared them.
+    pub method_sites: Vec<(String, u32)>,
 }
 
 /// One compiled `catch (T1 | T2 [$var]) { body }` clause of a `try`.
@@ -1727,6 +1749,26 @@ impl PhpHost {
             },
         );
         Ok(())
+    }
+
+    /// The `final` rule the class `class` breaks against the classes it
+    /// inherits from, if any — see [`final_violation`].
+    pub fn final_check(&self, class: &str) -> Option<(String, Option<u32>)> {
+        let def = self.classes.get(&class.to_ascii_lowercase())?;
+        final_violation(def, |n| self.classes.get(&n.to_ascii_lowercase()))
+    }
+
+    /// [`Self::final_check`] for `def` while it is still being compiled: it and
+    /// the types compiled alongside it are not in the class table yet, so
+    /// `local` is asked first.
+    pub fn final_check_with<'a>(
+        &'a self,
+        def: &ClassDef,
+        local: impl Fn(&str) -> Option<&'a ClassDef>,
+    ) -> Option<(String, Option<u32>)> {
+        final_violation(def, |n| {
+            local(n).or_else(|| self.classes.get(&n.to_ascii_lowercase()))
+        })
     }
 
     /// [`Self::declare_fn_at`] for a class compiled under `key`.
@@ -9903,6 +9945,121 @@ pub fn display_class(name: &str) -> &str {
         Some((head, _)) => head,
         None => name,
     }
+}
+
+/// The first `final` rule the class `def` breaks against what it inherits, as
+/// the reference reports it when it links the class: the message, plus the
+/// line to report it at when that is not the declaration's own (an override
+/// of a final method is reported at the overriding method). `find` resolves a
+/// class or interface name, either case, to its definition.
+///
+/// The reference's order is kept: a final parent class first, then the
+/// properties, the constants and the methods, each in the order the ancestor
+/// declared them. Only the NEAREST ancestor declaring a member decides
+/// whether it is final, which is also the class the message names.
+pub fn final_violation<'a>(
+    def: &ClassDef,
+    find: impl Fn(&str) -> Option<&'a ClassDef>,
+) -> Option<(String, Option<u32>)> {
+    // The parent chain, nearest first. A cycle cannot link, but is not this
+    // check's to report, so it only stops the walk.
+    let mut chain: Vec<&ClassDef> = Vec::new();
+    let mut next = def.parent.as_deref();
+    while let Some(p) = next {
+        let Some(d) = find(p) else { break };
+        if chain.iter().any(|c| std::ptr::eq(*c, d)) {
+            break;
+        }
+        chain.push(d);
+        next = d.parent.as_deref();
+    }
+    if let Some(parent) = chain.first() {
+        if parent.is_final {
+            return Some((
+                format!(
+                    "Class {} cannot extend final class {}",
+                    display_class(&def.name),
+                    parent.name
+                ),
+                None,
+            ));
+        }
+    }
+
+    let mut seen: FxHashSet<&str> = FxHashSet::default();
+    for anc in &chain {
+        let names = anc.prop_defaults.iter().chain(&anc.static_prop_defaults);
+        for (name, _) in names {
+            if seen.insert(name)
+                && anc.final_props.contains(name)
+                && def.prop_vis.contains_key(name)
+            {
+                return Some((
+                    format!("Cannot override final property {}::${name}", anc.name),
+                    None,
+                ));
+            }
+        }
+    }
+
+    // Constants come from interfaces as well: every interface the class or an
+    // ancestor implements, and every interface those extend.
+    let mut ifaces: Vec<&ClassDef> = Vec::new();
+    let mut pending: Vec<&str> = def
+        .interfaces
+        .iter()
+        .chain(chain.iter().flat_map(|c| &c.interfaces))
+        .map(String::as_str)
+        .collect();
+    let mut i = 0;
+    while i < pending.len() {
+        if let Some(d) = find(pending[i]) {
+            if !ifaces.iter().any(|x| std::ptr::eq(*x, d)) {
+                ifaces.push(d);
+                pending.extend(d.interfaces.iter().map(String::as_str));
+            }
+        }
+        i += 1;
+    }
+    seen.clear();
+    for anc in chain.iter().chain(&ifaces) {
+        for (name, _) in &anc.consts {
+            if seen.insert(name)
+                && anc.final_consts.contains(name)
+                && def.consts.iter().any(|(n, _)| n == name)
+            {
+                return Some((
+                    format!(
+                        "{}::{name} cannot override final constant {}::{name}",
+                        display_class(&def.name),
+                        anc.name
+                    ),
+                    None,
+                ));
+            }
+        }
+    }
+
+    let mut seen: FxHashSet<String> = FxHashSet::default();
+    for anc in &chain {
+        for (spelled, _) in &anc.method_sites {
+            let key = spelled.to_ascii_lowercase();
+            if !seen.insert(key.clone()) || !anc.final_methods.contains(&key) {
+                continue;
+            }
+            let own = def
+                .method_sites
+                .iter()
+                .find(|(n, _)| n.eq_ignore_ascii_case(spelled));
+            if let Some((own, line)) = own {
+                return Some((
+                    format!("Cannot override final method {}::{own}()", anc.name),
+                    Some(*line),
+                ));
+            }
+        }
+    }
+    None
 }
 
 /// The type name PHP prints in `Unsupported operand types: X op Y`.
