@@ -1270,6 +1270,7 @@ impl Parser {
             body,
             ret,
             by_ref_return,
+            namespace: self.magic.namespace.clone(),
         })
     }
 
@@ -1856,7 +1857,11 @@ impl Parser {
         );
         self.magic = saved;
         let decl = decl?;
-        Ok(StmtKind::Class(ClassDecl { attributes, ..decl }))
+        Ok(StmtKind::Class(ClassDecl {
+            attributes,
+            namespace: self.magic.namespace.clone(),
+            ..decl
+        }))
     }
 
     /// Everything of a class declaration after its name: the `extends` /
@@ -2071,6 +2076,7 @@ impl Parser {
             props,
             methods,
             attributes: Vec::new(),
+            namespace: String::new(),
         })
     }
 

@@ -530,6 +530,9 @@ pub enum StmtKind {
         /// `function &f()` — the function returns by reference, so `$r = &f()`
         /// aliases the storage its `return` names rather than copying its value.
         by_ref_return: bool,
+        /// The namespace the declaration was written in (`""` at global scope)
+        /// — see [`ClassDecl::namespace`] for why a flat resolver keeps it.
+        namespace: String,
     },
     /// `class Name [extends Parent] { ... }`.
     Class(ClassDecl),
@@ -799,6 +802,12 @@ pub struct ClassDecl {
     /// Only `AllowDynamicProperties` changes behaviour today; the rest are carried
     /// so the declaration parses and so reflection has something to report.
     pub attributes: Vec<String>,
+    /// The namespace the declaration was written in (`""` at global scope).
+    /// phplang resolves class names flat, so this is consulted only where the
+    /// reference's answer depends on it: two same-named declarations in
+    /// DIFFERENT namespaces are not a redeclaration, and a namespaced class may
+    /// share a built-in class's short name.
+    pub namespace: String,
 }
 
 /// One `A::m insteadof B, C;` conflict resolution inside a `use` block. Without

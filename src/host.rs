@@ -416,6 +416,16 @@ pub mod ops {
     pub const INCLUDE: u16 = 136;
     /// `[code]` -> value. `eval()`: compile and run a string in the current frame.
     pub const EVAL: u16 = 137;
+    /// `[key, name, namespace]` -> null. A function declared anywhere but a
+    /// file's top level (inside an `if`, a loop or another function's body):
+    /// the reference declares it when the statement RUNS, so until then the
+    /// name is undefined, and a second run is a redeclaration. The compiled
+    /// definition waits in the function table under `key`, which no PHP name
+    /// can spell, until this moves it to its real name.
+    pub const DECLARE_FN: u16 = 138;
+    /// `[key, name, namespace]` -> null. [`DECLARE_FN`] for a class, interface,
+    /// trait or enum declared inside a block.
+    pub const DECLARE_CLASS: u16 = 139;
 }
 
 /// The capture name a `static` closure carries from its creation site.
@@ -893,11 +903,28 @@ struct IncludeFrame {
     call_line: u32,
 }
 
+/// Where a user function or class was declared — what a redeclaration quotes
+/// as `(previously declared in <file>:<line>)`.
+#[derive(Debug, Clone)]
+pub struct DeclAt {
+    pub file: String,
+    pub line: u32,
+    /// The namespace it was declared in. phplang resolves names flat, so a
+    /// same-named declaration in ANOTHER namespace is not a redeclaration and
+    /// is not diagnosed as one.
+    pub namespace: String,
+}
+
 /// The PHP runtime state for one thread.
 pub struct PhpHost {
     objs: Vec<PhpObj>,
     scopes: Vec<Scope>,
     functions: FxHashMap<String, FuncDef>,
+    /// Declaration sites of the user functions, by lowercased name. A name
+    /// with no entry and a definition is not the program's own.
+    fn_sites: FxHashMap<String, DeclAt>,
+    /// Declaration sites of the user classes, by lowercased name.
+    class_sites: FxHashMap<String, DeclAt>,
     /// User-declared classes, keyed by lowercase class name.
     classes: FxHashMap<String, ClassDef>,
     /// When `Some`, `echo` appends here instead of writing to stdout (used by
@@ -1328,6 +1355,8 @@ impl PhpHost {
             // Start with the global scope already open.
             scopes: vec![Scope::default()],
             functions: FxHashMap::default(),
+            fn_sites: FxHashMap::default(),
+            class_sites: FxHashMap::default(),
             classes: FxHashMap::default(),
             capture: None,
             error: None,
@@ -1591,6 +1620,133 @@ impl PhpHost {
         for (name, def) in classes {
             self.classes.insert(name, def);
         }
+    }
+
+    /// Record where a loaded program's functions and classes were declared:
+    /// `(lowercased name, line, namespace)` each, all in `file`.
+    pub fn record_decl_sites(
+        &mut self,
+        file: &str,
+        fns: Vec<(String, u32, String)>,
+        classes: Vec<(String, u32, String)>,
+    ) {
+        let at = |line, namespace| DeclAt {
+            file: file.to_string(),
+            line,
+            namespace,
+        };
+        for (name, line, ns) in fns {
+            self.fn_sites.insert(name, at(line, ns));
+        }
+        for (name, line, ns) in classes {
+            self.class_sites.insert(name, at(line, ns));
+        }
+    }
+
+    /// The body of the reference's `Cannot redeclare function …` for declaring
+    /// `name` in namespace `ns`, or `None` when the name is free.
+    ///
+    /// A user function is quoted with the site it was declared at; a library
+    /// function — or one of the PHP-written prelude's — has none to quote. A
+    /// namespaced declaration never collides with a library function, which
+    /// lives in the global namespace.
+    pub fn fn_redeclare_msg(&self, name: &str, ns: &str) -> Option<String> {
+        let lname = name.to_ascii_lowercase();
+        match self.fn_sites.get(&lname) {
+            Some(at) if at.namespace == ns => Some(format!(
+                "Cannot redeclare function {name}() (previously declared in {}:{})",
+                at.file, at.line
+            )),
+            Some(_) => None,
+            None if ns.is_empty()
+                && (self.functions.contains_key(&lname)
+                    || crate::stdlib::callable::is_library_function(&lname)) =>
+            {
+                Some(format!("Cannot redeclare function {name}()"))
+            }
+            None => None,
+        }
+    }
+
+    /// The body of the reference's `Cannot redeclare <kind> <Name> …` for
+    /// declaring a class, interface, trait or enum called `name` in namespace
+    /// `ns`, or `None` when the name is free. The message names the type that
+    /// is ALREADY declared — its kind and its spelling — not the new one.
+    pub fn class_redeclare_msg(&self, name: &str, ns: &str) -> Option<String> {
+        let lname = name.to_ascii_lowercase();
+        if let Some(at) = self.class_sites.get(&lname) {
+            if at.namespace != ns {
+                return None;
+            }
+            let def = self.classes.get(&lname)?;
+            return Some(format!(
+                "Cannot redeclare {} {} (previously declared in {}:{})",
+                class_kind_word(def),
+                def.name,
+                at.file,
+                at.line
+            ));
+        }
+        if !ns.is_empty() {
+            return None;
+        }
+        if let Some(def) = self.classes.get(&lname) {
+            return Some(format!("Cannot redeclare {} {}", class_kind_word(def), def.name));
+        }
+        if let Some((spelled, kind)) = crate::prelude_type(&lname) {
+            return Some(format!("Cannot redeclare {kind} {spelled}"));
+        }
+        builtin_type(&lname).map(|(spelled, kind, ..)| {
+            format!("Cannot redeclare {} {spelled}", type_kind_word(*kind))
+        })
+    }
+
+    /// Declare a function whose definition was compiled under `key` (see
+    /// `ops::DECLARE_FN`) as `name`, at `line` of the running file. `Err` is the
+    /// redeclaration the reference refuses.
+    pub fn declare_fn_at(&mut self, key: &str, name: &str, ns: &str, line: u32) -> Result<(), String> {
+        if let Some(msg) = self.fn_redeclare_msg(name, ns) {
+            return Err(msg);
+        }
+        let lname = name.to_ascii_lowercase();
+        if let Some(def) = self.functions.remove(key) {
+            self.functions.insert(lname.clone(), def);
+        }
+        let file = self.current_file().to_string();
+        self.fn_sites.insert(
+            lname,
+            DeclAt {
+                file,
+                line,
+                namespace: ns.to_string(),
+            },
+        );
+        Ok(())
+    }
+
+    /// [`Self::declare_fn_at`] for a class compiled under `key`.
+    pub fn declare_class_at(&mut self, key: &str, ns: &str, line: u32) -> Result<(), String> {
+        let Some(def) = self.classes.get(key) else {
+            return Ok(());
+        };
+        let name = def.name.clone();
+        if let Some(msg) = self.class_redeclare_msg(&name, ns) {
+            return Err(msg);
+        }
+        let lname = name.to_ascii_lowercase();
+        if let Some(def) = self.classes.remove(key) {
+            self.classes.insert(lname.clone(), def);
+        }
+        let file = self.current_file().to_string();
+        self.class_sites.insert(
+            lname,
+            DeclAt {
+                file,
+                line,
+                namespace: ns.to_string(),
+            },
+        );
+        Ok(())
     }
 
     /// Install a program's compiled `try`/`catch`/`finally` table. The `RUN_TRY`
@@ -9919,7 +10075,13 @@ fn run_loaded(src: &str, file: String, label: String, eval: bool) -> Result<Valu
     let compiled = crate::parser::parse_meta(src)
         .map_err(|e| (e.severity, e.message))
         .and_then(|(stmts, _meta)| {
-            crate::compiler::compile_nested(&stmts, counters, &file).map_err(|m| ("Fatal error", m))
+            crate::compiler::compile_nested(&stmts, counters, &file).map_err(|m| {
+                let m = match m.strip_prefix(crate::compiler::COMPILE_FATAL) {
+                    Some(body) => body.to_string(),
+                    None => m,
+                };
+                ("Fatal error", m)
+            })
         });
     with_host(|h| h.script_name = saved);
     let prog = match compiled {
@@ -9940,6 +10102,8 @@ fn run_loaded(src: &str, file: String, label: String, eval: bool) -> Result<Valu
         try_defs,
         diags,
         counters,
+        fn_sites,
+        class_sites,
         ..
     } = prog;
     let arc: std::sync::Arc<str> = std::sync::Arc::from(file.as_str());
@@ -9948,6 +10112,7 @@ fn run_loaded(src: &str, file: String, label: String, eval: bool) -> Result<Valu
         h.load_program(functions);
         h.load_classes(classes);
         h.append_try_defs(try_defs);
+        h.record_decl_sites(&file, fn_sites, class_sites);
         let call_line = h.cur_frame_line();
         h.includes.push(IncludeFrame {
             depth: h.scopes.len() - 1,
@@ -10010,5 +10175,28 @@ impl PhpHost {
             .filter(|(_, d)| d.is_trait)
             .map(|(k, d)| (k.clone(), d.clone()))
             .collect()
+    }
+}
+
+/// The word a diagnostic names a declared type's kind with.
+fn class_kind_word(def: &ClassDef) -> &'static str {
+    if def.is_trait {
+        "trait"
+    } else if def.is_interface {
+        "interface"
+    } else if def.is_enum {
+        "enum"
+    } else {
+        "class"
+    }
+}
+
+/// [`class_kind_word`] for a built-in type.
+fn type_kind_word(kind: TypeKind) -> &'static str {
+    match kind {
+        TypeKind::Class => "class",
+        TypeKind::Interface => "interface",
+        TypeKind::Trait => "trait",
+        TypeKind::Enum => "enum",
     }
 }

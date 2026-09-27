@@ -24,6 +24,35 @@ enum LinkError {
     Throw(String),
 }
 
+/// The marker a compile-time `Fatal error` raised by the COMPILER carries at the
+/// head of its `Err`, so the entry points can display it in PHP's shape (the
+/// parser marks its own the same way). A control character, so no message text
+/// can forge one.
+pub const COMPILE_FATAL: char = '\u{1}';
+
+/// Where a type this compilation declares was declared, as a redeclaration
+/// quotes it.
+#[derive(Clone)]
+struct ClassSite {
+    kind: &'static str,
+    name: String,
+    line: u32,
+    namespace: String,
+}
+
+/// The word a redeclaration names a declaration's kind with.
+fn decl_kind_word(d: &ClassDecl) -> &'static str {
+    if d.is_trait {
+        "trait"
+    } else if d.is_interface {
+        "interface"
+    } else if d.is_enum {
+        "enum"
+    } else {
+        "class"
+    }
+}
+
 /// The full output of compiling a program.
 pub struct Program {
     pub main: Chunk,
@@ -46,6 +75,11 @@ pub struct Program {
     pub diags: Vec<CompileDiag>,
     /// Where this compilation's counters stopped; see [`Counters`].
     pub counters: Counters,
+    /// `(lowercased name, line, namespace)` of every function this program
+    /// declares at its top level — the site a later redeclaration quotes.
+    pub fn_sites: Vec<(String, u32, String)>,
+    /// The same for the types it declares at its top level.
+    pub class_sites: Vec<(String, u32, String)>,
 }
 
 /// The per-compilation counters that mint names and ids — temporaries,
@@ -402,12 +436,40 @@ pub struct Compiler {
     /// `++` may be lowered as `+ 1` on the native `Add` rather than through the
     /// host step.
     fnumeric: FxHashSet<String>,
+    /// Set for the one statement about to be lowered when it sits at the file's
+    /// top level (directly, or in a plain `{ }` or `namespace { }` block), and
+    /// taken by `compile_stmt` on entry. A function or type declared there is
+    /// bound before the program runs; one declared anywhere else is bound when
+    /// its statement runs (`ops::DECLARE_FN`, `ops::DECLARE_CLASS`).
+    top_decl: bool,
+    /// The top-level functions declared so far: lowercased name → (line,
+    /// namespace).
+    fn_decls: FxHashMap<String, (u32, String)>,
+    /// The top-level types bound so far, in the order the reference binds them.
+    class_decls: FxHashMap<String, ClassSite>,
+    /// The top-level type declarations (by address) the reference binds EARLY,
+    /// at compile time, rather than where they stand — see [`Compiler::early_bind`].
+    early: FxHashSet<usize>,
+    /// Compiling the PHP-written prelude, whose declarations ARE the built-ins
+    /// a user declaration is checked against, so it is not checked itself.
+    prelude: bool,
 }
 
 /// Compile a parsed program. `debug` enables per-statement DAP line markers.
 pub fn compile(stmts: &[Stmt], debug: bool) -> Result<Program, String> {
+    compile_program(stmts, debug, false)
+}
+
+/// Compile the PHP-written prelude. Its declarations are what a program's own
+/// are checked against, so they are not checked themselves.
+pub fn compile_prelude(stmts: &[Stmt]) -> Result<Program, String> {
+    compile_program(stmts, false, true)
+}
+
+fn compile_program(stmts: &[Stmt], debug: bool, prelude: bool) -> Result<Program, String> {
     let mut c = Compiler {
         debug,
+        prelude,
         ..Compiler::default()
     };
     // Pre-pass: record by-reference parameter positions of every function so a
@@ -431,7 +493,10 @@ pub fn compile(stmts: &[Stmt], debug: bool) -> Result<Program, String> {
     c.compile_top_level(&mut b, stmts)?;
     let main_locals = c.leave_scope(saved);
     let counters = c.counters();
+    let (fn_sites, class_sites) = c.decl_sites();
     Ok(Program {
+        fn_sites,
+        class_sites,
         main: b.build(),
         main_locals,
         functions: c.functions,
@@ -470,7 +535,10 @@ pub fn compile_nested(stmts: &[Stmt], start: Counters, source: &str) -> Result<P
     c.compile_top_level(&mut b, stmts)?;
     c.leave_scope(saved);
     let counters = c.counters();
+    let (fn_sites, class_sites) = c.decl_sites();
     let mut prog = Program {
+        fn_sites,
+        class_sites,
         main: b.build(),
         main_locals: Vec::new(),
         functions: c.functions,
@@ -1001,10 +1069,12 @@ impl Compiler {
     /// early-bound, even when those were declared above it, and is declared
     /// where it stands, as is everything else.
     fn compile_top_level(&mut self, b: &mut ChunkBuilder, stmts: &[Stmt]) -> Result<(), String> {
+        self.early_bind(stmts);
         let mut hoisted: FxHashSet<usize> = FxHashSet::default();
         for (i, s) in stmts.iter().enumerate() {
             if let StmtKind::Class(d) = &s.kind {
                 if d.is_trait && d.uses.is_empty() {
+                    self.top_decl = true;
                     self.compile_stmt(b, s)?;
                     hoisted.insert(i);
                 }
@@ -1012,10 +1082,150 @@ impl Compiler {
         }
         for (i, s) in stmts.iter().enumerate() {
             if !hoisted.contains(&i) {
+                self.top_decl = true;
                 self.compile_stmt(b, s)?;
             }
         }
         Ok(())
+    }
+
+    /// The reference's EARLY binding: before the file runs, each top-level type
+    /// that implements no interface, uses no trait and is not an enum is
+    /// entered into the class table in source order — provided its parent (if
+    /// any) is already there and its own name is not. Every other top-level
+    /// type is declared where it stands, and it is THERE that a clash with a
+    /// type bound earlier is reported. That is why, in
+    /// `class B extends A {} class A {} class B {}`, the fatal names the SECOND
+    /// `B` as the one previously declared: it was bound first.
+    ///
+    /// Only the order matters to this engine, which loads every type before
+    /// the program runs whichever way the reference binds it; what the
+    /// simulation decides is which declaration a redeclaration is reported at.
+    fn early_bind(&mut self, stmts: &[Stmt]) {
+        if self.prelude {
+            return;
+        }
+        for s in stmts {
+            match &s.kind {
+                StmtKind::Block(body) => self.early_bind(body),
+                StmtKind::Class(d) if d.implements.is_empty() && d.uses.is_empty() && !d.is_enum => {
+                    let linked = match &d.parent {
+                        None => true,
+                        Some(p) => {
+                            let lp = p.to_ascii_lowercase();
+                            self.class_decls.contains_key(&lp)
+                                || host::with_host(|h| h.class_exists(&lp))
+                                || crate::prelude_type(&lp).is_some()
+                        }
+                    };
+                    if linked && self.class_redeclare_msg(d).is_none() {
+                        self.bind_class(d, s.line);
+                        self.early.insert(s as *const Stmt as usize);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Enter a top-level type into [`Compiler::class_decls`].
+    fn bind_class(&mut self, d: &ClassDecl, line: u32) {
+        self.class_decls.insert(
+            d.name.to_ascii_lowercase(),
+            ClassSite {
+                kind: decl_kind_word(d),
+                name: d.name.clone(),
+                line,
+                namespace: d.namespace.clone(),
+            },
+        );
+    }
+
+    /// The reference's `Cannot redeclare <kind> <Name> …` for declaring `d`
+    /// at the top level now, or `None` when its name is free. It names the
+    /// type ALREADY declared, which is not necessarily spelled like `d`.
+    fn class_redeclare_msg(&self, d: &ClassDecl) -> Option<String> {
+        if self.prelude {
+            return None;
+        }
+        match self.class_decls.get(&d.name.to_ascii_lowercase()) {
+            Some(old) if old.namespace == d.namespace => {
+                let file = host::with_host(|h| h.script_name().to_string());
+                Some(format!(
+                    "Cannot redeclare {} {} (previously declared in {file}:{})",
+                    old.kind, old.name, old.line
+                ))
+            }
+            Some(_) => None,
+            None => host::with_host(|h| h.class_redeclare_msg(&d.name, &d.namespace)),
+        }
+    }
+
+    /// The reference's `Cannot redeclare function …` for declaring `name` at
+    /// the top level, or `None` when it is free. The reference raises it while
+    /// COMPILING — the file prints nothing — because a top-level function is
+    /// entered into the function table before the file runs.
+    fn fn_redeclare_msg(&self, name: &str, ns: &str) -> Option<String> {
+        if self.prelude {
+            return None;
+        }
+        match self.fn_decls.get(&name.to_ascii_lowercase()) {
+            Some((line, ns0)) if ns0 == ns => {
+                let file = host::with_host(|h| h.script_name().to_string());
+                Some(format!(
+                    "Cannot redeclare function {name}() (previously declared in {file}:{line})"
+                ))
+            }
+            Some(_) => None,
+            None => host::with_host(|h| h.fn_redeclare_msg(name, ns)),
+        }
+    }
+
+    /// A compile-time `Fatal error` at `line`, marked with [`COMPILE_FATAL`].
+    fn compile_fatal(&self, line: u32, msg: &str) -> String {
+        let file = host::with_host(|h| h.script_name().to_string());
+        format!("{COMPILE_FATAL}{msg} in {file} on line {line}\nStack trace:\n#0 {{main}}")
+    }
+
+    /// The declaration sites this compilation's top level recorded, for
+    /// [`Program::fn_sites`] and [`Program::class_sites`].
+    #[allow(clippy::type_complexity)]
+    fn decl_sites(&self) -> (Vec<(String, u32, String)>, Vec<(String, u32, String)>) {
+        let fns = self
+            .fn_decls
+            .iter()
+            .map(|(n, (line, ns))| (n.clone(), *line, ns.clone()))
+            .collect();
+        let classes = self
+            .class_decls
+            .iter()
+            .map(|(n, s)| (n.clone(), s.line, s.namespace.clone()))
+            .collect();
+        (fns, classes)
+    }
+
+    /// Lower a declaration that is NOT at the top level: its definition was
+    /// just pushed under its own name as the last entry of `table`; move it to
+    /// a key no PHP name can spell and emit the `op` that binds it when the
+    /// statement runs.
+    fn defer_declaration<T>(
+        &mut self,
+        b: &mut ChunkBuilder,
+        table: fn(&mut Self) -> &mut Vec<(String, T)>,
+        op: u16,
+        operands: &[String],
+        line: u32,
+    ) {
+        let key = self.tmp_name("decl");
+        if let Some(last) = table(self).last_mut() {
+            last.0 = key.clone();
+        }
+        for v in std::iter::once(&key).chain(operands) {
+            let idx = b.add_constant(Value::str(v.clone()));
+            b.emit(Op::LoadConst(idx), line);
+        }
+        b.emit(Op::CallBuiltin(op, 1 + operands.len() as u8), line);
+        b.emit(Op::Pop, line);
     }
 
     fn compile_seq(&mut self, b: &mut ChunkBuilder, body: &[Stmt]) -> Result<(), String> {
@@ -1026,6 +1236,7 @@ impl Compiler {
     }
 
     fn compile_stmt(&mut self, b: &mut ChunkBuilder, s: &Stmt) -> Result<(), String> {
+        let top = std::mem::take(&mut self.top_decl);
         // Under `--dap` each statement is preceded by a `DBG_LINE` marker so the
         // debugger can stop on it; the builtin returns Undef, popped immediately.
         if self.debug && s.line != 0 {
@@ -1057,6 +1268,14 @@ impl Compiler {
             StmtKind::Expr(e) => {
                 self.compile_expr(b, e)?;
                 b.emit(Op::Pop, line);
+            }
+            // A plain `{ }` or `namespace { }` block at the top level keeps its
+            // statements at the top level.
+            StmtKind::Block(body) if top => {
+                for s in body {
+                    self.top_decl = true;
+                    self.compile_stmt(b, s)?;
+                }
             }
             StmtKind::Block(body) => self.compile_seq(b, body)?,
             StmtKind::Global(names) => {
@@ -1165,7 +1384,15 @@ impl Compiler {
                 body,
                 ret,
                 by_ref_return,
+                namespace,
             } => {
+                if top {
+                    if let Some(msg) = self.fn_redeclare_msg(name, namespace) {
+                        return Err(self.compile_fatal(line, &msg));
+                    }
+                    self.fn_decls
+                        .insert(name.to_ascii_lowercase(), (line, namespace.clone()));
+                }
                 // Each default-value expression is lowered to its own tiny chunk,
                 // run in the callee frame when the argument is omitted (host).
                 let cparams = self.compile_params(params)?;
@@ -1203,8 +1430,48 @@ impl Compiler {
                         closure_site: None,
                     },
                 ));
+                if !top {
+                    self.defer_declaration(
+                        b,
+                        |c| &mut c.functions,
+                        ops::DECLARE_FN,
+                        &[name.clone(), namespace.clone()],
+                        line,
+                    );
+                }
             }
-            StmtKind::Class(decl) => self.compile_class(b, decl)?,
+            StmtKind::Class(decl) if top => {
+                if !self.early.contains(&(s as *const Stmt as usize)) {
+                    // Declared where it stands, so a clash with a type bound
+                    // before it is reported here, after whatever ran first.
+                    if let Some(msg) = self.class_redeclare_msg(decl) {
+                        let idx = b.add_constant(Value::str(msg));
+                        b.emit(Op::LoadConst(idx), line);
+                        b.emit(Op::CallBuiltin(ops::DECL_FATAL, 1), line);
+                        b.emit(Op::Pop, line);
+                        return Ok(());
+                    }
+                    if !self.prelude {
+                        self.bind_class(decl, line);
+                    }
+                }
+                self.compile_class(b, decl)?;
+            }
+            StmtKind::Class(decl) => {
+                let before = self.classes.len();
+                self.compile_class(b, decl)?;
+                // Nothing was registered when the declaration cannot link; the
+                // fatal that says so is already in the stream.
+                if self.classes.len() > before {
+                    self.defer_declaration(
+                        b,
+                        |c| &mut c.classes,
+                        ops::DECLARE_CLASS,
+                        &[decl.namespace.clone()],
+                        line,
+                    );
+                }
+            }
             StmtKind::If {
                 cond,
                 then,
@@ -2210,7 +2477,9 @@ impl Compiler {
         self.classes
             .iter()
             .chain(self.known_traits.iter())
-            .find(|(n, _)| *n == key)
+            // A type declared inside a block waits under a key of its own
+            // until it runs, so it is found by its declared name.
+            .find(|(n, d)| *n == key || d.name.eq_ignore_ascii_case(name))
             .map(|(_, d)| d)
     }
 

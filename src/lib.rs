@@ -46,6 +46,9 @@ pub fn compile_debug(src: &str) -> Result<compiler::Program, String> {
 /// arguments, so a program compiled through the library API would otherwise run in
 /// coercive mode however it was written.
 fn compile_with_meta(src: &str, debug: bool) -> Result<compiler::Program, String> {
+    // A declaration is checked against the prelude's types, which are only
+    // known once the prelude has compiled.
+    prelude_defs();
     let (stmts, meta) = parser::parse_meta(src).map_err(|e| e.message)?;
     host::with_host(|h| {
         for (line, msg) in &meta.declare_warnings {
@@ -424,7 +427,7 @@ fn prelude_defs() -> &'static PreludeDefs {
         // `declare(strict_types=1)` had just set. The prelude declares nothing of
         // the sort, so it has no facts of its own to apply.
         let stmts = parser::parse(&src).expect("prelude parses");
-        let prog = compiler::compile(&stmts, false).expect("prelude compiles");
+        let prog = compiler::compile_prelude(&stmts).expect("prelude compiles");
         let mut functions = prog.functions;
         // The forwarder is compiled from its own snippet — the closure literal
         // is the only definition it produces — and re-keyed to a name of its
@@ -437,8 +440,39 @@ fn prelude_defs() -> &'static PreludeDefs {
             .next()
             .expect("the forwarder snippet defines one closure");
         functions.push((FROM_CALLABLE_FORWARDER.to_string(), def));
+        let types = prog
+            .classes
+            .iter()
+            .map(|(lname, def)| {
+                let kind = if def.is_trait {
+                    "trait"
+                } else if def.is_interface {
+                    "interface"
+                } else if def.is_enum {
+                    "enum"
+                } else {
+                    "class"
+                };
+                (lname.clone(), (def.name.clone(), kind))
+            })
+            .collect();
+        let _ = PRELUDE_TYPES.set(types);
         (functions, prog.classes)
     })
+}
+
+/// The prelude's types by lowercased name: `(declared spelling, kind word)`.
+/// Filled once the prelude has compiled, so it is empty WHILE the prelude
+/// compiles — which is what keeps the prelude from colliding with itself.
+static PRELUDE_TYPES: std::sync::OnceLock<rustc_hash::FxHashMap<String, (String, &'static str)>> =
+    std::sync::OnceLock::new();
+
+/// A type the PHP-written prelude declares, as a redeclaration names it:
+/// `(declared spelling, kind word)`. Built-in to a PHP program, so a user
+/// declaration of the same name is refused as it would be for any other
+/// built-in type.
+pub(crate) fn prelude_type(lname: &str) -> Option<(String, &'static str)> {
+    PRELUDE_TYPES.get()?.get(lname).cloned()
 }
 
 /// Merge an already-compiled program onto the current host (install the exception
@@ -453,6 +487,8 @@ pub fn load_merged(prog: compiler::Program) -> fusevm::Chunk {
         try_defs,
         diags: _,
         counters,
+        fn_sites,
+        class_sites,
     } = prog;
     let (prelude_fns, prelude_classes) = prelude_defs();
     host::with_host(|h| {
@@ -462,6 +498,8 @@ pub fn load_merged(prog: compiler::Program) -> fusevm::Chunk {
         h.load_program(functions);
         h.load_classes(classes);
         h.load_try_defs(try_defs);
+        let file = h.script_name().to_string();
+        h.record_decl_sites(&file, fn_sites, class_sites);
         // A later `include` or `eval` continues this program's numbering.
         h.set_compile_counters(counters);
         // Reserve the global frame's slots before the chunk that numbered them
@@ -513,7 +551,15 @@ fn compile_cli(src: &str) -> Result<compiler::Program, String> {
         host::with_host(|h| h.fatal(e.severity, &e.message));
         return Err(e.message);
     }
-    compile(src)
+    compile(src).map_err(|e| match e.strip_prefix(compiler::COMPILE_FATAL) {
+        // A compile-time `Fatal error` the compiler raised (a redeclaration):
+        // shown in PHP's shape, exactly as the parser's are.
+        Some(body) => {
+            host::with_host(|h| h.fatal("Fatal error", body));
+            body.to_string()
+        }
+        None => e,
+    })
 }
 
 /// [`eval_str`] for the CLI: identical, except a syntax error is displayed in

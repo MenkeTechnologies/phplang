@@ -78,6 +78,8 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::PROP_ISSET, b_prop_isset);
     vm.register_builtin(ops::INDEX_ISSET, b_index_isset);
     vm.register_builtin(ops::DECL_FATAL, b_decl_fatal);
+    vm.register_builtin(ops::DECLARE_FN, b_declare_fn);
+    vm.register_builtin(ops::DECLARE_CLASS, b_declare_class);
     vm.register_builtin(ops::DYN_CLASS, b_dyn_class);
     vm.register_builtin(ops::DYN_CLASS_CONST, b_dyn_class_const);
     vm.register_builtin(ops::CLONE, b_clone);
@@ -1922,6 +1924,30 @@ fn b_const_decl(vm: &mut VM, _: u8) -> Value {
     Value::Undef
 }
 
+/// `ops::DECLARE_FN`: bind a function declared inside a block, now that its
+/// statement runs.
+fn b_declare_fn(vm: &mut VM, _: u8) -> Value {
+    let ns = with_host(|h| h.to_str(&vm.pop()));
+    let name = with_host(|h| h.to_str(&vm.pop()));
+    let key = with_host(|h| h.to_str(&vm.pop()));
+    let line = cur_op_line(vm);
+    match with_host(|h| h.declare_fn_at(&key, &name, &ns, line)) {
+        Ok(()) => Value::Undef,
+        Err(msg) => runtime_decl_fatal(vm, &msg),
+    }
+}
+
+/// `ops::DECLARE_CLASS`: [`b_declare_fn`] for a type.
+fn b_declare_class(vm: &mut VM, _: u8) -> Value {
+    let ns = with_host(|h| h.to_str(&vm.pop()));
+    let key = with_host(|h| h.to_str(&vm.pop()));
+    let line = cur_op_line(vm);
+    match with_host(|h| h.declare_class_at(&key, &ns, line)) {
+        Ok(()) => Value::Undef,
+        Err(msg) => runtime_decl_fatal(vm, &msg),
+    }
+}
+
 /// A declaration the reference refuses to link — see `ops::DECL_FATAL`.
 ///
 /// Displayed like an uncaught error (message, then a stack trace) but *not*
@@ -1929,6 +1955,12 @@ fn b_const_decl(vm: &mut VM, _: u8) -> Value {
 /// can see one and the program always stops here.
 fn b_decl_fatal(vm: &mut VM, _: u8) -> Value {
     let msg = with_host(|h| h.to_str(&vm.pop()));
+    runtime_decl_fatal(vm, &msg)
+}
+
+/// Display `msg` as the declaration fatal [`b_decl_fatal`] describes, at the
+/// running op's line, and stop the program.
+fn runtime_decl_fatal(vm: &mut VM, msg: &str) -> Value {
     let line = cur_op_line(vm);
     let body = with_host(|h| {
         let trace = h.backtrace();

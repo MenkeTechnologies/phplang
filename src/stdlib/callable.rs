@@ -67,17 +67,26 @@ fn invoke_callable(callee: Value, args: Vec<Value>) -> Result<Value, String> {
     call_value(callee, args)
 }
 
+/// Implemented and dispatchable, but the corpus entry for each says in so many
+/// words that reference PHP has no such function. A PHP program must not see
+/// them, so `function_exists`/`is_callable` deny them exactly as the reference
+/// does — while `dispatches` still lets the engine call them.
+const NOT_IN_PHP: &[&str] = &["__cast_array", "__cast_object", "gmp_pow2"];
+
 /// Whether a bare function name resolves — a user-defined function or a builtin
 /// this engine implements. Same authority as `function_exists`, so the two can
 /// never disagree about a name; see [`known_builtins`].
 pub(crate) fn function_resolves(name: &str) -> bool {
     let lname = name.to_ascii_lowercase();
-    // Implemented and dispatchable, but the corpus entry for each says in so
-    // many words that reference PHP has no such function. A PHP program must not
-    // see them, so `function_exists`/`is_callable` deny them exactly as the
-    // reference does — while `dispatches` still lets the engine call them.
-    const NOT_IN_PHP: &[&str] = &["__cast_array", "__cast_object", "gmp_pow2"];
     !NOT_IN_PHP.contains(&lname.as_str()) && dispatches(&lname)
+}
+
+/// Whether `name` is one of the reference's LIBRARY functions — built in, not
+/// declared by the program — which a user declaration of the same name in the
+/// global namespace collides with.
+pub(crate) fn is_library_function(name: &str) -> bool {
+    let lname = name.to_ascii_lowercase();
+    !NOT_IN_PHP.contains(&lname.as_str()) && known_builtins().contains(lname.as_str())
 }
 
 /// Whether a name reaches an implementation AT ALL — a user function or any
