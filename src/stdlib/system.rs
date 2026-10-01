@@ -178,6 +178,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         // the PREVIOUS one. Passing null (or nothing) only reads — the two are
         // indistinguishable here because a missing argument arrives as `Undef`,
         // which is also how an explicit `null` arrives, and PHP treats them alike.
+        "setlocale" => php_setlocale(args),
         "error_get_last" => with_host(|h| h.error_get_last()),
         "error_clear_last" => {
             with_host(|h| h.error_clear_last());
@@ -338,5 +339,82 @@ fn php_uname(mode: &str) -> String {
         'v' => String::new(),
         'm' => machine.to_string(),
         _ => format!("{os} {node} {machine}"),
+    }
+}
+
+/// `setlocale(int $category, string|array|null $locales, ...$rest)` — a port of
+/// `PHP_FUNCTION(setlocale)` (`ext/standard/string.c`): each candidate in turn,
+/// an array's elements in order, is handed to the C library's `setlocale` until
+/// one is accepted, whose name is returned; none accepted is `false`. `"0"` asks
+/// for the current setting without changing it, and `null` or `""` takes the
+/// locale from the environment. The categories are the C library's own values,
+/// so the answer is the platform's, exactly as the reference's is.
+fn php_setlocale(args: &[Value]) -> Value {
+    let cat = int_arg(args, 0) as libc::c_int;
+    let mut candidates: Vec<Value> = Vec::new();
+    for a in args.iter().skip(1) {
+        match with_host(|h| h.array_pairs(a)) {
+            Some(pairs) => candidates.extend(pairs.into_iter().map(|(_, v)| v)),
+            None => candidates.push(a.clone()),
+        }
+    }
+    for c in candidates {
+        let loc = with_host(|h| h.to_str(&c));
+        if loc.len() >= 255 {
+            with_host(|h| h.warn("setlocale(): Specified locale name is too long"));
+            continue;
+        }
+        if let Some(name) = c_setlocale(cat, (loc != "0").then_some(loc.as_str())) {
+            return Value::str(name);
+        }
+    }
+    Value::bool(false)
+}
+
+/// The C library's `setlocale(cat, loc)`, `None` for `loc` being a query.
+fn c_setlocale(cat: libc::c_int, loc: Option<&str>) -> Option<String> {
+    let owned = match loc {
+        Some(s) => Some(std::ffi::CString::new(s).ok()?),
+        None => None,
+    };
+    let ptr = owned.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
+    // SAFETY: `ptr` is null or a NUL-terminated string that outlives the call;
+    // the returned pointer is read immediately, before any other locale call.
+    let out = unsafe { libc::setlocale(cat, ptr) };
+    if out.is_null() {
+        return None;
+    }
+    // SAFETY: a non-null return is a NUL-terminated string owned by the C library.
+    Some(
+        unsafe { std::ffi::CStr::from_ptr(out) }
+            .to_string_lossy()
+            .into_owned(),
+    )
+}
+
+/// `zend_reset_lc_ctype_locale`: the reference starts every request with
+/// `LC_CTYPE` set to `C.UTF-8` (plain `C` where that does not exist), which is
+/// what `setlocale(LC_ALL, "0")` reports before a script changes anything.
+pub fn reset_lc_ctype() {
+    if c_setlocale(libc::LC_CTYPE, Some("C.UTF-8")).is_none() {
+        c_setlocale(libc::LC_CTYPE, Some("C"));
+    }
+}
+
+/// The current `LC_NUMERIC` decimal point — `LCONV_DECIMAL_POINT`, the first
+/// byte of `localeconv()->decimal_point` — which `printf`'s `%f`, `%g` and `%G`
+/// use and every other conversion does not.
+pub fn locale_decimal_point() -> char {
+    // SAFETY: `localeconv` returns a pointer to a static struct owned by the C
+    // library; its `decimal_point` is a NUL-terminated string, read at once.
+    unsafe {
+        let lc = libc::localeconv();
+        if lc.is_null() || (*lc).decimal_point.is_null() {
+            return '.';
+        }
+        match *(*lc).decimal_point as u8 {
+            0 => '.',
+            b => char::from(b),
+        }
     }
 }

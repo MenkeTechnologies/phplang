@@ -67,3 +67,39 @@ fn wordwrap_cut_and_wrap() {
         "The quick\nbrown fox"
     );
 }
+
+/// `%f`, `%g` and `%G` print the `LC_NUMERIC` decimal point; `%F`, `%e` and `%h`
+/// never do. Run as a subprocess, since `setlocale` changes the whole process,
+/// and skipped on a system with no German locale installed.
+#[test]
+fn sprintf_float_conversions_follow_lc_numeric() {
+    let src = r#"if (setlocale(LC_NUMERIC, "de_DE", "de_DE.UTF-8", "de_DE.utf8") === false) { echo "skip"; return; }
+printf("%f|%F|%e|%g|%h|%.3f|%10.2f", 1.5, 1.5, 1.5, 1.5, 1.5, -2.25, 3.14159);"#;
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_php"))
+        .args(["-r", src])
+        .env("LC_ALL", "C")
+        .output()
+        .expect("spawn php");
+    let out = String::from_utf8_lossy(&out.stdout);
+    if out == "skip" {
+        return;
+    }
+    assert_eq!(
+        out,
+        "1,500000|1.500000|1.500000e+0|1,5|1.5|-2,250|      3,14"
+    );
+}
+
+#[test]
+fn sprintf_non_finite_and_negative_zero() {
+    // A non-finite value is printed bare: no width, no padding, no sign flag.
+    assert_eq!(
+        run(r#"<?php echo sprintf("[%10.1f][%-6e][%+g][%05F]", INF, -INF, NAN, INF);"#),
+        "[INF][-INF][NaN][INF]"
+    );
+    // -0.0 is unsigned under %f/%e and keeps its sign under %g; + applies to e/g.
+    assert_eq!(
+        run(r#"<?php echo sprintf("%f|%e|%g|%+f|%+.1e|%+g", -0.0, -0.0, -0.0, -0.0, 1.5, 2.5);"#),
+        "0.000000|0.000000e+0|-0|+0.000000|+1.5e+0|+2.5"
+    );
+}

@@ -6278,6 +6278,14 @@ fn predefined_constants() -> FxHashMap<String, Value> {
     si("EXTR_PREFIX_IF_EXISTS", 5);
     si("EXTR_IF_EXISTS", 6);
     si("EXTR_REFS", 256);
+    // locale categories: the C library's own numbering, which differs by platform
+    si("LC_CTYPE", i64::from(libc::LC_CTYPE));
+    si("LC_NUMERIC", i64::from(libc::LC_NUMERIC));
+    si("LC_TIME", i64::from(libc::LC_TIME));
+    si("LC_COLLATE", i64::from(libc::LC_COLLATE));
+    si("LC_MONETARY", i64::from(libc::LC_MONETARY));
+    si("LC_MESSAGES", i64::from(libc::LC_MESSAGES));
+    si("LC_ALL", i64::from(libc::LC_ALL));
     // preg
     si("PREG_PATTERN_ORDER", 1);
     si("PREG_SET_ORDER", 2);
@@ -6525,6 +6533,7 @@ pub fn with_host<R>(f: impl FnOnce(&mut PhpHost) -> R) -> R {
 /// Reset the host to a fresh state (new heap, new global scope).
 pub fn reset_host() {
     CUR_GEN.with(|c| c.set(None));
+    crate::stdlib::system::reset_lc_ctype();
     set_warn_line(0);
     HOST.with(|h| *h.borrow_mut() = PhpHost::new());
 }

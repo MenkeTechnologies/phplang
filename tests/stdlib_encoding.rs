@@ -90,10 +90,17 @@ fn hex2bin_basic() {
 
 #[test]
 fn hex2bin_invalid_returns_false() {
-    // odd length -> false
-    assert_eq!(run(r#"<?php var_dump(hex2bin("abc"));"#), "bool(false)\n");
-    // non-hex character -> false
-    assert_eq!(run(r#"<?php var_dump(hex2bin("xy"));"#), "bool(false)\n");
+    // Each refusal is a warning, then false — the length is checked first.
+    assert_eq!(
+        run(r#"<?php var_dump(hex2bin("abc"));"#),
+        "\nWarning: hex2bin(): Hexadecimal input string must have an even length in \
+         Command line code on line 1\nbool(false)\n"
+    );
+    assert_eq!(
+        run(r#"<?php var_dump(hex2bin("xy"));"#),
+        "\nWarning: hex2bin(): Input string must be hexadecimal string in Command line code \
+         on line 1\nbool(false)\n"
+    );
 }
 
 #[test]

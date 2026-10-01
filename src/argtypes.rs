@@ -1179,6 +1179,7 @@ static PARAMS: &[(&str, Params)] = &[
     ),
     ("set_error_handler", &[(2, "error_levels", "int")]),
     ("set_time_limit", &[(1, "seconds", "int")]),
+    ("setlocale", &[(1, "category", "int")]),
     ("settype", &[(2, "type", "string")]),
     ("sha1", &[(1, "string", "string"), (2, "binary", "bool")]),
     (

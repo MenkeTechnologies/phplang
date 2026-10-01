@@ -1644,3 +1644,52 @@ Stack trace:
 #1 {main}
   thrown in Command line code on line 1
 
+#REC 79 exit=0 out=1099 err=0
+%f => [INF] [-INF] [NaN] [0.000000] [-0.000100] [1234.567800]
+%F => [INF] [-INF] [NaN] [0.000000] [-0.000100] [1234.567800]
+%e => [INF] [-INF] [NaN] [0.000000e+0] [-1.000000e-4] [1.234568e+3]
+%E => [INF] [-INF] [NaN] [0.000000E+0] [-1.000000E-4] [1.234568E+3]
+%g => [INF] [-INF] [NaN] [-0] [-0.0001] [1234.57]
+%G => [INF] [-INF] [NaN] [-0] [-0.0001] [1234.57]
+%10.1f => [INF] [-INF] [NaN] [       0.0] [      -0.0] [    1234.6]
+%-10f| => [INF|] [-INF|] [NaN|] [0.000000  |] [-0.000100 |] [1234.567800|]
+%+f => [INF] [-INF] [NaN] [+0.000000] [-0.000100] [+1234.567800]
+%05f => [INF] [-INF] [NaN] [0.000000] [-0.000100] [1234.567800]
+%.0f => [INF] [-INF] [NaN] [0] [-0] [1235]
+%+.1e => [INF] [-INF] [NaN] [+0.0e+0] [-1.0e-4] [+1.2e+3]
+%+g => [INF] [-INF] [NaN] [-0] [-0.0001] [+1234.57]
+%+e => [INF] [-INF] [NaN] [+0.000000e+0] [-1.000000e-4] [+1.234568e+3]
+%010.2e => [INF] [-INF] [NaN] [0000.00e+0] [-001.00e-4] [0001.23e+3]
+%-8g| => [INF|] [-INF|] [NaN|] [-0      |] [-0.0001 |] [1234.57 |]
+%.3g => [INF] [-INF] [NaN] [-0] [-0.0001] [1.23e+3]
+%+.2f => [INF] [-INF] [NaN] [+0.00] [-0.00] [+1234.57]
+
+#REC 80 exit=0 out=252 err=92
+string(1) "C"
+string(5) "POSIX"
+bool(false)
+string(1) "C"
+string(1) "C"
+
+Warning: setlocale(): Specified locale name is too long in Command line code on line 5
+bool(false)
+1.50 2.5
+setlocale(): Argument #1 ($category) must be of type int, string given
+PHP Warning:  setlocale(): Specified locale name is too long in Command line code on line 5
+
+#REC 81 exit=0 out=360 err=308
+
+Warning: hex2bin(): Hexadecimal input string must have an even length in Command line code on line 2
+
+Warning: hex2bin(): Input string must be hexadecimal string in Command line code on line 2
+
+Warning: hex2bin(): Hexadecimal input string must have an even length in Command line code on line 2
+bool(false)
+bool(false)
+bool(false)
+string(0) ""
+string(2) "AB"
+PHP Warning:  hex2bin(): Hexadecimal input string must have an even length in Command line code on line 2
+PHP Warning:  hex2bin(): Input string must be hexadecimal string in Command line code on line 2
+PHP Warning:  hex2bin(): Hexadecimal input string must have an even length in Command line code on line 2
+

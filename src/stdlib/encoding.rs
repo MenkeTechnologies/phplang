@@ -319,11 +319,24 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             Some(bytes) => Value::str(bytes_to_str(&bytes)),
             None => Value::bool(false),
         },
+        // `PHP_FUNCTION(hex2bin)`: the length is checked before the digits, and
+        // each refusal is a warning before the `false`.
         "hex2bin" => {
             let s = str_arg(args, 0);
+            if s.len() % 2 != 0 {
+                crate::host::with_host(|h| {
+                    h.warn("hex2bin(): Hexadecimal input string must have an even length")
+                });
+                return Some(Ok(Value::bool(false)));
+            }
             match hex::decode(s.as_bytes()) {
                 Ok(bytes) => Value::str(bytes_to_str(&bytes)),
-                Err(_) => Value::bool(false),
+                Err(_) => {
+                    crate::host::with_host(|h| {
+                        h.warn("hex2bin(): Input string must be hexadecimal string")
+                    });
+                    Value::bool(false)
+                }
             }
         }
         "quoted_printable_encode" => {

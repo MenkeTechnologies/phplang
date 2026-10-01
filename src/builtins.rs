@@ -5700,6 +5700,17 @@ fn render_spec(h: &mut host::PhpHost, s: &FmtSpec, v: &Value) -> String {
     } else {
         FmtSpec { ..*s }
     };
+    // A non-finite float is printed bare by every float conversion — no sign
+    // flag, no width, no padding (`php_sprintf_appenddouble`'s early return).
+    if matches!(s.conv, 'f' | 'F' | 'e' | 'E' | 'g' | 'G' | 'h' | 'H') {
+        let f = h.to_number(v).to_float();
+        if f.is_nan() {
+            return "NaN".to_string();
+        }
+        if f.is_infinite() {
+            return if f < 0.0 { "-INF" } else { "INF" }.to_string();
+        }
+    }
     // `body` = the value with sign but no field padding; `is_num` gates
     // zero-padding-after-sign.
     let (body, is_num) = match s.conv {
@@ -5734,23 +5745,30 @@ fn render_spec(h: &mut host::PhpHost, s: &FmtSpec, v: &Value) -> String {
             let f = h.to_number(v).to_float();
             let p = s.precision.unwrap_or(6);
             (
-                signed(format!("{:.*}", p, f.abs()), f.is_sign_negative(), s),
+                signed(
+                    locale_point(format!("{:.*}", p, f.abs()), s.conv == 'f'),
+                    f < 0.0,
+                    s,
+                ),
                 true,
             )
         }
         'e' | 'E' => {
             let f = h.to_number(v).to_float();
-            (fmt_exp(f, s.precision.unwrap_or(6), s.conv == 'E'), true)
+            // `-0.0` prints unsigned here, as in `%f`; `%g` keeps its sign.
+            let mag = fmt_exp(f.abs(), s.precision.unwrap_or(6), s.conv == 'E');
+            (signed(mag, f < 0.0, s), true)
         }
         // `h`/`H` are `g`/`G` with the decimal separator pinned to `.` instead of
-        // taken from the locale. phplang never consults the locale, so the two
-        // pairs render identically here.
+        // taken from the locale.
         'g' | 'G' | 'h' | 'H' => {
             let f = h.to_number(v).to_float();
             let p = s.precision.unwrap_or(6).max(1);
-            let g = host::php_gcvt(f, p);
+            let g = host::php_gcvt(f.abs(), p);
             let lower = s.conv == 'g' || s.conv == 'h';
-            (if lower { g.to_lowercase() } else { g }, true)
+            let g = if lower { g.to_lowercase() } else { g };
+            let g = locale_point(g, matches!(s.conv, 'g' | 'G'));
+            (signed(g, f.is_sign_negative(), s), true)
         }
         's' => {
             let mut txt = h.to_str_diag(v);
@@ -7496,5 +7514,17 @@ fn b_eval(vm: &mut VM, _: u8) -> Value {
     match host::run_eval(&code) {
         Ok(v) => bubbled(vm, v),
         Err(e) => fail_or_throw(vm, e),
+    }
+}
+
+/// `%f`, `%g` and `%G` print the `LC_NUMERIC` decimal point (see
+/// `php_sprintf_appenddouble`); `%F`, `%e`, `%h` and `%H` always print `.`.
+fn locale_point(num: String, localized: bool) -> String {
+    if !localized {
+        return num;
+    }
+    match crate::stdlib::system::locale_decimal_point() {
+        '.' => num,
+        dp => num.replacen('.', &dp.to_string(), 1),
     }
 }

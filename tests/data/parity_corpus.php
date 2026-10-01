@@ -969,3 +969,21 @@ function show_unplaced() { return sprintf(1, 1, "a", [3], nosuch: 2); }
 show_unplaced();
 #==#
 printf(1.5, 2, x: 1);
+#==#
+// ── float conversions: non-finite values print bare; -0.0 and + on e/g ──
+foreach (["%f", "%F", "%e", "%E", "%g", "%G", "%10.1f", "%-10f|", "%+f", "%05f", "%.0f",
+          "%+.1e", "%+g", "%+e", "%010.2e", "%-8g|", "%.3g", "%+.2f"] as $f) {
+    echo $f, " => [", sprintf($f, INF), "] [", sprintf($f, -INF), "] [", sprintf($f, NAN),
+         "] [", sprintf($f, -0.0), "] [", sprintf($f, -0.0001), "] [", sprintf($f, 1234.5678), "]\n";
+}
+#==#
+// ── setlocale: portable answers only (the LC_* values and names are the platform's) ──
+var_dump(setlocale(LC_ALL, "C"), setlocale(LC_ALL, ["xx_XX", "POSIX"]),
+         setlocale(LC_ALL, "xx_XX", "yy_YY"), setlocale(LC_ALL, [], "C"),
+         setlocale(LC_NUMERIC, "0"));
+var_dump(setlocale(LC_ALL, str_repeat("a", 300)));
+printf("%.2f %g\n", 1.5, 2.5);
+try { setlocale("x", "C"); } catch (TypeError $e) { echo $e->getMessage(), "\n"; }
+#==#
+// ── hex2bin warns before answering false ──
+var_dump(hex2bin("aaa"), hex2bin("zz"), hex2bin("a"), hex2bin(""), hex2bin("4142"));

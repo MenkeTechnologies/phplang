@@ -178,6 +178,21 @@ CORRECTED: this entry used to read "Two coercion warnings are not raised" and
 listed `echo NAN` alongside. `echo NAN` agrees with the reference and did so
 before this round's work; the claim was stale, not fixed here.
 
+## A diagnostic inside a multi-line expression names the statement's line
+
+```text
+$ php -r $'$x = [\n 1,\n $u];'
+Warning: Undefined variable $u in Command line code on line 3
+$ target/debug/php -r $'$x = [\n 1,\n $u];'
+Warning: Undefined variable $u in Command line code on line 1
+```
+
+The reference gives every opcode the line of the AST node it was compiled
+from; phplang's expression nodes carry no line, so every op of a statement
+takes the statement's first line. A call written on a later line of the same
+statement reports that first line too. Closing it is a line field on the
+expression nodes, threaded through the compiler.
+
 ## `set_error_handler`: when the handler runs
 
 A diagnostic is handed to the user handler at the next builtin boundary after
@@ -326,7 +341,6 @@ file's directory. The same value is what `get_include_path()` returns.
 | `new DateTime("not a date")` | `DateMalformedStringException` | no throw |
 | `new DateTimeZone("Nowhere/Nothing")` | `DateInvalidTimeZoneException` | class not declared |
 | `pack()` / `unpack()` | implemented | `Call to undefined function` |
-| `LC_ALL` and the other `LC_*` constants | defined | `Undefined constant` |
 | `goto end; …; end: echo "done";` | `done` | `Parse error: syntax error, unexpected identifier "end"` |
 | `iconv_strlen("héllo")` | `int(5)` | `Call to undefined function iconv_strlen()` |
 | `usort($x, ["C", "m"])` for a non-static `C::m` | `TypeError: usort(): Argument #2 ($callback) must be a valid callback, non-static method C::m() cannot be called statically` | the call succeeds |

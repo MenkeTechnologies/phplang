@@ -5912,6 +5912,13 @@ pub const CORPUS: &[Entry] = &[
         "echo $u; error_clear_last(); var_dump(error_get_last());   // => NULL"
     ),
     (
+        "setlocale",
+        "System and runtime environment",
+        "setlocale(int $category, string|array|null $locales, string|array|null ...$rest): string|false",
+        "Hands each candidate locale in turn (an array's elements in order) to the C library's `setlocale` and returns the name of the first one accepted, or false. `\"0\"` queries without changing anything; `null` or `\"\"` takes the locale from the environment. The `LC_*` category values are the platform's, and so is every answer, as in the reference — which also starts each run with `LC_CTYPE` at `C.UTF-8`. Nothing in phplang's own string or number formatting reads the locale.",
+        "var_dump(setlocale(LC_ALL, \"C\"), setlocale(LC_ALL, [\"xx_XX\", \"POSIX\"]));   // => string(1) \"C\" string(5) \"POSIX\"",
+    ),
+    (
         "ini_get",
         "System and runtime environment",
         "ini_get(string $option): string|false",
