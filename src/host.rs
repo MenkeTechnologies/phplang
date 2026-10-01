@@ -991,6 +991,29 @@ pub struct PhpHost {
     /// the `exit` stands. Kept in its own field precisely so `catch (Throwable)`
     /// cannot see it.
     pending_exit: Option<i32>,
+    /// `set_exception_handler`'s stack: the last entry is the live handler,
+    /// `Value::Undef` one that `set_exception_handler(null)` pushed.
+    exception_handlers: Vec<Value>,
+    /// Whether an uncaught exception may reach [`PhpHost::exception_handlers`]
+    /// at all — not under `php -r` (see [`run_main`]).
+    exception_handler_enabled: bool,
+    /// `register_shutdown_function`'s queue: each callable with its arguments,
+    /// run in order at request end (see [`request_shutdown`]).
+    shutdown_fns: Vec<(Value, Vec<Value>)>,
+    /// Objects whose `__destruct` the request-end sweep has already run, so
+    /// neither pass runs it twice.
+    destructed: FxHashSet<u32>,
+    /// Set by a fatal error that is not an uncaught exception: the reference
+    /// marks every object destructed then, so no `__destruct` runs at request end.
+    destructors_off: bool,
+    /// The main chunk's globals in first-appearance order, and which of them
+    /// live in fusevm frame slots — see [`crate::compiler::Program`].
+    main_order: Vec<String>,
+    main_promoted: Vec<String>,
+    /// The main chunk's fusevm frame slots as the run left them, captured
+    /// before its VM is recycled so request shutdown can still see the
+    /// promoted globals.
+    main_frame_slots: Vec<Value>,
     /// Level of the most recent `break`/`continue` signal — see
     /// [`last_break_level`].
     last_break_level: u32,
@@ -1413,6 +1436,14 @@ impl PhpHost {
             signal: None,
             pending_throw: None,
             pending_exit: None,
+            exception_handlers: Vec::new(),
+            exception_handler_enabled: true,
+            shutdown_fns: Vec::new(),
+            destructed: Default::default(),
+            destructors_off: false,
+            main_order: Vec::new(),
+            main_promoted: Vec::new(),
+            main_frame_slots: Vec::new(),
             last_break_level: 1,
             try_defs: Vec::new(),
             constants: predefined_constants(),
@@ -7053,6 +7084,13 @@ pub fn set_debug_mode(on: bool) {
 
 /// Register every phplang builtin + the strict numeric hook on a VM, then run it.
 fn run_chunk_on(chunk: Chunk) -> Result<Value, String> {
+    run_chunk_capturing(chunk, false)
+}
+
+/// [`run_chunk_on`], keeping the base frame's fusevm slots on the host when
+/// `capture` is set — the main chunk's promoted globals, which request shutdown
+/// still has to see after the VM is recycled.
+fn run_chunk_capturing(chunk: Chunk, capture: bool) -> Result<Value, String> {
     // The hook warns (`A non-numeric value encountered`), so it needs the line
     // of the operator that delegated to it. Native arithmetic ops run no
     // builtin, so nothing else sets the warn site — hand the hook this chunk's
@@ -7099,6 +7137,14 @@ fn run_chunk_on(chunk: Chunk) -> Result<Value, String> {
         (None, VMResult::Error(_)) if unwinding() => Some(Ok(Value::Undef)),
         (None, VMResult::Error(e)) => Some(Err(e.clone())),
     };
+    if capture {
+        let slots = vm
+            .frames
+            .first()
+            .map(|f| f.slots.clone())
+            .unwrap_or_default();
+        with_host(|h| h.main_frame_slots = slots);
+    }
     // Recycled only after the last read of `vm`. A generator that suspended
     // never gets here — its VM stays on the coroutine stack, which is what
     // keeps the pool from handing the same VM out twice.
@@ -7112,14 +7158,45 @@ fn run_chunk_on(chunk: Chunk) -> Result<Value, String> {
 
 /// Run the top-level program chunk.
 pub fn run_main(chunk: Chunk) -> Result<Value, String> {
-    let r = run_chunk_on(chunk);
+    let r = run_chunk_capturing(chunk, true);
     // A top-level `return` just ends the program; clear any leftover signal.
     with_host(|h| h.signal.take());
     // An exception that reached the top uncaught is a fatal error, displayed in
     // the PHP CLI's shape. `write_out` puts it where the reference puts it — on
     // stdout, inside any open output buffer — and the returned string is the
     // stderr log copy, which the CLI wrapper reports without re-displaying.
-    if let Some(exc) = with_host(|h| h.pending_throw.take()) {
+    if let Some(mut exc) = with_host(|h| h.pending_throw.take()) {
+        // `set_exception_handler`: the handler takes the exception instead of
+        // the fatal, and the run then ends normally. One it throws itself is
+        // what goes uncaught. `php -r` never calls it — the reference runs that
+        // code through `zend_eval_string`, which reports the exception directly.
+        if let Some(handler) = with_host(|h| h.user_exception_handler()) {
+            with_host(|h| {
+                if let Some(g) = h.scopes.first_mut() {
+                    g.internal = true;
+                }
+            });
+            let _ = call_value(handler, vec![exc.clone()]);
+            with_host(|h| h.signal.take());
+            match with_host(|h| h.pending_throw.take()) {
+                Some(next) => exc = next,
+                None => {
+                    with_host(|h| h.ob_flush_all());
+                    return Ok(Value::Undef);
+                }
+            }
+        }
+        return Err(report_uncaught(exc));
+    }
+    with_host(|h| h.ob_flush_all());
+    r
+}
+
+/// Display an exception nothing caught as the reference's fatal, on stdout
+/// (inside any open output buffer), and answer the stderr log copy, which the
+/// CLI wrapper reports without re-displaying.
+fn report_uncaught(exc: Value) -> String {
+    {
         // An uncaught `ParseError` — a syntax error in `include`d or `eval()`'d
         // code — is reported the way a syntax error in the script itself is:
         // `Parse error: <message> in <file> on line <n>`, with no trace.
@@ -7140,7 +7217,7 @@ pub fn run_main(chunk: Chunk) -> Result<Value, String> {
                 h.fatal("Parse error", &body);
                 h.ob_flush_all();
             });
-            return Err(format!("Parse error:  {body}"));
+            return format!("Parse error:  {body}");
         }
         let body = with_host(|h| {
             let class = h
@@ -7171,10 +7248,8 @@ pub fn run_main(chunk: Chunk) -> Result<Value, String> {
             h.fatal("Fatal error", &body);
             h.ob_flush_all();
         });
-        return Err(format!("Fatal error:  {body}"));
+        format!("Fatal error:  {body}")
     }
-    with_host(|h| h.ob_flush_all());
-    r
 }
 
 /// Invoke a user function (or fall through to the builtin library) by name.
@@ -10611,4 +10686,322 @@ fn type_kind_word(kind: TypeKind) -> &'static str {
         TypeKind::Trait => "trait",
         TypeKind::Enum => "enum",
     }
+}
+
+// ── request shutdown ─────────────────────────────────────────────────────────
+
+impl PhpHost {
+    /// The live `set_exception_handler` callable, when one is set and this run
+    /// is one the reference would call it for.
+    fn user_exception_handler(&self) -> Option<Value> {
+        if !self.exception_handler_enabled {
+            return None;
+        }
+        self.exception_handlers
+            .last()
+            .filter(|v| !matches!(v, Value::Undef))
+            .cloned()
+    }
+
+    /// `set_exception_handler($callback)`: push it, answering the one it replaces.
+    pub fn set_exception_handler(&mut self, callback: Value) -> Value {
+        let prev = self
+            .exception_handlers
+            .last()
+            .cloned()
+            .unwrap_or(Value::Undef);
+        self.exception_handlers.push(callback);
+        prev
+    }
+
+    /// `restore_exception_handler()`: drop back to the previous handler.
+    pub fn restore_exception_handler(&mut self) {
+        self.exception_handlers.pop();
+    }
+
+    /// `php -r` code never reaches a user exception handler.
+    pub fn disable_exception_handler(&mut self) {
+        self.exception_handler_enabled = false;
+    }
+
+    /// `register_shutdown_function($callback, ...$args)`.
+    pub fn register_shutdown_fn(&mut self, callback: Value, args: Vec<Value>) {
+        self.shutdown_fns.push((callback, args));
+    }
+
+    /// A fatal error that is not an uncaught exception ended the run.
+    pub fn disable_destructors(&mut self) {
+        self.destructors_off = true;
+    }
+
+    /// How many places other than the containers in `freed` hold `handle` —
+    /// the reference count the request-end sweep needs, recovered by looking,
+    /// since the heap keeps none. A stale handle in a dead temporary counts,
+    /// which errs toward leaving an object to the creation-order pass.
+    fn handle_refs(&self, handle: u32, freed: &FxHashSet<u32>) -> usize {
+        let is = |v: &Value| matches!(v, Value::Obj(o) if *o == handle);
+        let in_frame = |s: &Scope| {
+            s.vars
+                .slots
+                .iter()
+                .filter(|slot| matches!(slot, Slot::Val(v) if is(v)))
+                .count()
+        };
+        let mut n = self.scopes.iter().map(in_frame).sum::<usize>()
+            + self
+                .generators
+                .iter()
+                .flat_map(|g| g.ctx.frames.iter())
+                .map(in_frame)
+                .sum::<usize>()
+            + self.main_frame_slots.iter().filter(|v| is(v)).count()
+            + self.ref_cells.iter().filter(|v| is(v)).count()
+            + self.static_props.values().filter(|v| is(v)).count()
+            + self.constants.values().filter(|v| is(v)).count();
+        for (i, o) in self.objs.iter().enumerate() {
+            if freed.contains(&(i as u32)) {
+                continue;
+            }
+            n += match o {
+                PhpObj::Array { entries, .. } => entries.values().filter(|v| is(v)).count(),
+                PhpObj::Object { props, .. } => props.values().filter(|v| is(v)).count(),
+                PhpObj::Closure {
+                    captured,
+                    bound_this,
+                    ..
+                } => {
+                    captured.iter().filter(|(_, v)| is(v)).count()
+                        + usize::from(bound_this.as_ref().is_some_and(is))
+                }
+                _ => 0,
+            };
+        }
+        n
+    }
+
+    /// The handles `handle` itself holds: an array's elements, an object's
+    /// properties, a closure's captures and bound `$this`.
+    fn held_handles(&self, handle: u32) -> Vec<u32> {
+        let vals: Vec<&Value> = match self.objs.get(handle as usize) {
+            Some(PhpObj::Array { entries, .. }) => entries.values().collect(),
+            Some(PhpObj::Object { props, .. }) => props.values().collect(),
+            Some(PhpObj::Closure {
+                captured,
+                bound_this,
+                ..
+            }) => captured
+                .iter()
+                .map(|(_, v)| v)
+                .chain(bound_this.iter())
+                .collect(),
+            _ => Vec::new(),
+        };
+        vals.into_iter()
+            .filter_map(|v| match v {
+                Value::Obj(o) => Some(*o),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The global variables in the order the reference's symbol table holds
+    /// them, each with the object handle it holds directly (not through a
+    /// reference), newest first.
+    fn global_objects_newest_first(&self) -> Vec<(String, u32)> {
+        let Some(g) = self.scopes.first() else {
+            return Vec::new();
+        };
+        // The main chunk's names first, in the order it names them; then any
+        // bound by name only (`extract`, `$$x`, an include), in binding order.
+        let mut order: Vec<&String> = self.main_order.iter().collect();
+        let mut rest: Vec<(u32, &String)> = g
+            .vars
+            .index
+            .iter()
+            .filter(|(k, _)| !self.main_order.contains(k))
+            .map(|(k, &i)| (i, k))
+            .collect();
+        rest.sort_unstable();
+        order.extend(rest.into_iter().map(|(_, k)| k));
+        order
+            .into_iter()
+            .rev()
+            .filter_map(|k| {
+                let v = match self.main_promoted.iter().position(|p| p == k) {
+                    Some(i) => self.main_frame_slots.get(i)?,
+                    None => match g.vars.get(k) {
+                        Slot::Val(v) => v,
+                        _ => return None,
+                    },
+                };
+                match v {
+                    Value::Obj(o) if self.is_object_value(v) => Some((k.clone(), *o)),
+                    _ => None,
+                }
+            })
+            .collect()
+    }
+
+    /// Remove the global `name` from wherever it lives.
+    fn drop_global(&mut self, name: &str) {
+        match self.main_promoted.iter().position(|p| p == name) {
+            Some(i) => {
+                if let Some(v) = self.main_frame_slots.get_mut(i) {
+                    *v = Value::Undef;
+                }
+            }
+            None => {
+                if let Some(g) = self.scopes.first_mut() {
+                    if let Some(i) = g.vars.slot_of(name) {
+                        g.vars.put(i, Slot::Unset);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Record the main chunk's global layout (see [`PhpHost::main_order`]).
+    pub fn set_main_layout(&mut self, order: Vec<String>, promoted: Vec<String>) {
+        self.main_order = order;
+        self.main_promoted = promoted;
+        self.main_frame_slots.clear();
+    }
+
+    /// The class to run `__destruct` on for `handle`, if it still needs running.
+    fn pending_destructor(&self, handle: u32) -> Option<String> {
+        if self.destructed.contains(&handle) {
+            return None;
+        }
+        match self.objs.get(handle as usize) {
+            Some(PhpObj::Object { class, .. }) if self.class_has_method(class, "__destruct") => {
+                Some(class.clone())
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Request shutdown, in `php_request_shutdown`'s order: the
+/// `register_shutdown_function` queue (one registered while it runs is run
+/// too), then the destructors (see [`call_destructors`]). An exception either
+/// lets escape is reported uncaught and ends the sweep, as a bailout would.
+///
+/// An `exit` status already set is parked across the sweep, or every callback
+/// would see the run unwinding and return at once; one the sweep sets wins.
+pub fn request_shutdown(run_ok_or_uncaught: bool) -> Result<(), String> {
+    let exit = with_host(|h| h.pending_exit.take());
+    // Nothing calls these from PHP source: a trace names their call site
+    // `[internal function]`.
+    with_host(|h| {
+        if let Some(g) = h.scopes.first_mut() {
+            g.internal = true;
+        }
+    });
+    let r = run_shutdown_fns().and_then(|()| {
+        if run_ok_or_uncaught && !with_host(|h| h.destructors_off) {
+            call_destructors()
+        } else {
+            Ok(())
+        }
+    });
+    with_host(|h| {
+        if h.pending_exit.is_none() {
+            h.pending_exit = exit;
+        }
+    });
+    r
+}
+
+/// Report an exception a shutdown callback or destructor let escape, the way
+/// the top level reports one.
+fn shutdown_escape() -> Result<(), String> {
+    match with_host(|h| h.pending_throw.take()) {
+        Some(exc) => Err(report_uncaught(exc)),
+        None => Ok(()),
+    }
+}
+
+fn run_shutdown_fns() -> Result<(), String> {
+    let mut i = 0;
+    while let Some((callback, args)) = with_host(|h| h.shutdown_fns.get(i).cloned()) {
+        i += 1;
+        call_value(callback, args)?;
+        with_host(|h| h.signal.take());
+        shutdown_escape()?;
+        if with_host(|h| h.pending_exit.is_some()) {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// `zend_call_destructors`, then `zend_objects_store_call_destructors`.
+///
+/// First the globals that alone hold an object are freed, newest first, until
+/// a pass frees none; freeing one runs its `__destruct`, destroys a suspended
+/// generator, and frees in turn whatever only it was holding. Every object
+/// still alive after that is destructed in creation order — which, for a
+/// generator, is the forced `return` that runs its `finally` blocks.
+fn call_destructors() -> Result<(), String> {
+    let mut freed: FxHashSet<u32> = FxHashSet::default();
+    loop {
+        let mut any = false;
+        for (name, handle) in with_host(|h| h.global_objects_newest_first()) {
+            if freed.contains(&handle) || with_host(|h| h.handle_refs(handle, &freed)) != 1 {
+                continue;
+            }
+            with_host(|h| h.drop_global(&name));
+            free_object(handle, &mut freed)?;
+            any = true;
+        }
+        if !any {
+            break;
+        }
+    }
+    let count = with_host(|h| h.objs.len()) as u32;
+    for handle in 0..count {
+        if !freed.contains(&handle) {
+            destruct_one(handle)?;
+        }
+    }
+    Ok(())
+}
+
+/// Free `handle`: destruct it, then free every object it held that nothing
+/// else (outside the freed set) still holds.
+fn free_object(handle: u32, freed: &mut FxHashSet<u32>) -> Result<(), String> {
+    if !freed.insert(handle) {
+        return Ok(());
+    }
+    destruct_one(handle)?;
+    for child in with_host(|h| h.held_handles(handle)) {
+        if !freed.contains(&child) && with_host(|h| h.handle_refs(child, freed)) == 0 {
+            free_object(child, freed)?;
+        }
+    }
+    Ok(())
+}
+
+/// Run `handle`'s destructor once: `__destruct` for an instance, the forced
+/// `return` for a suspended generator.
+fn destruct_one(handle: u32) -> Result<(), String> {
+    if let Some(id) = with_host(|h| match h.objs.get(handle as usize) {
+        Some(PhpObj::Generator { id }) => Some(*id),
+        _ => None,
+    }) {
+        gen_destroy(id)?;
+        return shutdown_escape();
+    }
+    let Some(class) = with_host(|h| {
+        let c = h.pending_destructor(handle);
+        if c.is_some() {
+            h.destructed.insert(handle);
+        }
+        c
+    }) else {
+        return Ok(());
+    };
+    call_method(&class, "__destruct", Some(Value::Obj(handle)), Vec::new())?;
+    with_host(|h| h.signal.take());
+    shutdown_escape()
 }

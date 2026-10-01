@@ -844,3 +844,65 @@ foreach (["utf8", "latin1", "ab", "UTF-8", "iso-8859-1", "sjis-WIN", "cp932", ""
 var_dump(htmlentities("é", ENT_QUOTES, "ascii"));
 var_dump(html_entity_decode("&lt;", ENT_QUOTES, "zz"));
 var_dump(htmlspecialchars("x", ENT_QUOTES, null));
+#==#
+// ── request end: shutdown functions, then destructors ──
+// Globals that alone hold an object go newest first (freeing what only they
+// hold), then every other object in creation order.
+class Dd { function __construct(public $n) {} function __destruct() { echo "d{$this->n}\n"; } }
+class Ee { public $x; function __destruct() { echo "e\n"; } }
+register_shutdown_function(function ($t) {
+    echo "sd $t\n";
+    register_shutdown_function(fn() => print("nested\n"));
+}, "x");
+$a = new Dd(1);
+$b = new Dd(2);
+$c = [new Dd(3)];
+$e = new Dd(4);
+$f = $e;
+$o = new Ee;
+$o->x = new Dd(5);
+$k = function () use ($a) { return $a; };
+for ($i = 0; $i < 3; $i++) { $j = $i; }
+$explicit = new Dd(6);
+$explicit->__destruct();
+ob_start();
+echo "end $j\n";
+#==#
+// ── destructors still run after an uncaught exception and after exit ──
+class Dx { function __destruct() { echo "dx\n"; } }
+register_shutdown_function(fn() => print("sd\n"));
+$d = new Dx;
+throw new Exception("boom");
+#==#
+class Dx { function __destruct() { echo "dx\n"; } }
+$d = new Dx;
+exit(4);
+#==#
+// ── E_USER_ERROR runs shutdown functions but no destructor ──
+class Dx { function __destruct() { echo "dx\n"; } }
+register_shutdown_function(fn() => print("sd\n"));
+$d = new Dx;
+trigger_error("x", E_USER_ERROR);
+#==#
+// ── an exception escaping a shutdown function or destructor is uncaught ──
+register_shutdown_function(function () { throw new Exception("in sd"); });
+register_shutdown_function(fn() => print("never\n"));
+echo "a\n";
+#==#
+class Dt { function __destruct() { throw new Exception("dt"); } }
+class Dy { function __destruct() { echo "dy\n"; } }
+$t = new Dt;
+$y = new Dy;
+echo "a\n";
+#==#
+// ── suspended generators in globals are destroyed newest first ──
+function gfin($n) { try { yield 1; } finally { echo "F$n\n"; } }
+$ga = gfin("a"); $ga->current();
+$gb = gfin("b"); $gb->current();
+echo "end\n";
+#==#
+// ── set_exception_handler is a stack; under -r it is never called ──
+var_dump(set_exception_handler("strlen"), set_exception_handler(null),
+         restore_exception_handler(), set_exception_handler("trim"));
+set_exception_handler(function ($e) { echo "never\n"; });
+throw new Exception("direct");

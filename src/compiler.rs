@@ -74,6 +74,13 @@ pub struct Program {
     /// variables by name and so reaches the same slots without needing an order
     /// of its own.
     pub main_locals: Vec<String>,
+    /// Every global the main chunk names, in order of first appearance — the
+    /// order the reference's symbol table holds them in, which is the order the
+    /// request-end destructor pass walks (backwards).
+    pub main_order: Vec<String>,
+    /// The globals held in fusevm frame slots rather than the host scope,
+    /// indexed by their slot (see `crate::promote`).
+    pub main_promoted: Vec<String>,
     pub functions: Vec<(String, FuncDef)>,
     pub classes: Vec<(String, ClassDef)>,
     /// `try`/`catch`/`finally` constructs, indexed by the id baked into each
@@ -507,7 +514,9 @@ fn compile_program(stmts: &[Stmt], debug: bool, prelude: bool) -> Result<Program
         // top-level name can be shown to be out of reach.
         None => promoted.names.clear(),
     }
-    let saved = c.enter_scope_promoting(scope_slots(&[], stmts), promoted);
+    let main_order = scope_slots(&[], stmts);
+    let main_promoted = promoted.names.clone();
+    let saved = c.enter_scope_promoting(main_order.clone(), promoted);
     c.compile_top_level(&mut b, stmts)?;
     let main_locals = c.leave_scope(saved);
     let counters = c.counters();
@@ -517,6 +526,8 @@ fn compile_program(stmts: &[Stmt], debug: bool, prelude: bool) -> Result<Program
         class_sites,
         main: b.build(),
         main_locals,
+        main_order,
+        main_promoted,
         functions: c.functions,
         classes: c.classes,
         try_defs: c.try_defs,
@@ -559,6 +570,8 @@ pub fn compile_nested(stmts: &[Stmt], start: Counters, source: &str) -> Result<P
         class_sites,
         main: b.build(),
         main_locals: Vec::new(),
+        main_order: Vec::new(),
+        main_promoted: Vec::new(),
         functions: c.functions,
         classes: c.classes,
         try_defs: c.try_defs,

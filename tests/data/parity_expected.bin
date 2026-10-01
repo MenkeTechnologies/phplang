@@ -1448,3 +1448,96 @@ PHP Warning:  htmlspecialchars(): Charset "ab" is not supported, assuming UTF-8 
 PHP Warning:  htmlentities(): Charset "ascii" is not supported, assuming UTF-8 in Command line code on line 5
 PHP Warning:  html_entity_decode(): Charset "zz" is not supported, assuming UTF-8 in Command line code on line 6
 
+#REC 64 exit=0 out=41 err=0
+d6
+end 2
+sd x
+nested
+d6
+e
+d5
+d2
+d1
+d3
+d4
+
+#REC 65 exit=255 out=131 err=129
+
+Fatal error: Uncaught Exception: boom in Command line code:5
+Stack trace:
+#0 {main}
+  thrown in Command line code on line 5
+sd
+dx
+PHP Fatal error:  Uncaught Exception: boom in Command line code:5
+Stack trace:
+#0 {main}
+  thrown in Command line code on line 5
+
+#REC 66 exit=4 out=3 err=0
+dx
+
+#REC 67 exit=255 out=293 err=298
+
+Deprecated: Passing E_USER_ERROR to trigger_error() is deprecated since 8.4, throw an exception or call exit with a string message instead in Command line code on line 5
+
+Fatal error: x in Command line code on line 5
+Stack trace:
+#0 Command line code(5): trigger_error('x', 256)
+#1 {main}
+sd
+PHP Deprecated:  Passing E_USER_ERROR to trigger_error() is deprecated since 8.4, throw an exception or call exit with a string message instead in Command line code on line 5
+PHP Fatal error:  x in Command line code on line 5
+Stack trace:
+#0 Command line code(5): trigger_error('x', 256)
+#1 {main}
+
+#REC 68 exit=255 out=184 err=186
+a
+
+Fatal error: Uncaught Exception: in sd in Command line code:2
+Stack trace:
+#0 [internal function]: {closure:Command line code:2}()
+#1 {main}
+  thrown in Command line code on line 2
+PHP Fatal error:  Uncaught Exception: in sd in Command line code:2
+Stack trace:
+#0 [internal function]: {closure:Command line code:2}()
+#1 {main}
+  thrown in Command line code on line 2
+
+#REC 69 exit=255 out=169 err=168
+a
+dy
+
+Fatal error: Uncaught Exception: dt in Command line code:1
+Stack trace:
+#0 [internal function]: Dt->__destruct()
+#1 {main}
+  thrown in Command line code on line 1
+PHP Fatal error:  Uncaught Exception: dt in Command line code:1
+Stack trace:
+#0 [internal function]: Dt->__destruct()
+#1 {main}
+  thrown in Command line code on line 1
+
+#REC 70 exit=0 out=10 err=0
+end
+Fb
+Fa
+
+#REC 71 exit=255 out=181 err=131
+NULL
+string(6) "strlen"
+bool(true)
+string(6) "strlen"
+
+Fatal error: Uncaught Exception: direct in Command line code:5
+Stack trace:
+#0 {main}
+  thrown in Command line code on line 5
+PHP Fatal error:  Uncaught Exception: direct in Command line code:5
+Stack trace:
+#0 {main}
+  thrown in Command line code on line 5
+

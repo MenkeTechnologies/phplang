@@ -229,3 +229,39 @@ fn dir_is_the_working_directory_when_there_is_no_file() {
             .to_string()
     );
 }
+
+#[test]
+fn exception_handler_runs_for_a_file_and_stdin_but_not_for_dash_r() {
+    // `php -r` runs its code through `zend_eval_string`, which reports an
+    // uncaught exception itself; a file and stdin hand it to the handler, and
+    // the request then ends normally — shutdown functions after it.
+    let src =
+        "<?php set_exception_handler(function($e){ echo 'H:', $e->getMessage(), \"\\n\"; });\n\
+               register_shutdown_function(function(){ echo \"SD\\n\"; });\n\
+               throw new Exception('boom');";
+    let (out, _, _) = run_file("exch", src, &[]);
+    assert_eq!(out, "H:boom\nSD\n");
+    assert_eq!(run_stdin(src), "H:boom\nSD\n");
+    let r = run_r(src.trim_start_matches("<?php "), &[]);
+    assert!(
+        r.starts_with("PHP Fatal error:  Uncaught Exception: boom")
+            || r.starts_with("\nFatal error: Uncaught Exception: boom"),
+        "{r:?}"
+    );
+    assert!(r.ends_with("SD\n"), "{r:?}");
+}
+
+#[test]
+fn an_exception_the_handler_throws_is_the_uncaught_one() {
+    let src = "<?php\nset_exception_handler(function($e){ echo 'H1:', $e->getMessage(), \"\\n\"; throw new Exception('inner'); });\nthrow new Exception('boom');\n";
+    let (out, _, resolved) = run_file("exch2", src, &[]);
+    let f = resolved.display();
+    assert_eq!(
+        out,
+        format!(
+            "H1:boom\n\nFatal error: Uncaught Exception: inner in {f}:2\nStack trace:\n\
+             #0 [internal function]: {{closure:{f}:2}}(Object(Exception))\n#1 {{main}}\n  \
+             thrown in {f} on line 2\n"
+        )
+    );
+}

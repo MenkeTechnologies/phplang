@@ -285,7 +285,7 @@ and break the far more common one where a temporary closure (`array_map(fn…)`)
 is freed at once and its number reused, so it is left alone. Both need
 refcounted handles.
 
-## A suspended generator is destroyed late, or in creation order
+## An object or generator is destroyed late — at request end, not when its last holder lets go
 
 ```text
 $ php -r 'function g(){try{yield 1;}finally{echo "F ";}} function f(){ $x=g(); $x->current(); echo "in "; } f(); echo "end\n";'
@@ -294,23 +294,28 @@ $ target/debug/php -r 'function g(){try{yield 1;}finally{echo "F ";}} function f
 in end
 F
 
-$ php -r 'function g($n){try{yield 1;}finally{echo "F$n ";}} $a=g("a"); $a->current(); $b=g("b"); $b->current(); echo "end\n";'
-end
-Fb Fa
-$ target/debug/php -r 'function g($n){try{yield 1;}finally{echo "F$n ";}} $a=g("a"); $a->current(); $b=g("b"); $b->current(); echo "end\n";'
-end
-Fa Fb
+$ php -r 'class D{function __destruct(){echo "d\n";}} $a=new D; unset($a); echo "u\n";'
+d
+u
+$ target/debug/php -r 'class D{function __destruct(){echo "d\n";}} $a=new D; unset($a); echo "u\n";'
+u
+d
 ```
 
-The reference destroys a generator when its refcount reaches zero, which runs
-the `finally` blocks around its parked `yield`. phplang has no refcounts, so it
-destroys one at exactly two points: when a `foreach` whose subject expression
-created it is left (by exhausting it, `break` or `return`), and at request end.
-A generator held only by a local that goes out of scope therefore runs its
-`finally` at request end instead of at the return. At request end the reference
-first frees the globals that alone hold an object, newest first, and then the
-rest in creation order; globals held in fusevm frame slots are gone by then, so
-here every generator is destroyed in creation order.
+The reference runs `__destruct` (and destroys a suspended generator, running
+the `finally` around its parked `yield`) when the refcount reaches zero.
+phplang has no refcounts. It destroys at two points: a generator when a
+`foreach` whose subject expression created it is left, and everything at
+request end. The request-end sweep IS the reference's: the globals that alone
+hold an object are freed newest first (freeing what only they held), then every
+other object in creation order, after the shutdown functions and only when the
+run did not end on a fatal error proper. So an object that lives to the end of
+the script is destroyed exactly where the reference destroys it; one released
+mid-script (`unset`, reassignment, a local going out of scope, a temporary) is
+destroyed at the end instead. Destroying it at the release point needs to know
+that nothing still holds it, and a promoted local in a running fusevm frame or a
+value on a VM stack is invisible to the host, so that is left alone rather than
+risk destroying a live object.
 
 ## `include`: the search path
 

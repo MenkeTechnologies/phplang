@@ -96,16 +96,22 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         // debug_print_backtrace(): void — nothing to print, returns null.
         "debug_print_backtrace" => Value::Undef,
 
-        // Error/exception handler registration — documented no-ops. Nothing is
-        // stored, so the "previous handler" is always null.
-        // set_* return the previous handler (none here → null); restore_* always
-        // return bool true per the PHP manual.
-        "set_error_handler" | "set_exception_handler" => Value::Undef,
-        "restore_error_handler" | "restore_exception_handler" => Value::bool(true),
-
-        // register_shutdown_function(): void — accepted, never invoked. Returns
-        // null, matching PHP's signature.
-        "register_shutdown_function" => Value::Undef,
+        // The error handler is still a no-op: nothing is stored, so the "previous
+        // handler" is always null.
+        "set_error_handler" => Value::Undef,
+        "restore_error_handler" => Value::bool(true),
+        // A stack: `set_*` answers the handler it replaces, `restore_*` pops.
+        "set_exception_handler" => with_host(|h| h.set_exception_handler(arg(args, 0))),
+        "restore_exception_handler" => {
+            with_host(|h| h.restore_exception_handler());
+            Value::bool(true)
+        }
+        // Queued with its arguments; run at request end by `host::request_shutdown`.
+        "register_shutdown_function" => {
+            let rest = args.get(1..).unwrap_or_default().to_vec();
+            with_host(|h| h.register_shutdown_fn(arg(args, 0), rest));
+            Value::Undef
+        }
         // spl_autoload_register(): bool — no autoloader chain; accept and report
         // success.
         "spl_autoload_register" => Value::bool(true),
@@ -170,6 +176,7 @@ fn user_error_fatal(msg: &str, args: &[Value]) -> Result<Value, String> {
         h.pop_internal_frame();
         h.fatal("Fatal error", &body);
     });
+    crate::host::with_host(|h| h.disable_destructors());
     crate::host::set_pending_exit(255);
     Ok(Value::Undef)
 }

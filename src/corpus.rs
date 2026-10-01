@@ -865,6 +865,13 @@ pub const CORPUS: &[Entry] = &[
         "class P { function __construct(public $x) {} } echo (new P(4))->x;   // => 4",
     ),
     (
+        "__destruct",
+        "Magic method",
+        "public function __destruct(): void",
+        "The destructor. Run at request end, after the shutdown functions: first for the globals that alone hold an object, newest first (and for whatever only that object held), then for every other live object in creation order. DIVERGENCE: an object released mid-script (`unset`, reassignment, a local going out of scope) is destroyed at request end, not at the release — phplang keeps no reference counts. Skipped after a fatal error that is not an uncaught exception.",
+        "class D { function __destruct() { echo \"bye\"; } } $d = new D; echo \"end \";   // => end bye",
+    ),
+    (
         "__invoke",
         "Magic method",
         "public function __invoke(mixed ...$args): mixed",
@@ -6157,7 +6164,7 @@ pub const CORPUS: &[Entry] = &[
         "set_exception_handler",
         "Runtime and diagnostics",
         "set_exception_handler(?callable $callback): null",
-        "DIVERGENCE: shares the `set_error_handler` arm — the callback is discarded, so an uncaught exception still ends the program with the standard `Fatal error: Uncaught …` block instead of being routed to the handler.",
+        "Pushes the handler (null pushes \"none\") and returns the one it replaces. An exception that reaches the top of a FILE or STDIN script is handed to it instead of the fatal, and the run then ends normally (status 0); one the handler throws is the uncaught one. Under `php -r` it is never called, as in the reference, whose `zend_eval_string` reports the exception itself.",
         "",
     ),
     (
@@ -6171,15 +6178,15 @@ pub const CORPUS: &[Entry] = &[
         "restore_exception_handler",
         "Runtime and diagnostics",
         "restore_exception_handler(): bool",
-        "DIVERGENCE: a no-op returning true, sharing the `restore_error_handler` arm.",
+        "Pops the handler stack back to the previous `set_exception_handler`; always returns true.",
         "",
     ),
     (
         "register_shutdown_function",
         "Runtime and diagnostics",
         "register_shutdown_function(callable $callback, mixed ...$args): null",
-        "DIVERGENCE: the callback is accepted and SILENTLY DROPPED — no shutdown queue exists, so it never runs. Put cleanup in a `finally` block instead.",
-        "var_dump(register_shutdown_function(fn() => print(\"never\")));   // => NULL",
+        "Queues the callback with its arguments. At request end the queue runs in order (one registered during the run is run too), after an `exit` and after any displayed fatal error, before the destructors; an exception one lets escape is reported uncaught and ends the sweep.",
+        "register_shutdown_function(fn($w) => print(\"bye $w\\n\"), \"now\");   // prints at exit: bye now",
     ),
     (
         "spl_autoload_register",

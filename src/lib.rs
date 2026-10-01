@@ -493,6 +493,8 @@ pub fn load_merged(prog: compiler::Program) -> fusevm::Chunk {
     let compiler::Program {
         main,
         main_locals,
+        main_order,
+        main_promoted,
         functions,
         classes,
         try_defs,
@@ -517,6 +519,7 @@ pub fn load_merged(prog: compiler::Program) -> fusevm::Chunk {
         // runs. An `include`/`eval` later in the same frame keeps the by-name
         // path, which reaches these same slots.
         h.seed_global_slots(&main_locals);
+        h.set_main_layout(main_order, main_promoted);
     });
     main
 }
@@ -541,13 +544,30 @@ pub fn run_compiled(mut prog: compiler::Program) -> Result<Value, String> {
 }
 
 /// Run a WHOLE program: [`run_compiled`], then the request shutdown that frees
-/// what the program left behind (see [`host::shutdown_generators`]). The REPL
-/// runs each line through [`run_compiled`] alone, since its variables outlive
-/// the line.
+/// what the program left behind — shutdown functions, destructors and
+/// suspended generators (see [`host::request_shutdown`] and
+/// [`host::shutdown_generators`]). The REPL runs each line through
+/// [`run_compiled`] alone, since its variables outlive the line.
+///
+/// Shutdown functions run after ANY fatal the runtime displayed; destructors
+/// only after a clean end, an `exit`, or an uncaught exception — a fatal
+/// error proper marks every object destructed in the reference.
 fn run_program(prog: compiler::Program) -> Result<Value, String> {
     let r = run_compiled(prog);
+    let destructors = match &r {
+        Ok(_) => true,
+        Err(e) => e.starts_with("Fatal error:  Uncaught "),
+    };
+    let shut = if r.is_ok() || host::fatal_reported() {
+        host::request_shutdown(destructors)
+    } else {
+        Ok(())
+    };
     host::shutdown_generators();
-    r
+    match (r, shut) {
+        (Err(e), _) | (Ok(_), Err(e)) => Err(e),
+        (Ok(v), Ok(())) => Ok(v),
+    }
 }
 
 /// Parse, compile, load, and run a PHP source string on a fresh host; return the
@@ -591,7 +611,10 @@ pub fn eval_cli(src: &str, args: &[String]) -> Result<Value, String> {
     // `php -r` code names itself `Command line code` in diagnostics and
     // `__FILE__`, but `Standard input code` in `$argv[0]`. The reference really
     // does disagree with itself here, so the two are set from different values.
-    host::with_host(|h| h.set_script_args(None, args));
+    host::with_host(|h| {
+        h.set_script_args(None, args);
+        h.disable_exception_handler();
+    });
     run_program(compile_cli(src)?)
 }
 
