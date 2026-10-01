@@ -1069,3 +1069,23 @@ sw_f();
 // ── a break level no loop can reach ──
 echo "never printed\n";
 foreach ([1] as $x) { while (1) { try { break 3; } finally {} } }
+#==#
+// ── reading $this with no object bound is an Error, not an undefined variable ──
+function no_this() { return $this; }
+try { no_this(); } catch (Error $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+$unbound = function () { return isset($this) ? "bound" : "unbound"; };
+echo $unbound(), "\n";
+class HasThis { public $v = 4; function m() { $f = fn() => $this->v; return $f() * 2; } }
+echo (new HasThis)->m(), "\n";
+#==#
+// ── a void function that returns a value is a compile error ──
+echo "never printed\n";
+function void_f(): void { if (true) { return null; } }
+#==#
+// ── a backed enum case needs a value ──
+echo "never printed\n";
+enum NoValue: string { case A = "a"; case B; }
+#==#
+// ── a use clause naming a parameter ──
+echo "never printed\n";
+$f = function ($a) use ($a) { return $a; };

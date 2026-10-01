@@ -127,3 +127,177 @@ class U { var $v = 1; final const F = 4; }
 $c = new C; echo $c->f(), $c->z(), I::K, U::F, (new R(5))->a;";
     assert_eq!(run_r(code), ("12345".to_string(), 0));
 }
+#[test]
+fn an_enum_refuses_what_it_cannot_have() {
+    assert_eq!(
+        run_r("echo 1; enum E: float { case A = 1.5; }"),
+        fatal("Enum backing type must be int or string, float given")
+    );
+    assert_eq!(
+        run_r(r#"echo 1; enum E: string { case A = "a"; case B; }"#),
+        fatal("Case B of backed enum E must have a value")
+    );
+    assert_eq!(
+        run_r("echo 1; enum E { case A = 1; }"),
+        fatal("Case A of non-backed enum E must not have a value")
+    );
+    // A property is refused as it is compiled; the magic methods only once the
+    // body is done, so a property declared after one is still reported first.
+    assert_eq!(
+        run_r("echo 1; enum E { function __get($n) {} function __clone() {} public $x; }"),
+        fatal("Enum E cannot include properties")
+    );
+    // The magic methods are checked in a fixed order, in the engine's spelling.
+    assert_eq!(
+        run_r("echo 1; enum E { function __tostring() {} function __clone() {} }"),
+        fatal("Enum E cannot include magic method __clone")
+    );
+    assert_eq!(
+        run_r("echo 1; enum E { function __tostring() {} }"),
+        fatal("Enum E cannot include magic method __toString")
+    );
+}
+
+#[test]
+fn a_void_or_never_body_refuses_what_its_returns_carry() {
+    assert_eq!(
+        run_r("echo 1; function f(): void { return 1; }"),
+        fatal("A void function must not return a value")
+    );
+    assert_eq!(
+        run_r("echo 1; function f(): void { return NULL; }"),
+        fatal(
+            "A void function must not return a value (did you mean \"return;\" instead of \
+             \"return null;\"?)"
+        )
+    );
+    assert_eq!(
+        run_r("echo 1; class A { function m(): never { return; } }"),
+        fatal("A never-returning method must not return")
+    );
+    // A closure written in a method is a "method" too.
+    assert_eq!(
+        run_r("echo 1; class A { function m() { $f = function(): void { return 1; }; } }"),
+        fatal("A void method must not return a value")
+    );
+    assert_eq!(
+        run_r("echo 1; $f = fn(): void => 1;"),
+        fatal("A void function must not return a value")
+    );
+    // A nested body has its own rule; `fn(): never` may throw; a generator is exempt.
+    assert_eq!(
+        run_r(
+            "function f(): void { $g = function() { return 1; }; $h = fn() => 2; return; } f(); \
+             $n = fn(): never => throw new Exception(\"x\"); \
+             function g(): iterable { yield 1; return 2; } foreach (g() as $v) echo $v;"
+        ),
+        ("1".to_string(), 0)
+    );
+}
+
+#[test]
+fn this_is_never_rebound() {
+    for code in [
+        "echo 1; $this = 1;",
+        "echo 1; foreach ([1] as $k => $this) {}",
+        "echo 1; try {} catch (Exception $this) {}",
+        "echo 1; $this = &$a;",
+        "echo 1; [$a, $this] = [1, 2];",
+    ] {
+        assert_eq!(run_r(code), fatal("Cannot re-assign $this"), "{code}");
+    }
+    assert_eq!(
+        run_r("echo 1; function f() { global $this; }"),
+        fatal("Cannot use $this as global variable")
+    );
+    assert_eq!(
+        run_r("echo 1; function f() { static $this; }"),
+        fatal("Cannot use $this as static variable")
+    );
+    assert_eq!(
+        run_r("echo 1; unset($a, $this);"),
+        fatal("Cannot unset $this")
+    );
+    assert_eq!(
+        run_r("echo 1; $f = fn($this) => 1;"),
+        fatal("Cannot use $this as parameter")
+    );
+    assert_eq!(
+        run_r("echo 1; function f($_GET) {}"),
+        fatal("Cannot re-assign auto-global variable _GET")
+    );
+}
+
+#[test]
+fn a_use_clause_refuses_this_superglobals_repeats_and_parameters() {
+    assert_eq!(
+        run_r("echo 1; $f = function() use ($a, $this) {};"),
+        fatal("Cannot use $this as lexical variable")
+    );
+    assert_eq!(
+        run_r("echo 1; $f = function() use ($_GET) {};"),
+        fatal("Cannot use auto-global as lexical variable")
+    );
+    assert_eq!(
+        run_r("echo 1; $f = function() use ($a, $a) {};"),
+        fatal("Cannot use variable $a twice")
+    );
+    assert_eq!(
+        run_r("echo 1; $f = function($a) use ($a) {};"),
+        fatal("Cannot use lexical variable $a as a parameter name")
+    );
+}
+
+#[test]
+fn a_parameter_list_refuses_misplaced_variadics_and_bottom_types() {
+    assert_eq!(
+        run_r("echo 1; function f(...$a, $b) {}"),
+        fatal("Only the last parameter can be variadic")
+    );
+    assert_eq!(
+        run_r("echo 1; function f(...$a = []) {}"),
+        fatal("Variadic parameter cannot have a default value")
+    );
+    assert_eq!(
+        run_r("echo 1; function f(void $a) {}"),
+        fatal("void cannot be used as a parameter type")
+    );
+    assert_eq!(
+        run_r("echo 1; function f(?void $a) {}"),
+        fatal("Void can only be used as a standalone type")
+    );
+    assert_eq!(
+        run_r("echo 1; function f(?never $a) {}"),
+        fatal("never can only be used as a standalone type")
+    );
+}
+
+#[test]
+fn reading_this_with_no_object_bound_is_an_error() {
+    // php -r 'echo $this;' — no `Undefined variable` warning, an Error.
+    let thrown = |what: &str| {
+        (
+            format!(
+                "\nFatal error: Uncaught Error: Using $this when not in object context in Command \
+                 line code:1\nStack trace:\n#0 {what}\n"
+            ),
+            255,
+        )
+    };
+    assert_eq!(
+        run_r("echo $this;"),
+        thrown("{main}\n  thrown in Command line code on line 1")
+    );
+    assert_eq!(
+        run_r("$this->a = 1;"),
+        thrown("{main}\n  thrown in Command line code on line 1")
+    );
+    assert_eq!(
+        run_r("$this++;"),
+        thrown("{main}\n  thrown in Command line code on line 1")
+    );
+    assert_eq!(
+        run_r("function f() { return $this; } f();"),
+        thrown("Command line code(1): f()\n#1 {main}\n  thrown in Command line code on line 1")
+    );
+}

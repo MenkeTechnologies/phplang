@@ -414,6 +414,10 @@ pub struct Compiler {
     /// Set while lowering the body of a `function &f()`, so a `return` naming an
     /// lvalue publishes that storage cell instead of copying its value.
     ret_by_ref: bool,
+    /// The `void` or `never` return type of the body being lowered (`None`
+    /// for any other type, and for a generator), which every `return` in it is
+    /// checked against while compiling.
+    ret_rule: Option<&'static str>,
     /// Where the code currently being lowered was WRITTEN, which is what names
     /// a closure literal's stack frames (`{closure:<here>:<line>}`). It follows
     /// the declaration nesting rather than the call nesting: `Script` at the top
@@ -1088,7 +1092,10 @@ impl Compiler {
             format!("\"continue {level}\" targeting switch is equivalent to \"break {level}\"")
         };
         if has_parent {
-            msg.push_str(&format!(". Did you mean to use \"continue {}\"?", level + 1));
+            msg.push_str(&format!(
+                ". Did you mean to use \"continue {}\"?",
+                level + 1
+            ));
         }
         crate::lexer::push_diag("Warning", crate::errlevel::E_WARNING, line, msg);
     }
@@ -1431,6 +1438,9 @@ impl Compiler {
             StmtKind::Block(body) => self.compile_seq(b, body)?,
             StmtKind::Global(names) => {
                 for name in names {
+                    if name == "this" {
+                        return Err(self.compile_fatal(line, "Cannot use $this as global variable"));
+                    }
                     let nidx = b.add_constant(Value::str(name.clone()));
                     b.emit(Op::LoadConst(nidx), line);
                     b.emit(Op::CallBuiltin(ops::GLOBAL_BIND, 1), line);
@@ -1439,6 +1449,9 @@ impl Compiler {
             }
             StmtKind::StaticLocal(decls) => {
                 for (name, default) in decls {
+                    if name == "this" {
+                        return Err(self.compile_fatal(line, "Cannot use $this as static variable"));
+                    }
                     // A unique, stable key per declaration — baked into the chunk
                     // so every call resolves the same persistent slot.
                     let key = format!("@static#{}", self.static_slot);
@@ -1470,6 +1483,9 @@ impl Compiler {
                 }
             }
             StmtKind::Return(e) => {
+                if let Some(msg) = self.return_refusal(e.as_ref()) {
+                    return Err(self.compile_fatal(self.cur_line, &msg));
+                }
                 // Inside a `function &f()`, a `return` naming an lvalue publishes
                 // that storage cell (and still leaves its value, which is what a
                 // plain call sees). A returned expression that is not an lvalue
@@ -1562,6 +1578,8 @@ impl Compiler {
                 let saved = std::mem::take(&mut self.loops);
                 let saved_try = self.enter_own_loop_scope();
                 let saved_ref = std::mem::replace(&mut self.ret_by_ref, *by_ref_return);
+                let saved_rule =
+                    std::mem::replace(&mut self.ret_rule, ret_rule(ret.as_ref(), body));
                 // A closure written in this body is `{closure:name():LINE}`. PHP
                 // spells the enclosing function with its parentheses and in its
                 // DECLARED casing, not the lowercased lookup key.
@@ -1580,6 +1598,7 @@ impl Compiler {
                 self.ret_by_ref = saved_ref;
                 self.loops = saved;
                 self.leave_own_loop_scope(saved_try);
+                self.ret_rule = saved_rule;
                 self.functions.push((
                     name.to_ascii_lowercase(),
                     FuncDef {
@@ -1909,6 +1928,9 @@ impl Compiler {
         // `[$x, $y] = …` path is what makes a too-short element warn
         // ("Undefined array key N") and then bind null, rather than binding null
         // in silence.
+        if key_var == Some("this") || matches!(val, ForeachVal::Var(n) if n == "this") {
+            return Err(self.compile_fatal(self.cur_line, "Cannot re-assign $this"));
+        }
         let (val_name, pattern) = match val {
             ForeachVal::Var(n) => (n.clone(), None),
             ForeachVal::Pattern(p) => (self.tmp_name("fev"), Some(p)),
@@ -2389,11 +2411,155 @@ impl Compiler {
         last_required.unwrap_or(0)
     }
 
+    /// `zend_emit_return_type_check`'s compile errors for a `return` in a body
+    /// declared `void` (one that carries a value) or `never` (any). A body in a
+    /// class — including a closure written in a method — is a "method".
+    fn return_refusal(&self, e: Option<&Expr>) -> Option<String> {
+        let kind = if self.current_class.is_some() {
+            "method"
+        } else {
+            "function"
+        };
+        match (self.ret_rule?, e) {
+            ("void", Some(Expr::Null)) => Some(format!(
+                "A void {kind} must not return a value (did you mean \"return;\" instead of \
+                 \"return null;\"?)"
+            )),
+            ("void", Some(_)) => Some(format!("A void {kind} must not return a value")),
+            ("never", _) => Some(format!("A never-returning {kind} must not return")),
+            _ => None,
+        }
+    }
+
+    /// What `zend_compile_closure_binding` and `zend_compile_closure_uses` refuse
+    /// in a `use (...)` clause: `$this` and a superglobal, a name listed twice,
+    /// and a name that is also a parameter.
+    fn check_closure_uses(
+        &self,
+        params: &[Param],
+        uses: &[Capture],
+        line: u32,
+    ) -> Result<(), String> {
+        let mut seen: FxHashSet<&str> = FxHashSet::default();
+        for u in uses {
+            let msg = if u.name == "this" {
+                "Cannot use $this as lexical variable".to_string()
+            } else if is_auto_global(&u.name) {
+                "Cannot use auto-global as lexical variable".to_string()
+            } else if !seen.insert(&u.name) {
+                format!("Cannot use variable ${} twice", u.name)
+            } else {
+                continue;
+            };
+            return Err(self.compile_fatal(line, &msg));
+        }
+        if let Some(u) = uses
+            .iter()
+            .find(|u| params.iter().any(|p| p.name == u.name))
+        {
+            let msg = format!(
+                "Cannot use lexical variable ${} as a parameter name",
+                u.name
+            );
+            return Err(self.compile_fatal(line, &msg));
+        }
+        Ok(())
+    }
+
+    /// What the reference refuses in an `enum` declaration, in the order it
+    /// finds it: the backing type (at the declaration), then the members as
+    /// they are compiled — a case whose value disagrees with the enum being
+    /// backed or not, a property — and last, once the body is done, a magic
+    /// method an enum may not have.
+    fn check_enum(&self, decl: &ClassDecl) -> Result<(), String> {
+        if !decl.is_enum {
+            return Ok(());
+        }
+        let (name, line) = (&decl.name, self.cur_line);
+        if let Some(t) = &decl.enum_backing {
+            if !t.eq_ignore_ascii_case("int") && !t.eq_ignore_ascii_case("string") {
+                let msg = format!("Enum backing type must be int or string, {t} given");
+                return Err(self.compile_fatal(line, &msg));
+            }
+        }
+        let backed = decl.enum_backing.is_some();
+        let cases = decl.cases.iter().filter_map(|c| match (backed, &c.value) {
+            (true, None) => Some((
+                c.line,
+                format!("Case {} of backed enum {name} must have a value", c.name),
+            )),
+            (false, Some(_)) => Some((
+                c.line,
+                format!(
+                    "Case {} of non-backed enum {name} must not have a value",
+                    c.name
+                ),
+            )),
+            _ => None,
+        });
+        let props = decl
+            .props
+            .iter()
+            .map(|p| (p.line, format!("Enum {name} cannot include properties")));
+        if let Some((at, msg)) = cases.chain(props).min_by_key(|(at, _)| *at) {
+            return Err(self.compile_fatal(at, &msg));
+        }
+        // `zend_verify_enum_magic_methods` checks in this fixed order, and names
+        // the method in this spelling whatever the declaration wrote.
+        const BANNED: [&str; 14] = [
+            "__construct",
+            "__destruct",
+            "__clone",
+            "__get",
+            "__set",
+            "__unset",
+            "__isset",
+            "__toString",
+            "__debugInfo",
+            "__serialize",
+            "__unserialize",
+            "__sleep",
+            "__wakeup",
+            "__set_state",
+        ];
+        let has = |n: &str| decl.methods.iter().any(|m| m.name.eq_ignore_ascii_case(n));
+        if let Some(m) = BANNED.iter().find(|n| has(n)) {
+            let msg = format!("Enum {name} cannot include magic method {m}");
+            return Err(self.compile_fatal(line, &msg));
+        }
+        Ok(())
+    }
+
+    /// The per-parameter compile errors of `zend_compile_params`, in its order.
     fn check_params(&self, params: &[Param]) -> Result<(), String> {
         let mut seen: FxHashSet<&str> = FxHashSet::default();
-        for p in params {
+        for (i, p) in params.iter().enumerate() {
+            let fatal = |msg: &str| Err(self.compile_fatal(p.line, msg));
+            if is_auto_global(&p.name) {
+                return fatal(&format!("Cannot re-assign auto-global variable {}", p.name));
+            }
             if !seen.insert(&p.name) {
-                return Err(self.compile_fatal(p.line, &format!("Redefinition of parameter ${}", p.name)));
+                return fatal(&format!("Redefinition of parameter ${}", p.name));
+            }
+            if p.name == "this" {
+                return fatal("Cannot use $this as parameter");
+            }
+            if i > 0 && params[i - 1].variadic {
+                return fatal("Only the last parameter can be variadic");
+            }
+            if p.variadic && p.default.is_some() {
+                return fatal("Variadic parameter cannot have a default value");
+            }
+            let parts = p.ty.as_ref().map_or(&[][..], |t| t.parts.as_slice());
+            // The two spellings are the reference's own: `Void` is capitalized.
+            for (bottom, in_union) in [("void", "Void"), ("never", "never")] {
+                if parts.iter().any(|t| t.eq_ignore_ascii_case(bottom)) {
+                    return fatal(&if parts.len() > 1 {
+                        format!("{in_union} can only be used as a standalone type")
+                    } else {
+                        format!("{bottom} cannot be used as a parameter type")
+                    });
+                }
             }
         }
         Ok(())
@@ -2407,6 +2573,7 @@ impl Compiler {
     fn compile_class(&mut self, b: &mut ChunkBuilder, decl: &ClassDecl) -> Result<(), String> {
         if !self.prelude {
             self.check_class_members(decl)?;
+            self.check_enum(decl)?;
         }
         let prev_class = self.current_class.take();
         let prev_parent = self.current_parent.take();
@@ -2588,6 +2755,8 @@ impl Compiler {
                 }
             }
             let saved_ref = std::mem::replace(&mut self.ret_by_ref, m.by_ref_return);
+            let saved_rule =
+                std::mem::replace(&mut self.ret_rule, ret_rule(m.ret.as_ref(), &m.body));
             // A closure written in a method body is `{closure:Class::method():LINE}`
             // whether the method is static or not — PHP always spells the
             // enclosing method with `::` here, even though the FRAME above it
@@ -2613,6 +2782,7 @@ impl Compiler {
             self.ret_by_ref = saved_ref;
             self.loops = saved;
             self.leave_own_loop_scope(saved_try);
+            self.ret_rule = saved_rule;
             methods.insert(
                 m.name.to_ascii_lowercase(),
                 FuncDef {
@@ -3126,6 +3296,9 @@ impl Compiler {
         let try_chunk = self.compile_detached(body)?;
         let mut cc = Vec::with_capacity(catches.len());
         for c in catches {
+            if c.var.as_deref() == Some("this") {
+                return Err(self.compile_fatal(line, "Cannot re-assign $this"));
+            }
             cc.push(CatchClause {
                 classes: c.types.clone(),
                 var: c.var.clone(),
@@ -3659,7 +3832,11 @@ impl Compiler {
                 is_static,
                 line,
             } => {
+                self.check_closure_uses(params, uses, *line)?;
+                let saved_rule =
+                    std::mem::replace(&mut self.ret_rule, ret_rule(ret.as_ref(), body));
                 self.compile_closure(b, params, uses, body, ret.as_ref(), *is_static, *line)?;
+                self.ret_rule = saved_rule;
             }
             Expr::ArrowFn {
                 params,
@@ -3686,7 +3863,12 @@ impl Compiler {
                         by_ref: false,
                     })
                     .collect();
+                // The body IS a returned expression, which a `void` arrow function
+                // refuses; a `never` one is exempt (`fn(): never => throw $e`).
+                let rule = ret_rule(ret_ty.as_ref(), &ret).filter(|r| *r == "void");
+                let saved_rule = std::mem::replace(&mut self.ret_rule, rule);
                 self.compile_closure(b, params, &captures, &ret, ret_ty.as_ref(), false, *line)?;
+                self.ret_rule = saved_rule;
             }
             // The declaration is compiled here, once, and the expression becomes
             // an ordinary `new` on the name it was given — so re-evaluating it
@@ -4137,6 +4319,9 @@ impl Compiler {
         lhs: &Expr,
         rhs: &Expr,
     ) -> Result<(), String> {
+        if matches!(lhs, Expr::Var(n) if n == "this") {
+            return Err(self.compile_fatal(self.cur_line, "Cannot re-assign $this"));
+        }
         // `$a = &$b` between two plain variables keeps its compact lowering.
         if let (Expr::Var(t), Expr::Var(s)) = (lhs, rhs) {
             let ti = b.add_constant(Value::str(t.clone()));
@@ -4276,6 +4461,9 @@ impl Compiler {
     /// array element `$a[k1]..[kN]` (remove the deepest key).
     fn compile_unset_target(&mut self, b: &mut ChunkBuilder, t: &Expr) -> Result<(), String> {
         match t {
+            Expr::Var(name) if name == "this" => {
+                return Err(self.compile_fatal(self.cur_line, "Cannot unset $this"));
+            }
             Expr::PropGet(recv, prop) => {
                 self.compile_expr(b, recv)?;
                 self.emit_member(b, prop, self.cur_line)?;
@@ -4617,6 +4805,11 @@ impl Compiler {
         rhs: &Expr,
     ) -> Result<(), String> {
         match lhs {
+            // A compound `$this .= x` reads `$this` first and fails at run time;
+            // a plain store is refused while compiling.
+            Expr::Var(name) if name == "this" && op.is_none() => {
+                return Err(self.compile_fatal(self.cur_line, "Cannot re-assign $this"));
+            }
             Expr::Var(name) => {
                 self.emit_var_target(b, name);
                 match op {
@@ -4816,6 +5009,7 @@ impl Compiler {
                     return fatal("Cannot mix [] and list()");
                 }
                 Expr::Array(inner, syntax) => self.check_list_pattern(inner, *syntax)?,
+                Expr::Var(n) if n == "this" => return fatal("Cannot re-assign $this"),
                 // `zend_ensure_writable_variable`: a call is a variable to the
                 // grammar but not a place to store into.
                 Expr::Call(..) | Expr::CallValue(..) => {
@@ -5843,7 +6037,9 @@ impl Compiler {
     /// does. A plain `=` warns about neither. Anything else is an ordinary read.
     fn compile_prop_write_recv(&mut self, b: &mut ChunkBuilder, recv: &Expr, rw: bool) -> Result<(), String> {
         match recv {
-            Expr::Var(_) if !rw => self.compile_quiet(b, recv),
+            // `$this` is fetched like any read: with no object bound that is
+            // `Using $this when not in object context`, not a write on null.
+            Expr::Var(n) if !rw && n != "this" => self.compile_quiet(b, recv),
             Expr::PropGet(inner, name) => {
                 self.compile_prop_write_recv(b, inner, rw)?;
                 self.emit_member(b, name, 0)?;
@@ -6825,4 +7021,29 @@ fn implicitly_nullable(p: &Param) -> bool {
         && p.ty.as_ref().is_some_and(|t| {
             !t.nullable() && !t.parts.iter().any(|x| x.eq_ignore_ascii_case("mixed"))
         })
+}
+
+/// `zend_is_auto_global`: the superglobals, which a parameter or a `use`
+/// clause may not rebind. `$argv`/`$argc` are ordinary globals and do not count.
+fn is_auto_global(name: &str) -> bool {
+    crate::host::is_superglobal(name) && name != "argv" && name != "argc"
+}
+
+/// The return rule a body's declared type imposes on its `return`s: `void`,
+/// `never`, or none. A generator's declared type describes the `Generator`, not
+/// what its `return` statements carry, so it imposes none.
+fn ret_rule(ret: Option<&TypeHint>, body: &[Stmt]) -> Option<&'static str> {
+    let [only] = ret?.parts.as_slice() else {
+        return None;
+    };
+    if body_has_yield(body) {
+        return None;
+    }
+    if only.eq_ignore_ascii_case("void") {
+        Some("void")
+    } else if only.eq_ignore_ascii_case("never") {
+        Some("never")
+    } else {
+        None
+    }
 }

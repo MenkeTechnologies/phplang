@@ -1429,7 +1429,22 @@ fn b_setslot(vm: &mut VM, _: u8) -> Value {
 fn b_getvar(vm: &mut VM, _: u8) -> Value {
     let name = pop_name(vm);
     mark_warn_site(vm);
+    if name.as_str() == "this" {
+        return read_this(vm);
+    }
     with_host(|h| h.get_var_warn(&name))
+}
+
+/// `$this` in a value context: `ZEND_FETCH_THIS`, which has no undefined-variable
+/// warning to give — with no object bound the read is the `Error` `Using $this
+/// when not in object context`.
+fn read_this(vm: &mut VM) -> Value {
+    let this = with_host(|h| h.get_var("this"));
+    if matches!(this, Value::Undef) {
+        mark_frame_line(vm);
+        return throw_php(vm, "Error", "Using $this when not in object context");
+    }
+    this
 }
 
 /// `$name` read with no `Undefined variable` diagnostic — see `ops::GETVAR_Q`.
@@ -2214,6 +2229,15 @@ fn b_incdec(vm: &mut VM, _: u8) -> Value {
     let inc = code & 1 != 0;
     let prefix = code & 2 != 0;
     mark_warn_site(vm);
+    if name.as_str() == "this" {
+        // With no object bound `$this` is not even read; with one it is an
+        // object, which `++`/`--` refuse (`Cannot increment A`).
+        let this = read_this(vm);
+        if !host::unwinding() {
+            incdec_refused(vm, &this, inc);
+        }
+        return Value::Undef;
+    }
     // `$x++` on an unset variable reports it, exactly as reading it would.
     let old = with_host(|h| h.get_var_warn(&name));
     if incdec_refused(vm, &old, inc) {
