@@ -254,3 +254,94 @@ fn a_generator_unpacks_at_a_method_call() {
         echo (new C())->m(...(function () { yield 5; yield 6; })());"#;
     assert_eq!(run(src), "11");
 }
+
+// ── compile-time deprecations over defaults (`zend_compile_params`) ──────────
+
+/// `php -d log_errors=0 -r <code>`: the displayed output and exit status. The
+/// deprecations are raised while the file compiles, so the binary is driven.
+fn php_r(code: &str) -> (String, i32) {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_php"))
+        .args(["-d", "log_errors=0", "-r", code])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("spawn php");
+    (
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        out.status.code().unwrap_or(-1),
+    )
+}
+
+const IN: &str = "in Command line code on line 1";
+
+#[test]
+fn a_default_ahead_of_a_required_parameter_is_dropped() {
+    // php -r 'function f(int $a = null, $b = 1, $c) { var_dump($a); } f(null, 2, 3); f(5, c: 1);'
+    // `$a = null` on a non-nullable type is the implicit-nullable spelling: it
+    // widens the type (an explicit null is accepted) and is exempt from the
+    // optional-before-required deprecation, though its default is dropped too.
+    let (out, code) =
+        php_r("function f(int $a = null, $b = 1, $c) { var_dump($a); } f(null, 2, 3); f(5, c: 1);");
+    assert_eq!(
+        out,
+        format!(
+            "\nDeprecated: f(): Implicitly marking parameter $a as nullable is deprecated, the \
+             explicit nullable type must be used instead {IN}\n\
+             \nDeprecated: f(): Optional parameter $b declared before required parameter $c is \
+             implicitly treated as a required parameter {IN}\n\
+             NULL\n\
+             \nFatal error: Uncaught ArgumentCountError: f(): Argument #2 ($b) not passed in \
+             Command line code:1\nStack trace:\n#0 Command line code(1): f(5, NULL, 1)\n#1 {{main}}\n  \
+             thrown {IN}\n"
+        )
+    );
+    assert_eq!(code, 255);
+}
+
+#[test]
+fn the_deprecations_name_methods_and_closures_as_the_reference_does() {
+    // php -r 'class K { function m(?int $a = null, $b) {} } $f = fn(string $s = null) => $s ?? "d"; echo $f(), "\n";'
+    let (out, code) = php_r(
+        r#"class K { function m(?int $a = null, $b) {} } $f = fn(string $s = null) => $s ?? "d"; echo $f(), "\n";"#,
+    );
+    assert_eq!(
+        out,
+        format!(
+            "\nDeprecated: K::m(): Optional parameter $a declared before required parameter $b is \
+             implicitly treated as a required parameter {IN}\n\
+             \nDeprecated: {{closure:Command line code:1}}(): Implicitly marking parameter $s as \
+             nullable is deprecated, the explicit nullable type must be used instead {IN}\n\
+             d\n"
+        )
+    );
+    assert_eq!(code, 0);
+}
+
+#[test]
+fn a_type_that_admits_null_is_not_implicitly_nullable() {
+    // php -r 'function f(int|null $a = null, mixed $b = null, ?int $c = null, $d = 1, ...$e) {} echo "ok";'
+    assert_eq!(
+        php_r(
+            "function f(int|null $a = null, mixed $b = null, ?int $c = null, $d = 1, ...$e) {} \
+             echo \"ok\";"
+        ),
+        ("ok".to_string(), 0)
+    );
+}
+
+#[test]
+fn an_argument_refusal_is_raised_at_the_parameters_declared_line() {
+    // The reference raises these from the callee's receive for the parameter,
+    // so `getLine()` is where that parameter is written, not the call.
+    let src = "function f(\n$a,\nint $b\n) {}\n\
+               foreach ([fn() => f(), fn() => f(1), fn() => f(1, \"x\"), fn() => f(b: 2)] as $g) {\n\
+               try { $g(); } catch (TypeError $e) { echo get_class($e), \" \", $e->getLine(), \"\\n\"; }\n\
+               }";
+    assert_eq!(
+        php_r(src),
+        (
+            "ArgumentCountError 2\nArgumentCountError 3\nTypeError 3\nArgumentCountError 2\n"
+                .to_string(),
+            0
+        )
+    );
+}

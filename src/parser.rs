@@ -764,14 +764,17 @@ impl Parser {
     }
 
     /// The optional numeric level of a `break`/`continue` (`break 2;`),
-    /// defaulting to 1. PHP only accepts a literal integer here.
+    /// defaulting to 1. PHP only accepts a literal integer here. A literal that
+    /// is not a positive integer (`0`, `1.5`) reads as level 0, which the
+    /// compiler refuses with `'break' operator accepts only positive integers`.
     fn break_level(&mut self) -> u32 {
-        if let Some(Tok::Int(n)) = self.peek() {
-            let n = *n;
-            self.pos += 1;
-            return (n.max(1)) as u32;
-        }
-        1
+        let level = match self.peek() {
+            Some(Tok::Int(n)) => (*n).clamp(0, u32::MAX as i64) as u32,
+            Some(Tok::Float(_)) => 0,
+            _ => return 1,
+        };
+        self.pos += 1;
+        level
     }
 
     /// True if the next token is the keyword `kw` (case-insensitive, as PHP).

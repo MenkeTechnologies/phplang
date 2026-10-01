@@ -313,3 +313,73 @@ fn an_unhandled_match_names_the_type_of_a_non_scalar_subject() {
         "Unhandled match case of type Closure"
     );
 }
+
+// ── what `zend_compile_break_continue` refuses or warns about ───────────────
+
+/// `php -d log_errors=0 -r <code>`: the displayed output and exit status.
+/// Everything here is decided while the file compiles, so the binary is driven.
+fn php_r(code: &str) -> (String, i32) {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_php"))
+        .args(["-d", "log_errors=0", "-r", code])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("spawn php");
+    (
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        out.status.code().unwrap_or(-1),
+    )
+}
+
+fn compile_fatal(msg: &str) -> (String, i32) {
+    (
+        format!("\nFatal error: {msg} in Command line code on line 1\nStack trace:\n#0 {{main}}\n"),
+        255,
+    )
+}
+
+#[test]
+fn a_break_level_with_no_loop_to_reach_is_a_compile_error() {
+    // php -r 'echo "pre"; while (1) { break 0; }'
+    assert_eq!(
+        php_r(r#"echo "pre"; while (1) { break 0; }"#),
+        compile_fatal("'break' operator accepts only positive integers")
+    );
+    assert_eq!(
+        php_r("function f() { continue; }"),
+        compile_fatal("'continue' not in the 'loop' or 'switch' context")
+    );
+    // A `try` body is lowered as its own chunk; the loops around it still count.
+    assert_eq!(
+        php_r("foreach ([1] as $x) { while (1) { try { break 3; } finally {} } }"),
+        compile_fatal("Cannot 'break' 3 levels")
+    );
+    assert_eq!(
+        php_r("while (1) { try { function g() { break; } } finally {} }"),
+        compile_fatal("'break' not in the 'loop' or 'switch' context")
+    );
+}
+
+#[test]
+fn a_continue_that_lands_on_a_switch_warns_once() {
+    // php -r 'function f() { foreach ([1, 2] as $x) { switch ($x) { case 1: continue; default: echo $x; } } } f();'
+    // The foreach body is lowered twice internally; the warning is raised once.
+    assert_eq!(
+        php_r("function f() { foreach ([1, 2] as $x) { switch ($x) { case 1: continue; default: echo $x; } } } f();"),
+        (
+            "\nWarning: \"continue\" targeting switch is equivalent to \"break\". Did you mean to \
+             use \"continue 2\"? in Command line code on line 1\n2"
+                .to_string(),
+            0
+        )
+    );
+    // php -r 'switch (1) { case 1: switch (2) { default: continue 2; } } echo "end";'
+    assert_eq!(
+        php_r(r#"switch (1) { case 1: switch (2) { default: continue 2; } } echo "end";"#),
+        (
+            "\nWarning: \"continue 2\" targeting switch is equivalent to \"break 2\" in Command \
+             line code on line 1\nend"
+                .to_string(),
+            0
+        )
+    );
+}

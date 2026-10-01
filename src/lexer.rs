@@ -52,6 +52,18 @@ pub fn take_diags() -> Vec<CompileDiag> {
     DIAGS.with(|d| std::mem::take(&mut *d.borrow_mut()))
 }
 
+/// How many diagnostics are queued — a mark for [`truncate_diags`].
+pub(crate) fn diag_count() -> usize {
+    DIAGS.with(|d| d.borrow().len())
+}
+
+/// Drop the diagnostics queued since `mark`. For a body the compiler lowers
+/// twice (a `foreach` body, once per subject kind), whose compile-time
+/// warnings the reference raises once.
+pub(crate) fn truncate_diags(mark: usize) {
+    DIAGS.with(|d| d.borrow_mut().truncate(mark));
+}
+
 pub(crate) fn push_diag(severity: &'static str, level: i64, line: u32, msg: impl Into<String>) {
     DIAGS.with(|d| {
         d.borrow_mut().push(CompileDiag {

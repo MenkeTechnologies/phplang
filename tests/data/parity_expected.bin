@@ -1810,3 +1810,48 @@ int(7)
 int(8)
 int(9)
 
+#REC 94 exit=0 out=707 err=677
+
+Deprecated: pd_f(): Implicitly marking parameter $a as nullable is deprecated, the explicit nullable type must be used instead in Command line code on line 2
+
+Deprecated: pd_f(): Optional parameter $b declared before required parameter $c is implicitly treated as a required parameter in Command line code on line 2
+
+Deprecated: PdK::m(): Optional parameter $a declared before required parameter $b is implicitly treated as a required parameter in Command line code on line 3
+
+Deprecated: {closure:Command line code:4}(): Implicitly marking parameter $s as nullable is deprecated, the explicit nullable type must be used instead in Command line code on line 4
+NULL
+dflt
+pd_f(): Argument #2 ($b) not passed
+PHP Deprecated:  pd_f(): Implicitly marking parameter $a as nullable is deprecated, the explicit nullable type must be used instead in Command line code on line 2
+PHP Deprecated:  pd_f(): Optional parameter $b declared before required parameter $c is implicitly treated as a required parameter in Command line code on line 2
+PHP Deprecated:  PdK::m(): Optional parameter $a declared before required parameter $b is implicitly treated as a required parameter in Command line code on line 3
+PHP Deprecated:  {closure:Command line code:4}(): Implicitly marking parameter $s as nullable is deprecated, the explicit nullable type must be used instead in Command line code on line 4
+
+#REC 95 exit=255 out=211 err=215
+
+Fatal error: Uncaught ArgumentCountError: hole_f(): Argument #2 ($b) not passed in Command line code:2
+Stack trace:
+#0 Command line code(3): hole_f(1, NULL, 3)
+#1 {main}
+  thrown in Command line code on line 2
+PHP Fatal error:  Uncaught ArgumentCountError: hole_f(): Argument #2 ($b) not passed in Command line code:2
+Stack trace:
+#0 Command line code(3): hole_f(1, NULL, 3)
+#1 {main}
+  thrown in Command line code on line 2
+
+#REC 96 exit=0 out=131 err=133
+
+Warning: "continue" targeting switch is equivalent to "break". Did you mean to use "continue 2"? in Command line code on line 2
+2
+PHP Warning:  "continue" targeting switch is equivalent to "break". Did you mean to use "continue 2"? in Command line code on line 2
+
+#REC 97 exit=255 out=92 err=96
+
+Fatal error: Cannot 'break' 3 levels in Command line code on line 3
+Stack trace:
+#0 {main}
+PHP Fatal error:  Cannot 'break' 3 levels in Command line code on line 3
+Stack trace:
+#0 {main}
+

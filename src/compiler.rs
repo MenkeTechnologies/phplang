@@ -124,6 +124,8 @@ struct LoopCtx {
     /// reference frees the loop's iterator and so destroys a generator nothing
     /// else holds.
     gen_subj: Option<(String, String)>,
+    /// A `switch`, which `continue` reaches like a loop but warns about.
+    is_switch: bool,
 }
 
 /// One segment of a flattened array lvalue chain: an explicit `[key]` or an
@@ -381,6 +383,11 @@ pub struct Compiler {
     /// While `> 0` with no loop in the same detached chunk, `break`/`continue`
     /// lower to control signals the orchestrator relays, not in-chunk jumps.
     in_try: usize,
+    /// The loops (and `switch`es) enclosing the current detached `try` chunk
+    /// from the chunks around it, outermost first, each marked `true` for a
+    /// `switch` — the levels a `break` here can still reach through a control
+    /// signal. A function body starts again from none.
+    outer_loops: Vec<bool>,
     /// Monotonic counter for compiler-generated temporary variable names
     /// (`foreach` desugaring), kept out of the PHP identifier space with a `@`.
     tmp: usize,
@@ -689,11 +696,21 @@ impl Compiler {
     /// Compile a formal parameter list, lowering each default-value expression to
     /// its own chunk (run in the callee frame when the argument is omitted).
     /// Shared by named functions, closures, and methods.
-    fn compile_params(&mut self, params: &[Param]) -> Result<Vec<host::Param>, String> {
+    ///
+    /// `owner` is the function as the reference names it in a compile-time
+    /// diagnostic — `f()`, `K::m()`, `{closure:FILE:LINE}()`.
+    fn compile_params(
+        &mut self,
+        params: &[Param],
+        owner: &str,
+    ) -> Result<Vec<host::Param>, String> {
         self.check_params(params)?;
+        let required_before = self.check_param_defaults(params, owner);
         let mut out = Vec::with_capacity(params.len());
-        for p in params {
+        for (i, p) in params.iter().enumerate() {
+            // An optional parameter ahead of a required one is required too.
             let default = match &p.default {
+                Some(_) if i < required_before => None,
                 Some(expr) => {
                     let mut db = ChunkBuilder::new();
                     self.in_other_frame(|c| c.compile_expr(&mut db, expr))?;
@@ -707,7 +724,12 @@ impl Compiler {
                 default,
                 variadic: p.variadic,
                 by_ref: p.by_ref,
-                ty: p.ty.clone(),
+                ty: p.ty.clone().map(|mut t| {
+                    if implicitly_nullable(p) {
+                        t.parts.push("null".to_string());
+                    }
+                    t
+                }),
             });
         }
         Ok(out)
@@ -1054,6 +1076,60 @@ impl Compiler {
     /// have that many enclosing loops.
     fn loop_at_level(&self, level: u32) -> Option<usize> {
         self.loops.len().checked_sub(level.max(1) as usize)
+    }
+
+    /// `zend_compile_break_continue`'s compile-time warning for a `continue`
+    /// that lands on a `switch`, which acts as a `break`. When a loop encloses
+    /// the switch the warning suggests the level that would reach it.
+    fn warn_continue_targets_switch(&self, level: u32, has_parent: bool, line: u32) {
+        let mut msg = if level == 1 {
+            "\"continue\" targeting switch is equivalent to \"break\"".to_string()
+        } else {
+            format!("\"continue {level}\" targeting switch is equivalent to \"break {level}\"")
+        };
+        if has_parent {
+            msg.push_str(&format!(". Did you mean to use \"continue {}\"?", level + 1));
+        }
+        crate::lexer::push_diag("Warning", crate::errlevel::E_WARNING, line, msg);
+    }
+
+    /// Enter a function, method or closure body: no `try` and no loop around
+    /// it is visible from inside. Returns what [`Self::leave_own_loop_scope`]
+    /// puts back. (`self.loops` itself is saved by each caller.)
+    fn enter_own_loop_scope(&mut self) -> (usize, Vec<bool>) {
+        (
+            std::mem::take(&mut self.in_try),
+            std::mem::take(&mut self.outer_loops),
+        )
+    }
+
+    fn leave_own_loop_scope(&mut self, (in_try, outer_loops): (usize, Vec<bool>)) {
+        self.in_try = in_try;
+        self.outer_loops = outer_loops;
+    }
+
+    /// How a `break`/`continue` of `level` leaves this chunk: `Ok(Some(i))` jumps
+    /// to `self.loops[i]`, `Ok(None)` is a control signal relayed out of a
+    /// detached `try` chunk, and `Err` is the compile error
+    /// `zend_compile_break_continue` raises — a level of 0, or more levels than
+    /// there are enclosing loops in this function.
+    ///
+    /// A `continue` that lands on a `switch` — here or in an enclosing chunk —
+    /// also raises the reference's compile-time warning.
+    fn break_target(&self, kw: &str, level: u32, line: u32) -> Result<Option<usize>, String> {
+        let depth = self.loops.len() + self.outer_loops.len();
+        if level == 0 || level as usize > depth {
+            return Err(self.compile_fatal(line, &break_level_error(kw, level, depth)));
+        }
+        let target = depth - level as usize;
+        let is_switch = match target.checked_sub(self.outer_loops.len()) {
+            Some(i) => self.loops[i].is_switch,
+            None => self.outer_loops[target],
+        };
+        if kw == "continue" && is_switch {
+            self.warn_continue_targets_switch(level, target > 0, line);
+        }
+        Ok(self.loop_at_level(level))
     }
 
     fn collect_byref(&mut self, stmts: &[Stmt]) {
@@ -1430,30 +1506,26 @@ impl Compiler {
                 // this chunk → an in-chunk jump. Inside a `try` body with no such
                 // loop → a control signal the orchestrator relays to the
                 // enclosing loop.
-                if let Some(idx) = self.loop_at_level(*level) {
+                if let Some(idx) = self.break_target("break", *level, line)? {
                     let j = b.emit(Op::Jump(0), line);
                     self.loops[idx].breaks.push(j);
-                } else if self.in_try > 0 {
+                } else {
                     // No loop for it in this chunk: raise a signal carrying the
                     // levels still to unwind, which the `try` dispatch in the
                     // enclosing chunk resolves (or re-raises, decremented).
                     b.emit(Op::LoadInt(*level as i64), line);
                     b.emit(Op::CallBuiltin(ops::SIG_BREAK, 1), line);
                     b.emit(Op::Pop, line);
-                } else {
-                    return Err(break_level_error("break", *level, self.loops.len()));
                 }
             }
             StmtKind::Continue(level) => {
-                if let Some(idx) = self.loop_at_level(*level) {
+                if let Some(idx) = self.break_target("continue", *level, line)? {
                     let j = b.emit(Op::Jump(0), line);
                     self.loops[idx].continues.push(j);
-                } else if self.in_try > 0 {
+                } else {
                     b.emit(Op::LoadInt(*level as i64), line);
                     b.emit(Op::CallBuiltin(ops::SIG_CONTINUE, 1), line);
                     b.emit(Op::Pop, line);
-                } else {
-                    return Err(break_level_error("continue", *level, self.loops.len()));
                 }
             }
             StmtKind::Try {
@@ -1478,11 +1550,17 @@ impl Compiler {
                 }
                 // Each default-value expression is lowered to its own tiny chunk,
                 // run in the callee frame when the argument is omitted (host).
-                let cparams = self.compile_params(params)?;
+                let owner = if namespace.is_empty() {
+                    format!("{name}()")
+                } else {
+                    format!("{namespace}\\{name}()")
+                };
+                let cparams = self.compile_params(params, &owner)?;
                 let mut fb = ChunkBuilder::new();
                 // A function body has its own loop scope: a break inside it must
                 // not target a loop at the call site.
                 let saved = std::mem::take(&mut self.loops);
+                let saved_try = self.enter_own_loop_scope();
                 let saved_ref = std::mem::replace(&mut self.ret_by_ref, *by_ref_return);
                 // A closure written in this body is `{closure:name():LINE}`. PHP
                 // spells the enclosing function with its parentheses and in its
@@ -1501,6 +1579,7 @@ impl Compiler {
                 self.decl_site = saved_site;
                 self.ret_by_ref = saved_ref;
                 self.loops = saved;
+                self.leave_own_loop_scope(saved_try);
                 self.functions.push((
                     name.to_ascii_lowercase(),
                     FuncDef {
@@ -1645,6 +1724,7 @@ impl Compiler {
             breaks: vec![],
             continues: vec![],
             gen_subj: None,
+            is_switch: false,
         });
         self.compile_seq(b, body)?;
         let ctx = self.loops.pop().unwrap();
@@ -1674,6 +1754,7 @@ impl Compiler {
             breaks: vec![],
             continues: vec![],
             gen_subj: None,
+            is_switch: false,
         });
         self.compile_seq(b, body)?;
         let ctx = self.loops.pop().unwrap();
@@ -1727,6 +1808,7 @@ impl Compiler {
             breaks: vec![],
             continues: vec![],
             gen_subj: None,
+            is_switch: true,
         });
         let mut body_starts = Vec::with_capacity(cases.len());
         for case in cases {
@@ -1775,6 +1857,7 @@ impl Compiler {
             breaks: vec![],
             continues: vec![],
             gen_subj: None,
+            is_switch: false,
         });
         self.compile_seq(b, body)?;
         let ctx = self.loops.pop().unwrap();
@@ -1855,7 +1938,11 @@ impl Compiler {
         b.emit(Op::CallBuiltin(ops::IS_GENERATOR, 1), 0);
         b.emit(Op::CallBuiltin(ops::TRUTHY, 1), 0);
         let to_array = b.emit(Op::JumpIfFalse(0), 0);
+        // The body is lowered twice; its compile-time warnings are kept from the
+        // array copy below only, so each is raised once.
+        let diags = crate::lexer::diag_count();
         self.compile_foreach_generator(b, &subj_t, mark_t.as_deref(), key_var, val_var, pattern, body)?;
+        crate::lexer::truncate_diags(diags);
         let after_gen = b.emit(Op::Jump(0), 0);
         let array_start = b.current_pos();
         b.patch_jump(to_array, array_start);
@@ -1964,6 +2051,7 @@ impl Compiler {
             breaks: vec![],
             continues: vec![],
             gen_subj: None,
+            is_switch: false,
         });
         self.compile_seq(b, body)?;
         let ctx = self.loops.pop().unwrap();
@@ -2044,6 +2132,7 @@ impl Compiler {
             breaks: vec![],
             continues: vec![],
             gen_subj: mark_t.map(|m| (subj_t.to_string(), m.to_string())),
+            is_switch: false,
         });
         self.compile_seq(b, body)?;
         let ctx = self.loops.pop().unwrap();
@@ -2257,6 +2346,49 @@ impl Compiler {
 
     /// A parameter list that names one parameter twice is the reference's
     /// compile-time `Redefinition of parameter $x`, reported at the second.
+    /// The deprecations `zend_compile_params` raises over parameter defaults,
+    /// one parameter at a time in declared order, and the index of the last
+    /// required parameter — every default ahead of it is discarded, so those
+    /// parameters become required (`exactly N expected`, `Argument #1 ($a) not
+    /// passed`).
+    ///
+    /// A typed parameter defaulting to a literal `null` whose type does not
+    /// admit null is the old spelling of `?T`: it raises `Implicitly marking
+    /// parameter $a as nullable is deprecated` wherever it stands, and is
+    /// exempt from `Optional parameter $a declared before required parameter
+    /// $b is implicitly treated as a required parameter`, which every other
+    /// default ahead of the last required parameter raises.
+    fn check_param_defaults(&self, params: &[Param], owner: &str) -> usize {
+        let last_required = params
+            .iter()
+            .rposition(|p| p.default.is_none() && !p.variadic);
+        if self.prelude {
+            return last_required.unwrap_or(0);
+        }
+        for (i, p) in params.iter().enumerate() {
+            if p.default.is_none() {
+                continue;
+            }
+            let msg = if implicitly_nullable(p) {
+                format!(
+                    "{owner}: Implicitly marking parameter ${} as nullable is deprecated, the \
+                     explicit nullable type must be used instead",
+                    p.name
+                )
+            } else if let Some(r) = last_required.filter(|&r| i < r) {
+                format!(
+                    "{owner}: Optional parameter ${} declared before required parameter ${} is \
+                     implicitly treated as a required parameter",
+                    p.name, params[r].name
+                )
+            } else {
+                continue;
+            };
+            crate::lexer::push_diag("Deprecated", crate::errlevel::E_DEPRECATED, p.line, msg);
+        }
+        last_required.unwrap_or(0)
+    }
+
     fn check_params(&self, params: &[Param]) -> Result<(), String> {
         let mut seen: FxHashSet<&str> = FxHashSet::default();
         for p in params {
@@ -2421,10 +2553,16 @@ impl Compiler {
             } else {
                 finals.methods.remove(&m.name.to_ascii_lowercase());
             }
-            let cparams = self.compile_params(&m.params)?;
+            let owner = if decl.namespace.is_empty() {
+                format!("{}::{}()", decl.name, m.name)
+            } else {
+                format!("{}\\{}::{}()", decl.namespace, decl.name, m.name)
+            };
+            let cparams = self.compile_params(&m.params, &owner)?;
             let mut mb = ChunkBuilder::new();
             // A method body has its own loop scope (as free functions do).
             let saved = std::mem::take(&mut self.loops);
+            let saved_try = self.enter_own_loop_scope();
             // Constructor property promotion: `public int $x` also assigns
             // `$this->x = $x` before the body runs.
             let mut promotions: Vec<Expr> = Vec::new();
@@ -2474,6 +2612,7 @@ impl Compiler {
             self.decl_site = saved_site;
             self.ret_by_ref = saved_ref;
             self.loops = saved;
+            self.leave_own_loop_scope(saved_try);
             methods.insert(
                 m.name.to_ascii_lowercase(),
                 FuncDef {
@@ -2958,9 +3097,14 @@ impl Compiler {
         // A detached body must not see the enclosing loop's break/continue
         // fixups — those live in the parent chunk, unreachable from here.
         let saved = std::mem::take(&mut self.loops);
+        // Put back by value, not by undoing the increments: a body that fails
+        // to compile returns early from a nested function scope without
+        // restoring what that scope zeroed.
+        let around = (self.in_try, self.outer_loops.clone());
+        self.outer_loops.extend(saved.iter().map(|l| l.is_switch));
         self.in_try += 1;
         let r = self.compile_seq(&mut fb, body);
-        self.in_try -= 1;
+        (self.in_try, self.outer_loops) = around;
         self.loops = saved;
         r?;
         Ok(fb.build())
@@ -5010,11 +5154,14 @@ impl Compiler {
         is_static: bool,
         line: u32,
     ) -> Result<(), String> {
-        let cparams = self.compile_params(params)?;
+        let script = host::with_host(|h| h.script_name().to_string());
+        let owner = format!("{{closure:{}:{line}}}()", self.decl_site.render(&script));
+        let cparams = self.compile_params(params, &owner)?;
         let mut fb = ChunkBuilder::new();
         // Like a named function, the body gets its own loop scope so a `break`
         // inside it cannot target a loop at the creation site.
         let saved = std::mem::take(&mut self.loops);
+        let saved_try = self.enter_own_loop_scope();
         // This literal's own site, which names its frames — and which a closure
         // written INSIDE it nests under, so `{closure:{closure:f.php:2}:3}`
         // falls out of the same rule rather than being a second case.
@@ -5023,6 +5170,7 @@ impl Compiler {
         self.in_other_frame(|c| c.compile_seq(&mut fb, body))?;
         self.decl_site = saved_site;
         self.loops = saved;
+        self.leave_own_loop_scope(saved_try);
         let def_name = self.tmp_name("closure");
         self.functions.push((
             def_name.clone(),
@@ -6066,8 +6214,10 @@ fn expr_has_yield(e: &Expr) -> bool {
 /// PHP's compile-time error for a `break`/`continue` level that exceeds the
 /// number of enclosing loops, or that appears outside a loop entirely.
 fn break_level_error(kw: &str, level: u32, depth: usize) -> String {
-    if depth == 0 {
-        format!("'{kw}' outside of a loop")
+    if level == 0 {
+        format!("'{kw}' operator accepts only positive integers")
+    } else if depth == 0 {
+        format!("'{kw}' not in the 'loop' or 'switch' context")
     } else {
         format!("Cannot '{kw}' {level} levels")
     }
@@ -6665,4 +6815,14 @@ fn list_target_writable(target: &Expr) -> bool {
             _ => return false,
         }
     }
+}
+
+/// `Type $p = null` whose type does not already admit null — the pre-`?T`
+/// spelling of a nullable parameter. The reference widens the declared type
+/// with `null`, so an explicit `null` argument is accepted too.
+fn implicitly_nullable(p: &Param) -> bool {
+    matches!(p.default, Some(Expr::Null))
+        && p.ty.as_ref().is_some_and(|t| {
+            !t.nullable() && !t.parts.iter().any(|x| x.eq_ignore_ascii_case("mixed"))
+        })
 }

@@ -7837,13 +7837,26 @@ fn check_call_shape(
         .chain(std::iter::once(args.len()))
         .max()
         .unwrap_or(0);
+    // The frame shows the arguments where they landed: a named one in its
+    // parameter's slot, and NULL in each slot left empty before it —
+    // `f(1, c: 3)` is traced as `f(1, NULL, 3)`.
+    let placed: Vec<Value> = (0..reached)
+        .map(|j| match args.get(j) {
+            Some(v) => v.clone(),
+            None => named
+                .iter()
+                .find(|(n, _)| *n == params[j].name)
+                .map_or(Value::Undef, |(_, v)| v.clone()),
+        })
+        .collect();
     if i < reached {
         let argno = i + 1;
-        throw_from_internal(
+        throw_at_param(
             frame,
-            &called_with,
+            &placed,
             "ArgumentCountError",
             &format!("{shown}(): Argument #{argno} (${}) not passed", p.name),
+            p.line,
         )?;
         return Ok(false);
     }
@@ -7858,14 +7871,15 @@ fn check_call_shape(
     };
     let passed = args.len() + named.len();
     let (file, line) = with_host(|h| (h.current_file().to_string(), h.cur_frame_line()));
-    throw_from_internal(
+    throw_at_param(
         frame,
-        &called_with,
+        &placed,
         "ArgumentCountError",
         &format!(
             "Too few arguments to function {shown}(), {passed} passed in {file} \
              on line {line} and {bound} {required} expected"
         ),
+        p.line,
     )?;
     Ok(false)
 }
@@ -7965,6 +7979,40 @@ fn coerce_arg(p: Option<&Param>, v: Value) -> Result<Result<Value, String>, Stri
     }))
 }
 
+/// Throw a refusal of a user function's arguments. The reference raises it
+/// from the callee's receive for that parameter, so the exception's `line` is
+/// where the parameter is DECLARED while its trace still shows the call:
+///
+/// ```text
+/// $ php -r 'function f(
+/// $a)
+/// {}
+/// f();'   -> Too few arguments to function f(), 0 passed in … on line 4 … in Command line code:2
+/// ```
+fn throw_at_param(
+    frame: &str,
+    called_with: &[Value],
+    class: &str,
+    msg: &str,
+    decl_line: u32,
+) -> Result<Value, String> {
+    let r = throw_from_internal(frame, called_with, class, msg);
+    // A method of a PHP-written prelude class stands in for an internal one,
+    // which has no declaration to point at: the caller's line stays.
+    let internal = frame
+        .split_once("::")
+        .is_some_and(|(c, _)| crate::prelude_type(&c.to_ascii_lowercase()).is_some());
+    if internal {
+        return r;
+    }
+    with_host(|h| {
+        if let Some(exc) = h.pending_throw.clone() {
+            h.prop_set(&exc, "line", Value::int(decl_line as i64));
+        }
+    });
+    r
+}
+
 /// Raise the `TypeError` for an argument that did not satisfy its declared type,
 /// from a frame naming the callee — so the trace reads `#0 file(line): f('abc')`
 /// exactly as it does when the reference rejects the same call.
@@ -7985,15 +8033,14 @@ fn arg_type_error(
     let rendered = ty.map(|t| t.render()).unwrap_or_default();
     let (file, line) = with_host(|h| (h.current_file().to_string(), h.cur_frame_line()));
     let shown = display_frame(frame);
-    throw_from_internal(
-        frame,
-        called_with,
-        "TypeError",
-        &format!(
-            "{shown}(): Argument #{pos}{name} must be of type {rendered}, {given} given, \
-             called in {file} on line {line}"
-        ),
-    )
+    let msg = &format!(
+        "{shown}(): Argument #{pos}{name} must be of type {rendered}, {given} given, \
+         called in {file} on line {line}"
+    );
+    match p {
+        Some(p) => throw_at_param(frame, called_with, "TypeError", msg, p.line),
+        None => throw_from_internal(frame, called_with, "TypeError", msg),
+    }
 }
 
 /// Apply a declared return type to the value a body produced. Like the argument

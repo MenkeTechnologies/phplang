@@ -1049,3 +1049,23 @@ $a = [1, , 2];
 list(, list(, $d)) = [5, [6, 7]];
 ['x' => $x, 'y' => ['z' => $z]] = ['x' => 8, 'y' => ['z' => 9]];
 var_dump($b, $c, $d, $x, $z);
+#==#
+// ── a default ahead of a required parameter is dropped, and deprecated ──
+function pd_f(int $a = null, $b = 1, $c) { var_dump($a); }
+class PdK { function m(?int $a = null, $b) {} }
+$pd = fn(string $s = null) => $s ?? "dflt";
+pd_f(null, 2, 3);
+echo $pd(), "\n";
+try { pd_f(5, c: 1); } catch (ArgumentCountError $e) { echo $e->getMessage(), "\n"; }
+#==#
+// ── a named argument past a hole: the trace shows NULL in the empty slots ──
+function hole_f($a, $b, $c) {}
+hole_f(1, c: 3);
+#==#
+// ── a continue that lands on a switch warns once at compile time ──
+function sw_f() { foreach ([1, 2] as $x) { switch ($x) { case 1: continue; default: echo $x, "\n"; } } }
+sw_f();
+#==#
+// ── a break level no loop can reach ──
+echo "never printed\n";
+foreach ([1] as $x) { while (1) { try { break 3; } finally {} } }
