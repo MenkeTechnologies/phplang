@@ -4817,6 +4817,13 @@ pub const CORPUS: &[Entry] = &[
         "var_dump(checkdate(2, 29, 2024), checkdate(2, 30, 2024));   // => bool(true) bool(false)",
     ),
     (
+        "idate",
+        "Date and time",
+        "idate(string $format, ?int $timestamp = null): int|false",
+        "One `date()` field as an int (`php_idate`): `d j N w z W m n t L y Y o B g h H G i s I Z U`. A format longer than one character, or an unknown one, warns and returns `false`.",
+        "echo idate(\"Y\", 0), idate(\"z\", 86400 * 40);   // => 197040",
+    ),
+    (
         "microtime",
         "Date and time",
         "microtime(bool $as_float = false): float|string",

@@ -103,3 +103,14 @@ fn sprintf_non_finite_and_negative_zero() {
         "0.000000|0.000000e+0|-0|+0.000000|+1.5e+0|+2.5"
     );
 }
+
+#[test]
+fn a_left_justified_field_pads_with_its_padding_character() {
+    // php -r 'printf(...)' — `-` keeps the padding character, except that d/i/u
+    // trade `0` for a space; `%c` takes no width at all.
+    let src = r#"<?php printf("[%-05x][%-05u][%-08.1e][%-05s][%-05b][%-05c][%-'#5d][%-06.1F][%-6g][%-05d][%-'x6s][%5c]", 42, 42, 1.5, "ab", 5, 65, 3, 1.5, 0.5, 42, "ab", 66);"#;
+    assert_eq!(
+        run(src),
+        "[2a000][42   ][1.5e+000][ab000][10100][A][3####][1.5000][0.5   ][42   ][abxxxx][B]"
+    );
+}

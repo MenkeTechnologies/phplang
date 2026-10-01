@@ -28,6 +28,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         // default timezone at UTC, `date('T')` is `UTC` and `gmdate('T')` is `GMT`.
         "gmdate" => php_date(args, true),
         "checkdate" => php_checkdate(args),
+        "idate" => php_idate(args),
         "microtime" => php_microtime(args),
         "strtotime" => php_strtotime(args),
         "getdate" => php_getdate(args),
@@ -271,4 +272,70 @@ pub fn default_tz() -> crate::timelib::TzInfo {
     let name = TZ.with(|t| t.borrow().clone());
     crate::timelib::tz_lookup(&name)
         .unwrap_or_else(|| crate::timelib::tz_lookup("UTC").expect("UTC resolves"))
+}
+
+/// `idate(format, timestamp)` — `php_idate`: one field of the timestamp in the
+/// default zone, as an int.
+fn php_idate(args: &[Value]) -> Value {
+    use crate::timelib as tl;
+    let format = str_arg(args, 0);
+    if format.len() != 1 {
+        with_host(|h| h.warn("idate(): idate format is one char"));
+        return Value::bool(false);
+    }
+    let ts = if args.len() >= 2 && !matches!(args[1], Value::Undef) {
+        int_arg(args, 1)
+    } else {
+        now_ts()
+    };
+    let tz = default_tz();
+    let mut t = tl::Time {
+        tz_info: Some(tz.clone()),
+        zone_type: tl::ZONETYPE_ID,
+        ..tl::Time::default()
+    };
+    tl::unixtime2local(&mut t, ts);
+    let (isoweek, isoyear) = tl::isoweek_from_date(t.y, t.m, t.d);
+    let r: i64 = match format.as_bytes()[0] {
+        b'd' | b'j' => t.d,
+        b'N' => tl::iso_day_of_week(t.y, t.m, t.d),
+        b'w' => tl::day_of_week(t.y, t.m, t.d),
+        b'z' => tl::day_of_year(t.y, t.m, t.d),
+        b'W' => isoweek,
+        b'm' | b'n' => t.m,
+        b't' => tl::days_in_month(t.y, t.m),
+        b'L' => tl::is_leap(t.y) as i64,
+        b'y' => t.y % 100,
+        b'Y' => t.y,
+        b'o' => isoyear,
+        b'B' => {
+            let sse = t.sse;
+            let mut r = (sse - (sse - ((sse % 86400) + 3600))) * 10;
+            if r < 0 {
+                r += 864000;
+            }
+            (r / 864) % 1000
+        }
+        b'g' | b'h' => {
+            if t.h % 12 != 0 {
+                t.h % 12
+            } else {
+                12
+            }
+        }
+        b'H' | b'G' => t.h,
+        b'i' => t.i,
+        b's' => t.s,
+        b'I' => 0,
+        b'Z' => tz.offset,
+        b'U' => t.sse,
+        _ => -1,
+    };
+    // The reference returns a C `int`.
+    let r = r as i32 as i64;
+    if r == -1 {
+        with_host(|h| h.warn("idate(): Unrecognized date format token"));
+        return Value::bool(false);
+    }
+    Value::int(r)
 }

@@ -5955,14 +5955,25 @@ fn fmt_exp(f: f64, prec: usize, upper: bool) -> String {
 
 /// Apply width/justification/pad to a rendered body.
 fn pad_field(body: String, s: &FmtSpec, is_num: bool) -> String {
+    // `php_sprintf_appendchar` takes no width at all.
+    if s.conv == 'c' {
+        return body;
+    }
     let len = body.chars().count();
     if len >= s.width {
         return body;
     }
     let fill = s.width - len;
     if s.left {
-        // Left-justified fields always pad with spaces on the right.
-        format!("{body}{}", " ".repeat(fill))
+        // A left-justified field pads on the right with its padding character —
+        // except that `php_sprintf_appendint`/`appenduint` swap a `0` for a
+        // space (`%-05d` is `42   `, but `%-05x` is `2a000`).
+        let pad = if s.pad == '0' && matches!(s.conv, 'd' | 'i' | 'u') {
+            ' '
+        } else {
+            s.pad
+        };
+        format!("{body}{}", pad.to_string().repeat(fill))
     } else if s.pad == '0' && is_num {
         // Zero-pad after any leading sign character.
         let mut chars = body.chars();

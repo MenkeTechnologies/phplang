@@ -486,3 +486,13 @@ fn strtotime_is_timelibs_scanner() {
         assert_eq!(run(&src), *want, "strtotime({s:?})");
     }
 }
+
+#[test]
+fn idate_returns_one_field_as_an_int() {
+    // php -r 'foreach (str_split("djNwzWmntLyYoBghHGisIZU") as $c) echo idate($c, 1709254923), ",";'
+    let src = r#"<?php foreach (str_split("djNwzWmntLyYoBghHGisIZU") as $c) echo idate($c, 1709254923), ",";"#;
+    assert_eq!(
+        run(src),
+        "1,1,5,5,60,9,3,3,31,1,24,2024,2024,84,1,1,1,1,2,3,0,0,1709254923,"
+    );
+}
