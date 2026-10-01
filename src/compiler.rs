@@ -3256,6 +3256,32 @@ impl Compiler {
                         .filter(|(_, p)| f.byref.iter().any(|(bp, pn)| bp == p && !pn.is_empty()))
                         .collect();
                     self.emit_byref_writeback_to(b, &targets, true)?;
+                } else if let Some(sig) = crate::argsig::sig_of(name) {
+                    // A library function's OUT parameters (`preg_match`'s
+                    // `$matches`) are found by the name the reference declares
+                    // them under, so `matches: $m` is written back like `$m` in
+                    // third position.
+                    let bound: Vec<(Expr, usize)> = args
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, a)| match a {
+                            Expr::NamedArg(n, v) => sig
+                                .params
+                                .iter()
+                                .position(|p| p.name == n)
+                                .map(|p| ((**v).clone(), p)),
+                            Expr::Spread(_) => None,
+                            _ => Some((a.clone(), i)),
+                        })
+                        .collect();
+                    let most = bound.iter().map(|(_, p)| p + 1).max().unwrap_or(0);
+                    if let Some((positions, _)) = self.byref_positions(name, most) {
+                        let targets: Vec<(Expr, usize)> = bound
+                            .into_iter()
+                            .filter(|(_, p)| positions.contains(p))
+                            .collect();
+                        self.emit_byref_writeback_to(b, &targets, true)?;
+                    }
                 }
             }
             Expr::Call(name, args) => {

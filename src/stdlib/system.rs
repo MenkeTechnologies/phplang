@@ -404,10 +404,17 @@ fn c_setlocale(cat: libc::c_int, loc: Option<&str>) -> Option<String> {
 /// `zend_reset_lc_ctype_locale`: the reference starts every request with
 /// `LC_CTYPE` set to `C.UTF-8` (plain `C` where that does not exist), which is
 /// what `setlocale(LC_ALL, "0")` reports before a script changes anything.
+///
+/// Once per PROCESS, not per host reset: the C library's `setlocale` is not
+/// thread-safe, and an embedder (or the test harness) resets hosts on many
+/// threads at once. The CLI runs one request per process, as the reference does.
 pub fn reset_lc_ctype() {
-    if c_setlocale(libc::LC_CTYPE, Some("C.UTF-8")).is_none() {
-        c_setlocale(libc::LC_CTYPE, Some("C"));
-    }
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        if c_setlocale(libc::LC_CTYPE, Some("C.UTF-8")).is_none() {
+            c_setlocale(libc::LC_CTYPE, Some("C"));
+        }
+    });
 }
 
 /// The current `LC_NUMERIC` decimal point — `LCONV_DECIMAL_POINT`, the first

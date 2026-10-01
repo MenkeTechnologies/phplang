@@ -333,7 +333,6 @@ file's directory. The same value is what `get_include_path()` returns.
 | `pack()` / `unpack()` | implemented | `Call to undefined function` |
 | `goto end; …; end: echo "done";` | `done` | `Parse error: syntax error, unexpected identifier "end"` |
 | `iconv_strlen("héllo")` | `int(5)` | `Call to undefined function iconv_strlen()` |
-| `preg_match("/a/", "a", matches: $m)` — a NAMED argument to a library function's by-reference parameter | `$m` is the match array | `Warning: Undefined variable $m`, and `$m` stays null (a user function's named by-reference argument IS written back) |
 
 ## `...` unpacking: what is modelled and what is not
 

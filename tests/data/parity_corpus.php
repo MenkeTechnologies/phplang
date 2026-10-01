@@ -1005,3 +1005,13 @@ foreach ([fn() => iterator_to_array(1), fn() => iterator_to_array(new stdClass),
 }
 function gen_it() { yield 1; yield 2; }
 var_dump(iterator_to_array(gen_it()), iterator_count([1, 2]), iterator_count(new ArrayIterator([1, 2, 3])));
+#==#
+// ── a NAMED argument to a library function's by-reference parameter is written back ──
+preg_match(subject: "ab", pattern: "/(b)/", matches: $m, flags: PREG_OFFSET_CAPTURE);
+var_dump($m);
+$r = preg_replace("/a/", "b", "aaa", count: $c);
+var_dump($r, $c);
+str_replace("a", "b", "aaa", count: $n);
+parse_str("x=1&y=2", result: $out);
+similar_text("World", "Word", percent: $p);
+var_dump($n, $out, $p);
