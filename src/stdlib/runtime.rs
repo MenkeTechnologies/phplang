@@ -85,7 +85,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
                     Err(_) => Value::bool(false),
                 }
             } else {
-                eprintln!("{msg}");
+                crate::host::PhpHost::write_err(format!("{msg}\n").as_bytes());
                 Value::bool(true)
             }
         }

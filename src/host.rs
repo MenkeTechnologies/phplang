@@ -1946,6 +1946,16 @@ impl PhpHost {
     /// Emit a rendered string via `echo`: to the top output-buffering level if
     /// any, else the capture buffer if active, else stdout (no trailing newline —
     /// PHP `echo` writes exactly its argument).
+    /// Write to the process's stderr, first flushing what stdout holds. The
+    /// reference's CLI writes each stdout chunk as it is produced, so a line
+    /// still sitting in Rust's line buffer would otherwise land AFTER a later
+    /// diagnostic or `fwrite(STDERR, …)` on a shared `2>&1` stream.
+    pub fn write_err(bytes: &[u8]) {
+        use std::io::Write;
+        let _ = std::io::stdout().flush();
+        let _ = std::io::stderr().write_all(bytes);
+    }
+
     pub fn write_out(&mut self, s: &str) {
         if let Some(top) = self.ob_stack.last_mut() {
             top.push_str(s);
@@ -2441,7 +2451,7 @@ impl PhpHost {
         }
         let body = format!("{msg} in {} on line {line}", self.current_file());
         if self.ini_flag("log_errors") {
-            eprintln!("PHP {severity}:  {body}");
+            Self::write_err(format!("PHP {severity}:  {body}\n").as_bytes());
         }
         if self.ini_flag("display_errors") {
             self.write_out(&format!("\n{severity}: {body}\n"));
@@ -2869,7 +2879,7 @@ impl PhpHost {
             return;
         }
         if self.ini_flag("log_errors") {
-            eprintln!("PHP {severity}:  {body}");
+            Self::write_err(format!("PHP {severity}:  {body}\n").as_bytes());
         }
         if self.ini_flag("display_errors") {
             self.write_out(&format!("\n{severity}: {body}\n"));

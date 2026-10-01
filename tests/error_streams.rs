@@ -218,3 +218,23 @@ fn the_log_copy_is_written_before_the_display_copy() {
         )
     );
 }
+
+#[test]
+fn stdout_written_before_a_stderr_write_is_not_overtaken_by_it() {
+    // php -d display_errors=0 -r 'echo "a"; fwrite(STDERR, "b"); echo "c"; error_log("d"); echo "e"; echo $u; echo "f";' 2>&1
+    // The reference's CLI writes stdout unbuffered, so text with no newline
+    // yet is already out when STDERR, error_log or a logged warning writes.
+    let out = Command::new("sh")
+        .arg("-c")
+        .arg(
+            r#""$0" -d display_errors=0 -r 'echo "a"; fwrite(STDERR, "b"); echo "c"; error_log("d"); echo "e"; echo $u; echo "f";' 2>&1"#,
+        )
+        .arg(env!("CARGO_BIN_EXE_php"))
+        .stdin(Stdio::null())
+        .output()
+        .expect("spawn sh");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "abcd\nePHP Warning:  Undefined variable $u in Command line code on line 1\nf"
+    );
+}

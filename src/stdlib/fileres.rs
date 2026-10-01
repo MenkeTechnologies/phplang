@@ -445,10 +445,7 @@ pub fn write_bytes(fname: &str, res: &Value, data: &[u8]) -> Option<usize> {
     match kind {
         StreamKind::Stdout => with_host(|h| h.write_stdout_direct(&String::from_utf8_lossy(data))),
         StreamKind::Output => with_host(|h| h.write_out(&String::from_utf8_lossy(data))),
-        StreamKind::Stderr => {
-            use std::io::Write;
-            let _ = std::io::stderr().write_all(data);
-        }
+        StreamKind::Stderr => crate::host::PhpHost::write_err(data),
         _ => {
             with_host(|h| h.stream_write(res, data));
             flush(res);
