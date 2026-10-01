@@ -4162,6 +4162,7 @@ pub fn call_library(name: &str, args: &[Value]) -> Result<Value, String> {
                 Some(v) if !matches!(v, Value::Undef) => h.to_number(v).to_int(),
                 _ => crate::stdlib::textx::ENT_DEFAULT,
             };
+            crate::stdlib::textx::check_html_charset(h, &lname, args.get(2));
             let named = lname == "htmlentities";
             Value::str(crate::stdlib::textx::html_encode(&s, flags, named))
         }),

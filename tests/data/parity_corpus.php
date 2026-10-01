@@ -803,3 +803,44 @@ foreach ([[0, 1, ""], [0, 5, "abc"], [2, 2, "abc"], [-1, 2, "abc"], [1, -3, "abc
     try { var_dump(substr_count($hay, "a", $off, $len)); }
     catch (ValueError $e) { echo $e->getMessage(), "\n"; }
 }
+#==#
+// ── EXTR_PREFIX_IF_EXISTS binds a compiled-but-unset variable unprefixed ──
+// The function mentions $x and $y later, so both are UNDEF compiled variables
+// at the call: each is assigned as itself and counted. $z is never mentioned.
+function extr_cv() {
+    $a = ["x" => 2, "y" => 3, "z" => 4];
+    var_dump(extract($a, EXTR_PREFIX_IF_EXISTS, "p"));
+    var_dump(get_defined_vars());
+    $x = 9; unset($y);
+}
+extr_cv();
+function extr_unset() {
+    $x = 1; unset($x);
+    $a = ["x" => 2];
+    var_dump(extract($a, EXTR_PREFIX_IF_EXISTS, "p"), $x);
+}
+extr_unset();
+#==#
+// ── an unplaceable name loses only to the parameters parsed before the variadic ──
+foreach ([
+    fn() => sprintf([], x: 1),
+    fn() => sprintf("%s", [], x: 1),
+    fn() => array_map(null, null, x: 1),
+    fn() => array_map(1, [], x: 1),
+    fn() => array_map(null, x: 1),
+    fn() => array_diff(1, x: 1),
+    fn() => array_intersect_key(1, [], x: 1),
+    fn() => array_udiff(1, [], "strcmp", x: 1),
+    fn() => array_replace(1, x: 1),
+    fn() => max([], x: 1),
+] as $f) {
+    try { $f(); } catch (Throwable $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+}
+#==#
+// ── an $encoding html.c does not know is warned about and treated as UTF-8 ──
+foreach (["utf8", "latin1", "ab", "UTF-8", "iso-8859-1", "sjis-WIN", "cp932", ""] as $cs) {
+    var_dump(htmlspecialchars("<a>", ENT_QUOTES, $cs));
+}
+var_dump(htmlentities("é", ENT_QUOTES, "ascii"));
+var_dump(html_entity_decode("&lt;", ENT_QUOTES, "zz"));
+var_dump(htmlspecialchars("x", ENT_QUOTES, null));

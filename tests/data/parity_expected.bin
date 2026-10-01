@@ -1388,3 +1388,63 @@ int(0)
 int(2)
 int(1)
 
+#REC 61 exit=0 out=168 err=0
+int(2)
+array(3) {
+  ["a"]=>
+  array(3) {
+    ["x"]=>
+    int(2)
+    ["y"]=>
+    int(3)
+    ["z"]=>
+    int(4)
+  }
+  ["x"]=>
+  int(2)
+  ["y"]=>
+  int(3)
+}
+int(1)
+int(2)
+
+#REC 62 exit=0 out=777 err=0
+TypeError: sprintf(): Argument #1 ($format) must be of type string, array given
+ArgumentCountError: sprintf() does not accept unknown named parameters
+ArgumentCountError: array_map() does not accept unknown named parameters
+TypeError: array_map(): Argument #1 ($callback) must be a valid callback or null, no array or string given
+ArgumentCountError: array_map() expects at least 2 arguments, 1 given
+ArgumentCountError: array_diff() does not accept unknown named parameters
+ArgumentCountError: array_intersect_key() does not accept unknown named parameters
+ArgumentCountError: array_udiff() does not accept unknown named parameters
+ArgumentCountError: array_replace() does not accept unknown named parameters
+ArgumentCountError: max() does not accept unknown named parameters
+
+#REC 63 exit=0 out=767 err=562
+
+Warning: htmlspecialchars(): Charset "utf8" is not supported, assuming UTF-8 in Command line code on line 3
+string(9) "&lt;a&gt;"
+
+Warning: htmlspecialchars(): Charset "latin1" is not supported, assuming UTF-8 in Command line code on line 3
+string(9) "&lt;a&gt;"
+
+Warning: htmlspecialchars(): Charset "ab" is not supported, assuming UTF-8 in Command line code on line 3
+string(9) "&lt;a&gt;"
+string(9) "&lt;a&gt;"
+string(9) "&lt;a&gt;"
+string(9) "&lt;a&gt;"
+string(9) "&lt;a&gt;"
+string(9) "&lt;a&gt;"
+
+Warning: htmlentities(): Charset "ascii" is not supported, assuming UTF-8 in Command line code on line 5
+string(8) "&eacute;"
+
+Warning: html_entity_decode(): Charset "zz" is not supported, assuming UTF-8 in Command line code on line 6
+string(1) "<"
+string(1) "x"
+PHP Warning:  htmlspecialchars(): Charset "utf8" is not supported, assuming UTF-8 in Command line code on line 3
+PHP Warning:  htmlspecialchars(): Charset "latin1" is not supported, assuming UTF-8 in Command line code on line 3
+PHP Warning:  htmlspecialchars(): Charset "ab" is not supported, assuming UTF-8 in Command line code on line 3
+PHP Warning:  htmlentities(): Charset "ascii" is not supported, assuming UTF-8 in Command line code on line 5
+PHP Warning:  html_entity_decode(): Charset "zz" is not supported, assuming UTF-8 in Command line code on line 6
+

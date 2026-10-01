@@ -360,6 +360,68 @@ pub fn unknown_named_for_variadic(name: &str) -> String {
     )
 }
 
+/// How many leading parameters the reference's parameter-parsing block reads
+/// BEFORE its `Z_PARAM_VARIADIC` — the only ones whose types are judged ahead of
+/// an unplaceable name. Usually every declared non-variadic parameter, but the
+/// array set operations and `array_map` take their arrays (and the trailing
+/// callback) as one undifferentiated variadic and sort them out in the body, so
+/// a wrong type there loses to the name:
+///
+/// ```text
+/// $ php -r 'array_diff(1, x: 1);'
+/// ArgumentCountError: array_diff() does not accept unknown named parameters
+/// $ php -r 'array_map(null, null, x: 1);'
+/// ArgumentCountError: array_map() does not accept unknown named parameters
+/// ```
+fn zpp_fixed(name: &str, sig: &Sig) -> usize {
+    match lower_name(name).as_ref() {
+        "array_map" => 1,
+        "array_diff"
+        | "array_diff_key"
+        | "array_diff_assoc"
+        | "array_diff_ukey"
+        | "array_diff_uassoc"
+        | "array_udiff"
+        | "array_udiff_assoc"
+        | "array_udiff_uassoc"
+        | "array_intersect"
+        | "array_intersect_key"
+        | "array_intersect_assoc"
+        | "array_intersect_ukey"
+        | "array_intersect_uassoc"
+        | "array_uintersect"
+        | "array_uintersect_assoc"
+        | "array_uintersect_uassoc"
+        | "array_replace"
+        | "array_replace_recursive" => 0,
+        _ => sig.params.len(),
+    }
+}
+
+/// The refusal for a variadic call carrying a name it could not place: the
+/// count, then the types of the parameters parsed ahead of the variadic
+/// ([`zpp_fixed`]), and only then `does not accept unknown named parameters`.
+pub fn refuse_unplaced(name: &str, args: &[Value]) -> String {
+    let Some(sig) = sig_of(name) else {
+        return check_args(name, args)
+            .err()
+            .unwrap_or_else(|| unknown_named_for_variadic(name));
+    };
+    if let Err(e) = check_argc_of(name, sig, args.len()) {
+        return e;
+    }
+    let head = &args[..zpp_fixed(name, sig).min(args.len())];
+    let callable = check_callable(name, sig, head);
+    let stop_at = callable
+        .as_ref()
+        .err()
+        .map_or(u32::MAX, |(argno, _)| *argno);
+    crate::argtypes::check_call(name, head, stop_at)
+        .and(callable.map_err(|(_, e)| e))
+        .err()
+        .unwrap_or_else(|| unknown_named_for_variadic(name))
+}
+
 /// Every refusal PHP 8 makes about a call's ARGUMENTS, in the reference's order:
 /// the count first, then the parameters left to right, each of them judged by
 /// its declared type ([`crate::argtypes`]) or, for a `callable`, by whether the

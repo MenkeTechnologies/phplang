@@ -2897,6 +2897,17 @@ impl PhpHost {
         !matches!(scope.vars.get(name), Slot::Unset)
     }
 
+    /// Whether `name` has a slot in the current frame, bound or not: a compiled
+    /// variable the frame mentions anywhere (the reference's CV, present in the
+    /// symbol table as an `IS_UNDEF` indirect until first written), or one bound
+    /// dynamically and since unset.
+    pub fn var_has_slot(&self, name: &str) -> bool {
+        let idx = self.scope_idx(name);
+        self.scopes
+            .get(idx)
+            .is_some_and(|s| s.vars.slot_of(name).is_some())
+    }
+
     pub fn set_var(&mut self, name: &str, val: Value) {
         let idx = self.scope_idx(name);
         let Some(scope) = self.scopes.get_mut(idx) else {
@@ -7493,11 +7504,9 @@ pub fn call_function_named(
                 // A name a variadic could not place is the LAST refusal, after
                 // the types: `sprintf([], x: 1)` reports the array in #1.
                 let refusal = bound.refusal.or_else(|| {
-                    bound.unplaced_name.then(|| {
-                        crate::argsig::check_args(name, &bound.args)
-                            .err()
-                            .unwrap_or_else(|| crate::argsig::unknown_named_for_variadic(name))
-                    })
+                    bound
+                        .unplaced_name
+                        .then(|| crate::argsig::refuse_unplaced(name, &bound.args))
                 });
                 match refusal {
                     Some(e) => throw_from_internal_named(name, &bound.shown, e),

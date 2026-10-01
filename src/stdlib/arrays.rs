@@ -910,6 +910,9 @@ fn php_extract(h: &mut host::PhpHost, args: &[Value]) -> Result<Value, String> {
             extr::PREFIX_INVALID if plain => key.clone(),
             extr::PREFIX_INVALID => with_prefix(),
             extr::PREFIX_IF_EXISTS if exists => with_prefix(),
+            // `php_extract_prefix_if_exists`: a name the symbol table holds as an
+            // UNDEF compiled variable is assigned as itself, unprefixed, and counted.
+            extr::PREFIX_IF_EXISTS if plain && h.var_has_slot(&key) => key.clone(),
             extr::IF_EXISTS if exists => key.clone(),
             _ => continue,
         };

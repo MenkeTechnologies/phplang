@@ -70,6 +70,9 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
                 _ => crate::stdlib::textx::ENT_DEFAULT,
             };
             let named = name == "html_entity_decode";
+            if named {
+                with_host(|h| crate::stdlib::textx::check_html_charset(h, name, args.get(2)));
+            }
             Value::str(crate::stdlib::textx::html_decode(
                 &str_arg(args, 0),
                 flags,

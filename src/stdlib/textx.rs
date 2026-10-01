@@ -546,3 +546,61 @@ pub(crate) fn html_decode(s: &str, flags: i64, named: bool) -> String {
     }
     out
 }
+
+/// The `$encoding` names `ext/standard/html.c`'s `charset_map` recognises,
+/// matched without regard to case. An empty name means `default_charset`.
+const HTML_CHARSETS: &[&str] = &[
+    "ISO-8859-1",
+    "ISO8859-1",
+    "ISO-8859-15",
+    "ISO8859-15",
+    "utf-8",
+    "cp1252",
+    "Windows-1252",
+    "1252",
+    "BIG5",
+    "950",
+    "GB2312",
+    "936",
+    "Big5-HKSCS",
+    "Shift_JIS",
+    "SJIS",
+    "932",
+    "SJIS-win",
+    "CP932",
+    "EUCJP",
+    "EUC-JP",
+    "eucJP-win",
+    "KOI8-R",
+    "koi8-ru",
+    "koi8r",
+    "cp1251",
+    "Windows-1251",
+    "win-1251",
+    "iso8859-5",
+    "iso-8859-5",
+    "cp866",
+    "866",
+    "ibm866",
+    "MacRoman",
+];
+
+/// `determine_charset`: an `$encoding` the table does not know is warned about
+/// and treated as UTF-8 — the conversion itself goes on either way.
+///
+/// ```text
+/// $ php -r 'htmlspecialchars("a", ENT_QUOTES, "utf8");'
+/// Warning: htmlspecialchars(): Charset "utf8" is not supported, assuming UTF-8
+/// ```
+pub fn check_html_charset(h: &mut crate::host::PhpHost, func: &str, encoding: Option<&Value>) {
+    let Some(v) = encoding.filter(|v| !matches!(v, Value::Undef)) else {
+        return;
+    };
+    let name = h.to_str(v);
+    if name.is_empty() || HTML_CHARSETS.iter().any(|c| c.eq_ignore_ascii_case(&name)) {
+        return;
+    }
+    h.warn(format_args!(
+        "{func}(): Charset \"{name}\" is not supported, assuming UTF-8"
+    ));
+}
