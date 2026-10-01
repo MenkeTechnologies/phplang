@@ -52,7 +52,7 @@ pub fn take_diags() -> Vec<CompileDiag> {
     DIAGS.with(|d| std::mem::take(&mut *d.borrow_mut()))
 }
 
-fn push_diag(severity: &'static str, level: i64, line: u32, msg: impl Into<String>) {
+pub(crate) fn push_diag(severity: &'static str, level: i64, line: u32, msg: impl Into<String>) {
     DIAGS.with(|d| {
         d.borrow_mut().push(CompileDiag {
             severity,

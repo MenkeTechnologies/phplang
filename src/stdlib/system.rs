@@ -93,6 +93,9 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         // Iterator helpers — materialize any Traversable to an array via the
         // host's foreach normalization.
         "iterator_to_array" => {
+            if let Some(e) = iterator_arg_refusal(name, &arg(args, 0), true) {
+                return Some(Err(e));
+            }
             let arr = match crate::host::foreach_prep(arg(args, 0)) {
                 Ok(a) => a,
                 Err(e) => return Some(Err(e)),
@@ -113,6 +116,9 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             }
         }
         "iterator_count" => {
+            if let Some(e) = iterator_arg_refusal(name, &arg(args, 0), true) {
+                return Some(Err(e));
+            }
             let arr = match crate::host::foreach_prep(arg(args, 0)) {
                 Ok(a) => a,
                 Err(e) => return Some(Err(e)),
@@ -120,6 +126,9 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             Value::int(with_host(|h| h.array_len(&arr)))
         }
         "iterator_apply" => {
+            if let Some(e) = iterator_arg_refusal(name, &arg(args, 0), false) {
+                return Some(Err(e));
+            }
             let arr = match crate::host::foreach_prep(arg(args, 0)) {
                 Ok(a) => a,
                 Err(e) => return Some(Err(e)),
@@ -417,4 +426,30 @@ pub fn locale_decimal_point() -> char {
             b => char::from(b),
         }
     }
+}
+
+/// The refusal for an `$iterator` argument that is neither Traversable nor, when
+/// `array_ok`, an array — the parameter type the reference's `iterator_*`
+/// functions declare (`Traversable|array`, and `Traversable` for
+/// `iterator_apply`).
+fn iterator_arg_refusal(func: &str, v: &Value, array_ok: bool) -> Option<String> {
+    let traversable = with_host(|h| {
+        (array_ok && h.is_array(v))
+            || h.instance_class(v).is_some_and(|c| {
+                c.eq_ignore_ascii_case("Generator") || h.class_is_a_pub(&c, "Traversable")
+            })
+    });
+    if traversable {
+        return None;
+    }
+    let given = with_host(|h| h.type_name_for_error(v));
+    let ty = if array_ok {
+        "Traversable|array"
+    } else {
+        "Traversable"
+    };
+    Some(crate::builtins::throws(
+        "TypeError",
+        format!("{func}(): Argument #1 ($iterator) must be of type {ty}, {given} given"),
+    ))
 }

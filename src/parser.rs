@@ -2092,6 +2092,21 @@ impl Parser {
                     Some(Tok::Ident(n)) => n,
                     _ => return Err(self.syntax_error_at(self.pos - 1)),
                 };
+                // `zend_begin_method_decl`: a private method cannot be overridden, so
+                // `final` on one is pointless — except on a constructor, which a
+                // subclass constructor does not override.
+                if m_final
+                    && visibility == Visibility::Private
+                    && !mname.eq_ignore_ascii_case("__construct")
+                {
+                    crate::lexer::push_diag(
+                        "Warning",
+                        crate::errlevel::E_COMPILE_WARNING,
+                        fn_line,
+                        "Private methods cannot be final as they are never overridden by other \
+                         classes",
+                    );
+                }
                 let saved = self.enter_method(&mname);
                 let params = self.param_list()?;
                 let ret = self.return_type()?;

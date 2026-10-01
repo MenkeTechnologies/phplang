@@ -987,3 +987,21 @@ try { setlocale("x", "C"); } catch (TypeError $e) { echo $e->getMessage(), "\n";
 #==#
 // ── hex2bin warns before answering false ──
 var_dump(hex2bin("aaa"), hex2bin("zz"), hex2bin("a"), hex2bin(""), hex2bin("4142"));
+#==#
+// ── `final` on a private method is a compile-time warning (not on __construct) ──
+echo "first\n";
+class FinPriv {
+    final
+    private function f() {}
+    final private function __construct() {}
+    private final static function g() {}
+}
+trait FinTrait { final private function t() {} }
+#==#
+// ── iterator_* refuse what is not Traversable (or an array, where allowed) ──
+foreach ([fn() => iterator_to_array(1), fn() => iterator_to_array(new stdClass),
+          fn() => iterator_count("x"), fn() => iterator_apply([1], fn() => true)] as $f) {
+    try { $f(); } catch (TypeError $e) { echo $e->getMessage(), "\n"; }
+}
+function gen_it() { yield 1; yield 2; }
+var_dump(iterator_to_array(gen_it()), iterator_count([1, 2]), iterator_count(new ArrayIterator([1, 2, 3])));

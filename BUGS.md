@@ -231,14 +231,10 @@ call log observes it.
 
 ## Argument type checks are missing on a broad set of library functions
 
-Sampled, all reproduced; the reference throws and phplang continues:
+Sampled, reproduced; the reference throws and phplang continues:
 
 | call | reference | phplang |
 |---|---|---|
-| `iterator_to_array(1)` | `TypeError: … must be of type Traversable\|array, int given` | `array(0) {}` |
-| `reset($undefined)` | `TypeError: reset(): Argument #1 ($array) must be of type array, null given` | `Warning: Undefined variable`, then `false` |
-| `usort($undefined, …)` | `TypeError: usort(): Argument #1 ($array) must be of type array, null given` | `Warning: Undefined variable`, then `true` |
-| `array_splice($undefined, 0)` | `TypeError: array_splice(): Argument #1 ($array) must be of type array, null given` | no diagnostic |
 | `new ArrayObject(1)` | `TypeError: ArrayObject::__construct(): Argument #1 ($array) must be of type array, int given` | accepted |
 
 This is a systematic gap — `crate::argtypes` covers the names it has entries for
@@ -251,21 +247,15 @@ CORRECTED: two rows left this table when execution stopped reproducing them.
 (`crate::argsig`); `call_user_func("nope")` now raises the reference's
 `TypeError: … must be a valid callback, function "nope" not found or invalid
 function name`, because a `callable` parameter is checked against the same
-decision tree `is_callable` answers from. The five rows left are all a MISSING
-TYPE, which is still `crate::argtypes`' gap.
+decision tree `is_callable` answers from. Four more left when the `iterator_*`
+functions and the by-reference array functions (`reset`, `usort`,
+`array_splice` on an undefined variable) gained the reference's checks; the
+row left is a MISSING TYPE on a prelude class constructor.
 
 CORRECTED: this table used to open with `strlen([])` answering `int(5)`. It now
 raises the reference's `TypeError` with the reference's message, and (since this
 round) with the reference's frameless trace; the row was stale and has been
 removed rather than left to imply the check is missing.
-
-The `call_user_func("nope")` row is not confined to `call_user_func`: every
-library function that takes a callback reports an unresolvable one the same wrong
-way, `Error: Call to undefined function nope()` where the reference raises a
-`TypeError` naming the parameter. `array_map("nosuchfn", [1])` and
-`preg_replace_callback("/a/", "nope", "a")` were both measured. Only the CLASS
-and message differ — since this round the trace frame is the reference's on all
-three.
 
 ## Object handles (`#N`, `spl_object_id`) are never reused, and closures take none
 
@@ -343,8 +333,6 @@ file's directory. The same value is what `get_include_path()` returns.
 | `pack()` / `unpack()` | implemented | `Call to undefined function` |
 | `goto end; …; end: echo "done";` | `done` | `Parse error: syntax error, unexpected identifier "end"` |
 | `iconv_strlen("héllo")` | `int(5)` | `Call to undefined function iconv_strlen()` |
-| `usort($x, ["C", "m"])` for a non-static `C::m` | `TypeError: usort(): Argument #2 ($callback) must be a valid callback, non-static method C::m() cannot be called statically` | the call succeeds |
-| `class A { final private function f() {} }` | `Warning: Private methods cannot be final as they are never overridden by other classes`, at compile time | no warning (the `final` binds nothing either way) |
 | `preg_match("/a/", "a", matches: $m)` — a NAMED argument to a library function's by-reference parameter | `$m` is the match array | `Warning: Undefined variable $m`, and `$m` stays null (a user function's named by-reference argument IS written back) |
 
 ## `...` unpacking: what is modelled and what is not

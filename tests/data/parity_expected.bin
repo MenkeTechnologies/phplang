@@ -1693,3 +1693,29 @@ PHP Warning:  hex2bin(): Hexadecimal input string must have an even length in Co
 PHP Warning:  hex2bin(): Input string must be hexadecimal string in Command line code on line 2
 PHP Warning:  hex2bin(): Hexadecimal input string must have an even length in Command line code on line 2
 
+#REC 82 exit=0 out=363 err=369
+
+Warning: Private methods cannot be final as they are never overridden by other classes in Command line code on line 5
+
+Warning: Private methods cannot be final as they are never overridden by other classes in Command line code on line 7
+
+Warning: Private methods cannot be final as they are never overridden by other classes in Command line code on line 9
+first
+PHP Warning:  Private methods cannot be final as they are never overridden by other classes in Command line code on line 5
+PHP Warning:  Private methods cannot be final as they are never overridden by other classes in Command line code on line 7
+PHP Warning:  Private methods cannot be final as they are never overridden by other classes in Command line code on line 9
+
+#REC 83 exit=0 out=419 err=0
+iterator_to_array(): Argument #1 ($iterator) must be of type Traversable|array, int given
+iterator_to_array(): Argument #1 ($iterator) must be of type Traversable|array, stdClass given
+iterator_count(): Argument #1 ($iterator) must be of type Traversable|array, string given
+iterator_apply(): Argument #1 ($iterator) must be of type Traversable, array given
+array(2) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+}
+int(2)
+int(3)
+
