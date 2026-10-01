@@ -1132,3 +1132,11 @@ echo collatz(27), "\n";
 foreach ([1, 2] as $a) { foreach ([3, 4] as $b) { if ($b == 4) goto out; echo $a, $b, " "; } }
 out:
 echo "out\n";
+#==#
+// ── pack / unpack (bytes below 0x80) ──
+echo bin2hex(pack("nvNVc*", 0x1234, 0x1234, 0x01020304, 0x01020304, 65, 66)), "\n";
+print_r(unpack("nbig/vlittle/C2c", "\x12\x34\x34\x12AB"));
+echo json_encode(unpack("A5a/Z*z", "ab   cd\0ef")), " ", json_encode(pack("a4A4Z4", "x", "y", "zzzz")), "\n";
+echo pack("H*", "50485021"), " ", json_encode(unpack("H*", "PHP")), "\n";
+var_dump(unpack("N", "ab"));
+try { unpack("y", "a"); } catch (ValueError $e) { echo $e->getMessage(), "\n"; }

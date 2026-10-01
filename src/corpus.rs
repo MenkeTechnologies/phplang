@@ -5725,6 +5725,20 @@ pub const CORPUS: &[Entry] = &[
         "A hex timestamp of the form `%08x%05x` from the wall clock's seconds and microseconds, prefixed by `$prefix`. `$more_entropy` is honoured and appends a fractional suffix of PHP's shape, but with only 1000 distinct values. DIVERGENCE: the clock is the ONLY entropy source — there is no RNG, no counter, and no collision avoidance, so two calls in the same microsecond return IDENTICAL strings. It is not suitable as a unique identifier under load.",
         "var_dump(strlen(uniqid()) === 13);   // => bool(true)",
     ),
+    (
+        "pack",
+        "Misc",
+        "pack(string $format, mixed ...$values): string",
+        "A port of ext/standard/pack.c: every format code (`a A Z h H c C s S n v i I l L N V q Q J P f g G d e E x X @`), repeat counts and `*`, and its warnings and `ValueError`s. Bytes come out one per character, as `chr` makes them, so a byte of 0x80 or more is two bytes in this UTF-8 runtime (see BUGS.md).",
+        "echo bin2hex(pack(\"nv\", 0x1234, 0x1234));   // => 12343412",
+    ),
+    (
+        "unpack",
+        "Misc",
+        "unpack(string $format, string $string, int $offset = 0): array|false",
+        "A port of ext/standard/pack.c's `unpack`: `code[repeat]name` items separated by `/`, numbered keys for a repeat, and its warnings for short input. It reads the string's bytes, as `ord` does.",
+        "print_r(unpack(\"nbig/C2c\", \"\\x12\\x34AB\"));   // => Array ( [big] => 4660 [c1] => 65 [c2] => 66 )",
+    ),
     // ══ Output buffering (stdlib::system) ═══════════════════════════════════
     // A REAL nesting buffer stack lives on the host, and `write_out` always
     // targets its top, so nested buffers behave as PHP's do. What is missing is

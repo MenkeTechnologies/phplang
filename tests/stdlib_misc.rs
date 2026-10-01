@@ -452,3 +452,27 @@ fn array_multisort_ties_broken_by_second_column() {
         "1,1,2|1,3,2"
     );
 }
+
+// ── pack / unpack ────────────────────────────────────────────────────────────
+
+#[test]
+fn pack_and_unpack_follow_pack_c() {
+    // Byte order, padding codes, named and numbered keys, nibbles, absolute
+    // positioning, and the ValueError / short-input refusals.
+    let src = r#"<?php
+        echo bin2hex(pack("nvc*", 0x1234, 0x5678, 65, 66)), "|",
+             json_encode(unpack("nbig/vlittle/c2chars", pack("nvc*", 0x1234, 0x5678, 65, 66))), "|",
+             json_encode(unpack("A5x/a5y/Z5z", "ab   cd\0\0\0efgh\0")), "|",
+             json_encode(pack("A5a5Z5", "ab", "cd", "efghij")), "|",
+             json_encode(unpack("N*", pack("N3", 1, 2, 3))), "|",
+             pack("H*", "414243"), pack("h*", "1424"), "|", strlen(pack("x5@8")), "|";
+        try { pack("Q"); } catch (ValueError $e) { echo $e->getMessage(), "|"; }
+        var_dump(@unpack("N", "ab"));"#;
+    assert_eq!(
+        run(src),
+        "123478564142|{\"big\":4660,\"little\":22136,\"chars1\":65,\"chars2\":66}|\
+         {\"x\":\"ab\",\"y\":\"cd\\u0000\\u0000\\u0000\",\"z\":\"efgh\"}|\
+         \"ab   cd\\u0000\\u0000\\u0000efgh\\u0000\"|{\"1\":1,\"2\":2,\"3\":3}|ABCAB|8|\
+         Type Q: too few arguments|bool(false)\n"
+    );
+}

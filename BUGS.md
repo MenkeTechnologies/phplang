@@ -126,6 +126,10 @@ $ php -r 'var_dump(strlen(count_chars("aab", 4)));'              => int(254)
 $ target/debug/php -r 'var_dump(strlen(count_chars("aab", 4)));' => int(510)
 ```
 
+`pack()` and `unpack()` are in the same family: a packed byte of 0x80 or more
+is two bytes here, so `pack("q", -5)` round-trips through `unpack` wrongly while
+every byte below 0x80 is exact.
+
 `count_chars` modes 3 and 4 are the clearest case: their whole contract is to
 name bytes, and 128 of the 256 possible ones widen. Modes 0-2 and every
 ASCII-subject call are exact. Closing this needs `Value::Str` to become a byte
@@ -328,7 +332,6 @@ file's directory. The same value is what `get_include_path()` returns.
 
 | form | reference | phplang |
 |---|---|---|
-| `pack()` / `unpack()` | implemented | `Call to undefined function` |
 | `try { goto out; } finally { … } out:` — a `goto` out of a `try`/`catch`/`finally` body | runs the `finally`, then jumps | a phplang compile error: a `try` body is a chunk of its own and the jump cannot leave it |
 | `iconv_strlen("héllo")` | `int(5)` | `Call to undefined function iconv_strlen()` |
 | `strtotime("2024-03-01 10:00 Europe/Paris")`, `new DateTimeZone("Europe/Paris")` — any zone identifier whose offset is not fixed | `int(1709283600)`; a zone | `false`; `DateInvalidTimeZoneException`: there is no tz database, so only `UTC` and its aliases and the `Etc/GMT±N` zones resolve (abbreviations such as `CEST` do) |

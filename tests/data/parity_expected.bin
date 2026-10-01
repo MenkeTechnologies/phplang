@@ -1995,3 +1995,20 @@ Stack trace:
 111
 13 out
 
+#REC 106 exit=0 out=340 err=127
+1234341201020304040302014142
+Array
+(
+    [big] => 4660
+    [little] => 4660
+    [c1] => 65
+    [c2] => 66
+)
+{"a":"ab","z":"cd"} "x\u0000\u0000\u0000y   zzz\u0000"
+PHP! {"1":"504850"}
+
+Warning: unpack(): Type N: not enough input values, need 4 values but only 2 were provided in Command line code on line 6
+bool(false)
+Invalid format type y
+PHP Warning:  unpack(): Type N: not enough input values, need 4 values but only 2 were provided in Command line code on line 6
+
