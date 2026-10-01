@@ -1511,6 +1511,11 @@ impl Compiler {
                         locals,
                         // A named function's frame is named by the function.
                         closure_site: None,
+                        declared: Some(if namespace.is_empty() {
+                            name.clone()
+                        } else {
+                            format!("{namespace}\\{name}")
+                        }),
                     },
                 ));
                 if !top {
@@ -2474,6 +2479,7 @@ impl Compiler {
                     params: cparams,
                     // A method's frame is named by the method.
                     closure_site: None,
+                    declared: None,
                     chunk: mb.build(),
                     is_generator: body_has_yield(&m.body),
                     ret: m.ret.clone(),
@@ -4962,6 +4968,7 @@ impl Compiler {
                 // compiled local list, so its body stays by-name.
                 locals: Vec::new(),
                 closure_site: Some(site),
+                declared: None,
             },
         ));
 
@@ -5218,14 +5225,22 @@ impl Compiler {
             spine.push(base);
             base = r;
         }
-        if quiet {
+        // `BP_VAR_IS` reaches inward only through property and index fetches: a
+        // method call's receiver is fetched for READING, so in
+        // `$r?->a->m() ?? d` the `->a` warns. Links inside the outermost call
+        // (larger spine index — the spine runs outermost first) are loud.
+        let call_at = spine
+            .iter()
+            .position(|l| matches!(l, Expr::MethodCall(..) | Expr::NullsafeMethodCall(..)));
+        let quiet_at = |i: usize| quiet && call_at.map_or(true, |c| i < c);
+        if quiet_at(spine.len()) {
             self.compile_quiet(b, base)?;
         } else {
             self.compile_expr(b, base)?;
         }
         // Pending jumps to the chain's end — one per `?->` that short-circuits.
         let mut exits = Vec::new();
-        for link in spine.iter().rev() {
+        for (i, link) in spine.iter().enumerate().rev() {
             if matches!(
                 link,
                 Expr::NullsafePropGet(..) | Expr::NullsafeMethodCall(..)
@@ -5236,7 +5251,7 @@ impl Compiler {
                 b.emit(Op::CallBuiltin(ops::TRUTHY, 1), 0); // [recv, bool]
                 exits.push(b.emit(Op::JumpIfTrue(0), 0));
             }
-            self.compile_chain_link(b, link, quiet)?;
+            self.compile_chain_link(b, link, quiet_at(i))?;
         }
         let end = b.current_pos();
         for j in exits {

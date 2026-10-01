@@ -549,6 +549,10 @@ pub struct FuncDef {
     /// which is what names its stack frames. `None` for a named function or
     /// method, whose frame is named by the function itself.
     pub closure_site: Option<DeclSite>,
+    /// A named function's name as DECLARED, which is how its frames and its
+    /// argument errors name it however a call spells it: `function Foo()`
+    /// called as `FOO()` is `Foo()` in a trace. `None` for methods and closures.
+    pub declared: Option<String>,
 }
 
 /// Where a closure literal was WRITTEN, which is what PHP 8.4 names a closure
@@ -7393,7 +7397,7 @@ fn call_function_dispatched(name: &str, args: Vec<Value>, how: Dispatch) -> Resu
     }
     if let Some(def) = def {
         return invoke_with_locals(
-            name,
+            def.declared.as_deref().unwrap_or(name),
             Signature {
                 params: &def.params,
                 ret: def.ret.as_ref(),
@@ -7406,7 +7410,9 @@ fn call_function_dispatched(name: &str, args: Vec<Value>, how: Dispatch) -> Resu
             &def.locals,
         );
     }
-    call_library_throwing(name, args, how)
+    // A library function names itself in lower case in every message and trace
+    // frame, however the call spelled it: `STRLEN([])` reports `strlen()`.
+    call_library_throwing(&crate::argsig::lower_name(name), args, how)
 }
 
 /// Call a standard-library function, turning a tagged argument error into the
@@ -7610,7 +7616,7 @@ pub fn call_function_named(
     let def = with_host(|h| h.functions.get(&name.to_ascii_lowercase()).cloned());
     if let Some(def) = def {
         return invoke_with_locals(
-            name,
+            def.declared.as_deref().unwrap_or(name),
             Signature {
                 params: &def.params,
                 ret: def.ret.as_ref(),
@@ -7623,6 +7629,8 @@ pub fn call_function_named(
             &def.locals,
         );
     }
+    let lname = crate::argsig::lower_name(name);
+    let name = lname.as_ref();
     // A builtin binds by name too — the table in `crate::argsig` is what says
     // which parameter a name means, which slot it fills, and what belongs in the
     // slots a name jumped over. Only a name the table does not describe (an FFI

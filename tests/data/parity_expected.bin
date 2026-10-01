@@ -1747,3 +1747,23 @@ array(2) {
 }
 float(88.88888888888889)
 
+#REC 85 exit=255 out=127 err=131
+
+Parse error: syntax error, unexpected single-quoted string "a long single-quoted string th..." in Command line code on line 2
+PHP Parse error:  syntax error, unexpected single-quoted string "a long single-quoted string th..." in Command line code on line 2
+
+#REC 86 exit=255 out=114 err=118
+
+Parse error: syntax error, unexpected string content "never closed \' still open" in Command line code on line 2
+PHP Parse error:  syntax error, unexpected string content "never closed \' still open" in Command line code on line 2
+
+#REC 87 exit=255 out=118 err=122
+
+Parse error: syntax error, unexpected end of file, expecting variable or "${" or "{$" in Command line code on line 2
+PHP Parse error:  syntax error, unexpected end of file, expecting variable or "${" or "{$" in Command line code on line 2
+
+#REC 88 exit=255 out=82 err=86
+
+Parse error: syntax error, unexpected end of file in Command line code on line 1
+PHP Parse error:  syntax error, unexpected end of file in Command line code on line 1
+

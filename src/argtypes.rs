@@ -788,10 +788,6 @@ static PARAMS: &[(&str, Params)] = &[
     ("hypot", &[(1, "x", "float"), (2, "y", "float")]),
     ("ignore_user_abort", &[(1, "enable", "?bool")]),
     (
-        "implode",
-        &[(1, "separator", "array|string"), (2, "array", "?array")],
-    ),
-    (
         "in_array",
         &[(2, "haystack", "array"), (3, "strict", "bool")],
     ),
@@ -824,10 +820,6 @@ static PARAMS: &[(&str, Params)] = &[
     ("is_writeable", &[(1, "filename", "string")]),
     ("iterator_apply", &[(3, "args", "?array")]),
     ("iterator_to_array", &[(2, "preserve_keys", "bool")]),
-    (
-        "join",
-        &[(1, "separator", "array|string"), (2, "array", "?array")],
-    ),
     (
         "json_decode",
         &[

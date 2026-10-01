@@ -738,23 +738,24 @@ impl Parser {
         let raw = |fallback: String| -> String {
             sp.raw.as_ref().map(|r| r.to_string()).unwrap_or(fallback)
         };
+        let q = crate::lexer::quoted_token_text;
         match &sp.tok {
-            Tok::Int(n) => format!("integer \"{}\"", raw(n.to_string())),
-            Tok::Float(f) => format!("floating-point number \"{}\"", raw(f.to_string())),
-            Tok::Str(s) => format!("single-quoted string \"{s}\""),
+            Tok::Int(n) => format!("integer \"{}\"", q(&raw(n.to_string()))),
+            Tok::Float(f) => format!("floating-point number \"{}\"", q(&raw(f.to_string()))),
+            Tok::Str(s) => format!("single-quoted string \"{}\"", q(s)),
             Tok::Interp(parts) => {
                 // A double-quoted string with no interpolation is reported with
                 // its text; anything with an embedded expression has no single
                 // spelling, so only the kind is named.
                 match parts.as_slice() {
-                    [StrPart::Lit(s)] => format!("double-quoted string \"{s}\""),
+                    [StrPart::Lit(s)] => format!("double-quoted string \"{}\"", q(s)),
                     _ => "double-quoted string".to_string(),
                 }
             }
-            Tok::Var(v) => format!("variable \"${v}\""),
+            Tok::Var(v) => format!("variable \"{}\"", q(&format!("${v}"))),
             Tok::Ident(id) => match reserved_spelling(id) {
                 Some(kw) => format!("token \"{kw}\""),
-                None => format!("identifier \"{id}\""),
+                None => format!("identifier \"{}\"", q(id)),
             },
             Tok::Punct(p) => format!("token \"{p}\""),
             Tok::InlineHtml(_) => "inline HTML".to_string(),

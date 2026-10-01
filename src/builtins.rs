@@ -4126,7 +4126,7 @@ pub fn call_library(name: &str, args: &[Value]) -> Result<Value, String> {
             Value::Str(s) => host::is_numeric_string(&s),
             _ => false,
         }),
-        "implode" | "join" => php_implode(args),
+        "implode" | "join" => php_implode(&lname, args)?,
         "explode" => with_host(|h| php_explode(h, args))?,
         "in_array" => with_host(|h| php_in_array(h, args)),
         "array_keys" => with_host(|h| h.array_keys(&arg(args, 0))),
@@ -4882,15 +4882,61 @@ fn replace_all_pairs(subject: &str, pairs: &[(String, String)], count: &mut usiz
     cur
 }
 
-fn php_implode(args: &[Value]) -> Value {
-    // implode($glue, $array) or implode($array).
-    let (glue, arr) = with_host(|h| {
-        if h.is_array(&arg(args, 0)) {
-            (String::new(), arg(args, 0))
-        } else {
-            (h.to_str(&arg(args, 0)), arg(args, 1))
+fn php_implode(name: &str, args: &[Value]) -> Result<Value, String> {
+    // `PHP_FUNCTION(implode)`, as measured: `implode($array)` joins with "".
+    // Given both arguments, `$separator` is judged first — an array or a
+    // non-stringable object is refused, null is deprecated — then `$array`,
+    // whose null is refused with the two-argument wording a lone non-array
+    // separator also gets.
+    let sep = arg(args, 0);
+    let if_string = || {
+        throws(
+            "TypeError",
+            format!(
+                "{name}(): If argument #1 ($separator) is of type string, argument #2 \
+                 ($array) must be of type array, null given"
+            ),
+        )
+    };
+    let (glue, arr) = if args.len() < 2 {
+        if !with_host(|h| h.is_array(&sep)) {
+            return Err(if_string());
         }
-    });
+        (String::new(), sep)
+    } else {
+        let refused = with_host(|h| {
+            let bad = h.is_array(&sep)
+                || h.object_class(&sep)
+                    .is_some_and(|c| !h.class_has_method(&c, "__tostring"));
+            bad.then(|| h.type_name_for_error(&sep))
+        });
+        if let Some(given) = refused {
+            return Err(throws(
+                "TypeError",
+                format!("{name}(): Argument #1 ($separator) must be of type string, {given} given"),
+            ));
+        }
+        if matches!(sep, Value::Undef) {
+            with_host(|h| {
+                h.deprecated(format!(
+                    "{name}(): Passing null to parameter #1 ($separator) of type array|string \
+                     is deprecated"
+                ))
+            });
+        }
+        let pieces = arg(args, 1);
+        if matches!(pieces, Value::Undef) {
+            return Err(if_string());
+        }
+        if !with_host(|h| h.is_array(&pieces)) {
+            let given = with_host(|h| h.type_name_for_error(&pieces));
+            return Err(throws(
+                "TypeError",
+                format!("{name}(): Argument #2 ($array) must be of type ?array, {given} given"),
+            ));
+        }
+        (host::to_str_ext(&sep), pieces)
+    };
     let vals: Vec<Value> = with_host(|h| h.array_pairs(&arr).unwrap_or_default())
         .into_iter()
         .map(|(_, v)| v)
@@ -4903,7 +4949,7 @@ fn php_implode(args: &[Value]) -> Value {
     // text `Array`.
     // `to_str_ext` raises the conversion's own warning, once per element.
     let parts: Vec<String> = vals.iter().map(host::to_str_ext).collect();
-    Value::str(parts.join(&glue))
+    Ok(Value::str(parts.join(&glue)))
 }
 
 /// The name `php_charmask` reports a malformed `..` range under, given which of

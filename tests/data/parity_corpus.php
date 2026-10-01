@@ -1015,3 +1015,15 @@ str_replace("a", "b", "aaa", count: $n);
 parse_str("x=1&y=2", result: $out);
 similar_text("World", "Word", percent: $p);
 var_dump($n, $out, $p);
+#==#
+// ── a syntax error quotes a long token's first 30 bytes and `...` ──
+if ($a 'a long single-quoted string that goes past thirty bytes') {}
+#==#
+// ── an unterminated single-quoted string is quoted from the rest of the file ──
+echo 'never closed \' still open
+and the next line is cut off
+#==#
+// ── an unterminated double-quoted string: what was expected depends on its content ──
+echo "plain text, no closing quote
+#==#
+echo "with $interpolation and no closing quote

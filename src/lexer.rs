@@ -368,6 +368,7 @@ impl<'a> Lexer<'a> {
     }
 
     fn lex_single_quote(&mut self) -> Result<(), String> {
+        let (opened, body) = (self.line, self.pos + 1);
         self.pos += 1; // opening quote
         let mut s = String::new();
         while self.pos < self.src.len() {
@@ -400,7 +401,19 @@ impl<'a> Lexer<'a> {
                 }
             }
         }
-        Err(format!("unterminated string (line {})", self.line))
+        // Unterminated: the reference scans the rest of the file as the
+        // string'"'"'s content and the parser rejects that token, quoting it.
+        let rest = String::from_utf8_lossy(&self.src[body.min(self.src.len())..]);
+        // Quoted the way `zend_yytnamerr` quotes it: the quote marks at either
+        // end of the token text are stripped, so a trailing escaped `\'` goes.
+        let rest = rest.strip_suffix('\'').unwrap_or(&rest);
+        Err(located(
+            format!(
+                "syntax error, unexpected string content \"{}\"",
+                quoted_token_text(rest)
+            ),
+            opened,
+        ))
     }
 
     fn lex_double_quote(&mut self) -> Result<(), String> {
@@ -550,7 +563,22 @@ impl<'a> Lexer<'a> {
             }
             return Ok(parts);
         }
-        Err(format!("unterminated string (line {})", self.line))
+        if end != InterpEnd::DoubleQuote {
+            return Err(format!("unterminated string (line {})", self.line));
+        }
+        // An unterminated double-quoted string meets end of file inside the
+        // parser'"'"'s string rule, so what it expected depends on how far it got.
+        let expecting = if parts.iter().any(|p| !matches!(p, StrPart::Lit(_))) {
+            ""
+        } else if parts.is_empty() && lit.is_empty() {
+            ", expecting variable or string content or \"${\" or \"{$\""
+        } else {
+            ", expecting variable or \"${\" or \"{$\""
+        };
+        Err(located(
+            format!("syntax error, unexpected end of file{expecting}"),
+            self.line,
+        ))
     }
 
     /// Whether a heredoc header starts at `at`: `<<<`, blanks, a label (bare,
@@ -1014,4 +1042,18 @@ fn utf8_len(b: u8) -> usize {
         0xe0..=0xef => 3,
         _ => 4,
     }
+}
+
+/// A token's text as a syntax error quotes it (`zend_yytnamerr`): cut at the
+/// first line break, and past 33 bytes shortened to its first 30 and `...`.
+pub(crate) fn quoted_token_text(s: &str) -> String {
+    let line = s.split('\n').next().unwrap_or_default();
+    if line.len() <= 33 {
+        return line.to_string();
+    }
+    let mut cut = 30;
+    while !line.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    format!("{}...", &line[..cut])
 }
