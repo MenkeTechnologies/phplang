@@ -178,25 +178,14 @@ CORRECTED: this entry used to read "Two coercion warnings are not raised" and
 listed `echo NAN` alongside. `echo NAN` agrees with the reference and did so
 before this round's work; the claim was stale, not fixed here.
 
-## `set_error_handler` is a no-op
+## `set_error_handler`: when the handler runs
 
-```text
-$ php -r 'set_error_handler(function($n,$s){ echo "LVL=$n MSG=$s\n"; return true; }); $a=[1]; echo $a[9]; echo "CONT\n";'
-LVL=2 MSG=Undefined array key 9
-CONT
-$ target/debug/php -r '… same …'
-Warning: Undefined array key 9 in Command line code on line 1
-CONT
-```
-
-The callback is accepted and discarded — already recorded as a DIVERGENCE in
-the `set_error_handler` corpus entry. `function_exists` answers `true` for it,
-as the reference does.
-
-Implementing the handler chain would make the `E_*` level of every diagnostic
-observable from PHP, which is the strongest available test for the level work
-done this round — currently that level can only be probed indirectly, by masking
-the bit with `error_reporting()`.
+A diagnostic is handed to the user handler at the next builtin boundary after
+it was raised, because the handler is PHP code and the diagnostic is raised
+inside the host borrow. For a warning raised by one operation and consumed by
+the next — the usual shape — that is the same moment. It differs only for a
+library call that warns and then itself produces output before returning: that
+output comes first here.
 
 ## A user comparator is called in a different ORDER, and a different number of times
 

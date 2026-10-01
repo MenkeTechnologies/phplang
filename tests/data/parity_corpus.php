@@ -906,3 +906,60 @@ var_dump(set_exception_handler("strlen"), set_exception_handler(null),
          restore_exception_handler(), set_exception_handler("trim"));
 set_exception_handler(function ($e) { echo "never\n"; });
 throw new Exception("direct");
+#==#
+// ── set_error_handler takes the diagnostic instead of the display ──
+set_error_handler(function ($no, $str, $file, $line) {
+    echo "H($no) $str @ $file:$line er=", error_reporting(), "\n";
+    return true;
+});
+$a = [1];
+echo $a[9];
+echo "cont\n";
+echo @$u;
+echo "Array: " . [1], "\n";
+$x = "5 apples" + 1;
+trigger_error("user dep", E_USER_DEPRECATED);
+$s = "abc";
+echo $s[10], "|\n";
+var_dump(error_get_last());
+#==#
+// ── false falls through to the default display; levels mask what it takes ──
+set_error_handler(fn($no, $str) => false);
+$a = [];
+echo $a[1];
+var_dump(error_get_last()["message"]);
+set_error_handler(function ($no, $str) { echo "W:$str\n"; }, E_WARNING);
+echo $u;
+trigger_error("a notice");
+var_dump(restore_error_handler(), restore_error_handler());
+echo $v;
+#==#
+// ── the handler stack, and a handler's own diagnostics use the default ──
+var_dump(set_error_handler("strlen"), set_error_handler(null),
+         restore_error_handler(), set_error_handler("trim", E_WARNING));
+restore_error_handler(); restore_error_handler();
+set_error_handler(function ($no, $str) { echo "H:$str\n"; echo $inner; restore_error_handler(); });
+echo $u1;
+echo $u2;
+#==#
+// ── ErrorException from a handler is catchable where the warning arose ──
+set_error_handler(function ($no, $str, $file, $line) {
+    throw new ErrorException($str, 0, $no, $file, $line);
+});
+try {
+    $a = [];
+    $b = $a["k"];
+    echo "not reached\n";
+} catch (ErrorException $e) {
+    echo get_class($e), " ", $e->getMessage(), " sev=", $e->getSeverity(), " line=", $e->getLine(), "\n";
+}
+$e = new ErrorException("m", 1, E_WARNING, "f.php", 3);
+var_dump($e->getSeverity(), $e->getFile(), $e->getLine(), $e->getCode(), $e instanceof Exception);
+echo $undefined_after;
+#==#
+// ── E_USER_ERROR goes to a handler that takes it; false lets the fatal through ──
+set_error_handler(function ($no, $str) { echo "H($no):$str\n"; return $no !== E_USER_ERROR || $str !== "fatal"; });
+trigger_error("handled", E_USER_ERROR);
+echo "after\n";
+trigger_error("fatal", E_USER_ERROR);
+echo "never\n";

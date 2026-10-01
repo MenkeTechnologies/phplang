@@ -111,6 +111,16 @@ class Error {
     final public function getTraceAsString() { return $this->trace; }
     public function __toString() { return $this->message; }
 }
+class ErrorException extends Exception {
+    protected $severity = 1;
+    public function __construct($message = "", $code = 0, $severity = 1, $filename = null, $line = null, $previous = null) {
+        parent::__construct($message, $code, $previous);
+        $this->severity = $severity;
+        if ($filename !== null) { $this->file = $filename; }
+        if ($line !== null) { $this->line = $line; }
+    }
+    final public function getSeverity() { return $this->severity; }
+}
 class RuntimeException extends Exception {}
 class LogicException extends Exception {}
 class InvalidArgumentException extends LogicException {}

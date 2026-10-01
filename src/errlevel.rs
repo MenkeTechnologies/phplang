@@ -30,6 +30,22 @@ pub const E_DEPRECATED: i64 = 8192;
 pub const E_USER_DEPRECATED: i64 = 16384;
 pub const E_ALL: i64 = 30719;
 
+/// The levels `set_error_handler` may take. The engine's fatal, parse, core and
+/// compile levels never reach a user handler. `E_USER_ERROR` does, but through
+/// `trigger_error`'s own path, since its fallback is a fatal, not a display.
+pub const HANDLEABLE: i64 = E_WARNING
+    | E_NOTICE
+    | E_USER_WARNING
+    | E_USER_NOTICE
+    | E_RECOVERABLE_ERROR
+    | E_DEPRECATED
+    | E_USER_DEPRECATED;
+
+/// What `@` narrows `error_reporting` to while it is in effect: the fatal
+/// levels only (4437).
+pub const SILENCED: i64 =
+    E_ERROR | E_PARSE | E_CORE_ERROR | E_COMPILE_ERROR | E_USER_ERROR | E_RECOVERABLE_ERROR;
+
 /// The `E_*` names an ini value may spell, for [`parse_ini_level`].
 const NAMES: &[(&str, i64)] = &[
     ("E_ERROR", E_ERROR),

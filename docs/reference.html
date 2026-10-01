@@ -1833,51 +1833,57 @@ catch (Exception $e) { echo $e-&gt;getMessage(), $e-&gt;getCode(); }   // =&gt; 
 catch (Exception $e) { echo "E"; } catch (Error $e) { echo "R"; }   // =&gt; R</code></pre>
         </article>
         <article class="doc-entry" id="doc-prelude-class-3">
-          <h3><a class="doc-anchor" href="#doc-prelude-class-3">#</a> <code>RuntimeException</code></h3>
+          <h3><a class="doc-anchor" href="#doc-prelude-class-3">#</a> <code>ErrorException</code></h3>
+          <pre><code class="lang-php">class ErrorException extends Exception { __construct($message = "", $code = 0, $severity = E_ERROR, $filename = null, $line = null, $previous = null); getSeverity(): int }</code></pre>
+          <p>An exception carrying an error level, the usual way an error handler turns a warning into something `catch` can take. A non-null `$filename` / `$line` replace where it was raised.</p>
+          <pre><code class="lang-php">set_error_handler(fn($n, $s, $f, $l) =&gt; throw new ErrorException($s, 0, $n, $f, $l));</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-prelude-class-4">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-4">#</a> <code>RuntimeException</code></h3>
           <pre><code class="lang-php">class RuntimeException extends Exception {}</code></pre>
           <p>Thrown for an error only detectable at run time. Adds no members of its own.</p>
         </article>
-        <article class="doc-entry" id="doc-prelude-class-4">
-          <h3><a class="doc-anchor" href="#doc-prelude-class-4">#</a> <code>LogicException</code></h3>
+        <article class="doc-entry" id="doc-prelude-class-5">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-5">#</a> <code>LogicException</code></h3>
           <pre><code class="lang-php">class LogicException extends Exception {}</code></pre>
           <p>Thrown for an error in the program's logic that should be caught at development time.</p>
         </article>
-        <article class="doc-entry" id="doc-prelude-class-5">
-          <h3><a class="doc-anchor" href="#doc-prelude-class-5">#</a> <code>InvalidArgumentException</code></h3>
+        <article class="doc-entry" id="doc-prelude-class-6">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-6">#</a> <code>InvalidArgumentException</code></h3>
           <pre><code class="lang-php">class InvalidArgumentException extends LogicException {}</code></pre>
           <p>Thrown when an argument does not match the expected type or value.</p>
         </article>
-        <article class="doc-entry" id="doc-prelude-class-6">
-          <h3><a class="doc-anchor" href="#doc-prelude-class-6">#</a> <code>ArithmeticError</code></h3>
+        <article class="doc-entry" id="doc-prelude-class-7">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-7">#</a> <code>ArithmeticError</code></h3>
           <pre><code class="lang-php">class ArithmeticError extends Error {}</code></pre>
           <p>Thrown for an arithmetic failure, such as a shift by a negative count.</p>
         </article>
-        <article class="doc-entry" id="doc-prelude-class-7">
-          <h3><a class="doc-anchor" href="#doc-prelude-class-7">#</a> <code>DivisionByZeroError</code></h3>
+        <article class="doc-entry" id="doc-prelude-class-8">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-8">#</a> <code>DivisionByZeroError</code></h3>
           <pre><code class="lang-php">class DivisionByZeroError extends ArithmeticError {}</code></pre>
           <p>The class raised for a zero divisor. `/` and `intdiv()` throw it with the message `Division by zero`, `%` with `Modulo by zero`, and a program may throw and catch it itself.</p>
           <pre><code class="lang-php">try { throw new DivisionByZeroError("x"); }
 catch (ArithmeticError $e) { echo get_class($e); }   // =&gt; DivisionByZeroError</code></pre>
         </article>
-        <article class="doc-entry" id="doc-prelude-class-8">
-          <h3><a class="doc-anchor" href="#doc-prelude-class-8">#</a> <code>TypeError</code></h3>
+        <article class="doc-entry" id="doc-prelude-class-9">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-9">#</a> <code>TypeError</code></h3>
           <pre><code class="lang-php">class TypeError extends Error {}</code></pre>
           <p>Thrown when a value has the wrong type for the operation. phplang enforces no declared parameter types, so it is raised far less often than in PHP.</p>
         </article>
-        <article class="doc-entry" id="doc-prelude-class-9">
-          <h3><a class="doc-anchor" href="#doc-prelude-class-9">#</a> <code>ValueError</code></h3>
+        <article class="doc-entry" id="doc-prelude-class-10">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-10">#</a> <code>ValueError</code></h3>
           <pre><code class="lang-php">class ValueError extends Error {}</code></pre>
           <p>Thrown when a value is of the right type but outside the accepted domain — the class the standard library's range and argument errors report.</p>
         </article>
-        <article class="doc-entry" id="doc-prelude-class-10">
-          <h3><a class="doc-anchor" href="#doc-prelude-class-10">#</a> <code>UnhandledMatchError</code></h3>
+        <article class="doc-entry" id="doc-prelude-class-11">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-11">#</a> <code>UnhandledMatchError</code></h3>
           <pre><code class="lang-php">class UnhandledMatchError extends Error {}</code></pre>
           <p>Thrown by a `match` expression whose subject matched no arm and which had no `default`. The message reads `Unhandled match case &lt;subject&gt;`.</p>
           <pre><code class="lang-php">try { echo match (5) { 1 =&gt; "a" }; }
 catch (UnhandledMatchError $e) { echo $e-&gt;getMessage(); }   // =&gt; Unhandled match case 5</code></pre>
         </article>
-        <article class="doc-entry" id="doc-prelude-class-11">
-          <h3><a class="doc-anchor" href="#doc-prelude-class-11">#</a> <code>DateInterval</code></h3>
+        <article class="doc-entry" id="doc-prelude-class-12">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-12">#</a> <code>DateInterval</code></h3>
           <pre><code class="lang-php">class DateInterval {
     public $y, $m, $d, $h, $i, $s, $f, $invert, $days;
     __construct($spec = "")
@@ -1886,8 +1892,8 @@ catch (UnhandledMatchError $e) { echo $e-&gt;getMessage(); }   // =&gt; Unhandle
           <p>A duration parsed from an ISO 8601 spec such as `P1Y2M3DT4H5M6S`, with `W` weeks folded into days. `_seconds()` is the phplang-specific helper `DateTime::add`/`sub` use, converting with the fixed approximations of 30 days per month and 365 days per year. `format()` handles `%y %m %d %h %i %s %a %R %%`. DIVERGENCE: `$days` is only set by `DateTime::diff`, and PHP's `createFromDateString` static is absent.</p>
           <pre><code class="lang-php">$i = new DateInterval("P1DT2H"); echo $i-&gt;d, $i-&gt;h;   // =&gt; 12</code></pre>
         </article>
-        <article class="doc-entry" id="doc-prelude-class-12">
-          <h3><a class="doc-anchor" href="#doc-prelude-class-12">#</a> <code>DateTime</code></h3>
+        <article class="doc-entry" id="doc-prelude-class-13">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-13">#</a> <code>DateTime</code></h3>
           <pre><code class="lang-php">class DateTime {
     public $ts;
     __construct($datetime = "now")
@@ -1898,8 +1904,8 @@ catch (UnhandledMatchError $e) { echo $e-&gt;getMessage(); }   // =&gt; Unhandle
           <p>A mutable date/time built on the `date`/`strtotime`/`mktime` functions, so everything it computes is UTC. The mutators return `$this` for chaining. DIVERGENCE: it stores a plain integer timestamp in the public `$ts`, has no timezone parameter or `DateTimeZone` support, no sub-second precision, and none of PHP's `createFromFormat`/`setISODate`/`getTimezone` API.</p>
           <pre><code class="lang-php">$d = new DateTime("@0"); echo $d-&gt;format("Y-m-d");   // =&gt; 1970-01-01</code></pre>
         </article>
-        <article class="doc-entry" id="doc-prelude-class-13">
-          <h3><a class="doc-anchor" href="#doc-prelude-class-13">#</a> <code>DateTimeImmutable</code></h3>
+        <article class="doc-entry" id="doc-prelude-class-14">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-14">#</a> <code>DateTimeImmutable</code></h3>
           <pre><code class="lang-php">class DateTimeImmutable {
     public $ts;
     __construct($datetime = "now")
@@ -1910,14 +1916,14 @@ catch (UnhandledMatchError $e) { echo $e-&gt;getMessage(); }   // =&gt; Unhandle
           <pre><code class="lang-php">$a = new DateTimeImmutable("@0"); $b = $a-&gt;add(new DateInterval("P1D"));
 echo $a-&gt;getTimestamp(), " ", $b-&gt;getTimestamp();   // =&gt; 0 86400</code></pre>
         </article>
-        <article class="doc-entry" id="doc-prelude-class-14">
-          <h3><a class="doc-anchor" href="#doc-prelude-class-14">#</a> <code>stdClass</code></h3>
+        <article class="doc-entry" id="doc-prelude-class-15">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-15">#</a> <code>stdClass</code></h3>
           <pre><code class="lang-php">class stdClass {}</code></pre>
           <p>The empty generic object. Properties are added dynamically at assignment. Produced by `new stdClass` and by the `(object)` cast. DIVERGENCE: `json_decode` always yields arrays, so it never produces one.</p>
           <pre><code class="lang-php">$o = new stdClass; $o-&gt;x = 1; echo $o-&gt;x, get_class($o);   // =&gt; 1stdClass</code></pre>
         </article>
-        <article class="doc-entry" id="doc-prelude-class-15">
-          <h3><a class="doc-anchor" href="#doc-prelude-class-15">#</a> <code>SplDoublyLinkedList</code></h3>
+        <article class="doc-entry" id="doc-prelude-class-16">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-16">#</a> <code>SplDoublyLinkedList</code></h3>
           <pre><code class="lang-php">class SplDoublyLinkedList {
     public $dll = [];
     push($v)  pop()  shift()  unshift($v)  top()  bottom()
@@ -1929,22 +1935,22 @@ echo $a-&gt;getTimestamp(), " ", $b-&gt;getTimestamp();   // =&gt; 0 86400</code
           <pre><code class="lang-php">$l = new SplDoublyLinkedList; $l-&gt;push(1); $l-&gt;push(2);
 echo $l-&gt;count(), $l-&gt;top();   // =&gt; 22</code></pre>
         </article>
-        <article class="doc-entry" id="doc-prelude-class-16">
-          <h3><a class="doc-anchor" href="#doc-prelude-class-16">#</a> <code>SplStack</code></h3>
+        <article class="doc-entry" id="doc-prelude-class-17">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-17">#</a> <code>SplStack</code></h3>
           <pre><code class="lang-php">class SplStack extends SplDoublyLinkedList {}</code></pre>
           <p>A LIFO view over `SplDoublyLinkedList`, using `push()`/`pop()`/`top()`. It adds no members and does not reverse the iteration order.</p>
           <pre><code class="lang-php">$s = new SplStack; $s-&gt;push(1); $s-&gt;push(2); echo $s-&gt;pop();   // =&gt; 2</code></pre>
         </article>
-        <article class="doc-entry" id="doc-prelude-class-17">
-          <h3><a class="doc-anchor" href="#doc-prelude-class-17">#</a> <code>SplQueue</code></h3>
+        <article class="doc-entry" id="doc-prelude-class-18">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-18">#</a> <code>SplQueue</code></h3>
           <pre><code class="lang-php">class SplQueue extends SplDoublyLinkedList {
     enqueue($v)   dequeue()
 }</code></pre>
           <p>A FIFO view over `SplDoublyLinkedList`: `enqueue()` appends and `dequeue()` removes from the front.</p>
           <pre><code class="lang-php">$q = new SplQueue; $q-&gt;enqueue(1); $q-&gt;enqueue(2); echo $q-&gt;dequeue();   // =&gt; 1</code></pre>
         </article>
-        <article class="doc-entry" id="doc-prelude-class-18">
-          <h3><a class="doc-anchor" href="#doc-prelude-class-18">#</a> <code>SplFixedArray</code></h3>
+        <article class="doc-entry" id="doc-prelude-class-19">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-19">#</a> <code>SplFixedArray</code></h3>
           <pre><code class="lang-php">class SplFixedArray {
     public $data = []; public $sz = 0;
     __construct($size = 0)
@@ -1955,8 +1961,8 @@ echo $l-&gt;count(), $l-&gt;top();   // =&gt; 22</code></pre>
           <pre><code class="lang-php">$a = new SplFixedArray(3); $a-&gt;offsetSet(0, "x");
 echo $a-&gt;getSize(), $a-&gt;offsetGet(0);   // =&gt; 3x</code></pre>
         </article>
-        <article class="doc-entry" id="doc-prelude-class-19">
-          <h3><a class="doc-anchor" href="#doc-prelude-class-19">#</a> <code>ArrayObject</code></h3>
+        <article class="doc-entry" id="doc-prelude-class-20">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-20">#</a> <code>ArrayObject</code></h3>
           <pre><code class="lang-php">class ArrayObject {
     public $storage = [];
     __construct($array = [])
@@ -1967,13 +1973,13 @@ echo $a-&gt;getSize(), $a-&gt;offsetGet(0);   // =&gt; 3x</code></pre>
           <pre><code class="lang-php">$o = new ArrayObject(["a" =&gt; 1]); $o-&gt;append(2);
 echo $o-&gt;count(), $o-&gt;offsetGet("a");   // =&gt; 21</code></pre>
         </article>
-        <article class="doc-entry" id="doc-prelude-class-20">
-          <h3><a class="doc-anchor" href="#doc-prelude-class-20">#</a> <code>ArrayIterator</code></h3>
+        <article class="doc-entry" id="doc-prelude-class-21">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-21">#</a> <code>ArrayIterator</code></h3>
           <pre><code class="lang-php">class ArrayIterator extends ArrayObject {}</code></pre>
           <p>An alias of `ArrayObject` with no added members. DIVERGENCE: it implements no `Iterator` interface and has none of PHP's `current`/`key`/`next`/`valid`/`rewind` cursor methods.</p>
         </article>
-        <article class="doc-entry" id="doc-prelude-class-21">
-          <h3><a class="doc-anchor" href="#doc-prelude-class-21">#</a> <code>SplObjectStorage</code></h3>
+        <article class="doc-entry" id="doc-prelude-class-22">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-22">#</a> <code>SplObjectStorage</code></h3>
           <pre><code class="lang-php">class SplObjectStorage {
     public $store = [];
     attach($obj, $data = null)   detach($obj)
@@ -1983,8 +1989,8 @@ echo $o-&gt;count(), $o-&gt;offsetGet("a");   // =&gt; 21</code></pre>
           <pre><code class="lang-php">$s = new SplObjectStorage; $o = new stdClass; $s-&gt;attach($o);
 var_dump($s-&gt;contains($o), $s-&gt;count());   // =&gt; bool(true) int(1)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-prelude-class-22">
-          <h3><a class="doc-anchor" href="#doc-prelude-class-22">#</a> <code>SplPriorityQueue</code></h3>
+        <article class="doc-entry" id="doc-prelude-class-23">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-23">#</a> <code>SplPriorityQueue</code></h3>
           <pre><code class="lang-php">class SplPriorityQueue {
     public $items = [];
     insert($value, $priority)   extract()   top()
@@ -1994,8 +2000,8 @@ var_dump($s-&gt;contains($o), $s-&gt;count());   // =&gt; bool(true) int(1)</cod
           <pre><code class="lang-php">$q = new SplPriorityQueue; $q-&gt;insert("lo", 1); $q-&gt;insert("hi", 9);
 echo $q-&gt;extract();   // =&gt; hi</code></pre>
         </article>
-        <article class="doc-entry" id="doc-prelude-class-23">
-          <h3><a class="doc-anchor" href="#doc-prelude-class-23">#</a> <code>SplHeap</code></h3>
+        <article class="doc-entry" id="doc-prelude-class-24">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-24">#</a> <code>SplHeap</code></h3>
           <pre><code class="lang-php">class SplHeap {
     public $items = [];
     insert($v)   extract()   top()
@@ -2004,16 +2010,16 @@ echo $q-&gt;extract();   // =&gt; hi</code></pre>
           <p>The base heap class. DIVERGENCE: it is concrete rather than abstract and stores an unordered list, so `_best()` linear-scans with `compare()` on every `top()`/`extract()`. Override `compare()` to change the ordering; the base implementation is `$a &lt;=&gt; $b`, i.e. max-first.</p>
           <pre><code class="lang-php">$h = new SplHeap; $h-&gt;insert(3); $h-&gt;insert(9); echo $h-&gt;extract();   // =&gt; 9</code></pre>
         </article>
-        <article class="doc-entry" id="doc-prelude-class-24">
-          <h3><a class="doc-anchor" href="#doc-prelude-class-24">#</a> <code>SplMaxHeap</code></h3>
+        <article class="doc-entry" id="doc-prelude-class-25">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-25">#</a> <code>SplMaxHeap</code></h3>
           <pre><code class="lang-php">class SplMaxHeap extends SplHeap {
     compare($a, $b): int   //  $a &lt;=&gt; $b
 }</code></pre>
           <p>A heap whose `extract()` yields the largest element first.</p>
           <pre><code class="lang-php">$h = new SplMaxHeap; $h-&gt;insert(1); $h-&gt;insert(5); echo $h-&gt;extract();   // =&gt; 5</code></pre>
         </article>
-        <article class="doc-entry" id="doc-prelude-class-25">
-          <h3><a class="doc-anchor" href="#doc-prelude-class-25">#</a> <code>SplMinHeap</code></h3>
+        <article class="doc-entry" id="doc-prelude-class-26">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-26">#</a> <code>SplMinHeap</code></h3>
           <pre><code class="lang-php">class SplMinHeap extends SplHeap {
     compare($a, $b): int   //  $b &lt;=&gt; $a
 }</code></pre>
@@ -5263,8 +5269,9 @@ var_dump(is_subclass_of(new B, "A"), is_subclass_of(new A, "A"));   // =&gt; boo
         <article class="doc-entry" id="doc-runtime-and-diagnostics-8">
           <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-8">#</a> <code>set_error_handler</code></h3>
           <pre><code class="lang-php">set_error_handler(?callable $callback, int $error_levels = E_ALL): null</code></pre>
-          <p>DIVERGENCE: accepted and discarded. There is no error-handler chain, so the callback is NEVER invoked; it returns null, which reads as "no previous handler".</p>
-          <pre><code class="lang-php">var_dump(set_error_handler(fn() =&gt; true));   // =&gt; NULL</code></pre>
+          <p>Pushes the handler (null pushes "none") with the levels it takes and returns the handler it replaces. A warning, notice or deprecation of a level it takes is handed to it as `($errno, $errstr, $errfile, $errline)` instead of being displayed — even under `@`, where `error_reporting()` reads 4437 inside it; returning `false` displays it after all. A diagnostic the handler raises itself takes the default path. `trigger_error(…, E_USER_ERROR)` reaches it too, and is fatal only when it returns `false`. DIVERGENCE: the handler runs at the next builtin boundary after the diagnostic, so one raised in the middle of a library call that goes on to print runs after that output.</p>
+          <pre><code class="lang-php">set_error_handler(function ($n, $s) { echo "caught: $s\n"; return true; });
+echo $undefined;   // =&gt; caught: Undefined variable $undefined</code></pre>
         </article>
         <article class="doc-entry" id="doc-runtime-and-diagnostics-9">
           <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-9">#</a> <code>set_exception_handler</code></h3>
@@ -5274,7 +5281,7 @@ var_dump(is_subclass_of(new B, "A"), is_subclass_of(new A, "A"));   // =&gt; boo
         <article class="doc-entry" id="doc-runtime-and-diagnostics-10">
           <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-10">#</a> <code>restore_error_handler</code></h3>
           <pre><code class="lang-php">restore_error_handler(): bool</code></pre>
-          <p>DIVERGENCE: a no-op that always returns true, since no handler was ever stored.</p>
+          <p>Pops the handler stack back to the previous `set_error_handler`; always returns true.</p>
           <pre><code class="lang-php">var_dump(restore_error_handler());   // =&gt; bool(true)</code></pre>
         </article>
         <article class="doc-entry" id="doc-runtime-and-diagnostics-11">

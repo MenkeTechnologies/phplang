@@ -1541,3 +1541,78 @@ Stack trace:
 #0 {main}
   thrown in Command line code on line 5
 
+#REC 72 exit=0 out=391 err=0
+H(2) Undefined array key 9 @ Command line code:7 er=30719
+cont
+H(2) Undefined variable $u @ Command line code:9 er=4437
+H(2) Array to string conversion @ Command line code:10 er=30719
+Array: Array
+H(2) A non-numeric value encountered @ Command line code:11 er=30719
+H(16384) user dep @ Command line code:12 er=30719
+H(2) Uninitialized string offset 10 @ Command line code:14 er=30719
+|
+NULL
+
+#REC 73 exit=0 out=257 err=188
+
+Warning: Undefined array key 1 in Command line code on line 4
+string(21) "Undefined array key 1"
+W:Undefined variable $u
+
+Notice: a notice in Command line code on line 8
+bool(true)
+bool(true)
+
+Warning: Undefined variable $v in Command line code on line 10
+PHP Warning:  Undefined array key 1 in Command line code on line 4
+PHP Notice:  a notice in Command line code on line 8
+PHP Warning:  Undefined variable $v in Command line code on line 10
+
+#REC 74 exit=0 out=210 err=139
+NULL
+string(6) "strlen"
+bool(true)
+string(6) "strlen"
+H:Undefined variable $u1
+
+Warning: Undefined variable $inner in Command line code on line 5
+
+Warning: Undefined variable $u2 in Command line code on line 7
+PHP Warning:  Undefined variable $inner in Command line code on line 5
+PHP Warning:  Undefined variable $u2 in Command line code on line 7
+
+#REC 75 exit=255 out=372 err=274
+ErrorException Undefined array key "k" sev=2 line=7
+int(2)
+string(5) "f.php"
+int(3)
+int(1)
+bool(true)
+
+Fatal error: Uncaught ErrorException: Undefined variable $undefined_after in Command line code:14
+Stack trace:
+#0 Command line code(14): {closure:Command line code:2}(2, 'Undefined varia...', 'Command line co...', 14)
+#1 {main}
+  thrown in Command line code on line 14
+PHP Fatal error:  Uncaught ErrorException: Undefined variable $undefined_after in Command line code:14
+Stack trace:
+#0 Command line code(14): {closure:Command line code:2}(2, 'Undefined varia...', 'Command line co...', 14)
+#1 {main}
+  thrown in Command line code on line 14
+
+#REC 76 exit=255 out=431 err=131
+H(8192):Passing E_USER_ERROR to trigger_error() is deprecated since 8.4, throw an exception or call exit with a string message instead
+H(256):handled
+after
+H(8192):Passing E_USER_ERROR to trigger_error() is deprecated since 8.4, throw an exception or call exit with a string message instead
+H(256):fatal
+
+Fatal error: fatal in Command line code on line 5
+Stack trace:
+#0 Command line code(5): trigger_error('fatal', 256)
+#1 {main}
+PHP Fatal error:  fatal in Command line code on line 5
+Stack trace:
+#0 Command line code(5): trigger_error('fatal', 256)
+#1 {main}
+

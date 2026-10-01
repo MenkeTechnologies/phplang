@@ -54,7 +54,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
                 )));
             }
             if level == 256 {
-                return Some(user_error_fatal(&msg, args));
+                return Some(user_error(&msg, args));
             }
             with_host(|h| {
                 let line = h.cur_frame_line();
@@ -96,10 +96,18 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         // debug_print_backtrace(): void — nothing to print, returns null.
         "debug_print_backtrace" => Value::Undef,
 
-        // The error handler is still a no-op: nothing is stored, so the "previous
-        // handler" is always null.
-        "set_error_handler" => Value::Undef,
-        "restore_error_handler" => Value::bool(true),
+        // A stack of `(callback, error_levels)`; see `host::drain_error_handlers`.
+        "set_error_handler" => {
+            let levels = match args.get(1) {
+                Some(v) if !matches!(v, Value::Undef) => int_arg(args, 1),
+                _ => crate::errlevel::E_ALL,
+            };
+            with_host(|h| h.set_error_handler(arg(args, 0), levels))
+        }
+        "restore_error_handler" => {
+            with_host(|h| h.restore_error_handler());
+            Value::bool(true)
+        }
         // A stack: `set_*` answers the handler it replaces, `restore_*` pops.
         "set_exception_handler" => with_host(|h| h.set_exception_handler(arg(args, 0))),
         "restore_exception_handler" => {
@@ -151,7 +159,10 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
 /// is visible even though the fatal follows it. The fatal then renders like an
 /// uncaught throw's block minus the `thrown in` line, with the `trigger_error`
 /// call as frame `#0`, and the process exits 255.
-fn user_error_fatal(msg: &str, args: &[Value]) -> Result<Value, String> {
+///
+/// A user error handler that takes E_USER_ERROR is called instead, after the
+/// deprecation has reached it; only a `false` from it lets the fatal through.
+fn user_error(msg: &str, args: &[Value]) -> Result<Value, String> {
     with_host(|h| {
         let line = h.cur_frame_line();
         h.diagnose(
@@ -161,6 +172,29 @@ fn user_error_fatal(msg: &str, args: &[Value]) -> Result<Value, String> {
             "Passing E_USER_ERROR to trigger_error() is deprecated since 8.4, throw an \
              exception or call exit with a string message instead",
         );
+    });
+    if crate::host::drain_error_handlers() || crate::host::unwinding() {
+        return Ok(Value::Undef);
+    }
+    let Some(handler) = with_host(|h| h.error_handler_for(crate::errlevel::E_USER_ERROR)) else {
+        return user_error_fatal(msg, args);
+    };
+    let (file, line) = with_host(|h| (h.current_file().to_string(), h.cur_frame_line()));
+    let r =
+        crate::host::invoke_error_handler(handler, crate::errlevel::E_USER_ERROR, msg, file, line)?;
+    if crate::host::unwinding() {
+        return Ok(Value::Undef);
+    }
+    match r {
+        Value::Bool(false) => user_error_fatal(msg, args),
+        _ => Ok(Value::bool(true)),
+    }
+}
+
+/// The fatal itself, once the deprecation has been raised.
+fn user_error_fatal(msg: &str, args: &[Value]) -> Result<Value, String> {
+    with_host(|h| {
+        let line = h.cur_frame_line();
         // The frame the trace names is the library call itself, pushed the way
         // `throw_from_internal` pushes it so `backtrace` renders the arguments.
         let argsarr = h.new_array();

@@ -2202,6 +2202,13 @@ pub const CORPUS: &[Entry] = &[
         "try { throw new TypeError(\"t\"); }\ncatch (Exception $e) { echo \"E\"; } catch (Error $e) { echo \"R\"; }   // => R",
     ),
     (
+        "ErrorException",
+        "Prelude class",
+        "class ErrorException extends Exception { __construct($message = \"\", $code = 0, $severity = E_ERROR, $filename = null, $line = null, $previous = null); getSeverity(): int }",
+        "An exception carrying an error level, the usual way an error handler turns a warning into something `catch` can take. A non-null `$filename` / `$line` replace where it was raised.",
+        "set_error_handler(fn($n, $s, $f, $l) => throw new ErrorException($s, 0, $n, $f, $l));",
+    ),
+    (
         "RuntimeException",
         "Prelude class",
         "class RuntimeException extends Exception {}",
@@ -6157,8 +6164,8 @@ pub const CORPUS: &[Entry] = &[
         "set_error_handler",
         "Runtime and diagnostics",
         "set_error_handler(?callable $callback, int $error_levels = E_ALL): null",
-        "DIVERGENCE: accepted and discarded. There is no error-handler chain, so the callback is NEVER invoked; it returns null, which reads as \"no previous handler\".",
-        "var_dump(set_error_handler(fn() => true));   // => NULL",
+        "Pushes the handler (null pushes \"none\") with the levels it takes and returns the handler it replaces. A warning, notice or deprecation of a level it takes is handed to it as `($errno, $errstr, $errfile, $errline)` instead of being displayed — even under `@`, where `error_reporting()` reads 4437 inside it; returning `false` displays it after all. A diagnostic the handler raises itself takes the default path. `trigger_error(…, E_USER_ERROR)` reaches it too, and is fatal only when it returns `false`. DIVERGENCE: the handler runs at the next builtin boundary after the diagnostic, so one raised in the middle of a library call that goes on to print runs after that output.",
+        "set_error_handler(function ($n, $s) { echo \"caught: $s\\n\"; return true; });\necho $undefined;   // => caught: Undefined variable $undefined",
     ),
     (
         "set_exception_handler",
@@ -6171,7 +6178,7 @@ pub const CORPUS: &[Entry] = &[
         "restore_error_handler",
         "Runtime and diagnostics",
         "restore_error_handler(): bool",
-        "DIVERGENCE: a no-op that always returns true, since no handler was ever stored.",
+        "Pops the handler stack back to the previous `set_error_handler`; always returns true.",
         "var_dump(restore_error_handler());   // => bool(true)",
     ),
     (

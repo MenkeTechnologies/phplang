@@ -185,7 +185,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         }
         "error_reporting" => with_host(|h| match args.first() {
             Some(v) if !matches!(v, Value::Undef) => Value::int(h.set_error_reporting(v.to_int())),
-            _ => Value::int(h.error_reporting()),
+            _ => Value::int(h.error_reporting_visible()),
         }),
         "ini_get" => {
             let name = str_arg(args, 0);

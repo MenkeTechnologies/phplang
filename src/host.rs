@@ -997,6 +997,15 @@ pub struct PhpHost {
     /// Whether an uncaught exception may reach [`PhpHost::exception_handlers`]
     /// at all — not under `php -r` (see [`run_main`]).
     exception_handler_enabled: bool,
+    /// `set_error_handler`'s stack of `(callback, error_levels)`; the last
+    /// entry is live, a `Value::Undef` callback one `set_error_handler(null)`
+    /// pushed.
+    error_handlers: Vec<(Value, i64)>,
+    /// A user error handler is running.
+    in_error_handler: bool,
+    /// Diagnostics the live handler takes, waiting for [`drain_error_handlers`]:
+    /// `(severity, level, message, file, line)`.
+    queued_errors: Vec<(String, i64, String, String, u32)>,
     /// `register_shutdown_function`'s queue: each callable with its arguments,
     /// run in order at request end (see [`request_shutdown`]).
     shutdown_fns: Vec<(Value, Vec<Value>)>,
@@ -1437,6 +1446,9 @@ impl PhpHost {
             pending_throw: None,
             pending_exit: None,
             exception_handlers: Vec::new(),
+            error_handlers: Vec::new(),
+            in_error_handler: false,
+            queued_errors: Vec::new(),
             exception_handler_enabled: true,
             shutdown_fns: Vec::new(),
             destructed: Default::default(),
@@ -2377,7 +2389,47 @@ impl PhpHost {
     /// default on, so the ordinary run emits both; `-d log_errors=0` leaves only
     /// the stdout copy and `-d display_errors=0` only the stderr one.
     pub fn diagnose(&mut self, severity: &str, level: i64, line: u32, msg: impl std::fmt::Display) {
-        self.last_error = Some((level, msg.to_string(), self.current_file().to_string(), line));
+        // `set_error_handler`: a level the live handler takes is queued for it
+        // instead of displayed — the handler is PHP code, which cannot run
+        // inside this borrow, so it runs at the next builtin boundary (see
+        // [`drain_error_handlers`]). `@` does not stop it; the handler sees the
+        // narrowed `error_reporting()` instead. While a handler runs, its own
+        // diagnostics take the default path, as the reference unsets the
+        // handler for the duration of the call.
+        if !self.in_error_handler && level & errlevel::HANDLEABLE != 0 {
+            if let Some((handler, mask)) = self.error_handlers.last() {
+                if !matches!(handler, Value::Undef) && mask & level != 0 {
+                    let file = self.current_file().to_string();
+                    self.queued_errors.push((
+                        severity.to_string(),
+                        level,
+                        msg.to_string(),
+                        file,
+                        line,
+                    ));
+                    ERRORS_QUEUED.with(|q| q.set(true));
+                    return;
+                }
+            }
+        }
+        self.diagnose_default(severity, level, line, msg);
+    }
+
+    /// The reference's own error display, with no user handler consulted —
+    /// also what a handler that returns `false` falls back to.
+    fn diagnose_default(
+        &mut self,
+        severity: &str,
+        level: i64,
+        line: u32,
+        msg: impl std::fmt::Display,
+    ) {
+        self.last_error = Some((
+            level,
+            msg.to_string(),
+            self.current_file().to_string(),
+            line,
+        ));
         if self.suppress > 0 || self.error_reporting & level == 0 {
             return;
         }
@@ -7159,6 +7211,9 @@ fn run_chunk_capturing(chunk: Chunk, capture: bool) -> Result<Value, String> {
 /// Run the top-level program chunk.
 pub fn run_main(chunk: Chunk) -> Result<Value, String> {
     let r = run_chunk_capturing(chunk, true);
+    // A diagnostic raised by the program's last native op has had no builtin
+    // boundary to reach its handler at yet.
+    drain_error_handlers();
     // A top-level `return` just ends the program; clear any leftover signal.
     with_host(|h| h.signal.take());
     // An exception that reached the top uncaught is a fatal error, displayed in
@@ -11004,4 +11059,139 @@ fn destruct_one(handle: u32) -> Result<(), String> {
     call_method(&class, "__destruct", Some(Value::Obj(handle)), Vec::new())?;
     with_host(|h| h.signal.take());
     shutdown_escape()
+}
+
+// ── set_error_handler ────────────────────────────────────────────────────────
+
+thread_local! {
+    /// Whether [`PhpHost::queued_errors`] may be non-empty — read on every
+    /// builtin call, so it is a flag beside the host rather than a borrow of it.
+    static ERRORS_QUEUED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+impl PhpHost {
+    /// `set_error_handler($callback, $error_levels)`: push it, answering the
+    /// callback it replaces.
+    pub fn set_error_handler(&mut self, callback: Value, levels: i64) -> Value {
+        let prev = self
+            .error_handlers
+            .last()
+            .map(|(c, _)| c.clone())
+            .unwrap_or(Value::Undef);
+        self.error_handlers.push((callback, levels));
+        prev
+    }
+
+    /// `restore_error_handler()`: drop back to the previous handler.
+    pub fn restore_error_handler(&mut self) {
+        self.error_handlers.pop();
+    }
+
+    /// `error_reporting()` as PHP code reads it: narrowed to the fatal levels
+    /// inside an `@` region.
+    pub fn error_reporting_visible(&self) -> i64 {
+        if self.suppress > 0 {
+            self.error_reporting & errlevel::SILENCED
+        } else {
+            self.error_reporting
+        }
+    }
+}
+
+/// Hand every queued diagnostic to the live error handler, as
+/// `$handler($errno, $errstr, $errfile, $errline)`. A handler that returns
+/// `false` gets the default display instead; one that throws stops the drain,
+/// and whatever is still queued is dropped with the statement that raised it.
+/// Answers whether the caller has to halt its chunk: the handler threw, exited
+/// or failed.
+///
+/// Called at every builtin boundary (before and after the handler runs) and at
+/// the end of the main chunk, which is the earliest point the host borrow that
+/// raised the diagnostic has been released.
+pub fn drain_error_handlers() -> bool {
+    if !ERRORS_QUEUED.with(|q| q.get()) {
+        return false;
+    }
+    loop {
+        let next = with_host(|h| {
+            if h.queued_errors.is_empty() {
+                ERRORS_QUEUED.with(|q| q.set(false));
+                return None;
+            }
+            let item = h.queued_errors.remove(0);
+            let handler = h.error_handlers.last().map(|(c, _)| c.clone());
+            Some((item, handler))
+        });
+        let Some(((severity, level, msg, file, line), handler)) = next else {
+            return false;
+        };
+        let Some(handler) = handler.filter(|c| !matches!(c, Value::Undef)) else {
+            with_host(|h| h.diagnose_default(&severity, level, line, &msg));
+            continue;
+        };
+        let r = invoke_error_handler(handler, level, &msg, file, line);
+        if unwinding() {
+            with_host(|h| h.queued_errors.clear());
+            ERRORS_QUEUED.with(|q| q.set(false));
+            return true;
+        }
+        match r {
+            Ok(Value::Bool(false)) => {
+                with_host(|h| h.diagnose_default(&severity, level, line, &msg))
+            }
+            Ok(_) => {}
+            Err(e) => {
+                with_host(|h| {
+                    h.queued_errors.clear();
+                    h.set_error(e);
+                });
+                ERRORS_QUEUED.with(|q| q.set(false));
+                return true;
+            }
+        }
+    }
+}
+
+/// Call `handler` as the reference calls an error handler:
+/// `($errno, $errstr, $errfile, $errline)`, from the line that raised the
+/// diagnostic (the call site its trace frame names), with the handler itself
+/// unset for the duration so its own diagnostics take the default path.
+pub fn invoke_error_handler(
+    handler: Value,
+    level: i64,
+    msg: &str,
+    file: String,
+    line: u32,
+) -> Result<Value, String> {
+    with_host(|h| {
+        h.in_error_handler = true;
+        if let Some(s) = h.scopes.last_mut() {
+            s.line = line;
+        }
+    });
+    let args = vec![
+        Value::int(level),
+        Value::str(msg.to_string()),
+        Value::str(file),
+        Value::int(i64::from(line)),
+    ];
+    let r = call_value(handler, args);
+    with_host(|h| {
+        h.in_error_handler = false;
+        h.signal.take();
+    });
+    r
+}
+
+impl PhpHost {
+    /// The live error handler, when it takes diagnostics of `level`.
+    pub fn error_handler_for(&self, level: i64) -> Option<Value> {
+        if self.in_error_handler {
+            return None;
+        }
+        self.error_handlers
+            .last()
+            .filter(|(c, mask)| !matches!(c, Value::Undef) && mask & level != 0)
+            .map(|(c, _)| c.clone())
+    }
 }
