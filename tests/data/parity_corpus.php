@@ -637,3 +637,169 @@ function has_default($a, $b = 2) { return "$a$b"; }
 echo has_default(a: 9), " ", has_default(1), " ", has_default(1, 5), "\n";
 function no_params() { return "ok"; }
 echo no_params(), "\n";
+#==#
+// ── a generator destroyed while suspended runs its `finally` blocks ──
+// Leaving a `foreach` over a generator the subject expression created (by
+// `break`, `break 2` or `return`) frees it at once; `catch` is not consulted.
+function gen_fin($tag) { try { yield 1; yield 2; } catch (Throwable $e) { echo "caught "; } finally { echo "F$tag "; } }
+foreach (gen_fin("a") as $v) { echo $v, " "; break; }
+echo "after-a\n";
+foreach (gen_fin("b") as $v) { foreach ([1] as $x) { break 2; } }
+echo "after-b\n";
+function first_of() { foreach (gen_fin("c") as $v) { return $v; } }
+echo first_of(), " after-c\n";
+// One a variable still holds survives the loop and is freed at shutdown,
+// after everything the script printed — so is one parked by `->current()`.
+$held = gen_fin("d");
+foreach ($held as $v) { break; }
+echo "after-d\n";
+// One run to completion ran its `finally` on the way out; nothing is left.
+foreach (gen_fin("e") as $v) {}
+echo "after-e\n";
+#==#
+// A `yield` reached in a `finally` while the generator is being destroyed is
+// an Error raised at the destroying site.
+function yields_in_finally() { try { yield 1; } finally { echo "fin "; yield 2; } }
+foreach (yields_in_finally() as $v) { break; }
+echo "unreached\n";
+#==#
+// `exit` at the top level still frees a parked generator, and the status the
+// script asked for survives it.
+function parked() { try { yield 1; } finally { echo "freed\n"; } }
+$p = parked();
+$p->current();
+exit(3);
+#==#
+// ── a property write on something that cannot hold one is an Error ──
+// The type is named by `zend_zval_value_name`: a bool by its value. The verb
+// follows the write: assign, increment/decrement, or modify for a fetch that
+// writes deeper.
+function attempt($f) { try { $f(); echo "no error\n"; } catch (Error $e) { echo $e->getMessage(), "\n"; } }
+attempt(function () { $x = null; $x->k = 1; });
+attempt(function () { $x = true; $x->k = 1; });
+attempt(function () { $x = 5; $x->k .= "a"; });
+attempt(function () { $x = 1.5; $x->k++; });
+attempt(function () { $x = "s"; $x->k[] = 1; });
+attempt(function () { $x = []; $x->k = 1; });
+attempt(function () { $c = fn() => 1; $c->k = 1; });
+attempt(function () { $g = (function () { yield 1; })(); $g->k = 1; });
+// A plain `=` fetches a property chain for WRITING: the missing link is
+// created as null without an `Undefined property` warning, and the write after
+// it is what fails. A compound write reads the link, and warns as a read does.
+$o = new stdClass;
+attempt(function () use ($o) { $o->inner->k = 5; });
+attempt(function () use ($o) { $o->a->b->c = 1; });
+attempt(function () use ($o) { $o->x->y[] = 1; });
+attempt(function () use ($o) { $o->m->n .= 1; });
+attempt(function () use ($o) { $o->r->s++; });
+class NoDynamic {}
+$d = new NoDynamic;
+attempt(function () use ($d) { $d->w->n = 1; });
+attempt(function () use ($d) { $d->m->n .= 1; });
+print_r($d);
+print_r($o);
+// An existing object link is written through.
+$o->inner = new stdClass;
+$o->inner->k = 7;
+$o->inner->list[] = 8;
+print_r($o->inner);
+// `__get` supplies the link; a non-object one cannot carry the write back.
+class MagicLink { public function __get($n) { echo "get $n\n"; return $n === "obj" ? new stdClass : null; } }
+$m = new MagicLink;
+attempt(function () use ($m) { $m->obj->k = 1; });
+attempt(function () use ($m) { $m->nul->k = 1; });
+// An uninitialized typed property is fetched as null and stays uninitialized
+// (print_r leaves an uninitialized property out).
+class TypedLink { public stdClass $s; }
+$t = new TypedLink;
+attempt(function () use ($t) { $t->s->k = 1; });
+print_r($t);
+#==#
+// An undefined variable as the receiver of a plain property write raises no
+// `Undefined variable` warning — only the Error.
+$undefined->k = 1;
+#==#
+// ── unpacking a scalar inside a CONSTANT array literal is a compile-time fatal ──
+// Nothing before it runs, and no `catch` can see it.
+echo "never printed\n";
+try { var_dump([1, ..."ab", 2]); } catch (Throwable $e) { echo "caught\n"; }
+#==#
+// The same spread in a non-constant literal is a catchable Error at run time.
+$x = 1;
+foreach (['ab', 5, null, true, 1.5] as $bad) {
+    try { var_dump([$x, ...$bad]); } catch (Error $e) { echo $e->getMessage(), "\n"; }
+}
+#==#
+function never_called() { return [...false]; }
+echo "never printed\n";
+#==#
+// A `<<<` that does not open a well-formed heredoc header (here, a label that
+// begins with a digit) is not a heredoc: the scanner takes `<<` and the parse
+// error names that token.
+$s = <<<9BAD
+v
+9BAD;
+var_dump($s);
+#==#
+// ── a by-reference parameter of a method, judged when the argument is sent ──
+// The callee is only known at run time, but the verdict is the same as for a
+// function: a literal is an Error (and the arguments after it never run), a
+// call result binds to a temporary after a notice.
+function five() { return 5; }
+class ByRefMethods {
+    public function bump(&$a, $b = 0) { $a++; return $a; }
+    public static function stat(&$a) { return "static"; }
+    public function __call($n, $args) { return "magic $n"; }
+}
+class ByRefChild extends ByRefMethods {}
+$o = new ByRefMethods;
+function sent($f) { try { var_dump($f()); } catch (Error $e) { echo $e->getMessage(), "\n"; } }
+sent(fn() => $o->bump(1, print("never\n")));
+sent(fn() => (new ByRefChild)->bump(2));
+sent(fn() => ByRefMethods::stat(3));
+sent(fn() => $o->bump(1, ...[2]));
+sent(fn() => $o->bump(five()));
+sent(fn() => $o->undefinedMethod(1));
+$name = "bump";
+sent(fn() => $o->$name(4));
+// A variable is a real location, and is written back — also from a call
+// with a spread or named arguments after it.
+$x = 1;
+$o->bump($x);
+$o->bump($x, ...[9]);
+$o->bump($x, b: 9);
+var_dump($x);
+#==#
+// A named argument to a user function's by-reference parameter is written
+// back to the variable it names, and reads an unset one quietly.
+function out_param($v, &$out) { $out = $v * 2; }
+out_param(out: $r, v: 4);
+var_dump($r);
+out_param(5, out: $q);
+var_dump($q);
+function incr(&$a, $b = 0) { $a++; }
+$n = 1;
+incr($n, b: 2);
+incr(b: 1, a: $n);
+var_dump($n);
+#==#
+// ── the bitwise operators put a constant left operand second, as `*` does ──
+// Visible in the operand order of the refusal. `(2.5 | 2.5)` is not folded at
+// compile time (folding would have to deprecate), so it is a runtime operand.
+$t = [];
+foreach (['|', '&', '^'] as $op) {
+    try {
+        echo match ($op) { '|' => "x" | $t, '&' => "x" & $t, '^' => "x" ^ $t }, "\n";
+    } catch (TypeError $e) { echo $e->getMessage(), "\n"; }
+}
+try { var_dump("INF" | (2.5 | 2.5)); } catch (TypeError $e) { echo $e->getMessage(), "\n"; }
+try { var_dump($t | "x"); } catch (TypeError $e) { echo $e->getMessage(), "\n"; }
+var_dump("ab" | "  ", 6 & 3, 5 ^ 1);
+#==#
+// ── substr_count refuses a window that leaves the haystack ──
+foreach ([[0, 1, ""], [0, 5, "abc"], [2, 2, "abc"], [-1, 2, "abc"], [1, -3, "abc"],
+          [4, null, "abc"], [-7, null, "abcabc"], [3, 0, "abc"], [-6, -1, "abcabc"],
+          [1, -1, "abcabc"]] as [$off, $len, $hay]) {
+    try { var_dump(substr_count($hay, "a", $off, $len)); }
+    catch (ValueError $e) { echo $e->getMessage(), "\n"; }
+}

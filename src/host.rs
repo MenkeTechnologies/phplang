@@ -431,6 +431,30 @@ pub mod ops {
     /// when the declaration RUNS: until then its parent may not be declared.
     /// A broken rule stops the program like [`DECL_FATAL`].
     pub const FINAL_CHECK: u16 = 140;
+    /// `[value, mark] -> null`. A `foreach` released its subject (the loop
+    /// ended, or a `return` left it). A suspended generator created while the
+    /// subject was evaluated (its id is at or past `mark`, see [`GEN_MARK`])
+    /// that no variable, element or property holds is destroyed: the `finally`
+    /// blocks around the `yield` it is parked at run now, as they do when the
+    /// reference frees it.
+    pub const GEN_RELEASE: u16 = 141;
+    /// `[] -> int`. The id the next generator will get. Taken before a
+    /// `foreach` subject is evaluated, for [`GEN_RELEASE`].
+    pub const GEN_MARK: u16 = 142;
+    /// `[recv, name] -> value`. `$recv->name` fetched FOR WRITING, as the link
+    /// of a longer write target (`$recv->name->p = v`). A missing property is
+    /// created as null with no `Undefined property` warning — the write after
+    /// it is what fails — and a receiver that cannot hold one is an `Error`
+    /// (`Attempt to modify property "name" on null`).
+    pub const PROP_FETCH_W: u16 = 143;
+    /// `[recv-or-class, method, argno, kind] -> null`. [`BYREF_ARG_DIAG`] for a
+    /// method or static call, whose callee is only known at run time: the
+    /// method is resolved on the receiver (an object, or a class name for
+    /// `C::m()`), and the diagnostic is raised only when its parameter at
+    /// `argno` is by reference. `kind` is the compiler's verdict on the
+    /// argument, as for `BYREF_ARG_DIAG`. A method that does not resolve —
+    /// one `__call` answers — takes nothing by reference.
+    pub const BYREF_ARG_DIAG_M: u16 = 144;
 }
 
 /// The capture name a `static` closure carries from its creation site.
@@ -4156,6 +4180,12 @@ impl PhpHost {
     }
 
     /// `$obj->name` read (`Undef` if the object lacks the property).
+    /// Whether the object `recv` carries a property called `name` (declared
+    /// or dynamic, initialized or not), whatever its visibility.
+    pub fn obj_has_prop(&self, recv: &Value, name: &str) -> bool {
+        matches!(self.as_array(recv), Some(PhpObj::Object { props, .. }) if props.contains_key(name))
+    }
+
     pub fn prop_get(&self, recv: &Value, name: &str) -> Value {
         match self.as_array(recv) {
             Some(PhpObj::Object { props, .. }) => {
@@ -4175,6 +4205,34 @@ impl PhpHost {
             return;
         }
         self.obj_put_prop(recv, name, val);
+    }
+
+    /// Why a property WRITE on `recv` is refused, or `None` when `recv` is an
+    /// object that can take it. `verb` names the write the way the reference's
+    /// message does: `assign`, `increment/decrement`, or `modify` for a fetch
+    /// that goes on to write deeper (`$x->p[] = 1`, `$x->p->q = 1`).
+    ///
+    /// A closure and a generator are objects that refuse every dynamic property;
+    /// anything else that is not an object names its type — a bool by its value,
+    /// as `zend_zval_value_name` spells it.
+    pub fn prop_write_refusal(&self, recv: &Value, name: &str, verb: &str) -> Option<String> {
+        let ty = match recv {
+            Value::Bool(true) => "true",
+            Value::Bool(false) => "false",
+            Value::Obj(_) => match self.as_array(recv) {
+                Some(PhpObj::Object { .. } | PhpObj::Ref { .. }) | None => return None,
+                Some(PhpObj::Closure { .. }) => {
+                    return Some(format!("Cannot create dynamic property Closure::${name}"));
+                }
+                Some(PhpObj::Generator { .. }) => {
+                    return Some(format!("Cannot create dynamic property Generator::${name}"));
+                }
+                Some(PhpObj::Resource(_)) => "resource",
+                Some(PhpObj::Array { .. }) => "array",
+            },
+            other => self.diag_type(other),
+        };
+        Some(format!("Attempt to {verb} property \"{name}\" on {ty}"))
     }
 
     /// `$obj->name = val` from PHP source, with the PHP 8.2 deprecation for
@@ -4282,6 +4340,23 @@ impl PhpHost {
             cur = def.parent.as_ref().map(|p| p.to_ascii_lowercase());
         }
         false
+    }
+
+    /// The by-reference parameter at 1-based `argno` of method `method` on
+    /// `recv` (an object, or a class name), as `(Class::method, parameter)`, or
+    /// `None` when the method does not resolve or that parameter is by value.
+    /// The class named is the one that DECLARES the method. A variadic tail is
+    /// left alone.
+    pub fn method_byref_param(&self, recv: &Value, method: &str, argno: usize) -> Option<(String, String)> {
+        let class = match recv {
+            Value::Obj(_) => self.object_class(recv)?,
+            other => self.to_str(other),
+        };
+        let (decl, def) = self.resolve_method(&class, &method.to_ascii_lowercase())?;
+        let p = def.params.get(argno.checked_sub(1)?)?;
+        (p.by_ref && !p.variadic).then(|| {
+            (format!("{}::{method}", self.class_display_name(&decl)), p.name.clone())
+        })
     }
 
     /// Resolve a method by walking the class up its parent chain; returns the
@@ -6384,11 +6459,17 @@ thread_local! {
     static CUR_GEN: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
 }
 
-/// A forced completion injected at a suspended `yield` by `->throw()` (there is no
-/// `Generator::return` in PHP, so only the throw case is needed).
+/// A forced completion injected at a suspended `yield`: `->throw()`, or the
+/// generator being destroyed while suspended, which unwinds the body as a
+/// `return` would — `finally` blocks run, `catch` blocks do not.
 enum GenInject {
     Throw(Value),
+    Destroy,
 }
+
+/// The error a `yield` reports when its generator is being destroyed. The
+/// `return` signal is already set; the dispatcher only has to halt the chunk.
+pub const GEN_DESTROY: &str = "__generator_destroy__";
 
 /// The volatile execution state swapped in/out at every generator resume/suspend
 /// boundary, so a suspended generator's half-finished call frame and in-flight
@@ -6424,6 +6505,9 @@ struct GenCell {
     started: bool,
     done: bool,
     inject: Option<GenInject>,
+    /// Being destroyed while suspended: a `yield` reached now (one in a
+    /// `finally`) is an error rather than a suspension.
+    destroying: bool,
 }
 
 impl PhpHost {
@@ -6475,6 +6559,7 @@ fn make_generator(body: Chunk, frame: Scope) -> Value {
             started: false,
             done: false,
             inject: None,
+            destroying: false,
         });
         id
     });
@@ -6518,6 +6603,12 @@ fn gen_yield(key: YieldKey, val: Value) -> Result<Value, String> {
         Some(id) => id,
         None => return Err("cannot yield outside a generator".to_string()),
     };
+    if with_host(|h| h.generators[id as usize].destroying) {
+        return Err(crate::builtins::throws_bare(
+            "Error",
+            "Cannot yield from finally in a force-closed generator",
+        ));
+    }
     let yp = with_host(|h| {
         let g = &mut h.generators[id as usize];
         let k = match key {
@@ -6543,11 +6634,19 @@ fn gen_yield(key: YieldKey, val: Value) -> Result<Value, String> {
     // only reach here from inside that live body.
     let yielder = unsafe { &*yp };
     let sent = yielder.suspend(());
-    if let Some(GenInject::Throw(e)) = with_host(|h| h.generators[id as usize].inject.take()) {
+    match with_host(|h| h.generators[id as usize].inject.take()) {
         // Re-raise the injected exception at the suspension point so an enclosing
         // try/catch in the body handles it (or it unwinds the body).
-        set_pending_throw(e);
-        return Err("__generator_throw__".to_string());
+        Some(GenInject::Throw(e)) => {
+            set_pending_throw(e);
+            return Err("__generator_throw__".to_string());
+        }
+        // Destroyed while parked here: leave the body as a `return;` would.
+        Some(GenInject::Destroy) => {
+            set_return(Value::Undef);
+            return Err(GEN_DESTROY.to_string());
+        }
+        None => {}
     }
     Ok(sent)
 }
@@ -6743,6 +6842,124 @@ pub fn gen_throw(gen: &Value, e: Value) -> Result<Value, String> {
     with_host(|h| h.generators[id as usize].inject = Some(GenInject::Throw(e)));
     gen_resume(id, Value::Undef)?;
     Ok(with_host(|h| h.generators[id as usize].cur_val.clone()))
+}
+
+/// Request shutdown: destroy every generator still suspended, in the order they
+/// were created, so the `finally` blocks around each one's parked `yield` run —
+/// after an `exit` and after an uncaught exception's fatal as well, which is
+/// when the reference frees them.
+///
+/// The reference first frees the global variables that alone hold an object,
+/// newest first, and only then the rest in creation order. Globals held in
+/// fusevm frame slots are gone by now, so that first pass cannot be
+/// reproduced: two generators parked in two globals finish in creation order
+/// here. An `exit` status already set is parked across the destruction, or
+/// each body would see the run unwinding and skip its `finally`; one that a
+/// `finally` sets itself wins.
+pub fn shutdown_generators() {
+    let exit = with_host(|h| h.pending_exit.take());
+    let count = with_host(|h| h.generators.len());
+    for id in 0..count as u32 {
+        if gen_destroy(id).is_err() || unwinding() {
+            break;
+        }
+    }
+    with_host(|h| {
+        if h.pending_exit.is_none() {
+            h.pending_exit = exit;
+        }
+        h.ob_flush_all();
+    });
+}
+
+/// [`ops::GEN_MARK`]: the id the next generator created will get.
+pub fn gen_mark() -> i64 {
+    with_host(|h| h.generators.len() as i64)
+}
+
+/// Destroy a generator: one suspended at a `yield` is resumed with a forced
+/// `return`, so the `finally` blocks enclosing that `yield` run (an exception
+/// one throws reaches the destroyer). An unstarted or finished one has nothing
+/// to run. Either way it is finished afterwards.
+fn gen_destroy(id: u32) -> Result<(), String> {
+    let live = with_host(|h| {
+        let g = &h.generators[id as usize];
+        g.started && !g.done && g.coro.is_some()
+    });
+    let r = if live {
+        with_host(|h| {
+            let g = &mut h.generators[id as usize];
+            g.destroying = true;
+            g.inject = Some(GenInject::Destroy);
+        });
+        gen_resume(id, Value::Undef)
+    } else {
+        Ok(())
+    };
+    with_host(|h| {
+        let g = &mut h.generators[id as usize];
+        g.done = true;
+        g.cur_key = Value::Undef;
+        g.cur_val = Value::Undef;
+    });
+    r
+}
+
+/// [`ops::GEN_RELEASE`]: destroy `v` if it is a suspended generator that
+/// nothing reachable holds any more.
+///
+/// Only a generator created at or after `mark` qualifies: one the `foreach`
+/// subject expression itself produced. A local of a frame that is still
+/// running can live in a fusevm frame slot this scan cannot see, but no such
+/// local can have received a generator its callee created and returned —
+/// that is what makes the scan below sufficient for a fresh one, where it
+/// would not be for `foreach ($g as …)`.
+///
+/// phplang keeps no reference counts, so "nothing holds it" is answered by
+/// looking: every frame's variables (the running ones and those parked in
+/// other generators), reference cells, static and constant values, and every
+/// array element, property and closure capture on the heap. A handle found
+/// anywhere keeps the generator alive — a stale one in a dead array included,
+/// which errs toward NOT running a `finally` early.
+pub fn gen_release(v: &Value, mark: i64) -> Result<(), String> {
+    let Some((id, handle)) = with_host(|h| match v {
+        Value::Obj(o) => h.gen_id(v).map(|id| (id, *o)),
+        _ => None,
+    }) else {
+        return Ok(());
+    };
+    let pending = with_host(|h| {
+        let g = &h.generators[id as usize];
+        i64::from(id) >= mark && g.started && !g.done
+    });
+    if !pending || with_host(|h| h.handle_held(handle)) {
+        return Ok(());
+    }
+    gen_destroy(id)
+}
+
+impl PhpHost {
+    /// Whether any variable, reference cell, static, constant, array element,
+    /// property or closure binding holds the object handle `handle`.
+    fn handle_held(&self, handle: u32) -> bool {
+        let is = |v: &Value| matches!(v, Value::Obj(o) if *o == handle);
+        let frame_holds = |s: &Scope| {
+            s.vars.slots.iter().any(|slot| matches!(slot, Slot::Val(v) if is(v)))
+        };
+        self.scopes.iter().any(frame_holds)
+            || self.generators.iter().any(|g| g.ctx.frames.iter().any(frame_holds))
+            || self.ref_cells.iter().any(is)
+            || self.static_props.values().any(is)
+            || self.constants.values().any(is)
+            || self.objs.iter().any(|o| match o {
+                PhpObj::Array { entries, .. } => entries.values().any(is),
+                PhpObj::Object { props, .. } => props.values().any(is),
+                PhpObj::Closure { captured, bound_this, .. } => {
+                    captured.iter().any(|(_, v)| is(v)) || bound_this.as_ref().is_some_and(is)
+                }
+                _ => false,
+            })
+    }
 }
 
 /// `->getReturn()` — the value the body `return`ed.

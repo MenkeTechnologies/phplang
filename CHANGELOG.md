@@ -26,6 +26,54 @@ comment above it.
 
 ---
 
+## Round 17 — generator destruction, property writes on non-objects, by-reference method arguments
+
+Measured under `PHP 8.5.11 (cli) (built: Sep 22 2026 13:32:06) (NTS)`; ini state
+and environment otherwise as recorded in the oracle table above. Every
+expectation below was byte-diffed against that binary (stdout, stderr and exit
+status). Each fix has a block in `tests/data/parity_corpus.php`.
+
+**A generator destroyed while suspended never ran its `finally`.** Leaving a
+`foreach` over a generator its subject expression created — by `break`,
+`break N` or `return` — now destroys it on the spot, unwinding the body from
+the parked `yield` as a `return;` would: `finally` blocks run, `catch` blocks
+do not, and a `yield` reached in such a `finally` is the reference's `Cannot
+yield from finally in a force-closed generator`. Without reference counts,
+"nothing else holds it" is answered by scanning the heap and every frame for
+the handle, and only for a generator created while the subject was evaluated.
+At request end every generator still suspended is destroyed — after `exit`
+and after an uncaught exception's fatal too, with the `exit` status kept.
+
+**A property write on something that cannot hold one was a silent no-op.**
+`$x->p = v`, `$x->p .= v`, `$x->p++` and `$x->p[] = v` on null, a bool, a
+number, a string, an array or a resource now throw the reference's `Attempt to
+assign|increment/decrement|modify property "p" on <type>` (a bool named by its
+value), and on a closure or generator `Cannot create dynamic property
+Closure::$p`. A plain `=` fetches its container for WRITING, as the reference
+does: an undefined receiver variable raises no `Undefined variable`, and a
+missing link in `$o->a->b = v` is created as null without an `Undefined
+property` warning, so the write after it is what fails. A `__get` link that is
+not an object raises `Indirect modification of overloaded property`.
+
+**A by-reference method parameter accepted a literal.** `$o->m(1)` and
+`C::m(1)` on `function m(&$a)` are now `C::m(): Argument #1 ($a) could not be
+passed by reference`, raised as the argument is sent (the arguments after it
+never run), and a call result is the `Only variables should be passed by
+reference` notice. A by-reference result is now written back from a method or
+static call with a spread or named arguments after it, and from a named
+argument to a user function (`f(out: $r)`), whose unset variable is read
+quietly as the positional form's is.
+
+**Smaller fixes.** Unpacking a scalar literal inside a constant array literal
+(`[1, ..."ab"]`) is the compile-time fatal it is in the reference, before any
+output and uncatchable. `|`, `&` and `^` put a constant left operand second, as
+`*` already did, which is visible in `Unsupported operand types: array | string`.
+A `<<<` that does not open a well-formed heredoc header lexes as `<<`, so the
+parse error names that token. `substr_count()` refuses an offset or length that
+leaves the haystack (`ValueError`) instead of clamping it.
+
+---
+
 ## Round 16 — `final` enforced
 
 Measured under `PHP 8.5.11 (cli) (built: Sep 22 2026 13:32:06) (NTS)`; ini state

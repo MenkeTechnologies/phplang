@@ -540,11 +540,21 @@ pub fn run_compiled(mut prog: compiler::Program) -> Result<Value, String> {
     host::run_main(main)
 }
 
+/// Run a WHOLE program: [`run_compiled`], then the request shutdown that frees
+/// what the program left behind (see [`host::shutdown_generators`]). The REPL
+/// runs each line through [`run_compiled`] alone, since its variables outlive
+/// the line.
+fn run_program(prog: compiler::Program) -> Result<Value, String> {
+    let r = run_compiled(prog);
+    host::shutdown_generators();
+    r
+}
+
 /// Parse, compile, load, and run a PHP source string on a fresh host; return the
 /// value of the last top-level expression.
 pub fn eval_str(src: &str) -> Result<Value, String> {
     host::reset_host();
-    run_compiled(compile(src)?)
+    run_program(compile(src)?)
 }
 
 /// Compile `src`, displaying a syntax error the way the PHP CLI does: a
@@ -582,7 +592,7 @@ pub fn eval_cli(src: &str, args: &[String]) -> Result<Value, String> {
     // `__FILE__`, but `Standard input code` in `$argv[0]`. The reference really
     // does disagree with itself here, so the two are set from different values.
     host::with_host(|h| h.set_script_args(None, args));
-    run_compiled(compile_cli(src)?)
+    run_program(compile_cli(src)?)
 }
 
 /// [`eval_cli`] for a script read from standard input (`php < script.php`).
@@ -597,7 +607,7 @@ pub fn eval_stdin_cli(src: &str, args: &[String]) -> Result<Value, String> {
         h.set_script_name("Standard input code");
         h.set_script_args(None, args);
     });
-    run_compiled(compile_cli(src)?)
+    run_program(compile_cli(src)?)
 }
 
 /// [`eval_file`] for the CLI — see [`eval_cli`].
@@ -608,7 +618,7 @@ pub fn eval_file_cli(path: &str, args: &[String]) -> Result<Value, String> {
     // `$argv[0]` is the path AS WRITTEN on the command line, where the diagnostic
     // name just set is the resolved one — `php sub/s.php` reports both.
     host::with_host(|h| h.set_script_args(Some(path), args));
-    run_compiled(compile_cli(&src)?)
+    run_program(compile_cli(&src)?)
 }
 
 /// Read and run a `.php` file on a fresh host.
@@ -616,7 +626,7 @@ pub fn eval_file(path: &str) -> Result<Value, String> {
     let src = std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?;
     host::reset_host();
     set_script_name(path);
-    run_compiled(compile(&src)?)
+    run_program(compile(&src)?)
 }
 
 /// Name this run's source for diagnostics. PHP prints the script's *resolved*

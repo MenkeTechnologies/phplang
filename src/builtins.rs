@@ -149,6 +149,10 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::YIELD_FROM, b_yield_from);
     vm.register_builtin(ops::IS_GENERATOR, b_is_generator);
     vm.register_builtin(ops::GEN_REWIND, b_gen_rewind);
+    vm.register_builtin(ops::GEN_RELEASE, b_gen_release);
+    vm.register_builtin(ops::GEN_MARK, b_gen_mark);
+    vm.register_builtin(ops::PROP_FETCH_W, b_prop_fetch_w);
+    vm.register_builtin(ops::BYREF_ARG_DIAG_M, b_byref_arg_diag_m);
     vm.register_builtin(ops::GEN_VALID, b_gen_valid);
     vm.register_builtin(ops::GEN_KEY, b_gen_key);
     vm.register_builtin(ops::GEN_CURRENT, b_gen_current);
@@ -190,7 +194,9 @@ fn b_yield_from(vm: &mut VM, _: u8) -> Value {
 /// sentinel for an injected/uncaught throw already recorded as pending — in the
 /// latter case halt the chunk so the pending exception unwinds the body.
 fn yield_err(vm: &mut VM, e: String) -> Value {
-    if host::unwinding() {
+    // A generator destroyed while parked at this `yield` leaves its body as a
+    // `return;` does: the signal is set, the chunk only has to stop.
+    if host::unwinding() || e == host::GEN_DESTROY {
         vm.ip = vm.chunk.ops.len();
         Value::Undef
     } else {
@@ -205,6 +211,19 @@ fn yield_err(vm: &mut VM, e: String) -> Value {
 fn b_is_generator(vm: &mut VM, _: u8) -> Value {
     let v = vm.pop();
     Value::bool(with_host(|h| h.is_generator_val(&v)))
+}
+
+fn b_gen_mark(_: &mut VM, _: u8) -> Value {
+    Value::int(host::gen_mark())
+}
+
+fn b_gen_release(vm: &mut VM, _: u8) -> Value {
+    let mark = vm.pop().to_int();
+    let g = vm.pop();
+    match host::gen_release(&g, mark) {
+        Ok(()) => bubbled(vm, Value::Undef),
+        Err(e) => yield_err(vm, e),
+    }
 }
 
 fn b_gen_rewind(vm: &mut VM, _: u8) -> Value {
@@ -1537,6 +1556,31 @@ fn b_byref_arg_diag(vm: &mut VM, argc: u8) -> Value {
     )
 }
 
+/// `BYREF_ARG_DIAG_M`: [`b_byref_arg_diag`] for a method or static call. Stack
+/// `[recv-or-class, method, argno, kind]`.
+fn b_byref_arg_diag_m(vm: &mut VM, argc: u8) -> Value {
+    let args = pop_args(vm, argc as usize);
+    let method = with_host(|h| h.to_str(&args[1]));
+    let (argno, kind) = (args[2].to_int(), args[3].to_int());
+    let Some((callee, param)) =
+        with_host(|h| h.method_byref_param(&args[0], &method, argno as usize))
+    else {
+        return Value::Undef;
+    };
+    mark_frame_line(vm);
+    if kind == 0 {
+        with_host(|h| h.notice("Only variables should be passed by reference"));
+        return Value::Undef;
+    }
+    fail_or_throw(
+        vm,
+        throws_bare(
+            "Error",
+            format!("{callee}(): Argument #{argno} (${param}) could not be passed by reference"),
+        ),
+    )
+}
+
 /// Return the call result, or `Undef` if a throw raised inside the callee is now
 /// unwinding the caller too (see `bubble_throw`).
 fn bubbled(vm: &mut VM, v: Value) -> Value {
@@ -2374,6 +2418,9 @@ fn b_prop_set(vm: &mut VM, _: u8) -> Value {
     let val = vm.pop();
     let name = pop_name(vm);
     let recv = vm.pop();
+    if let Some(msg) = with_host(|h| h.prop_write_refusal(&recv, &name, "assign")) {
+        return throw_php(vm, "Error", &msg);
+    }
     match prop_plan!(vm, recv, name, "__set") {
         PropAccess::Direct | PropAccess::Absent => {
             if readonly_refused(vm, &recv, &name) {
@@ -2524,6 +2571,11 @@ fn b_prop_unset(vm: &mut VM, _: u8) -> Value {
 fn b_prop_touch(vm: &mut VM, _: u8) -> Value {
     let name = pop_name(vm);
     let recv = vm.pop();
+    // A compound assignment on something that cannot hold a property stops
+    // here, before its read half warns about the property it cannot read.
+    if let Some(msg) = with_host(|h| h.prop_write_refusal(&recv, &name, "assign")) {
+        return throw_php(vm, "Error", &msg);
+    }
     // A class with `__get` does not get a slot here: the read half will call
     // `__get`, and nothing is created until the write half decides what to do.
     // So the deprecation must not fire yet — and when the write does create a
@@ -2537,11 +2589,70 @@ fn b_prop_touch(vm: &mut VM, _: u8) -> Value {
     recv
 }
 
+/// `$recv->name` fetched for writing — see `ops::PROP_FETCH_W`. Stack
+/// `[recv, name, rw]`.
+fn b_prop_fetch_w(vm: &mut VM, _: u8) -> Value {
+    let rw = vm.pop().to_int() != 0;
+    let name = pop_name(vm);
+    let recv = vm.pop();
+    if let Some(msg) = with_host(|h| h.prop_write_refusal(&recv, &name, "modify")) {
+        return throw_php(vm, "Error", &msg);
+    }
+    match prop_plan!(vm, recv, name, "__get") {
+        PropAccess::Denied(msg) => throw_php(vm, "Error", &msg),
+        // `__get` hands back a VALUE: a write into it reaches the object only
+        // when that value is itself an object, and the reference says so when
+        // it is not.
+        PropAccess::Magic => {
+            let v = call_magic(&recv, &name, "__get", vec![Value::Str(name.clone())]);
+            if bubble_throw(vm) {
+                return Value::Undef;
+            }
+            let lost = with_host(|h| h.object_class(&v).is_none());
+            if lost {
+                mark_warn_site(vm);
+                with_host(|h| {
+                    let class = h.object_class(&recv).unwrap_or_default();
+                    h.notice(format!(
+                        "Indirect modification of overloaded property {class}::${name} has no effect"
+                    ))
+                });
+            }
+            v
+        }
+        PropAccess::Direct | PropAccess::Absent => {
+            // An uninitialized typed property is fetched as the null it is not
+            // yet, and left uninitialized: the write after it then fails on null.
+            if with_host(|h| h.uninit_read_error(&recv, &name)).is_some() {
+                return Value::Undef;
+            }
+            mark_warn_site(vm);
+            with_host(|h| {
+                if h.obj_has_prop(&recv, &name) {
+                    h.prop_get(&recv, &name)
+                } else {
+                    h.warn_dynamic_prop(&recv, &name);
+                    // A read-and-write fetch still reads: it warns, after the
+                    // deprecation, and creates the property all the same.
+                    if rw {
+                        h.prop_get_warn(&recv, &name);
+                    }
+                    h.prop_set(&recv, &name, Value::Undef);
+                    Value::Undef
+                }
+            })
+        }
+    }
+}
+
 /// Vivify `$o->name` into an array and leave its handle on the stack — the pivot
 /// for indexing/appending into an array-valued property. Stack `[recv, name]`.
 fn b_prop_ensure_array(vm: &mut VM, _: u8) -> Value {
     let name = pop_name(vm);
     let recv = vm.pop();
+    if let Some(msg) = with_host(|h| h.prop_write_refusal(&recv, &name, "modify")) {
+        return throw_php(vm, "Error", &msg);
+    }
     // A property out of reach still errors before anything is vivified; the
     // other outcomes all end in a write, which is what this op is for.
     if let PropAccess::Denied(msg) = prop_plan!(vm, recv, name, "__get") {
@@ -2582,6 +2693,9 @@ fn b_prop_incdec(vm: &mut VM, _: u8) -> Value {
     let code = vm.pop().to_int();
     let name = pop_name(vm);
     let recv = vm.pop();
+    if let Some(msg) = with_host(|h| h.prop_write_refusal(&recv, &name, "increment/decrement")) {
+        return throw_php(vm, "Error", &msg);
+    }
     let inc = code & 1 != 0;
     let prefix = code & 2 != 0;
     let magic_blocked = with_host(|h| h.uninit_magic_blocked(&recv, &name));

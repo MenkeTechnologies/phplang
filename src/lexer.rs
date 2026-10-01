@@ -214,8 +214,13 @@ impl<'a> Lexer<'a> {
                 b'/' if self.peek(1) == Some(b'*') => self.skip_block_comment()?,
                 b'$' => self.lex_variable(),
                 // Before the operator table, which would otherwise take `<<`
-                // and leave a stray `<` and an identifier.
-                _ if self.starts_with("<<<") => self.lex_heredoc()?,
+                // and leave a stray `<` and an identifier. A `<<<` that does
+                // not open a well-formed heredoc header is NOT one: the
+                // reference's scanner then matches the longest operator, `<<`,
+                // and the parse error names that token.
+                _ if self.starts_with("<<<") && self.heredoc_header_at(self.pos) => {
+                    self.lex_heredoc()?
+                }
                 b'\'' => self.lex_single_quote()?,
                 b'"' => self.lex_double_quote()?,
                 b'0'..=b'9' => self.lex_number(),
@@ -546,6 +551,38 @@ impl<'a> Lexer<'a> {
             return Ok(parts);
         }
         Err(format!("unterminated string (line {})", self.line))
+    }
+
+    /// Whether a heredoc header starts at `at`: `<<<`, blanks, a label (bare,
+    /// or in matching single or double quotes) that does not begin with a
+    /// digit, and a line break — the reference scanner's
+    /// `"<<<"{TABS_AND_SPACES}({LABEL}|'{LABEL}'|"{LABEL}"){NEWLINE}`.
+    fn heredoc_header_at(&self, at: usize) -> bool {
+        let src = &self.src;
+        let mut i = at + 3;
+        while matches!(src.get(i), Some(b' ' | b'\t')) {
+            i += 1;
+        }
+        let quote = match src.get(i) {
+            Some(&q @ (b'\'' | b'"')) => {
+                i += 1;
+                Some(q)
+            }
+            _ => None,
+        };
+        if !matches!(src.get(i), Some(&b) if is_ident(b) && !b.is_ascii_digit()) {
+            return false;
+        }
+        while matches!(src.get(i), Some(&b) if is_ident(b)) {
+            i += 1;
+        }
+        if let Some(q) = quote {
+            if src.get(i) != Some(&q) {
+                return false;
+            }
+            i += 1;
+        }
+        matches!(src.get(i), Some(b'\n' | b'\r'))
     }
 
     /// `<<<LABEL` (heredoc) and `<<<'LABEL'` (nowdoc).

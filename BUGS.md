@@ -285,6 +285,33 @@ and break the far more common one where a temporary closure (`array_map(fn…)`)
 is freed at once and its number reused, so it is left alone. Both need
 refcounted handles.
 
+## A suspended generator is destroyed late, or in creation order
+
+```text
+$ php -r 'function g(){try{yield 1;}finally{echo "F ";}} function f(){ $x=g(); $x->current(); echo "in "; } f(); echo "end\n";'
+in F end
+$ target/debug/php -r 'function g(){try{yield 1;}finally{echo "F ";}} function f(){ $x=g(); $x->current(); echo "in "; } f(); echo "end\n";'
+in end
+F
+
+$ php -r 'function g($n){try{yield 1;}finally{echo "F$n ";}} $a=g("a"); $a->current(); $b=g("b"); $b->current(); echo "end\n";'
+end
+Fb Fa
+$ target/debug/php -r 'function g($n){try{yield 1;}finally{echo "F$n ";}} $a=g("a"); $a->current(); $b=g("b"); $b->current(); echo "end\n";'
+end
+Fa Fb
+```
+
+The reference destroys a generator when its refcount reaches zero, which runs
+the `finally` blocks around its parked `yield`. phplang has no refcounts, so it
+destroys one at exactly two points: when a `foreach` whose subject expression
+created it is left (by exhausting it, `break` or `return`), and at request end.
+A generator held only by a local that goes out of scope therefore runs its
+`finally` at request end instead of at the return. At request end the reference
+first frees the globals that alone hold an object, newest first, and then the
+rest in creation order; globals held in fusevm frame slots are gone by then, so
+here every generator is destroyed in creation order.
+
 ## `include`: the search path
 
 ```text
@@ -310,6 +337,7 @@ file's directory. The same value is what `get_include_path()` returns.
 | `iconv_strlen("héllo")` | `int(5)` | `Call to undefined function iconv_strlen()` |
 | `usort($x, ["C", "m"])` for a non-static `C::m` | `TypeError: usort(): Argument #2 ($callback) must be a valid callback, non-static method C::m() cannot be called statically` | the call succeeds |
 | `class A { final private function f() {} }` | `Warning: Private methods cannot be final as they are never overridden by other classes`, at compile time | no warning (the `final` binds nothing either way) |
+| `preg_match("/a/", "a", matches: $m)` — a NAMED argument to a library function's by-reference parameter | `$m` is the match array | `Warning: Undefined variable $m`, and `$m` stays null (a user function's named by-reference argument IS written back) |
 
 ## `...` unpacking: what is modelled and what is not
 
@@ -321,13 +349,10 @@ scalar or `null`, while an argument list says `TypeError` for both. A spread's
 STRING keys are named arguments and its integer keys positional, so
 `f(...["b" => 2, "a" => 1])` binds by name rather than by position, and a name
 that matches no parameter is now the reference's `Unknown named parameter`
-rather than a silent drop. Two edges remain:
+rather than a silent drop. A non-unpackable LITERAL inside a constant array
+literal (`[1, ..."ab"]`) is the reference's compile-time fatal. One edge
+remains:
 
-- **A non-unpackable LITERAL is diagnosed at run time, not at compile time.**
-  `[..."str"]` written with a literal is a compile-time fatal in the reference —
-  uncatchable, no `Uncaught` in the banner — because the operand is constant.
-  Here it is the ordinary runtime throw, so a `try` around it catches what the
-  reference would never let run.
 - **`[...$a] = $b` reports the wrong text.** The reference refuses a spread in a
   destructuring target with "Spread operator is not supported in assignments";
   this rejects it as "invalid assignment target", through the host-level

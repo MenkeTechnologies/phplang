@@ -2686,7 +2686,7 @@ min(array $values): mixed</code></pre>
         <article class="doc-entry" id="doc-strings-1">
           <h3><a class="doc-anchor" href="#doc-strings-1">#</a> <code>substr_count</code></h3>
           <pre><code class="lang-php">substr_count(string $haystack, string $needle, int $offset = 0, ?int $length = null): int</code></pre>
-          <p>Counts non-overlapping matches inside the byte window `[$offset, $offset + $length)`. Negative offsets and lengths count from the end. An empty needle throws `ValueError: substr_count(): Argument #2 ($needle) must not be empty`. The window is a raw byte slice, so a multibyte haystack can be cut mid-character.</p>
+          <p>Counts non-overlapping matches inside the byte window `[$offset, $offset + $length)`. Negative offsets and lengths count from the end. A window that leaves the haystack is refused rather than clamped: `ValueError: substr_count(): Argument #3 ($offset)` (or `#4 ($length)`) `must be contained in argument #1 ($haystack)`. An empty needle throws `ValueError: substr_count(): Argument #2 ($needle) must not be empty`. The window is a raw byte slice, so a multibyte haystack can be cut mid-character.</p>
           <pre><code class="lang-php">echo substr_count("aaa", "aa");   // =&gt; 1</code></pre>
         </article>
         <article class="doc-entry" id="doc-strings-2">

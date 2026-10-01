@@ -1213,3 +1213,178 @@ Too few arguments to function Holder::pair(), 1 passed in FILE on line N and exa
 92 12 15
 ok
 
+#REC 48 exit=0 out=59 err=0
+1 Fa after-a
+Fb after-b
+Fc 1 after-c
+after-d
+Fe after-e
+Fd 
+#REC 49 exit=255 out=219 err=219
+fin 
+Fatal error: Uncaught Error: Cannot yield from finally in a force-closed generator in Command line code:3
+Stack trace:
+#0 Command line code(4): yields_in_finally()
+#1 {main}
+  thrown in Command line code on line 3
+PHP Fatal error:  Uncaught Error: Cannot yield from finally in a force-closed generator in Command line code:3
+Stack trace:
+#0 Command line code(4): yields_in_finally()
+#1 {main}
+  thrown in Command line code on line 3
+
+#REC 50 exit=3 out=6 err=0
+freed
+
+#REC 51 exit=0 out=1518 err=570
+Attempt to assign property "k" on null
+Attempt to assign property "k" on true
+Attempt to assign property "k" on int
+Attempt to increment/decrement property "k" on float
+Attempt to modify property "k" on string
+Attempt to assign property "k" on array
+Cannot create dynamic property Closure::$k
+Cannot create dynamic property Generator::$k
+Attempt to assign property "k" on null
+Attempt to modify property "b" on null
+Attempt to modify property "y" on null
+
+Warning: Undefined property: stdClass::$m in Command line code on line 21
+Attempt to assign property "n" on null
+
+Warning: Undefined property: stdClass::$r in Command line code on line 22
+Attempt to increment/decrement property "s" on null
+
+Deprecated: Creation of dynamic property NoDynamic::$w is deprecated in Command line code on line 25
+Attempt to assign property "n" on null
+
+Deprecated: Creation of dynamic property NoDynamic::$m is deprecated in Command line code on line 26
+
+Warning: Undefined property: NoDynamic::$m in Command line code on line 26
+Attempt to assign property "n" on null
+NoDynamic Object
+(
+    [w] => 
+    [m] => 
+)
+stdClass Object
+(
+    [inner] => 
+    [a] => 
+    [x] => 
+    [m] => 
+    [r] => 
+)
+stdClass Object
+(
+    [k] => 7
+    [list] => Array
+        (
+            [0] => 8
+        )
+
+)
+get obj
+no error
+get nul
+
+Notice: Indirect modification of overloaded property MagicLink::$nul has no effect in Command line code on line 38
+Attempt to assign property "k" on null
+Attempt to assign property "k" on null
+TypedLink Object
+(
+)
+PHP Warning:  Undefined property: stdClass::$m in Command line code on line 21
+PHP Warning:  Undefined property: stdClass::$r in Command line code on line 22
+PHP Deprecated:  Creation of dynamic property NoDynamic::$w is deprecated in Command line code on line 25
+PHP Deprecated:  Creation of dynamic property NoDynamic::$m is deprecated in Command line code on line 26
+PHP Warning:  Undefined property: NoDynamic::$m in Command line code on line 26
+PHP Notice:  Indirect modification of overloaded property MagicLink::$nul has no effect in Command line code on line 38
+
+#REC 52 exit=255 out=155 err=159
+
+Fatal error: Uncaught Error: Attempt to assign property "k" on null in Command line code:3
+Stack trace:
+#0 {main}
+  thrown in Command line code on line 3
+PHP Fatal error:  Uncaught Error: Attempt to assign property "k" on null in Command line code:3
+Stack trace:
+#0 {main}
+  thrown in Command line code on line 3
+
+#REC 53 exit=255 out=127 err=131
+
+Fatal error: Only arrays and Traversables can be unpacked, string given in Command line code on line 4
+Stack trace:
+#0 {main}
+PHP Fatal error:  Only arrays and Traversables can be unpacked, string given in Command line code on line 4
+Stack trace:
+#0 {main}
+
+#REC 54 exit=0 out=287 err=0
+Only arrays and Traversables can be unpacked, string given
+Only arrays and Traversables can be unpacked, int given
+Only arrays and Traversables can be unpacked, null given
+Only arrays and Traversables can be unpacked, true given
+Only arrays and Traversables can be unpacked, float given
+
+#REC 55 exit=255 out=126 err=130
+
+Fatal error: Only arrays and Traversables can be unpacked, false given in Command line code on line 1
+Stack trace:
+#0 {main}
+PHP Fatal error:  Only arrays and Traversables can be unpacked, false given in Command line code on line 1
+Stack trace:
+#0 {main}
+
+#REC 56 exit=255 out=81 err=85
+
+Parse error: syntax error, unexpected token "<<" in Command line code on line 4
+PHP Parse error:  syntax error, unexpected token "<<" in Command line code on line 4
+
+#REC 57 exit=0 out=495 err=90
+ByRefMethods::bump(): Argument #1 ($a) could not be passed by reference
+ByRefMethods::bump(): Argument #1 ($a) could not be passed by reference
+ByRefMethods::stat(): Argument #1 ($a) could not be passed by reference
+ByRefMethods::bump(): Argument #1 ($a) could not be passed by reference
+
+Notice: Only variables should be passed by reference in Command line code on line 18
+int(6)
+string(21) "magic undefinedMethod"
+ByRefMethods::bump(): Argument #1 ($a) could not be passed by reference
+int(4)
+PHP Notice:  Only variables should be passed by reference in Command line code on line 18
+
+#REC 58 exit=0 out=22 err=0
+int(8)
+int(10)
+int(3)
+
+#REC 59 exit=0 out=443 err=214
+Unsupported operand types: array | string
+Unsupported operand types: array & string
+Unsupported operand types: array ^ string
+
+Deprecated: Implicit conversion from float 2.5 to int loses precision in Command line code on line 10
+
+Deprecated: Implicit conversion from float 2.5 to int loses precision in Command line code on line 10
+Unsupported operand types: int | string
+Unsupported operand types: array | string
+string(2) "ab"
+int(2)
+int(4)
+PHP Deprecated:  Implicit conversion from float 2.5 to int loses precision in Command line code on line 10
+PHP Deprecated:  Implicit conversion from float 2.5 to int loses precision in Command line code on line 10
+
+#REC 60 exit=0 out=602 err=0
+substr_count(): Argument #4 ($length) must be contained in argument #1 ($haystack)
+substr_count(): Argument #4 ($length) must be contained in argument #1 ($haystack)
+substr_count(): Argument #4 ($length) must be contained in argument #1 ($haystack)
+substr_count(): Argument #4 ($length) must be contained in argument #1 ($haystack)
+substr_count(): Argument #4 ($length) must be contained in argument #1 ($haystack)
+substr_count(): Argument #3 ($offset) must be contained in argument #1 ($haystack)
+substr_count(): Argument #3 ($offset) must be contained in argument #1 ($haystack)
+int(0)
+int(2)
+int(1)
+

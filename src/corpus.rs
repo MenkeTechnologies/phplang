@@ -3131,7 +3131,7 @@ pub const CORPUS: &[Entry] = &[
         "substr_count",
         "Strings",
         "substr_count(string $haystack, string $needle, int $offset = 0, ?int $length = null): int",
-        "Counts non-overlapping matches inside the byte window `[$offset, $offset + $length)`. Negative offsets and lengths count from the end. An empty needle throws `ValueError: substr_count(): Argument #2 ($needle) must not be empty`. The window is a raw byte slice, so a multibyte haystack can be cut mid-character.",
+        "Counts non-overlapping matches inside the byte window `[$offset, $offset + $length)`. Negative offsets and lengths count from the end. A window that leaves the haystack is refused rather than clamped: `ValueError: substr_count(): Argument #3 ($offset)` (or `#4 ($length)`) `must be contained in argument #1 ($haystack)`. An empty needle throws `ValueError: substr_count(): Argument #2 ($needle) must not be empty`. The window is a raw byte slice, so a multibyte haystack can be cut mid-character.",
         "echo substr_count(\"aaa\", \"aa\");   // => 1",
     ),
     (

@@ -98,24 +98,37 @@ fn substr_count(args: &[Value]) -> Result<Value, String> {
             "substr_count(): Argument #2 ($needle) must not be empty",
         ));
     }
+    // ext/standard/string.c: a negative offset counts from the end, and an
+    // offset or length that leaves the haystack is refused rather than clamped.
+    let outside = |argno: u8, name: &str| {
+        throws(
+            "ValueError",
+            format!("substr_count(): Argument #{argno} (${name}) must be contained in argument #1 ($haystack)"),
+        )
+    };
     let bytes = hay.as_bytes();
     let len = bytes.len() as i64;
     let mut start = int_arg(args, 2);
     if start < 0 {
-        start = (len + start).max(0);
+        start += len;
     }
-    let start = start.clamp(0, len) as usize;
+    if start < 0 || start > len {
+        return Err(outside(3, "offset"));
+    }
     let end = match args.get(3) {
         Some(v) if !matches!(v, Value::Undef) => {
-            let l = v.to_int();
+            let mut l = v.to_int();
             if l < 0 {
-                ((len + l).max(start as i64)) as usize
-            } else {
-                (start + l as usize).min(bytes.len())
+                l += len - start;
             }
+            if l < 0 || l > len - start {
+                return Err(outside(4, "length"));
+            }
+            (start + l) as usize
         }
         _ => bytes.len(),
     };
+    let start = start as usize;
     // PHP strings are byte-oriented; count non-overlapping needle matches over
     // the byte window so multibyte haystacks never slice mid-UTF-8-char.
     let slice = &bytes[start..end];

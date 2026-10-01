@@ -110,6 +110,13 @@ pub struct Counters {
 struct LoopCtx {
     breaks: Vec<usize>,
     continues: Vec<usize>,
+    /// For a `foreach` over a generator whose subject is not a plain variable:
+    /// the hidden temporaries holding the subject and the generator mark taken
+    /// before it was evaluated. A `return` from inside the loop releases it
+    /// (see [`ops::GEN_RELEASE`]) before the frame exits, which is when the
+    /// reference frees the loop's iterator and so destroys a generator nothing
+    /// else holds.
+    gen_subj: Option<(String, String)>,
 }
 
 /// One segment of a flattened array lvalue chain: an explicit `[key]` or an
@@ -743,6 +750,33 @@ impl Compiler {
         b.emit(Op::Pop, 0);
     }
 
+    /// [`Compiler::emit_byref_arg_diag`] for a method or static call: the
+    /// callee is resolved at run time (see [`ops::BYREF_ARG_DIAG_M`]), so only
+    /// the verdict on the argument is decided here. `push_recv` pushes the
+    /// receiver or class again. Emitted directly after argument `index` is
+    /// evaluated, so the arguments after a refused one never run.
+    fn emit_byref_arg_diag_m(
+        &mut self,
+        b: &mut ChunkBuilder,
+        push_recv: impl FnOnce(&mut Self, &mut ChunkBuilder) -> Result<(), String>,
+        method: &Member,
+        index: usize,
+        arg: &Expr,
+    ) -> Result<(), String> {
+        let kind = match byref_arg_class(arg) {
+            ByRefArg::Lvalue => return Ok(()),
+            ByRefArg::VarTemp => 0,
+            ByRefArg::TmpConst => 1,
+        };
+        push_recv(self, b)?;
+        self.emit_member(b, method, 0)?;
+        b.emit(Op::LoadInt(index as i64 + 1), 0);
+        b.emit(Op::LoadInt(kind), 0);
+        b.emit(Op::CallBuiltin(ops::BYREF_ARG_DIAG_M, 4), self.cur_line);
+        b.emit(Op::Pop, 0);
+        Ok(())
+    }
+
     /// The receiver guard a method call needs when it HAS arguments.
     ///
     /// PHP raises `Call to a member function m() on null` before it evaluates
@@ -863,8 +897,24 @@ impl Compiler {
         positions: &[usize],
         guarded: bool,
     ) -> Result<(), String> {
-        for &pos in positions {
-            let Some(arg) = args.get(pos) else { continue };
+        let targets: Vec<(Expr, usize)> = positions
+            .iter()
+            .filter_map(|&pos| args.get(pos).map(|a| (a.clone(), pos)))
+            .collect();
+        self.emit_byref_writeback_to(b, &targets, guarded)
+    }
+
+    /// [`Compiler::emit_byref_writeback`] over explicit `(argument, parameter
+    /// position)` pairs, for a call whose arguments do not sit at their
+    /// parameters' positions — a named argument binds wherever its name is.
+    fn emit_byref_writeback_to(
+        &mut self,
+        b: &mut ChunkBuilder,
+        targets: &[(Expr, usize)],
+        guarded: bool,
+    ) -> Result<(), String> {
+        for (arg, pos) in targets {
+            let (arg, pos) = (arg, *pos);
             // Only an lvalue can receive one. A literal or a call result in a
             // by-reference position is a diagnostic in the reference, not a write.
             if !matches!(
@@ -1350,6 +1400,14 @@ impl Compiler {
                         b.emit(Op::LoadUndef, line);
                     }
                 }
+                // The value is computed first; then every generator loop this
+                // `return` leaves frees its iterator, as the reference does
+                // before the frame exits.
+                let subjects: Vec<(String, String)> =
+                    self.loops.iter().rev().filter_map(|l| l.gen_subj.clone()).collect();
+                for (s, m) in &subjects {
+                    self.emit_gen_release(b, s, m)?;
+                }
                 b.emit(Op::CallBuiltin(ops::SIG_RETURN, 1), line);
                 b.emit(Op::Pop, line);
             }
@@ -1568,6 +1626,7 @@ impl Compiler {
         self.loops.push(LoopCtx {
             breaks: vec![],
             continues: vec![],
+            gen_subj: None,
         });
         self.compile_seq(b, body)?;
         let ctx = self.loops.pop().unwrap();
@@ -1596,6 +1655,7 @@ impl Compiler {
         self.loops.push(LoopCtx {
             breaks: vec![],
             continues: vec![],
+            gen_subj: None,
         });
         self.compile_seq(b, body)?;
         let ctx = self.loops.pop().unwrap();
@@ -1648,6 +1708,7 @@ impl Compiler {
         self.loops.push(LoopCtx {
             breaks: vec![],
             continues: vec![],
+            gen_subj: None,
         });
         let mut body_starts = Vec::with_capacity(cases.len());
         for case in cases {
@@ -1695,6 +1756,7 @@ impl Compiler {
         self.loops.push(LoopCtx {
             breaks: vec![],
             continues: vec![],
+            gen_subj: None,
         });
         self.compile_seq(b, body)?;
         let ctx = self.loops.pop().unwrap();
@@ -1754,6 +1816,20 @@ impl Compiler {
 
         // Evaluate the subject once into a hidden temporary, then branch: a lazy
         // generator loop, or the array/iterator index loop.
+        // A subject that is not a plain variable may CREATE the generator it
+        // yields; the mark taken first is how the release at the loop's end
+        // tells such a fresh generator from one that already existed.
+        let mark_t = match arr {
+            Expr::Var(_) => None,
+            _ => {
+                let m = self.tmp_name("gmark");
+                self.emit_set_var(b, &m, |_, b| {
+                    b.emit(Op::CallBuiltin(ops::GEN_MARK, 0), 0);
+                    Ok(())
+                })?;
+                Some(m)
+            }
+        };
         let subj_t = self.tmp_name("subj");
         self.emit_set_var(b, &subj_t, |c, b| c.compile_expr(b, arr))?;
 
@@ -1761,7 +1837,7 @@ impl Compiler {
         b.emit(Op::CallBuiltin(ops::IS_GENERATOR, 1), 0);
         b.emit(Op::CallBuiltin(ops::TRUTHY, 1), 0);
         let to_array = b.emit(Op::JumpIfFalse(0), 0);
-        self.compile_foreach_generator(b, &subj_t, key_var, val_var, pattern, body)?;
+        self.compile_foreach_generator(b, &subj_t, mark_t.as_deref(), key_var, val_var, pattern, body)?;
         let after_gen = b.emit(Op::Jump(0), 0);
         let array_start = b.current_pos();
         b.patch_jump(to_array, array_start);
@@ -1869,6 +1945,7 @@ impl Compiler {
         self.loops.push(LoopCtx {
             breaks: vec![],
             continues: vec![],
+            gen_subj: None,
         });
         self.compile_seq(b, body)?;
         let ctx = self.loops.pop().unwrap();
@@ -1909,6 +1986,7 @@ impl Compiler {
         &mut self,
         b: &mut ChunkBuilder,
         subj_t: &str,
+        mark_t: Option<&str>,
         key_var: Option<&str>,
         val_var: &str,
         pattern: Option<&Expr>,
@@ -1946,6 +2024,7 @@ impl Compiler {
         self.loops.push(LoopCtx {
             breaks: vec![],
             continues: vec![],
+            gen_subj: mark_t.map(|m| (subj_t.to_string(), m.to_string())),
         });
         self.compile_seq(b, body)?;
         let ctx = self.loops.pop().unwrap();
@@ -1964,6 +2043,12 @@ impl Compiler {
         }
         for j in ctx.continues {
             b.patch_jump(j, cont_target);
+        }
+        // Leaving the loop (exhausted, or by `break`) frees the iterator. A
+        // generator nothing else holds is destroyed there, which runs the
+        // `finally` blocks around the `yield` it is suspended at.
+        if let Some(m) = mark_t {
+            self.emit_gen_release(b, subj_t, m)?;
         }
         Ok(())
     }
@@ -3035,6 +3120,15 @@ impl Compiler {
                 self.compile_array_with_refs(b, elems)?
             }
             Expr::Array(elems) => {
+                // An array literal made only of constants is evaluated by the
+                // reference at COMPILE time, so unpacking a scalar inside one is
+                // a fatal raised before the script runs, not a catchable Error.
+                if let Some(given) = const_array_bad_spread(elems) {
+                    return Err(self.compile_fatal(
+                        self.cur_line,
+                        &format!("Only arrays and Traversables can be unpacked, {given} given"),
+                    ));
+                }
                 // `CallBuiltin`'s operand count is a `u8`, so the pairs go out
                 // in chunks: one `MKARRAY` builds the array, and each further
                 // chunk extends it through `MKARRAY_ADD`.
@@ -3127,11 +3221,28 @@ impl Compiler {
                 let idx = b.add_constant(Value::str(name.clone()));
                 b.emit(Op::LoadConst(idx), 0);
                 self.emit_call_name_check(b, name, args.len());
-                self.compile_arg_pairs_for(b, name, args)?;
+                self.compile_arg_pairs_for(b, name, args, None)?;
                 b.emit(
                     Op::CallBuiltin(ops::CALL_NAMED, (args.len() * 2 + 1) as u8),
                     self.cur_line,
                 );
+                // A user function's parameters are known by name here, so a
+                // named argument is written back to the variable it named.
+                if let Some(f) = self.byref_user_fns.get(&name.to_ascii_lowercase()) {
+                    let targets: Vec<(Expr, usize)> = args
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, a)| match a {
+                            Expr::NamedArg(n, v) => {
+                                f.params.iter().position(|p| p == n).map(|p| ((**v).clone(), p))
+                            }
+                            Expr::Spread(_) => None,
+                            _ => Some((a.clone(), i)),
+                        })
+                        .filter(|(_, p)| f.byref.iter().any(|(bp, pn)| bp == p && !pn.is_empty()))
+                        .collect();
+                    self.emit_byref_writeback_to(b, &targets, true)?;
+                }
             }
             Expr::Call(name, args) => {
                 let has_spread = args.iter().any(|a| matches!(a, Expr::Spread(_)));
@@ -3429,23 +3540,48 @@ impl Compiler {
                 b.emit(Op::CallBuiltin(ops::PROP_GET, 2), self.cur_line);
             }
             Expr::MethodCall(recv, name, args) if needs_arg_pairs(args) => {
-                self.compile_expr(b, recv)?;
+                // As for the plain form below: the receiver is held for the
+                // by-reference judgement of the positional arguments.
+                let t = self.tmp_name("mrecv");
+                self.emit_set_var(b, &t, |c, b| c.compile_expr(b, recv))?;
+                self.emit_get_var(b, &t);
                 let name = &self.method_member(b, name, args.len())?;
                 self.emit_mcall_recv_check(b, name, args.len())?;
                 self.emit_member(b, name, 0)?;
-                self.compile_arg_pairs(b, args)?;
+                self.compile_arg_pairs_m(b, args, Some((&t, name)))?;
                 b.emit(
                     Op::CallBuiltin(ops::MCALL_NAMED, (args.len() * 2 + 2) as u8),
                     self.cur_line,
                 );
+                self.emit_byref_writeback(b, args, &leading_positional(args), true)?;
             }
             Expr::MethodCall(recv, name, args) => {
-                self.compile_expr(b, recv)?;
+                // An argument with no location of its own is judged against
+                // the method's by-reference parameters as it is sent, which
+                // needs the receiver again: it is held in a temporary.
+                let recv_t = match args.iter().any(|a| byref_arg_class(a) != ByRefArg::Lvalue) {
+                    true => {
+                        let t = self.tmp_name("mrecv");
+                        self.emit_set_var(b, &t, |c, b| c.compile_expr(b, recv))?;
+                        self.emit_get_var(b, &t);
+                        Some(t)
+                    }
+                    false => {
+                        self.compile_expr(b, recv)?;
+                        None
+                    }
+                };
                 let name = &self.method_member(b, name, args.len())?;
                 self.emit_mcall_recv_check(b, name, args.len())?;
                 self.emit_member(b, name, 0)?;
-                for a in args {
+                for (i, a) in args.iter().enumerate() {
                     self.compile_expr(b, a)?;
+                    if let Some(t) = &recv_t {
+                        self.emit_byref_arg_diag_m(b, |c, b| {
+                            c.emit_get_var(b, t);
+                            Ok(())
+                        }, name, i, a)?;
+                    }
                 }
                 b.emit(
                     Op::CallBuiltin(ops::MCALL, (args.len() + 2) as u8),
@@ -3504,6 +3640,7 @@ impl Compiler {
                     Op::CallBuiltin(ops::SCALL_NAMED, (args.len() * 2 + 2) as u8),
                     self.cur_line,
                 );
+                self.emit_byref_writeback(b, args, &leading_positional(args), true)?;
             }
             Expr::StaticCall(class, name, args) => {
                 self.emit_lsb_forward(b, class);
@@ -3511,8 +3648,14 @@ impl Compiler {
                 let nidx = b.add_constant(Value::str(name.clone()));
                 self.emit_scall_callee_check(b, nidx, args.len());
                 b.emit(Op::LoadConst(nidx), 0);
-                for a in args {
+                for (i, a) in args.iter().enumerate() {
                     self.compile_expr(b, a)?;
+                    // Re-pushing the class has no side effect only for a NAME;
+                    // `$expr::m()` is left unjudged.
+                    if matches!(class, ClassRef::Name(_)) {
+                        let member = Member::Name(name.clone());
+                        self.emit_byref_arg_diag_m(b, |c, b| c.emit_class_ref(b, class), &member, i, a)?;
+                    }
                 }
                 b.emit(
                     Op::CallBuiltin(ops::SCALL, (args.len() + 2) as u8),
@@ -3689,10 +3832,10 @@ impl Compiler {
                 match key {
                     Some(k) => {
                         self.compile_expr(b, k)?;
-                        b.emit(Op::CallBuiltin(ops::YIELD_KV, 2), 0);
+                        b.emit(Op::CallBuiltin(ops::YIELD_KV, 2), self.cur_line);
                     }
                     None => {
-                        b.emit(Op::CallBuiltin(ops::YIELD, 1), 0);
+                        b.emit(Op::CallBuiltin(ops::YIELD, 1), self.cur_line);
                     }
                 }
             }
@@ -3708,7 +3851,7 @@ impl Compiler {
             }
             Expr::YieldFrom(src) => {
                 self.compile_expr(b, src)?;
-                b.emit(Op::CallBuiltin(ops::YIELD_FROM, 1), 0);
+                b.emit(Op::CallBuiltin(ops::YIELD_FROM, 1), self.cur_line);
             }
             // The file or code is compiled when the construct RUNS, and runs in
             // this frame — see `host::run_include`.
@@ -4156,10 +4299,12 @@ impl Compiler {
         //     "5g" * $t   →  throws with NO "non-numeric value" warning for "5g",
         //                    because $t is coerced first and throws before it
         //
-        // Only `*`. `+` is not swapped even though it commutes on numbers —
-        // it is also array union, which does not. `-`, `/`, `%` and `**` all
-        // report in source order.
-        let swap = op == BinOp::Mul && is_const_operand(l) && is_definitely_runtime(r);
+        // `*` and the three bitwise operators `|`, `&`, `^`. `+` is not
+        // swapped even though it commutes on numbers — it is also array union,
+        // which does not. `-`, `/`, `%` and `**` all report in source order.
+        let swap = matches!(op, BinOp::Mul | BinOp::BitOr | BinOp::BitAnd | BinOp::BitXor)
+            && is_const_operand(l)
+            && is_definitely_runtime(r);
         if swap {
             self.compile_expr(b, r)?;
             self.compile_expr(b, l)?;
@@ -4293,14 +4438,14 @@ impl Compiler {
                 // (shared by the read and the write).
                 match op {
                     None => {
-                        self.compile_expr(b, recv)?;
+                        self.compile_prop_write_recv(b, recv, false)?;
                         self.emit_member(b, name, 0)?;
                         self.compile_rhs(b, rhs)?;
                         b.emit(Op::CallBuiltin(ops::PROP_SET, 3), self.cur_line);
                     }
                     Some(cop) => {
                         let r = self.tmp_name("pr");
-                        self.emit_set_var(b, &r, |c, b| c.compile_expr(b, recv))?;
+                        self.emit_set_var(b, &r, |c, b| c.compile_prop_write_recv(b, recv, true))?;
                         let name = &self.stash_member(b, name)?;
                         // Fetch-for-write comes FIRST, so `$o->missing .= "x"`
                         // deprecates the dynamic property before the read below
@@ -4330,7 +4475,7 @@ impl Compiler {
                         // mutation lands on the object).
                         let t = self.tmp_name("po");
                         self.emit_set_var(b, &t, |c, b| {
-                            c.compile_expr(b, recv)?;
+                            c.compile_prop_write_recv(b, recv, op.is_some())?;
                             c.emit_member(b, prop, 0)?;
                             b.emit(Op::CallBuiltin(ops::PROP_ENSURE_ARRAY, 2), c.cur_line);
                             Ok(())
@@ -4886,7 +5031,7 @@ impl Compiler {
             },
             Expr::PropGet(recv, name) => {
                 // `$o->p++` — read-modify-write a scalar property.
-                self.compile_expr(b, recv)?;
+                self.compile_prop_write_recv(b, recv, true)?;
                 self.emit_member(b, name, 0)?;
                 b.emit(Op::LoadInt(code), 0);
                 b.emit(Op::CallBuiltin(ops::PROP_INCDEC, 3), self.cur_line);
@@ -5123,7 +5268,7 @@ impl Compiler {
     /// named argument contributes its name as a string constant, a positional
     /// argument contributes `Undef`. Consumed by the host's named-argument binding.
     fn compile_arg_pairs(&mut self, b: &mut ChunkBuilder, args: &[Expr]) -> Result<(), String> {
-        self.compile_arg_pairs_for(b, "", args)
+        self.compile_arg_pairs_for(b, "", args, None)
     }
 
     /// [`Compiler::compile_arg_pairs`], plus the by-reference argument check for
@@ -5151,11 +5296,26 @@ impl Compiler {
         }
     }
 
+    /// [`Compiler::compile_arg_pairs`] for a method call. `method` is the
+    /// temporary holding the receiver and the method name: each POSITIONAL
+    /// argument written before the first spread or named one has a known
+    /// position, and is judged against the method's by-reference parameters
+    /// as it is sent (see [`ops::BYREF_ARG_DIAG_M`]).
+    fn compile_arg_pairs_m(
+        &mut self,
+        b: &mut ChunkBuilder,
+        args: &[Expr],
+        method: Option<(&str, &Member)>,
+    ) -> Result<(), String> {
+        self.compile_arg_pairs_for(b, "", args, method)
+    }
+
     fn compile_arg_pairs_for(
         &mut self,
         b: &mut ChunkBuilder,
         callee: &str,
         args: &[Expr],
+        method: Option<(&str, &Member)>,
     ) -> Result<(), String> {
         let (shown, diag) = self.byref_slots_for(callee, args.len().max(BYREF_MAX_ARGNO));
         // A named argument that binds NOWHERE stops the judgement of every
@@ -5177,12 +5337,16 @@ impl Compiler {
                 )
             });
         let mut blocked = false;
+        // Positions stay exact until a spread or a named argument.
+        let mut positional = true;
         for (i, a) in args.iter().enumerate() {
+            if matches!(a, Expr::NamedArg(..) | Expr::Spread(_)) {
+                positional = false;
+            }
             let slot = match a {
                 Expr::NamedArg(n, v) => {
                     let idx = b.add_constant(Value::str(n.clone()));
                     b.emit(Op::LoadConst(idx), 0);
-                    self.compile_expr(b, v)?;
                     // A name binds to the parameter it spells; on a VARIADIC
                     // by-reference callee it binds to the variadic tail
                     // instead, which has no name, so the slot is the one this
@@ -5198,6 +5362,12 @@ impl Compiler {
                                     .map(|(p, _, param)| (*p, 1, param.clone()))
                             })
                         });
+                    // A by-reference slot is an output location: an unset
+                    // variable there is read quietly, as in the positional form.
+                    match found {
+                        Some(_) => self.compile_quiet(b, v)?,
+                        None => self.compile_expr(b, v)?,
+                    }
                     if let Some((names, variadic)) = &known {
                         if !variadic && !names.contains(n) {
                             blocked = true;
@@ -5216,8 +5386,18 @@ impl Compiler {
                 }
                 _ => {
                     b.emit(Op::LoadUndef, 0);
-                    self.compile_expr(b, a)?;
-                    diag.iter().find(|(p, ..)| *p == i).cloned()
+                    let found = diag.iter().find(|(p, ..)| *p == i).cloned();
+                    match found {
+                        Some(_) => self.compile_quiet(b, a)?,
+                        None => self.compile_expr(b, a)?,
+                    }
+                    if let (true, Some((t, m))) = (positional, method) {
+                        self.emit_byref_arg_diag_m(b, |c, b| {
+                            c.emit_get_var(b, t);
+                            Ok(())
+                        }, m, i, a)?;
+                    }
+                    found
                 }
             };
             if let Some((_, argno, param)) = slot.filter(|_| !blocked) {
@@ -5382,6 +5562,45 @@ impl Compiler {
         b.emit(Op::CallBuiltin(op, 2), 0);
     }
 
+    /// The receiver of a property WRITE (`$recv->p = v`, `$recv->p[] = v`),
+    /// fetched the way the reference fetches a write target's container.
+    ///
+    /// A property chain goes through [`ops::PROP_FETCH_W`], which creates a
+    /// missing link as null instead of leaving it absent — so the write itself
+    /// is what fails, with `Attempt to assign property "p" on null`. `rw` is
+    /// the read-and-write fetch of a compound assignment or `++`: it still
+    /// warns about the missing link (and an undefined variable), as a read
+    /// does. A plain `=` warns about neither. Anything else is an ordinary read.
+    fn compile_prop_write_recv(&mut self, b: &mut ChunkBuilder, recv: &Expr, rw: bool) -> Result<(), String> {
+        match recv {
+            Expr::Var(_) if !rw => self.compile_quiet(b, recv),
+            Expr::PropGet(inner, name) => {
+                self.compile_prop_write_recv(b, inner, rw)?;
+                self.emit_member(b, name, 0)?;
+                b.emit(Op::LoadInt(i64::from(rw)), 0);
+                b.emit(Op::CallBuiltin(ops::PROP_FETCH_W, 3), self.cur_line);
+                Ok(())
+            }
+            _ => self.compile_expr(b, recv),
+        }
+    }
+
+
+    /// Release the hidden temporary holding a `foreach` subject: read it, clear
+    /// the slot, and hand the value to [`ops::GEN_RELEASE`], which destroys a
+    /// suspended generator once no variable, element or property still holds it.
+    fn emit_gen_release(&mut self, b: &mut ChunkBuilder, subj_t: &str, mark_t: &str) -> Result<(), String> {
+        self.emit_get_var(b, subj_t);
+        self.emit_get_var(b, mark_t);
+        self.emit_set_var(b, subj_t, |_, b| {
+            b.emit(Op::LoadUndef, 0);
+            Ok(())
+        })?;
+        b.emit(Op::CallBuiltin(ops::GEN_RELEASE, 2), 0);
+        b.emit(Op::Pop, 0);
+        Ok(())
+    }
+
     /// Emit `$name = <value produced by `f`>`, leaving the value on the stack.
     fn emit_set_var(
         &mut self,
@@ -5418,6 +5637,18 @@ fn has_named(args: &[Expr]) -> bool {
 /// other with the compile-time `'...' argument unpacking is only valid in a
 /// function call`, so `$f(...$a)`, `$o->m(...$a)`, `C::s(...$a)` and
 /// `new C(...$a)` were all hard failures rather than divergences.
+/// The positions of the arguments written before the first spread or named
+/// one — the only ones whose parameter position is known from the call site,
+/// and so the only ones a run-time-resolved call can write a by-reference
+/// result back to.
+fn leading_positional(args: &[Expr]) -> Vec<usize> {
+    args.iter()
+        .take_while(|a| !matches!(a, Expr::NamedArg(..) | Expr::Spread(_)))
+        .enumerate()
+        .map(|(i, _)| i)
+        .collect()
+}
+
 fn needs_arg_pairs(args: &[Expr]) -> bool {
     args.iter()
         .any(|a| matches!(a, Expr::NamedArg(..) | Expr::Spread(_)))
@@ -5754,6 +5985,52 @@ fn is_const_operand(e: &Expr) -> bool {
     }
 }
 
+/// Whether every element of an array literal is a compile-time constant, the
+/// condition for the reference to build the array while compiling.
+fn is_const_array(elems: &[ArrayElem]) -> bool {
+    let is_const = |e: &Expr| match e {
+        Expr::Array(inner) => is_const_array(inner),
+        Expr::Spread(x) => matches!(&**x, Expr::Array(inner) if is_const_array(inner)) || is_const_operand(x),
+        _ => is_const_operand(e),
+    };
+    elems
+        .iter()
+        .all(|e| !e.by_ref && e.key.as_ref().is_none_or(is_const_operand) && is_const(&e.value))
+}
+
+/// The type name of the first scalar a CONSTANT array literal unpacks with
+/// `...`, which the reference refuses at compile time. `None` when the literal
+/// is not constant, or every spread in it is an array.
+fn const_array_bad_spread(elems: &[ArrayElem]) -> Option<&'static str> {
+    if !is_const_array(elems) {
+        return None;
+    }
+    elems.iter().find_map(|e| match &e.value {
+        Expr::Spread(x) => literal_type_name(x),
+        _ => None,
+    })
+}
+
+/// The diagnostic name of a scalar literal (`int`, `string`, and `true` or
+/// `false` for a bool, as the reference spells it); `None` for anything whose
+/// type is not evident from its spelling.
+fn literal_type_name(e: &Expr) -> Option<&'static str> {
+    match e {
+        Expr::Null => Some("null"),
+        // `zend_zval_value_name`: a bool is named by its value.
+        Expr::Bool(true) => Some("true"),
+        Expr::Bool(false) => Some("false"),
+        Expr::Int(_) => Some("int"),
+        Expr::Float(_) => Some("float"),
+        Expr::Str(_) | Expr::Interp(_) => Some("string"),
+        Expr::Unary(UnOp::Neg | UnOp::Pos, x) => match literal_type_name(x)? {
+            t @ ("int" | "float") => Some(t),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Whether `e` cannot be a compile-time constant under ANY folding rule, so a
 /// swap against it is certainly what the reference did.
 fn is_definitely_runtime(e: &Expr) -> bool {
@@ -5768,6 +6045,11 @@ fn is_definitely_runtime(e: &Expr) -> bool {
         // folding it would have to emit the diagnostic at compile time.
         Expr::Binary(op, a, b) if is_foldable_arith(*op) => {
             is_const_operand(a) && is_const_operand(b) && !folds_without_diagnostic(*op, a, b)
+        }
+        // A bitwise operator over a float constant with a fractional part
+        // deprecates the lossy conversion, so the reference does not fold it.
+        Expr::Binary(BinOp::BitOr | BinOp::BitAnd | BinOp::BitXor, a, b) => {
+            is_const_operand(a) && is_const_operand(b) && (is_fractional_float(a) || is_fractional_float(b))
         }
         _ => false,
     }
@@ -5832,6 +6114,16 @@ fn is_literal(e: &Expr) -> bool {
             | Expr::Interp(_)
             | Expr::Array(_)
     )
+}
+
+/// Whether `e` is a float literal (possibly negated) with a fractional part —
+/// one an integer operator cannot take without a precision-loss deprecation.
+fn is_fractional_float(e: &Expr) -> bool {
+    match e {
+        Expr::Float(f) => f.is_finite() && f.fract() != 0.0,
+        Expr::Unary(UnOp::Neg | UnOp::Pos, x) => is_fractional_float(x),
+        _ => false,
+    }
 }
 
 fn is_literal_zero(e: &Expr) -> bool {

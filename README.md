@@ -184,6 +184,8 @@ end-to-end (see `tests/basic.rs`):
   (delegating to an array, `Traversable`, or another generator). The `Generator`
   object supports `current`/`key`/`next`/`valid`/`send`/`throw`/`getReturn` and
   drives `foreach` lazily (side effects interleave; infinite generators work).
+  A generator destroyed while suspended — left by a `foreach` that created it,
+  or still parked at request end — runs the `finally` blocks around its `yield`.
   Implemented as host-side stackful coroutines (`corosensei`) — the fusevm VM run
   loop executes on the coroutine's stack, so `yield` suspends it with one stack
   switch and no VM change.
