@@ -1089,3 +1089,13 @@ enum NoValue: string { case A = "a"; case B; }
 // ── a use clause naming a parameter ──
 echo "never printed\n";
 $f = function ($a) use ($a) { return $a; };
+#==#
+// ── strtotime is timelib's scanner: formats, zones, weekday and "of" relatives ──
+$base = 1709254923; // 2024-03-01 01:02:03 UTC, a Friday
+foreach (["15 January 2024", "01/15/2024", "Jan 15th 2024 5:30pm", "2024-W03-2", "Sat, 30 Apr 2016 17:52:13 GMT",
+          "2024-03-01T10:00:00+05:30", "10:00 EST", "next monday", "last friday of this month",
+          "first day of next month", "+5 weekdays", "3 days ago", "tomorrow noon", "2024-01-31 +1 month",
+          "@1709251200.5", "   ", "foo", "10:00 10:00"] as $s) {
+    $r = strtotime($s, $base);
+    echo str_pad($s, 34), $r === false ? "false" : gmdate("Y-m-d H:i:s", $r), "\n";
+}

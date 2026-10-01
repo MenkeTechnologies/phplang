@@ -91,6 +91,10 @@ regex = "1"
 # pattern using them is compiled by this backtracking engine instead, so
 # `preg_match("/foo(?=bar)/", …)` answers rather than failing to compile.
 fancy-regex = "0.18"
+# timelib's date scanner is re2c: the LONGEST match among every token rule at
+# the cursor. A multi-pattern lazy DFA with `MatchKind::All` reports each
+# (rule, end) pair, which the `regex` facade does not expose.
+regex-automata = { version = "0.4", default-features = false, features = ["std", "syntax", "hybrid", "perf"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 base64 = "0.22"
 md-5 = "0.10"

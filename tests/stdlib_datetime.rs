@@ -2,13 +2,12 @@
 //! Every assertion pins an explicit timestamp so results are deterministic and
 //! independent of the wall clock / host timezone.
 //!
-//! SEVEN assertions pin this engine rather than the reference. They are listed
+//! FOUR assertions pin this engine rather than the reference. They are listed
 //! because a reader is entitled to assume the rest were captured from `php`, and
 //! these were re-verified against `php 8.5.9`:
 //!
-//!   * five OVERFLOW cases — `mktime`/`gmmktime` with a 12-digit field, and
-//!     `strtotime("+999999999999 days"/"months")`, plus `strtotime("   ")` —
-//!     answer `false` here where the reference returns a (wrapped) timestamp.
+//!   * two OVERFLOW cases — `mktime`/`gmmktime` with a 12-digit field — answer
+//!     `false` here where the reference returns a (wrapped) timestamp.
 //!   * two `date_default_timezone_set("Not/AZone")` cases: this engine accepts
 //!     and stores any name, while the reference emits `Notice: …Timezone ID
 //!     'Not/AZone' is invalid`, returns false, and keeps UTC. Already documented
@@ -114,25 +113,24 @@ fn mktime_huge_field_returns_false_no_panic() {
         run(r#"<?php echo gmmktime(0,0,0,999999999999,1,2020) === false ? "F":"?";"#),
         "F"
     );
-    // A relative strtotime offset large enough to overflow must also return false.
+    // strtotime does the reference's own arithmetic on a huge relative offset
+    // (php -r 'var_dump(strtotime("+999999999999 days", 0));').
     assert_eq!(
-        run(r#"<?php echo strtotime("+999999999999 days", 0) === false ? "F":"?";"#),
-        "F"
+        run(r#"<?php echo strtotime("+999999999999 days", 0);"#),
+        "86399999999913600"
     );
     assert_eq!(
-        run(r#"<?php echo strtotime("+999999999999 months", 0) === false ? "F":"?";"#),
-        "F"
+        run(r#"<?php echo strtotime("+999999999999 months", 0);"#),
+        "2629745999997235200"
     );
 }
 
 #[test]
 fn strtotime_empty_string_is_false() {
-    // Bug 2: PHP 8 treats an empty (or whitespace-only) string as a parse failure.
+    // An empty string is a parse failure; an all-blank one is not empty to
+    // timelib (its trim keeps the last character) and reads as "now".
     assert_eq!(run(r#"<?php echo strtotime("") === false ? "F":"?";"#), "F");
-    assert_eq!(
-        run(r#"<?php echo strtotime("   ") === false ? "F":"?";"#),
-        "F"
-    );
+    assert_eq!(run(r#"<?php echo strtotime("   ", 42);"#), "42");
     // "now" still resolves to the base timestamp.
     assert_eq!(run(r#"<?php echo strtotime("now", 42);"#), "42");
 }
@@ -422,4 +420,69 @@ fn strtotime_honours_a_trailing_timezone_it_can_apply_exactly() {
         run(r#"<?php var_dump(strtotime('garbage'));"#),
         "bool(false)\n"
     );
+}
+
+#[test]
+fn strtotime_is_timelibs_scanner() {
+    // Each expectation is `strtotime($s, BASE)` under the reference (2024-03-01
+    // 01:02:03 UTC, a Friday): absolute formats, zones and abbreviations,
+    // weekday and "of" relatives, weekday counting, and the scanner's refusals.
+    const BASE: i64 = 1709254923;
+    let cases: &[(&str, &str)] = &[
+        ("2024/01/15", "1705276800"),
+        ("01/15/2024", "1705276800"),
+        ("15-01-2024", "1705276800"),
+        ("15.01.24", "1709305284"),
+        ("Jan 15 2024", "1705276800"),
+        ("15 January 2024", "1705276800"),
+        ("January 15th, 2024", "1705276800"),
+        ("2024-W03-2", "1705363200"),
+        ("2016.121", "1461974400"),
+        ("20240115", "1705276800"),
+        ("20160430T175213", "1462038733"),
+        ("30/Apr/2016:17:52:13 +0000", "1462038733"),
+        ("Sat, 30 Apr 2016 17:52:13 GMT", "1462038733"),
+        ("2024-03-01T10:00:00.5+05:30", "1709267400"),
+        ("2024-03-01 10:00 EST", "1709305200"),
+        ("10:00 GMT+2", "1709280000"),
+        ("2024-03-01 10:00 Etc/GMT+5", "1709287200"),
+        ("10:30pm", "1709332200"),
+        ("12am", "1709251200"),
+        ("12:00 a.m.", "1709251200"),
+        ("back of 7pm", "1709320500"),
+        ("front of 7", "1709275500"),
+        ("@1709251200.123", "1709251200"),
+        ("monday", "1709510400"),
+        ("next monday", "1709510400"),
+        ("last friday", "1708646400"),
+        ("sunday this week", "1709424000"),
+        ("tuesday next week", "1709596800"),
+        ("first monday of january 2025", "1736121600"),
+        ("last friday of this month", "1711670400"),
+        ("last day of next month", "1714438923"),
+        ("first day of last month", "1706749323"),
+        ("+1 week 2 days", "1710032523"),
+        ("3 days ago", "1708995723"),
+        ("1 hour ago 30 min", "1709253123"),
+        ("+5 weekdays", "1709859723"),
+        ("3 weekdays ago", "1708995723"),
+        ("next year", "1740790923"),
+        ("this week", "1708909323"),
+        ("tomorrow noon", "1709380800"),
+        ("midnight +1 hour", "1709254800"),
+        ("+500 ms", "1709254923"),
+        ("-1 week 2 days 4 hours 2 seconds", "1708837325"),
+        ("1 jan 2024 10:00 +1 month", "1706781600"),
+        ("2024-01-31 +1 month", "1709337600"),
+        ("2024-03-31 -1 month", "1709337600"),
+        ("foo", "false"),
+        ("2024-01-01 xyz", "false"),
+        ("10:00 10:00", "false"),
+        ("2024-02-30", "1709251200"),
+        ("24:00", "1709337600"),
+    ];
+    for (s, want) in cases {
+        let src = format!("<?php $r = strtotime({s:?}, {BASE}); echo $r === false ? 'false' : $r;");
+        assert_eq!(run(&src), *want, "strtotime({s:?})");
+    }
 }

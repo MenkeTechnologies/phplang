@@ -337,180 +337,20 @@ fn php_microtime(args: &[Value]) -> Value {
     }
 }
 
-/// `strtotime(time, baseTimestamp=now)`: parse a subset of PHP's date/time
-/// grammar — "now", "today"/"yesterday"/"tomorrow", absolute `YYYY-MM-DD` and
-/// `YYYY-MM-DD HH:MM:SS`, `@<unixts>`, and chained relative offsets such as
-/// `"+1 week"`, `"-3 days"`, `"2 months 1 day"`. Returns `false` on parse
-/// failure, mirroring PHP.
+/// `strtotime(time, baseTimestamp=now)`: timelib's scanner (`stdlib::timelib`),
+/// holes filled from the base timestamp in the default zone; `false` when the
+/// scanner reports an error.
 fn php_strtotime(args: &[Value]) -> Value {
-    let input = str_arg(args, 0).trim().to_string();
-    let base = if args.len() >= 2 {
+    let input = str_arg(args, 0);
+    let base = if args.len() >= 2 && !matches!(args[1], Value::Undef) {
         int_arg(args, 1)
     } else {
         now_ts()
     };
-    match parse_strtotime(&input, base) {
+    match crate::stdlib::timelib::strtotime_ts(input.as_bytes(), base, &default_tz()) {
         Some(ts) => Value::int(ts),
         None => Value::bool(false),
     }
-}
-
-/// Core of `strtotime`; `None` signals an unparseable string.
-fn parse_strtotime(input: &str, base: i64) -> Option<i64> {
-    // PHP 8: an empty string is a parse failure, not the base timestamp.
-    if input.is_empty() {
-        return None;
-    }
-    let low = input.to_ascii_lowercase();
-    match low.as_str() {
-        "now" => return Some(base),
-        "today" | "midnight" => return Some(start_of_day(base)),
-        "yesterday" => return Some(start_of_day(base) - 86_400),
-        "tomorrow" => return Some(start_of_day(base) + 86_400),
-        _ => {}
-    }
-    // "@<timestamp>" — explicit Unix seconds.
-    if let Some(rest) = input.strip_prefix('@') {
-        return rest.trim().parse::<i64>().ok();
-    }
-    // A trailing timezone is taken off first and applied to the result. The
-    // absolute formats below are exact, so `"1970-01-02 UTC"` did not match any
-    // of them and the whole call answered `false`.
-    let (input, offset) = match split_timezone(input) {
-        Some(split) => split,
-        None => (input, 0),
-    };
-    // Absolute "YYYY-MM-DD HH:MM:SS" then "YYYY-MM-DD".
-    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(input, "%Y-%m-%d %H:%M:%S") {
-        return Some(Utc.from_utc_datetime(&dt).timestamp() - offset);
-    }
-    if let Some(dt) = NaiveDate::parse_from_str(input, "%Y-%m-%d")
-        .ok()
-        .and_then(|d| d.and_hms_opt(0, 0, 0))
-    {
-        return Some(Utc.from_utc_datetime(&dt).timestamp() - offset);
-    }
-    parse_relative(&low, base)
-}
-
-/// Split a trailing timezone off an absolute date string: the remainder, and
-/// the zone's offset in seconds EAST of UTC.
-///
-/// Only the zones this module can honour EXACTLY are accepted — `UTC`, `GMT`,
-/// `UT`, `Z`, and a numeric `+HH:MM` / `+HHMM` / `+HH` offset. A named zone from
-/// the tz database (`America/New_York`, `EST`) is left alone and the parse
-/// fails as before: without `chrono-tz` there is no offset to apply, and
-/// answering with UTC's would be a wrong timestamp rather than a refusal.
-fn split_timezone(s: &str) -> Option<(&str, i64)> {
-    // A bare trailing `Z` is written with no separator (`…T12:00:00Z`).
-    if let Some(head) = s.strip_suffix(['Z', 'z']) {
-        if !head.is_empty() {
-            return Some((head.trim_end(), 0));
-        }
-    }
-    // Split on WHITESPACE only. Splitting on `T` as well — the ISO 8601 date
-    // separator — cut `"1970-01-02 UTC"` inside the zone name itself.
-    let (head, tail) = s.rsplit_once(char::is_whitespace)?;
-    let head = head.trim_end();
-    if head.is_empty() {
-        return None;
-    }
-    if tail.eq_ignore_ascii_case("utc")
-        || tail.eq_ignore_ascii_case("gmt")
-        || tail.eq_ignore_ascii_case("ut")
-        || tail.eq_ignore_ascii_case("z")
-    {
-        return Some((head, 0));
-    }
-    // `+HH:MM`, `+HHMM`, `+HH` — and the same with `-`.
-    let sign = match tail.as_bytes().first()? {
-        b'+' => 1,
-        b'-' => -1,
-        _ => return None,
-    };
-    let digits: String = tail[1..].chars().filter(|c| *c != ':').collect();
-    if !digits.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    let (h, m) = match digits.len() {
-        2 => (digits.parse::<i64>().ok()?, 0),
-        4 => (digits[..2].parse().ok()?, digits[2..].parse().ok()?),
-        _ => return None,
-    };
-    (h < 24 && m < 60).then_some((head, sign * (h * 3600 + m * 60)))
-}
-
-/// Midnight (UTC) of the day containing `ts`.
-fn start_of_day(ts: i64) -> i64 {
-    let d = from_ts(ts).date_naive().and_hms_opt(0, 0, 0).unwrap();
-    Utc.from_utc_datetime(&d).timestamp()
-}
-
-/// Apply one or more `"[+-]N unit"` offsets (optionally with a trailing "ago")
-/// to `base`. Every token must match or the whole parse fails.
-fn parse_relative(low: &str, base: i64) -> Option<i64> {
-    let re = regex::Regex::new(
-        r"([+-]?\d+)\s*(sec(?:ond)?|min(?:ute)?|hour|day|week|month|year)s?(\s+ago)?",
-    )
-    .ok()?;
-    let mut dt = from_ts(base);
-    let mut matched_end = 0usize;
-    let mut any = false;
-    for cap in re.captures_iter(low) {
-        let whole = cap.get(0).unwrap();
-        // Reject stray characters between tokens (keeps parsing strict).
-        let gap = low[matched_end..whole.start()].trim();
-        if !gap.is_empty() {
-            return None;
-        }
-        matched_end = whole.end();
-        any = true;
-        let mut n: i64 = cap[1].parse().ok()?;
-        if cap.get(3).is_some() {
-            n = -n; // "N unit ago"
-        }
-        dt = apply_unit(dt, &cap[2], n)?;
-    }
-    // Require at least one token and no unconsumed trailing text.
-    if !any || !low[matched_end..].trim().is_empty() {
-        return None;
-    }
-    Some(dt.timestamp())
-}
-
-/// Shift `dt` by `n` of the named unit; month/year use calendar arithmetic.
-/// Every add is checked, so huge `n` yields `None` (→ `false`) instead of a panic.
-fn apply_unit(dt: DateTime<Utc>, unit: &str, n: i64) -> Option<DateTime<Utc>> {
-    let dur = match unit {
-        "sec" | "second" => Duration::try_seconds(n)?,
-        "min" | "minute" => Duration::try_minutes(n)?,
-        "hour" => Duration::try_hours(n)?,
-        "day" => Duration::try_days(n)?,
-        "week" => Duration::try_weeks(n)?,
-        "month" => return add_months_overflow(dt, n),
-        "year" => return add_months_overflow(dt, n.checked_mul(12)?),
-        _ => return None,
-    };
-    dt.checked_add_signed(dur)
-}
-
-/// Add `months` (may be negative) to `dt`, matching PHP's **overflowing** month
-/// arithmetic rather than chrono's clamping `checked_add_months`. PHP keeps the
-/// day-of-month and lets it spill into the following month when the target month
-/// is shorter: `2011-01-31 +1 month` → `2011-03-03`, not `2011-02-28`. Achieved
-/// by landing on the first of the target month and adding `(day-1)` days.
-/// Returns `None` on year/day overflow (→ `false`).
-fn add_months_overflow(dt: DateTime<Utc>, months: i64) -> Option<DateTime<Utc>> {
-    let total = (dt.year() as i64)
-        .checked_mul(12)?
-        .checked_add(dt.month0() as i64)?
-        .checked_add(months)?;
-    let ny = i32::try_from(total.div_euclid(12)).ok()?;
-    let nm = (total.rem_euclid(12) + 1) as u32;
-    let day_off = Duration::try_days(dt.day() as i64 - 1)?;
-    let first = NaiveDate::from_ymd_opt(ny, nm, 1)?.and_time(dt.time());
-    let shifted = first.checked_add_signed(day_off)?;
-    Some(Utc.from_utc_datetime(&shifted))
 }
 
 /// `getdate(timestamp=now)`: the associative/indexed array of date components.
@@ -535,4 +375,11 @@ fn php_getdate(args: &[Value]) -> Value {
         (Value::str("month"), Value::str(MONTHS[dt.month() as usize])),
         (Value::int(0), Value::int(ts)),
     ])
+}
+
+/// The default time zone as timelib sees it. Only a fixed-offset zone can be
+/// resolved here (see `stdlib::timelib`); anything else is treated as UTC.
+pub fn default_tz() -> crate::stdlib::timelib::TzInfo {
+    let name = TZ.with(|t| t.borrow().clone());
+    crate::stdlib::timelib::tz_lookup(&name).unwrap_or_else(|| crate::stdlib::timelib::tz_lookup("UTC").expect("UTC resolves"))
 }

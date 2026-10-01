@@ -333,6 +333,7 @@ file's directory. The same value is what `get_include_path()` returns.
 | `pack()` / `unpack()` | implemented | `Call to undefined function` |
 | `goto end; …; end: echo "done";` | `done` | `Parse error: syntax error, unexpected identifier "end"` |
 | `iconv_strlen("héllo")` | `int(5)` | `Call to undefined function iconv_strlen()` |
+| `strtotime("2024-03-01 10:00 Europe/Paris")` — any zone identifier whose offset is not fixed | `int(1709283600)` | `false`: there is no tz database, so only `UTC` and its aliases and the `Etc/GMT±N` zones resolve (abbreviations such as `CEST` do) |
 
 ## `...` unpacking: what is modelled and what is not
 

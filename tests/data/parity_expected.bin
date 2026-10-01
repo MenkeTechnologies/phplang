@@ -1887,3 +1887,23 @@ PHP Fatal error:  Cannot use lexical variable $a as a parameter name in Command 
 Stack trace:
 #0 {main}
 
+#REC 102 exit=0 out=944 err=0
+15 January 2024                   2024-01-15 00:00:00
+01/15/2024                        2024-01-15 00:00:00
+Jan 15th 2024 5:30pm              2024-01-15 17:30:00
+2024-W03-2                        2024-01-16 00:00:00
+Sat, 30 Apr 2016 17:52:13 GMT     2016-04-30 17:52:13
+2024-03-01T10:00:00+05:30         2024-03-01 04:30:00
+10:00 EST                         2024-03-01 15:00:00
+next monday                       2024-03-04 00:00:00
+last friday of this month         2024-03-29 00:00:00
+first day of next month           2024-04-01 01:02:03
++5 weekdays                       2024-03-08 01:02:03
+3 days ago                        2024-02-27 01:02:03
+tomorrow noon                     2024-03-02 12:00:00
+2024-01-31 +1 month               2024-03-02 00:00:00
+@1709251200.5                     2024-03-01 00:00:00
+                                  2024-03-01 01:02:03
+foo                               false
+10:00 10:00                       false
+

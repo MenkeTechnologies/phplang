@@ -1032,6 +1032,7 @@ dependencies = [
  "once_cell",
  "reedline",
  "regex",
+ "regex-automata",
  "rustc-hash",
  "serde",
  "serde_json",
