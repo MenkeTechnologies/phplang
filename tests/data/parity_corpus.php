@@ -1099,3 +1099,29 @@ foreach (["15 January 2024", "01/15/2024", "Jan 15th 2024 5:30pm", "2024-W03-2",
     $r = strtotime($s, $base);
     echo str_pad($s, 34), $r === false ? "false" : gmdate("Y-m-d H:i:s", $r), "\n";
 }
+#==#
+// ── DateTime: calendar arithmetic, zones, intervals and the shown properties ──
+$d = new DateTime("2024-01-31 10:00:00.25");
+$month = new DateInterval("P1M");
+$d->add($month);
+var_dump($d);
+$from = new DateTime("2024-01-01");
+$to = new DateTimeImmutable("2024-03-15 10:00 +02:00");
+$i = $from->diff($to);
+var_dump($i);
+echo $i->format("%R%a days, %y-%m-%d %H:%I:%S.%F"), "\n";
+$z = new DateTimeImmutable("2024-06-01 12:00:00", new DateTimeZone("+05:30"));
+echo $z->format(DATE_RFC2822), " ", $z->setTimezone(new DateTimeZone("EST"))->format("c T e I"), "\n";
+echo json_encode(new DateTime("2000-01-01 00:00 PST")), "\n";
+var_dump(new DateTime("2020-02-29") < new DateTimeImmutable("2020-03-01"), date_parse("next monday 10am")["relative"]);
+#==#
+// ── DateTime refusals: the reference's exception classes and messages ──
+foreach ([fn() => new DateTime("31/12/2024"), fn() => new DateInterval("P1X"),
+          fn() => (new DateTimeImmutable("2020-01-01"))->modify("noonish"),
+          fn() => DateInterval::createFromDateString("2020-01-01"),
+          fn() => new DateTimeZone("+99:00")] as $f) {
+    try { $f(); } catch (Exception $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+}
+var_dump(date_create("bogus"), date_get_last_errors());
+new DateTime("2024-02-31 25:00");
+echo DateTime::getLastErrors()["warnings"][16] ?? "none", "\n";

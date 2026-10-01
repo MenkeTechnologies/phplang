@@ -92,134 +92,22 @@ fn php_date(args: &[Value], gm: bool) -> Value {
     } else {
         now_ts()
     };
-    Value::str(format_php(&fmt, from_ts(ts), gm))
+    Value::str(php_format_date(fmt.as_bytes(), ts, !gm))
 }
 
-/// Render `dt` per PHP `date()` format characters. `\` escapes the next char.
-///
-/// Everything is UTC here (see the module header), which fixes every one of the
-/// timezone characters to a constant: offset `+0000`, DST off, and the zone
-/// named `UTC` — or `GMT` for `T` under `gmdate`, which is the only place the
-/// two spellings differ.
-fn format_php(fmt: &str, dt: DateTime<Utc>, gm: bool) -> String {
-    let mut out = String::with_capacity(fmt.len() * 2);
-    let mut chars = fmt.chars();
-    let dow_sun = dt.weekday().num_days_from_sunday() as usize; // 0=Sun..6=Sat
-    let dow_iso = dt.weekday().number_from_monday(); // 1=Mon..7=Sun
-    let day = dt.day();
-    let month = dt.month();
-    let hour24 = dt.hour();
-    let hour12 = match hour24 % 12 {
-        0 => 12,
-        h => h,
-    };
-    while let Some(c) = chars.next() {
-        match c {
-            '\\' => {
-                if let Some(n) = chars.next() {
-                    out.push(n);
-                }
-            }
-            'd' => out.push_str(&format!("{day:02}")),
-            'j' => out.push_str(&day.to_string()),
-            'D' => out.push_str(&DAYS[dow_sun][..3]),
-            'l' => out.push_str(DAYS[dow_sun]),
-            'N' => out.push_str(&dow_iso.to_string()),
-            'w' => out.push_str(&dow_sun.to_string()),
-            'S' => out.push_str(ordinal_suffix(day)),
-            'z' => out.push_str(&dt.ordinal0().to_string()),
-            'W' => out.push_str(&format!("{:02}", dt.iso_week().week())),
-            'F' => out.push_str(MONTHS[month as usize]),
-            'M' => out.push_str(&MONTHS[month as usize][..3]),
-            'm' => out.push_str(&format!("{month:02}")),
-            'n' => out.push_str(&month.to_string()),
-            't' => out.push_str(&days_in_month(dt.year(), month).to_string()),
-            'L' => out.push_str(if is_leap(dt.year()) { "1" } else { "0" }),
-            'Y' => out.push_str(&dt.year().to_string()),
-            'y' => out.push_str(&format!("{:02}", dt.year().rem_euclid(100))),
-            'a' => out.push_str(if hour24 < 12 { "am" } else { "pm" }),
-            'A' => out.push_str(if hour24 < 12 { "AM" } else { "PM" }),
-            'g' => out.push_str(&hour12.to_string()),
-            'G' => out.push_str(&hour24.to_string()),
-            'h' => out.push_str(&format!("{hour12:02}")),
-            'H' => out.push_str(&format!("{hour24:02}")),
-            'i' => out.push_str(&format!("{:02}", dt.minute())),
-            's' => out.push_str(&format!("{:02}", dt.second())),
-            'U' => out.push_str(&dt.timestamp().to_string()),
-            // ISO-8601 week-numbering year (differs from `Y` near Jan 1 / Dec 31).
-            'o' => out.push_str(&dt.iso_week().year().to_string()),
-            // Microseconds / milliseconds. Timestamps here carry no sub-second
-            // component, so these render as zeros, matching PHP integer-second input.
-            'u' => out.push_str(&format!("{:06}", dt.timestamp_subsec_micros())),
-            'v' => out.push_str(&format!("{:03}", dt.timestamp_subsec_millis())),
-            // ISO 8601 date, e.g. "2004-02-12T15:19:21+00:00" (UTC only here).
-            'c' => out.push_str(&format!(
-                "{:04}-{month:02}-{day:02}T{hour24:02}:{:02}:{:02}+00:00",
-                dt.year(),
-                dt.minute(),
-                dt.second()
-            )),
-            // RFC 2822 date, e.g. "Thu, 21 Dec 2000 16:01:07 +0000" (UTC only here).
-            'r' => out.push_str(&format!(
-                "{}, {day:02} {} {} {hour24:02}:{:02}:{:02} +0000",
-                &DAYS[dow_sun][..3],
-                &MONTHS[month as usize][..3],
-                dt.year(),
-                dt.minute(),
-                dt.second()
-            )),
-            // ── timezone, all constant in a UTC-only engine ──────────────────
-            // The zone identifier and its abbreviation. `T` is the one place
-            // `date` and `gmdate` disagree: with the default timezone at UTC the
-            // first says `UTC` and the second says `GMT`.
-            'e' => out.push_str("UTC"),
-            'T' => out.push_str(if gm { "GMT" } else { "UTC" }),
-            'I' => out.push('0'),
-            'Z' => out.push('0'),
-            'O' => out.push_str("+0000"),
-            'P' => out.push_str("+00:00"),
-            // `p` is `P` with `Z` for a zero offset (PHP 8.0).
-            'p' => out.push('Z'),
-            // ── expanded years (PHP 8.2) ─────────────────────────────────────
-            // `X` always carries a sign; `x` carries one only outside 0000-9999.
-            // Both pad to at least four digits, so year -500 is `-0500` under
-            // either and year 12345 is `+12345`.
-            'X' => out.push_str(&expanded_year(dt.year(), true)),
-            'x' => out.push_str(&expanded_year(dt.year(), false)),
-            // Swatch Internet Time: the day divided into 1000 beats, counted
-            // from midnight in UTC+1, so it is a pure function of the timestamp.
-            'B' => {
-                let secs = (dt.timestamp() + 3600).rem_euclid(86_400);
-                out.push_str(&format!("{:03}", secs * 1000 / 86_400));
-            }
-            other => out.push(other),
-        }
-    }
-    out
-}
-
-/// PHP's `X`/`x` expanded year: at least four digits, signed always for `X` and
-/// only outside the four-digit range for `x`.
-fn expanded_year(year: i32, always_sign: bool) -> String {
-    let sign = if year < 0 {
-        "-"
-    } else if always_sign || year > 9999 {
-        "+"
+/// `php_format_date`: `ts` broken down in the default zone (`date`) or in UTC
+/// (`gmdate`), rendered by timelib's `date_format`.
+pub fn php_format_date(fmt: &[u8], ts: i64, localtime: bool) -> String {
+    use crate::timelib as tl;
+    let mut t = tl::Time::default();
+    if localtime {
+        t.tz_info = Some(default_tz());
+        t.zone_type = tl::ZONETYPE_ID;
+        tl::unixtime2local(&mut t, ts);
     } else {
-        ""
-    };
-    format!("{sign}{:04}", year.abs())
-}
-
-/// English ordinal suffix for a day-of-month (`1`→"st", `11`→"th", `22`→"nd").
-fn ordinal_suffix(day: u32) -> &'static str {
-    match (day % 10, day % 100) {
-        (1, 11) | (2, 12) | (3, 13) => "th",
-        (1, _) => "st",
-        (2, _) => "nd",
-        (3, _) => "rd",
-        _ => "th",
+        tl::unixtime2gmt(&mut t, ts);
     }
+    tl::date_format(fmt, &t, localtime)
 }
 
 /// Proleptic-Gregorian leap-year test.
@@ -337,7 +225,7 @@ fn php_microtime(args: &[Value]) -> Value {
     }
 }
 
-/// `strtotime(time, baseTimestamp=now)`: timelib's scanner (`stdlib::timelib`),
+/// `strtotime(time, baseTimestamp=now)`: timelib's scanner (`crate::timelib`),
 /// holes filled from the base timestamp in the default zone; `false` when the
 /// scanner reports an error.
 fn php_strtotime(args: &[Value]) -> Value {
@@ -347,7 +235,7 @@ fn php_strtotime(args: &[Value]) -> Value {
     } else {
         now_ts()
     };
-    match crate::stdlib::timelib::strtotime_ts(input.as_bytes(), base, &default_tz()) {
+    match crate::timelib::strtotime_ts(input.as_bytes(), base, &default_tz()) {
         Some(ts) => Value::int(ts),
         None => Value::bool(false),
     }
@@ -378,8 +266,9 @@ fn php_getdate(args: &[Value]) -> Value {
 }
 
 /// The default time zone as timelib sees it. Only a fixed-offset zone can be
-/// resolved here (see `stdlib::timelib`); anything else is treated as UTC.
-pub fn default_tz() -> crate::stdlib::timelib::TzInfo {
+/// resolved here (see `crate::timelib`); anything else is treated as UTC.
+pub fn default_tz() -> crate::timelib::TzInfo {
     let name = TZ.with(|t| t.borrow().clone());
-    crate::stdlib::timelib::tz_lookup(&name).unwrap_or_else(|| crate::stdlib::timelib::tz_lookup("UTC").expect("UTC resolves"))
+    crate::timelib::tz_lookup(&name)
+        .unwrap_or_else(|| crate::timelib::tz_lookup("UTC").expect("UTC resolves"))
 }

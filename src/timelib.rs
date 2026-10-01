@@ -3101,3 +3101,558 @@ fn reset_unset_fields(t: &mut Time) {
         }
     }
 }
+
+// ── php_date.c: date_format ──────────────────────────────────────────────────
+
+const DAY_FULL: [&str; 7] = [
+    "Sunday",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+];
+const DAY_SHORT: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MON_FULL: [&str; 12] = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+];
+const MON_SHORT: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+fn english_suffix(n: i64) -> &'static str {
+    if (10..=19).contains(&n) {
+        return "th";
+    }
+    match n % 10 {
+        1 => "st",
+        2 => "nd",
+        3 => "rd",
+        _ => "th",
+    }
+}
+
+/// `timelib_time_offset` as `date_format` needs it.
+struct Offset {
+    offset: i64,
+    is_dst: i64,
+    abbr: String,
+}
+
+fn time_offset(t: &Time) -> Offset {
+    match t.zone_type {
+        ZONETYPE_ABBR => Offset {
+            offset: t.z + t.dst * 3600,
+            is_dst: t.dst,
+            abbr: t.tz_abbr.clone().unwrap_or_default(),
+        },
+        ZONETYPE_OFFSET => Offset {
+            offset: t.z,
+            is_dst: 0,
+            abbr: format!(
+                "GMT{}{:02}{:02}",
+                if t.z < 0 { '-' } else { '+' },
+                (t.z / 3600).abs(),
+                ((t.z % 3600) / 60).abs()
+            ),
+        },
+        ZONETYPE_ID => {
+            let tz = t.tz_info.as_ref();
+            Offset {
+                offset: tz.map_or(0, |z| z.offset),
+                is_dst: 0,
+                abbr: tz.map(|z| z.abbr.clone()).unwrap_or_default(),
+            }
+        }
+        _ => Offset {
+            offset: 0,
+            is_dst: 0,
+            abbr: String::new(),
+        },
+    }
+}
+
+/// `+05:00`, or `+05:00:01` when the offset has seconds —
+/// `date_create_tz_offset_str`.
+pub fn offset_str(offset: i64) -> String {
+    let secs = offset % 60;
+    let sign = if offset < 0 { '-' } else { '+' };
+    if secs == 0 {
+        format!(
+            "{sign}{:02}:{:02}",
+            (offset / 3600).abs(),
+            ((offset % 3600) / 60).abs()
+        )
+    } else {
+        format!(
+            "{sign}{:02}:{:02}:{:02}",
+            (offset / 3600).abs(),
+            ((offset % 3600) / 60).abs(),
+            secs.abs()
+        )
+    }
+}
+
+/// `date_format` (php_date.c): render `t` per a `date()` format string.
+pub fn date_format(format: &[u8], t: &Time, localtime: bool) -> String {
+    let mut out = String::with_capacity(format.len() * 2);
+    let off = if localtime {
+        Some(time_offset(t))
+    } else {
+        None
+    };
+    let zero = Offset {
+        offset: 0,
+        is_dst: 0,
+        abbr: String::new(),
+    };
+    let o = off.as_ref().unwrap_or(&zero);
+    let sign = |v: i64| if localtime && v < 0 { '-' } else { '+' };
+    let oh = if localtime {
+        (o.offset / 3600).abs()
+    } else {
+        0
+    };
+    let om = if localtime {
+        ((o.offset % 3600) / 60).abs()
+    } else {
+        0
+    };
+    let dow = day_of_week(t.y, t.m, t.d);
+    let month = |m: i64| ((m - 1).clamp(0, 11)) as usize;
+    let mut iso: Option<(i64, i64)> = None;
+    let mut i = 0;
+    while i < format.len() {
+        let c = format[i];
+        match c {
+            b'd' => out.push_str(&format!("{:02}", t.d)),
+            b'D' => out.push_str(DAY_SHORT.get(dow as usize).copied().unwrap_or("Unknown")),
+            b'j' => out.push_str(&t.d.to_string()),
+            b'l' => out.push_str(DAY_FULL.get(dow as usize).copied().unwrap_or("Unknown")),
+            b'S' => out.push_str(english_suffix(t.d)),
+            b'w' => out.push_str(&dow.to_string()),
+            b'N' => out.push_str(&iso_day_of_week(t.y, t.m, t.d).to_string()),
+            b'z' => out.push_str(&day_of_year(t.y, t.m, t.d).to_string()),
+            b'W' => {
+                let (w, _) = *iso.get_or_insert_with(|| isoweek_from_date(t.y, t.m, t.d));
+                out.push_str(&format!("{w:02}"));
+            }
+            b'o' => {
+                let (_, y) = *iso.get_or_insert_with(|| isoweek_from_date(t.y, t.m, t.d));
+                out.push_str(&y.to_string());
+            }
+            b'F' => out.push_str(MON_FULL[month(t.m)]),
+            b'm' => out.push_str(&format!("{:02}", t.m)),
+            b'M' => out.push_str(MON_SHORT[month(t.m)]),
+            b'n' => out.push_str(&t.m.to_string()),
+            b't' => out.push_str(&days_in_month(t.y, t.m.clamp(1, 12)).to_string()),
+            b'L' => out.push_str(if is_leap(t.y) { "1" } else { "0" }),
+            b'y' => out.push_str(&format!("{:02}", t.y % 100)),
+            b'Y' => out.push_str(&format!(
+                "{}{:04}",
+                if t.y < 0 { "-" } else { "" },
+                t.y.unsigned_abs()
+            )),
+            b'x' => out.push_str(&format!(
+                "{}{:04}",
+                if t.y < 0 {
+                    "-"
+                } else if t.y >= 10000 {
+                    "+"
+                } else {
+                    ""
+                },
+                t.y.unsigned_abs()
+            )),
+            b'X' => out.push_str(&format!(
+                "{}{:04}",
+                if t.y < 0 { "-" } else { "+" },
+                t.y.unsigned_abs()
+            )),
+            b'a' => out.push_str(if t.h >= 12 { "pm" } else { "am" }),
+            b'A' => out.push_str(if t.h >= 12 { "PM" } else { "AM" }),
+            b'B' => {
+                // As the reference computes it — on a `long` cast of the
+                // timestamp, the hour of BMT added back in.
+                let sse = t.sse;
+                let mut r = (sse - (sse - ((sse % 86400) + 3600))) * 10;
+                if r < 0 {
+                    r += 864000;
+                }
+                r = (r / 864) % 1000;
+                out.push_str(&format!("{r:03}"));
+            }
+            b'g' => out.push_str(&(if t.h % 12 != 0 { t.h % 12 } else { 12 }).to_string()),
+            b'G' => out.push_str(&t.h.to_string()),
+            b'h' => out.push_str(&format!("{:02}", if t.h % 12 != 0 { t.h % 12 } else { 12 })),
+            b'H' => out.push_str(&format!("{:02}", t.h)),
+            b'i' => out.push_str(&format!("{:02}", t.i)),
+            b's' => out.push_str(&format!("{:02}", t.s)),
+            b'u' => out.push_str(&format!("{:06}", t.us)),
+            b'v' => out.push_str(&format!("{:03}", t.us / 1000)),
+            b'I' => out.push_str(&(if localtime { o.is_dst } else { 0 }).to_string()),
+            b'p' if !localtime || o.abbr == "UTC" || o.abbr == "Z" || o.abbr == "GMT+0000" => {
+                out.push('Z')
+            }
+            b'p' | b'P' | b'O' => {
+                let colon = if c == b'O' { "" } else { ":" };
+                out.push_str(&format!("{}{oh:02}{colon}{om:02}", sign(o.offset)));
+            }
+            b'T' => out.push_str(if localtime { &o.abbr } else { "GMT" }),
+            b'e' => {
+                if !localtime {
+                    out.push_str("UTC");
+                } else {
+                    match t.zone_type {
+                        ZONETYPE_ID => {
+                            out.push_str(t.tz_info.as_ref().map_or("", |z| z.name.as_str()))
+                        }
+                        ZONETYPE_ABBR => out.push_str(&o.abbr),
+                        ZONETYPE_OFFSET => out.push_str(&offset_str(o.offset)),
+                        _ => {}
+                    }
+                }
+            }
+            b'Z' => out.push_str(&(if localtime { o.offset } else { 0 }).to_string()),
+            b'c' => out.push_str(&format!(
+                "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}{}{oh:02}:{om:02}",
+                t.y,
+                t.m,
+                t.d,
+                t.h,
+                t.i,
+                t.s,
+                sign(o.offset)
+            )),
+            b'r' => out.push_str(&format!(
+                "{:>3}, {:02} {:>3} {:04} {:02}:{:02}:{:02} {}{oh:02}{om:02}",
+                DAY_SHORT.get(dow as usize).copied().unwrap_or("Unknown"),
+                t.d,
+                MON_SHORT[month(t.m)],
+                t.y,
+                t.h,
+                t.i,
+                t.s,
+                sign(o.offset)
+            )),
+            b'U' => out.push_str(&t.sse.to_string()),
+            b'\\' => {
+                i += 1;
+                if let Some(&n) = format.get(i) {
+                    push_byte(&mut out, n, format, i);
+                }
+            }
+            _ => push_byte(&mut out, c, format, i),
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Copy one literal format byte — a whole UTF-8 sequence is copied by its
+/// lead byte and its continuation bytes skipped, since `out` is a `String`.
+fn push_byte(out: &mut String, c: u8, format: &[u8], i: usize) {
+    if c < 0x80 {
+        out.push(c as char);
+    } else if c >= 0xC0 {
+        let len = match c {
+            0xC0..=0xDF => 2,
+            0xE0..=0xEF => 3,
+            _ => 4,
+        };
+        if let Some(s) = format
+            .get(i..i + len)
+            .and_then(|b| std::str::from_utf8(b).ok())
+        {
+            out.push_str(s);
+        }
+    }
+}
+
+/// `timelib_add` / `timelib_sub` live in `add_wall` here: with every zone at
+/// a fixed offset the civil and wall-clock forms agree.
+pub fn sub_wall(old: &Time, interval: &RelTime) -> Time {
+    add_wall(old, interval, true)
+}
+
+/// `timelib_set_timezone_from_offset`.
+pub fn set_timezone_from_offset(t: &mut Time, utc_offset: i64) {
+    t.tz_abbr = None;
+    t.z = utc_offset;
+    t.have_zone = 1;
+    t.zone_type = ZONETYPE_OFFSET;
+    t.dst = 0;
+    t.tz_info = None;
+}
+
+/// `timelib_set_timezone_from_abbr`.
+pub fn set_timezone_from_abbr(t: &mut Time, z: i64, dst: i64, abbr: &str) {
+    t.tz_abbr = Some(abbr.to_string());
+    t.z = z;
+    t.have_zone = 1;
+    t.zone_type = ZONETYPE_ABBR;
+    t.dst = dst;
+    t.tz_info = None;
+}
+
+/// `timelib_parse_zone` over a whole string, for `DateTimeZone`: the time
+/// fields it sets, and how far it read.
+pub fn parse_zone_str(s: &[u8]) -> (Time, i64, bool, usize) {
+    let tok = Tok {
+        b: s.iter().copied().take_while(|&c| c != 0).collect(),
+    };
+    let mut t = Time::default();
+    let mut p = 0;
+    let (z, not_found) = parse_zone(&mut t, &tok, &mut p);
+    (t, z, not_found, p)
+}
+
+/// The abbreviation table's offset and dst flag for `abbr`.
+pub fn abbreviation(abbr: &str) -> Option<(i64, i64)> {
+    abbr_search(abbr.as_bytes())
+}
+
+// ── parse_iso_intervals.re: `timelib_strtointerval` ──────────────────────────
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum IsoRule {
+    Recurrences,
+    DateTime,
+    Period,
+    CombinedRep,
+    Separator,
+    Nul,
+    Any,
+}
+
+fn iso_scanner() -> &'static (DFA, Vec<IsoRule>) {
+    static S: OnceLock<(DFA, Vec<IsoRule>)> = OnceLock::new();
+    S.get_or_init(|| {
+        let defs: &[(&str, &str)] = &[
+            ("number", "[0-9]+"),
+            ("hour24lz", "(?:[01][0-9]|2[0-4])"),
+            ("minutelz", "(?:[0-5][0-9])"),
+            ("monthlz", "(?:0[1-9]|1[0-2])"),
+            ("monthlzz", "(?:0[0-9]|1[0-2])"),
+            ("daylz", "(?:0[1-9]|[1-2][0-9]|3[01])"),
+            ("daylzz", "(?:0[0-9]|[1-2][0-9]|3[01])"),
+            ("secondlz", "{minutelz}"),
+            ("year4", "[0-9]{4}"),
+            ("datetimebasic", "{year4}{monthlz}{daylz}T{hour24lz}{minutelz}{secondlz}Z"),
+            ("datetimeextended", "{year4}-{monthlz}-{daylz}T{hour24lz}:{minutelz}:{secondlz}Z"),
+            (
+                "period",
+                "P(?:{number}Y)?(?:{number}M)?(?:{number}W)?(?:{number}D)?(?:T(?:{number}H)?(?:{number}M)?(?:{number}S)?)?",
+            ),
+            ("combinedrep", "P{year4}-{monthlzz}-{daylzz}T{hour24lz}:{minutelz}:{secondlz}"),
+            ("recurrences", "R{number}"),
+        ];
+        let mut built: Vec<(String, String)> = Vec::new();
+        for (n, p) in defs {
+            let body = expand(p, &built);
+            built.push((n.to_string(), body));
+        }
+        use IsoRule::*;
+        let rules: Vec<(IsoRule, &str)> = vec![
+            (Recurrences, "{recurrences}"),
+            (DateTime, "{datetimebasic}|{datetimeextended}"),
+            (Period, "{period}"),
+            (CombinedRep, "{combinedrep}"),
+            (Separator, r"[ .,\t/]"),
+            (Nul, r"\x00|\n"),
+            (Any, r"(?s-u:.)"),
+        ];
+        let pats: Vec<String> = rules.iter().map(|(_, p)| format!("(?-u:{})", expand(p, &built))).collect();
+        let dfa = DFA::builder()
+            .configure(DFA::config().match_kind(MatchKind::All))
+            .syntax(regex_automata::util::syntax::Config::new().unicode(false).utf8(false))
+            .thompson(regex_automata::nfa::thompson::Config::new().utf8(false))
+            .build_many(&pats)
+            .expect("interval rules compile");
+        (dfa, rules.into_iter().map(|(r, _)| r).collect())
+    })
+}
+
+thread_local! {
+    static ISO_CACHE: RefCell<Option<Cache>> = const { RefCell::new(None) };
+}
+
+fn iso_longest(buf: &[u8], pos: usize) -> (IsoRule, usize) {
+    let (dfa, rules) = iso_scanner();
+    ISO_CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        let cache = c.get_or_insert_with(|| dfa.create_cache());
+        let input = Input::new(buf).range(pos..).anchored(Anchored::Yes);
+        let mut state = OverlappingState::start();
+        let mut best: Option<(usize, usize)> = None;
+        while dfa
+            .try_search_overlapping_fwd(cache, &input, &mut state)
+            .is_ok()
+        {
+            let Some(hm) = state.get_match() else { break };
+            let (end, pid) = (hm.offset(), hm.pattern().as_usize());
+            if end > pos && best.map_or(true, |(be, bp)| end > be || (end == be && pid < bp)) {
+                best = Some((end, pid));
+            }
+        }
+        let (end, pid) = best.unwrap_or((pos + 1, rules.len() - 1));
+        (rules[pid], end)
+    })
+}
+
+/// `timelib_get_unsigned_nr` (parse_iso_intervals.re).
+fn iso_get_unsigned_nr(t: &Tok, p: &mut usize, max: usize) -> i64 {
+    let mut dir: i64 = 1;
+    while !is_digit(t.at(*p)) && t.at(*p) != b'+' && t.at(*p) != b'-' {
+        if t.at(*p) == 0 {
+            return UNSET;
+        }
+        *p += 1;
+    }
+    while t.at(*p) == b'+' || t.at(*p) == b'-' {
+        if t.at(*p) == b'-' {
+            dir = -dir;
+        }
+        *p += 1;
+    }
+    dir.wrapping_mul(get_nr(t, p, max))
+}
+
+/// `date_interval_initialize`: the interval an ISO 8601 duration (or a pair
+/// of dates) describes, or the exception message.
+pub fn parse_iso_interval(input: &[u8]) -> Result<RelTime, String> {
+    let shown = String::from_utf8_lossy(input).into_owned();
+    let bad = || Err(format!("Unknown or bad format ({shown})"));
+    if input.is_empty() {
+        return bad();
+    }
+    let mut s = 0;
+    let mut last = input.len() - 1;
+    while input[s].is_ascii_whitespace_c() && s < last {
+        s += 1;
+    }
+    while input[last].is_ascii_whitespace_c() && last > s {
+        last -= 1;
+    }
+    let len = last + 1 - s;
+    let mut buf = input[s..=last].to_vec();
+    buf.extend_from_slice(&[0u8; 32]);
+    let mut period = RelTime {
+        days: UNSET,
+        ..RelTime::default()
+    };
+    let blank = || Time {
+        y: UNSET,
+        m: UNSET,
+        d: UNSET,
+        h: UNSET,
+        i: UNSET,
+        s: UNSET,
+        zone_type: ZONETYPE_OFFSET,
+        ..Time::default()
+    };
+    let (mut begin, mut end) = (blank(), blank());
+    let (mut have_period, mut have_date, mut have_begin, mut have_end) =
+        (false, false, false, false);
+    let mut errors = 0;
+    let mut pos = 0;
+    while pos <= len {
+        let (rule, stop) = iso_longest(&buf, pos);
+        let text = &buf[pos..stop];
+        let cut = text.iter().position(|&c| c == 0).unwrap_or(text.len());
+        let t = Tok {
+            b: text[..cut].to_vec(),
+        };
+        let mut p = 0;
+        match rule {
+            IsoRule::Recurrences => {}
+            IsoRule::DateTime => {
+                let cur = if have_date || have_period {
+                    have_end = true;
+                    &mut end
+                } else {
+                    have_begin = true;
+                    &mut begin
+                };
+                cur.y = get_nr(&t, &mut p, 4);
+                cur.m = get_nr(&t, &mut p, 2);
+                cur.d = get_nr(&t, &mut p, 2);
+                cur.h = get_nr(&t, &mut p, 2);
+                cur.i = get_nr(&t, &mut p, 2);
+                cur.s = get_nr(&t, &mut p, 2);
+                have_date = true;
+            }
+            IsoRule::Period => {
+                p += 1;
+                let mut in_time = false;
+                loop {
+                    if t.at(p) == b'T' {
+                        in_time = true;
+                        p += 1;
+                    }
+                    if t.at(p) == 0 {
+                        errors += 1;
+                        break;
+                    }
+                    let nr = iso_get_unsigned_nr(&t, &mut p, 12);
+                    match t.at(p) {
+                        b'Y' => period.y = nr,
+                        b'W' => period.d += nr * 7,
+                        b'D' => period.d += nr,
+                        b'H' => period.h = nr,
+                        b'S' => period.s = nr,
+                        b'M' if in_time => period.i = nr,
+                        b'M' => period.m = nr,
+                        _ => errors += 1,
+                    }
+                    p += 1;
+                    if errors != 0 || t.at(p) == 0 {
+                        break;
+                    }
+                }
+                have_period = true;
+            }
+            IsoRule::CombinedRep => {
+                period.y = iso_get_unsigned_nr(&t, &mut p, 4);
+                p += 1;
+                period.m = iso_get_unsigned_nr(&t, &mut p, 2);
+                p += 1;
+                period.d = iso_get_unsigned_nr(&t, &mut p, 2);
+                p += 1;
+                period.h = iso_get_unsigned_nr(&t, &mut p, 2);
+                p += 1;
+                period.i = iso_get_unsigned_nr(&t, &mut p, 2);
+                p += 1;
+                period.s = iso_get_unsigned_nr(&t, &mut p, 2);
+                have_period = true;
+            }
+            IsoRule::Separator | IsoRule::Nul => {}
+            IsoRule::Any => errors += 1,
+        }
+        pos = stop;
+    }
+    if errors > 0 {
+        return bad();
+    }
+    if have_period {
+        return Ok(period);
+    }
+    if have_begin && have_end {
+        update_ts(&mut begin, None);
+        update_ts(&mut end, None);
+        return Ok(diff(&begin, &end));
+    }
+    Err(format!("Failed to parse interval ({shown})"))
+}

@@ -440,7 +440,12 @@ end-to-end (see `tests/basic.rs`):
     a real by-reference OUT parameter, so it defines the caller's variable
     whether or not it existed, and a `(?<name>…)` group appears under its name as
     well as its index.
-  - **datetime** — `time`/`mktime`/`date`/`gmdate`/`checkdate`/`strtotime` (UTC).
+  - **datetime** — `time`/`mktime`/`date`/`gmdate`/`checkdate`/`strtotime`, and the
+    `DateTime`/`DateTimeImmutable`/`DateTimeZone`/`DateInterval`/`DatePeriod` classes with
+    their `date_*`/`timezone_*` functions, over a port of the reference's timelib
+    (`src/timelib.rs`: the `strtotime` scanner, `createFromFormat`, relative-time
+    resolution, interval arithmetic). No tz database: a zone identifier resolves only
+    when its offset is fixed (`UTC`, `Etc/GMT±N`); offsets and abbreviations work.
   - **hash** — `md5`/`sha1`/`hash`/`crc32`/`hash_hmac`. **encoding** —
     `base64_*`, `bin2hex`/`hex2bin`, quoted-printable, `utf8_*`. **url** —
     `urlencode`/`rawurlencode` (+decode), `http_build_query`, `parse_url`,

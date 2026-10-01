@@ -164,6 +164,9 @@ pub fn install(vm: &mut VM) {
     reg!(vm, ops::MCALL_NAMED, b_mcall_named);
     reg!(vm, ops::SCALL_NAMED, b_scall_named);
     reg!(vm, ops::NEW_NAMED, b_new_named);
+    reg!(vm, ops::NEW_ALLOC, b_new_alloc);
+    reg!(vm, ops::NEW_INIT, b_new_init);
+    reg!(vm, ops::NEW_INIT_NAMED, b_new_init_named);
     reg!(vm, ops::CALLVALUE_NAMED, b_callvalue_named);
     reg!(vm, ops::YIELD, b_yield);
     reg!(vm, ops::YIELD_KV, b_yield_kv);
@@ -436,6 +439,40 @@ fn b_scall_named(vm: &mut VM, argc: u8) -> Value {
 }
 
 /// `new C(name: v, ...)` — named-argument constructor. Stack `[class, (n,v)...]`.
+/// `new`'s allocation, before its arguments — see `ops::NEW_ALLOC`.
+fn b_new_alloc(vm: &mut VM, _: u8) -> Value {
+    let class = pop_name(vm);
+    mark_frame_line(vm);
+    match host::alloc_object(&class) {
+        Ok(v) => bubbled(vm, v),
+        Err(e) => fail_or_throw(vm, e),
+    }
+}
+
+/// `new`'s constructor call over the allocated instance — see `ops::NEW_INIT`.
+fn b_new_init(vm: &mut VM, argc: u8) -> Value {
+    let mut args = pop_args(vm, argc as usize);
+    let obj = args.remove(0);
+    let class = with_host(|h| h.object_class(&obj)).unwrap_or_default();
+    mark_frame_line(vm);
+    match host::construct_object(&obj, &class, args, Vec::new()) {
+        Ok(()) => bubbled(vm, obj),
+        Err(e) => fail_or_throw(vm, e),
+    }
+}
+
+fn b_new_init_named(vm: &mut VM, argc: u8) -> Value {
+    let pairs = pop_args(vm, argc as usize - 1);
+    let obj = vm.pop();
+    let (pos, named) = split_named_or_throw!(vm, pairs);
+    let class = with_host(|h| h.object_class(&obj)).unwrap_or_default();
+    mark_frame_line(vm);
+    match host::construct_object(&obj, &class, pos, named) {
+        Ok(()) => bubbled(vm, obj),
+        Err(e) => fail_or_throw(vm, e),
+    }
+}
+
 fn b_new_named(vm: &mut VM, argc: u8) -> Value {
     let pairs = pop_args(vm, argc as usize - 1);
     let class = pop_name(vm);
@@ -3282,7 +3319,10 @@ fn loose_eq(h: &host::PhpHost, a: &Value, b: &Value) -> bool {
                 x == y
             }
         }
-        (Obj(_), Obj(_)) => arrays_loose_eq(h, a, b),
+        (Obj(_), Obj(_)) => match crate::stdlib::datefn::compare_dates(h, a, b) {
+            Some(ord) => ord == 0,
+            None => arrays_loose_eq(h, a, b),
+        },
         (Obj(_), _) | (_, Obj(_)) => false,
         // `==` is `zend_compare(...) == 0` (`Zend/zend_operators.c:2524`), and a
         // NaN double against a string is answered 1 there before the string is
@@ -3412,7 +3452,9 @@ fn php_compare(h: &host::PhpHost, a: &Value, b: &Value) -> i32 {
             i32::from(h.is_truthy(a)) - i32::from(h.is_truthy(b))
         }
         // 3. Two arrays compare by size, then element-wise.
-        (Obj(_), Obj(_)) => compare_arrays(h, a, b),
+        (Obj(_), Obj(_)) => {
+            crate::stdlib::datefn::compare_dates(h, a, b).unwrap_or_else(|| compare_arrays(h, a, b))
+        }
         // 4. An array outranks every non-array, non-bool, non-null operand.
         (Obj(_), _) => 1,
         (_, Obj(_)) => -1,

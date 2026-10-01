@@ -515,7 +515,7 @@ use Def::{Bool, EmptyArray, Float, Int, Null, Required, Str, Unknown};
 /// default in this generated table is a literal too.
 #[allow(clippy::approx_constant)]
 static SIGS: &[(&str, Sig)] = &[
-    // generated: 526 functions
+    // generated: 539 functions
     (
         "abs",
         Sig {
@@ -1643,12 +1643,49 @@ static SIGS: &[(&str, Sig)] = &[
         },
     ),
     (
+        "date_create_from_format",
+        Sig {
+            req: 2,
+            params: &[
+                p("format", Required, "string"),
+                p("datetime", Required, "string"),
+                p("timezone", Null, "?DateTimeZone"),
+            ],
+            variadic: false,
+        },
+    ),
+    (
         "date_create_immutable",
         Sig {
             req: 0,
             params: &[
                 p("datetime", Str("now"), "string"),
                 p("timezone", Null, "?DateTimeZone"),
+            ],
+            variadic: false,
+        },
+    ),
+    (
+        "date_create_immutable_from_format",
+        Sig {
+            req: 2,
+            params: &[
+                p("format", Required, "string"),
+                p("datetime", Required, "string"),
+                p("timezone", Null, "?DateTimeZone"),
+            ],
+            variadic: false,
+        },
+    ),
+    (
+        "date_date_set",
+        Sig {
+            req: 4,
+            params: &[
+                p("object", Required, "DateTime"),
+                p("year", Required, "int"),
+                p("month", Required, "int"),
+                p("day", Required, "int"),
             ],
             variadic: false,
         },
@@ -1693,6 +1730,14 @@ static SIGS: &[(&str, Sig)] = &[
         },
     ),
     (
+        "date_get_last_errors",
+        Sig {
+            req: 0,
+            params: &[],
+            variadic: false,
+        },
+    ),
+    (
         "date_interval_create_from_date_string",
         Sig {
             req: 1,
@@ -1707,6 +1752,19 @@ static SIGS: &[(&str, Sig)] = &[
             params: &[
                 p("object", Required, "DateInterval"),
                 p("format", Required, "string"),
+            ],
+            variadic: false,
+        },
+    ),
+    (
+        "date_isodate_set",
+        Sig {
+            req: 3,
+            params: &[
+                p("object", Required, "DateTime"),
+                p("year", Required, "int"),
+                p("week", Required, "int"),
+                p("dayOfWeek", Int(1), "int"),
             ],
             variadic: false,
         },
@@ -1731,12 +1789,45 @@ static SIGS: &[(&str, Sig)] = &[
         },
     ),
     (
+        "date_parse",
+        Sig {
+            req: 1,
+            params: &[p("datetime", Required, "string")],
+            variadic: false,
+        },
+    ),
+    (
+        "date_parse_from_format",
+        Sig {
+            req: 2,
+            params: &[
+                p("format", Required, "string"),
+                p("datetime", Required, "string"),
+            ],
+            variadic: false,
+        },
+    ),
+    (
         "date_sub",
         Sig {
             req: 2,
             params: &[
                 p("object", Required, "DateTime"),
                 p("interval", Required, "DateInterval"),
+            ],
+            variadic: false,
+        },
+    ),
+    (
+        "date_time_set",
+        Sig {
+            req: 3,
+            params: &[
+                p("object", Required, "DateTime"),
+                p("hour", Required, "int"),
+                p("minute", Required, "int"),
+                p("second", Int(0), "int"),
+                p("microsecond", Int(0), "int"),
             ],
             variadic: false,
         },
@@ -1756,6 +1847,25 @@ static SIGS: &[(&str, Sig)] = &[
             params: &[
                 p("object", Required, "DateTime"),
                 p("timestamp", Required, "int"),
+            ],
+            variadic: false,
+        },
+    ),
+    (
+        "date_timezone_get",
+        Sig {
+            req: 1,
+            params: &[p("object", Required, "DateTimeInterface")],
+            variadic: false,
+        },
+    ),
+    (
+        "date_timezone_set",
+        Sig {
+            req: 2,
+            params: &[
+                p("object", Required, "DateTime"),
+                p("timezone", Required, "DateTimeZone"),
             ],
             variadic: false,
         },
@@ -5321,6 +5431,33 @@ static SIGS: &[(&str, Sig)] = &[
                 p("seconds", Required, "int"),
                 p("nanoseconds", Required, "int"),
             ],
+            variadic: false,
+        },
+    ),
+    (
+        "timezone_name_get",
+        Sig {
+            req: 1,
+            params: &[p("object", Required, "DateTimeZone")],
+            variadic: false,
+        },
+    ),
+    (
+        "timezone_offset_get",
+        Sig {
+            req: 2,
+            params: &[
+                p("object", Required, "DateTimeZone"),
+                p("datetime", Required, "DateTimeInterface"),
+            ],
+            variadic: false,
+        },
+    ),
+    (
+        "timezone_open",
+        Sig {
+            req: 1,
+            params: &[p("timezone", Required, "string")],
             variadic: false,
         },
     ),

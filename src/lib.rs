@@ -26,6 +26,7 @@ pub mod repl;
 pub mod rust_ffi;
 pub mod stdlib;
 pub mod tiers;
+pub mod timelib;
 
 pub use fusevm::Value;
 
@@ -135,136 +136,133 @@ class ParseError extends CompileError {}
 class UnhandledMatchError extends Error {}
 "#;
 
-/// The date/time classes, written in PHP over the `date`/`strtotime`/`mktime`
-/// standard-library functions (UTC, like those functions). Appended to the
-/// prelude source (no `<?php` tag — it is concatenated after the exceptions).
+/// The date/time classes. Each method is a thin PHP shell over a
+/// `__phplang_date_*` helper in `stdlib::datefn`, which ports the matching
+/// `php_date.c` routine over `crate::timelib`; an object's state is the
+/// properties the reference shows for it (see `stdlib::datefn`). Appended to
+/// the prelude source (no `<?php` tag — it is concatenated after the
+/// exceptions).
 const DATETIME_PRELUDE: &str = r#"
+class DateError extends Error {}
+class DateObjectError extends DateError {}
+class DateRangeError extends DateError {}
+class DateException extends Exception {}
+class DateInvalidTimeZoneException extends DateException {}
+class DateInvalidOperationException extends DateException {}
+class DateMalformedStringException extends DateException {}
+class DateMalformedIntervalStringException extends DateException {}
+class DateMalformedPeriodStringException extends DateException {}
+interface DateTimeInterface {
+    const ATOM = 'Y-m-d\TH:i:sP';
+    const COOKIE = 'l, d-M-Y H:i:s T';
+    const ISO8601 = 'Y-m-d\TH:i:sO';
+    const ISO8601_EXPANDED = 'X-m-d\TH:i:sP';
+    const RFC822 = 'D, d M y H:i:s O';
+    const RFC850 = 'l, d-M-y H:i:s T';
+    const RFC1036 = 'D, d M y H:i:s O';
+    const RFC1123 = 'D, d M Y H:i:s O';
+    const RFC7231 = 'D, d M Y H:i:s \G\M\T';
+    const RFC2822 = 'D, d M Y H:i:s O';
+    const RFC3339 = 'Y-m-d\TH:i:sP';
+    const RFC3339_EXTENDED = 'Y-m-d\TH:i:s.vP';
+    const RSS = 'D, d M Y H:i:s O';
+    const W3C = 'Y-m-d\TH:i:sP';
+    public function format(string $format): string;
+    public function getTimezone(): DateTimeZone|false;
+    public function getOffset(): int;
+    public function getTimestamp(): int;
+    public function getMicrosecond(): int;
+    public function diff(DateTimeInterface $targetObject, bool $absolute = false): DateInterval;
+}
+class DateTime implements DateTimeInterface {
+    public function __construct(string $datetime = "now", ?DateTimeZone $timezone = null) { __phplang_date_init($this, $datetime, $timezone); }
+    public function format(string $format): string { return __phplang_date_format($this, $format); }
+    public function modify(string $modifier): DateTime { return __phplang_date_modify($this, $modifier); }
+    public function add(DateInterval $interval): DateTime { return __phplang_date_add($this, $interval); }
+    public function sub(DateInterval $interval): DateTime { return __phplang_date_sub($this, $interval); }
+    public function diff(DateTimeInterface $targetObject, bool $absolute = false): DateInterval { return __phplang_date_diff($this, $targetObject, $absolute); }
+    public function getTimestamp(): int { return __phplang_date_timestamp($this); }
+    public function getMicrosecond(): int { return __phplang_date_microsecond($this); }
+    public function getOffset(): int { return __phplang_date_offset($this); }
+    public function getTimezone(): DateTimeZone|false { return __phplang_date_timezone_get($this); }
+    public function setTimezone(DateTimeZone $timezone): DateTime { return __phplang_date_timezone_set($this, $timezone); }
+    public function setDate(int $year, int $month, int $day): DateTime { return __phplang_date_set($this, "date", $year, $month, $day, 0); }
+    public function setISODate(int $year, int $week, int $dayOfWeek = 1): DateTime { return __phplang_date_set($this, "isodate", $year, $week, $dayOfWeek, 0); }
+    public function setTime(int $hour, int $minute, int $second = 0, int $microsecond = 0): DateTime { return __phplang_date_set($this, "time", $hour, $minute, $second, $microsecond); }
+    public function setTimestamp(int $timestamp): DateTime { return __phplang_date_set($this, "timestamp", $timestamp, 0, 0, 0); }
+    public function setMicrosecond(int $microsecond): static { return __phplang_date_set($this, "microsecond", $microsecond, 0, 0, 0); }
+    public static function createFromFormat(string $format, string $datetime, ?DateTimeZone $timezone = null): DateTime|false {
+        $o = __phplang_date_new(static::class);
+        return __phplang_date_init($o, $datetime, $timezone, $format) ? $o : false;
+    }
+    public static function createFromImmutable(DateTimeImmutable $object): static { return __phplang_date_copy(__phplang_date_new(static::class), $object); }
+    public static function createFromInterface(DateTimeInterface $object): DateTime { return __phplang_date_copy(__phplang_date_new(static::class), $object); }
+    public static function createFromTimestamp(int|float $timestamp): static { return __phplang_date_from_timestamp(__phplang_date_new(static::class), $timestamp); }
+    public static function getLastErrors(): array|false { return __phplang_date_last_errors(); }
+}
+class DateTimeImmutable implements DateTimeInterface {
+    public function __construct(string $datetime = "now", ?DateTimeZone $timezone = null) { __phplang_date_init($this, $datetime, $timezone); }
+    public function format(string $format): string { return __phplang_date_format($this, $format); }
+    public function modify(string $modifier): DateTimeImmutable { return __phplang_date_modify(clone $this, $modifier); }
+    public function add(DateInterval $interval): DateTimeImmutable { return __phplang_date_add(clone $this, $interval); }
+    public function sub(DateInterval $interval): DateTimeImmutable { return __phplang_date_sub(clone $this, $interval); }
+    public function diff(DateTimeInterface $targetObject, bool $absolute = false): DateInterval { return __phplang_date_diff($this, $targetObject, $absolute); }
+    public function getTimestamp(): int { return __phplang_date_timestamp($this); }
+    public function getMicrosecond(): int { return __phplang_date_microsecond($this); }
+    public function getOffset(): int { return __phplang_date_offset($this); }
+    public function getTimezone(): DateTimeZone|false { return __phplang_date_timezone_get($this); }
+    public function setTimezone(DateTimeZone $timezone): DateTimeImmutable { return __phplang_date_timezone_set(clone $this, $timezone); }
+    public function setDate(int $year, int $month, int $day): DateTimeImmutable { return __phplang_date_set(clone $this, "date", $year, $month, $day, 0); }
+    public function setISODate(int $year, int $week, int $dayOfWeek = 1): DateTimeImmutable { return __phplang_date_set(clone $this, "isodate", $year, $week, $dayOfWeek, 0); }
+    public function setTime(int $hour, int $minute, int $second = 0, int $microsecond = 0): DateTimeImmutable { return __phplang_date_set(clone $this, "time", $hour, $minute, $second, $microsecond); }
+    public function setTimestamp(int $timestamp): DateTimeImmutable { return __phplang_date_set(clone $this, "timestamp", $timestamp, 0, 0, 0); }
+    public function setMicrosecond(int $microsecond): static { return __phplang_date_set(clone $this, "microsecond", $microsecond, 0, 0, 0); }
+    public static function createFromFormat(string $format, string $datetime, ?DateTimeZone $timezone = null): DateTimeImmutable|false {
+        $o = __phplang_date_new(static::class);
+        return __phplang_date_init($o, $datetime, $timezone, $format) ? $o : false;
+    }
+    public static function createFromMutable(DateTime $object): static { return __phplang_date_copy(__phplang_date_new(static::class), $object); }
+    public static function createFromInterface(DateTimeInterface $object): DateTimeImmutable { return __phplang_date_copy(__phplang_date_new(static::class), $object); }
+    public static function createFromTimestamp(int|float $timestamp): static { return __phplang_date_from_timestamp(__phplang_date_new(static::class), $timestamp); }
+    public static function getLastErrors(): array|false { return __phplang_date_last_errors(); }
+}
+class DateTimeZone {
+    const AFRICA = 1;
+    const AMERICA = 2;
+    const ANTARCTICA = 4;
+    const ARCTIC = 8;
+    const ASIA = 16;
+    const ATLANTIC = 32;
+    const AUSTRALIA = 64;
+    const EUROPE = 128;
+    const INDIAN = 256;
+    const PACIFIC = 512;
+    const UTC = 1024;
+    const ALL = 2047;
+    const ALL_WITH_BC = 4095;
+    const PER_COUNTRY = 4096;
+    public function __construct(string $timezone) { __phplang_tz_init($this, $timezone); }
+    public function getName(): string { return __phplang_tz_name($this); }
+    public function getOffset(DateTimeInterface $datetime): int { return __phplang_tz_offset($this, $datetime); }
+}
+class DatePeriod implements IteratorAggregate {
+    const EXCLUDE_START_DATE = 1;
+    const INCLUDE_END_DATE = 2;
+    public function __construct($start, $interval = null, $end = null, $options = null) { __phplang_period_init($this, func_get_args()); }
+    public function getStartDate(): DateTimeInterface { return clone $this->start; }
+    public function getEndDate(): ?DateTimeInterface { return $this->end === null ? null : clone $this->end; }
+    public function getDateInterval(): DateInterval { return clone $this->interval; }
+    public function getRecurrences(): ?int {
+        $n = $this->recurrences - (int) $this->include_start_date - (int) $this->include_end_date;
+        return $n === 0 ? null : $n;
+    }
+    public function getIterator(): Iterator { return new ArrayIterator(__phplang_period_list($this)); }
+}
 class DateInterval {
-    public $y = 0;
-    public $m = 0;
-    public $d = 0;
-    public $h = 0;
-    public $i = 0;
-    public $s = 0;
-    public $f = 0;
-    public $invert = 0;
-    public $days = false;
-    public function __construct($spec = "") {
-        $len = strlen($spec);
-        $in_time = false;
-        $num = "";
-        for ($p = 0; $p < $len; $p++) {
-            $ch = $spec[$p];
-            if ($ch === "P") { continue; }
-            if ($ch === "T") { $in_time = true; continue; }
-            if (ctype_digit($ch)) { $num = $num . $ch; continue; }
-            $val = (int) $num;
-            $num = "";
-            if ($ch === "Y") { $this->y = $val; }
-            elseif ($ch === "W") { $this->d = $val * 7; }
-            elseif ($ch === "D") { $this->d = $val; }
-            elseif ($ch === "H") { $this->h = $val; }
-            elseif ($ch === "S") { $this->s = $val; }
-            elseif ($ch === "M" && $in_time) { $this->i = $val; }
-            elseif ($ch === "M") { $this->m = $val; }
-        }
-    }
-    public function _seconds() {
-        return $this->s + $this->i * 60 + $this->h * 3600 + $this->d * 86400
-            + $this->m * 2592000 + $this->y * 31536000;
-    }
-    public function format($fmt) {
-        $out = "";
-        $len = strlen($fmt);
-        for ($p = 0; $p < $len; $p++) {
-            $ch = $fmt[$p];
-            if ($ch === "%" && $p + 1 < $len) {
-                $p++;
-                $n = $fmt[$p];
-                if ($n === "y") { $out = $out . $this->y; }
-                elseif ($n === "m") { $out = $out . $this->m; }
-                elseif ($n === "d") { $out = $out . $this->d; }
-                elseif ($n === "h") { $out = $out . $this->h; }
-                elseif ($n === "i") { $out = $out . $this->i; }
-                elseif ($n === "s") { $out = $out . $this->s; }
-                elseif ($n === "a") { $out = $out . $this->days; }
-                elseif ($n === "R") { $out = $out . ($this->invert ? "-" : "+"); }
-                elseif ($n === "%") { $out = $out . "%"; }
-                else { $out = $out . $n; }
-            } else {
-                $out = $out . $ch;
-            }
-        }
-        return $out;
-    }
-}
-class DateTime {
-    public $ts = 0;
-    public function __construct($datetime = "now") {
-        if ($datetime === "now" || $datetime === "") {
-            $this->ts = time();
-        } else {
-            $this->ts = strtotime($datetime);
-        }
-    }
-    public function format($format) { return date($format, $this->ts); }
-    public function getTimestamp() { return $this->ts; }
-    public function setTimestamp($ts) { $this->ts = $ts; return $this; }
-    public function modify($modifier) { $this->ts = strtotime($modifier, $this->ts); return $this; }
-    public function setDate($y, $m, $d) {
-        $this->ts = mktime((int) date("H", $this->ts), (int) date("i", $this->ts),
-            (int) date("s", $this->ts), $m, $d, $y);
-        return $this;
-    }
-    public function setTime($h, $i, $s = 0) {
-        $this->ts = mktime($h, $i, $s, (int) date("n", $this->ts),
-            (int) date("j", $this->ts), (int) date("Y", $this->ts));
-        return $this;
-    }
-    public function add($interval) { $this->ts = $this->ts + $interval->_seconds(); return $this; }
-    public function sub($interval) { $this->ts = $this->ts - $interval->_seconds(); return $this; }
-    public function diff($other) {
-        $secs = $other->getTimestamp() - $this->ts;
-        $inv = 0;
-        if ($secs < 0) { $inv = 1; $secs = 0 - $secs; }
-        $di = new DateInterval("");
-        $di->days = intdiv($secs, 86400);
-        $di->d = intdiv($secs, 86400);
-        $rem = $secs % 86400;
-        $di->h = intdiv($rem, 3600);
-        $rem = $rem % 3600;
-        $di->i = intdiv($rem, 60);
-        $di->s = $rem % 60;
-        $di->invert = $inv;
-        return $di;
-    }
-}
-class DateTimeImmutable {
-    public $ts = 0;
-    public function __construct($datetime = "now") {
-        if ($datetime === "now" || $datetime === "") {
-            $this->ts = time();
-        } else {
-            $this->ts = strtotime($datetime);
-        }
-    }
-    public function format($format) { return date($format, $this->ts); }
-    public function getTimestamp() { return $this->ts; }
-    public function modify($modifier) {
-        $n = new DateTimeImmutable();
-        $n->ts = strtotime($modifier, $this->ts);
-        return $n;
-    }
-    public function add($interval) {
-        $n = new DateTimeImmutable();
-        $n->ts = $this->ts + $interval->_seconds();
-        return $n;
-    }
-    public function sub($interval) {
-        $n = new DateTimeImmutable();
-        $n->ts = $this->ts - $interval->_seconds();
-        return $n;
-    }
+    public function __construct(string $duration) { __phplang_interval_init($this, $duration); }
+    public function format(string $format): string { return __phplang_interval_format($this, $format); }
+    public static function createFromDateString(string $datetime): DateInterval { return __phplang_interval_from_string($datetime); }
+    public function __get($name) { return __phplang_interval_get($this, $name); }
 }
 "#;
 

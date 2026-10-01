@@ -3894,23 +3894,27 @@ impl Compiler {
                 self.compile_expr(b, &Expr::New(name, args.clone()))?;
                 self.cur_line = site;
             }
+            // The instance is allocated before the arguments are evaluated (see
+            // `ops::NEW_ALLOC`), and the constructor runs over it after.
             Expr::New(class, args) if needs_arg_pairs(args) => {
                 self.emit_class_name(b, class)?;
                 self.emit_callee_check(b, ops::CALL_CLASS_CHECK, args.len());
+                b.emit(Op::CallBuiltin(ops::NEW_ALLOC, 1), self.cur_line);
                 self.compile_arg_pairs(b, args)?;
                 b.emit(
-                    Op::CallBuiltin(ops::NEW_NAMED, (args.len() * 2 + 1) as u8),
+                    Op::CallBuiltin(ops::NEW_INIT_NAMED, (args.len() * 2 + 1) as u8),
                     self.cur_line,
                 );
             }
             Expr::New(class, args) => {
                 self.emit_class_name(b, class)?;
                 self.emit_callee_check(b, ops::CALL_CLASS_CHECK, args.len());
+                b.emit(Op::CallBuiltin(ops::NEW_ALLOC, 1), self.cur_line);
                 for a in args {
                     self.compile_expr(b, a)?;
                 }
                 b.emit(
-                    Op::CallBuiltin(ops::NEW, (args.len() + 1) as u8),
+                    Op::CallBuiltin(ops::NEW_INIT, (args.len() + 1) as u8),
                     self.cur_line,
                 );
             }

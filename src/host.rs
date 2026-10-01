@@ -455,6 +455,16 @@ pub mod ops {
     /// argument, as for `BYREF_ARG_DIAG`. A method that does not resolve —
     /// one `__call` answers — takes nothing by reference.
     pub const BYREF_ARG_DIAG_M: u16 = 144;
+    /// `[class] -> object`. The first half of `new`: allocate the instance
+    /// (property defaults included) BEFORE the constructor arguments are
+    /// evaluated, as `ZEND_NEW` does — it decides the `#N` the object gets.
+    pub const NEW_ALLOC: u16 = 145;
+    /// `[object, args...]` argc=1+n `-> object`. The second half: run the
+    /// constructor over the instance [`NEW_ALLOC`] made.
+    pub const NEW_INIT: u16 = 146;
+    /// `[object, (n,v)...]` argc=1+2k `-> object`. [`NEW_INIT`] with named
+    /// arguments.
+    pub const NEW_INIT_NAMED: u16 = 147;
 }
 
 /// The capture name a `static` closure carries from its creation site.
@@ -6455,11 +6465,33 @@ fn predefined_constants() -> FxHashMap<String, Value> {
     si("ENT_XHTML", 32);
     si("ENT_SUBSTITUTE", 8);
     si("ENT_IGNORE", 4);
+    si("SUNFUNCS_RET_TIMESTAMP", 0);
+    si("SUNFUNCS_RET_STRING", 1);
+    si("SUNFUNCS_RET_DOUBLE", 2);
     // string constants
     let mut ss = |k: &str, v: &str| {
         m.insert(k.to_string(), Value::str(v.to_string()));
     };
     ss("PHP_EOL", "\n");
+    // ext/date's format constants, the same strings as `DateTimeInterface::*`.
+    for (k, v) in [
+        ("DATE_ATOM", r"Y-m-d\TH:i:sP"),
+        ("DATE_COOKIE", "l, d-M-Y H:i:s T"),
+        ("DATE_ISO8601", r"Y-m-d\TH:i:sO"),
+        ("DATE_ISO8601_EXPANDED", r"X-m-d\TH:i:sP"),
+        ("DATE_RFC822", "D, d M y H:i:s O"),
+        ("DATE_RFC850", "l, d-M-y H:i:s T"),
+        ("DATE_RFC1036", "D, d M y H:i:s O"),
+        ("DATE_RFC1123", "D, d M Y H:i:s O"),
+        ("DATE_RFC7231", r"D, d M Y H:i:s \G\M\T"),
+        ("DATE_RFC2822", "D, d M Y H:i:s O"),
+        ("DATE_RFC3339", r"Y-m-d\TH:i:sP"),
+        ("DATE_RFC3339_EXTENDED", r"Y-m-d\TH:i:s.vP"),
+        ("DATE_RSS", "D, d M Y H:i:s O"),
+        ("DATE_W3C", r"Y-m-d\TH:i:sP"),
+    ] {
+        ss(k, v);
+    }
     ss("PHP_VERSION", "8.3.0");
     ss(
         "PHP_OS",
@@ -8885,6 +8917,15 @@ pub fn throw_from_internal_args(
 /// defaults, then run its constructor. Property-default and constructor code run
 /// on fresh VMs, so no host borrow is held across them.
 pub fn new_object(class: &str, args: Vec<Value>) -> Result<Value, String> {
+    let obj = alloc_object(class)?;
+    construct_object(&obj, class, args, Vec::new())?;
+    Ok(obj)
+}
+
+/// The first half of `new`: the instance, with its property defaults, before
+/// a constructor argument is evaluated — `ZEND_NEW` allocates it there, which
+/// is why `new A(new B)` makes `A` object #1 and `B` #2.
+pub fn alloc_object(class: &str) -> Result<Value, String> {
     let cl = class.to_ascii_lowercase();
     // Both refusals are catchable `Error`s in the reference; a bare `Err` here
     // stopped the program with a scaffold message no `try` block could see.
@@ -8917,14 +8958,29 @@ pub fn new_object(class: &str, args: Vec<Value>) -> Result<Value, String> {
         Value::Obj((h.objs.len() - 1) as u32)
     });
     seed_throwable(class, &obj);
-    // Run the constructor if one exists anywhere in the chain.
+    Ok(obj)
+}
+
+/// The second half of `new`: run the constructor, if one exists anywhere in
+/// the chain, over the allocated instance.
+pub fn construct_object(
+    obj: &Value,
+    class: &str,
+    args: Vec<Value>,
+    named: Vec<(String, Value)>,
+) -> Result<(), String> {
+    let cl = class.to_ascii_lowercase();
     if with_host(|h| h.method_declared(&cl, "__construct")) {
         // `static::` inside the constructor is the instantiated class in its
         // declared spelling, not the lowercased lookup key.
         with_host(|h| h.lsb_set_for_next_call(class));
-        call_method(&cl, "__construct", Some(obj.clone()), args)?;
+        if named.is_empty() {
+            call_method(&cl, "__construct", Some(obj.clone()), args)?;
+        } else {
+            call_method_named(&cl, "__construct", Some(obj.clone()), args, named)?;
+        }
     }
-    Ok(obj)
+    Ok(())
 }
 
 /// `new Class(...)` with PHP 8.0 named constructor arguments.
@@ -8933,38 +8989,8 @@ pub fn new_object_named(
     args: Vec<Value>,
     named: Vec<(String, Value)>,
 ) -> Result<Value, String> {
-    let cl = class.to_ascii_lowercase();
-    // Both refusals are catchable `Error`s in the reference; a bare `Err` here
-    // stopped the program with a scaffold message no `try` block could see.
-    if let Some(e) = with_host(|h| h.class_instantiation_error(class)) {
-        return Err(crate::builtins::throws_bare("Error", e));
-    }
-    let Some(defaults) = with_host(|h| h.class_prop_default_chunks(&cl)) else {
-        return Err(crate::builtins::throws_bare(
-            "Error",
-            format!("Class \"{class}\" not found"),
-        ));
-    };
-    let mut props: IndexMap<String, Value> = IndexMap::new();
-    for (name, (declaring, chunk, uninit)) in defaults {
-        if uninit {
-            continue;
-        }
-        let v = run_in_class_scope(&declaring, chunk)?;
-        props.insert(name, v);
-    }
-    let obj = with_host(|h| {
-        h.objs.push(PhpObj::Object {
-            class: class.to_string(),
-            props,
-        });
-        Value::Obj((h.objs.len() - 1) as u32)
-    });
-    seed_throwable(class, &obj);
-    if with_host(|h| h.method_declared(&cl, "__construct")) {
-        with_host(|h| h.lsb_set_for_next_call(class));
-        call_method_named(&cl, "__construct", Some(obj.clone()), args, named)?;
-    }
+    let obj = alloc_object(class)?;
+    construct_object(&obj, class, args, named)?;
     Ok(obj)
 }
 
@@ -11279,4 +11305,39 @@ impl PhpHost {
             .filter(|(c, mask)| !matches!(c, Value::Undef) && mask & level != 0)
             .map(|(c, _)| c.clone())
     }
+}
+
+/// Raise `class(message)` from a PHP-written prelude method as the reference
+/// raises it from an internal one: the method's own frame is the top of the
+/// trace (`#0 file(3): DateTime->__construct('x')`), and the exception's file
+/// and line are its CALL SITE's — an internal method has no line of its own,
+/// while the prelude method's frame is executing prelude source.
+pub fn throw_as_internal_method(class: &str, message: &str) -> Result<Value, String> {
+    let exc = new_object(class, vec![Value::str(message.to_string())])?;
+    with_host(|h| {
+        let n = h.scopes.len();
+        if n >= 2 {
+            let line = h.scopes[n - 2].line;
+            let file = h.scope_file(n - 2).to_string();
+            h.prop_set(&exc, "line", Value::int(line as i64));
+            h.prop_set(&exc, "file", Value::str(file));
+        }
+    });
+    set_pending_throw(exc);
+    Ok(Value::Undef)
+}
+
+/// Raise a warning from a PHP-written prelude method at its CALL SITE — see
+/// [`throw_as_internal_method`].
+pub fn warn_as_internal_method(message: &str) {
+    let caller = with_host(|h| {
+        let n = h.scopes.len();
+        (n >= 2).then(|| h.scopes[n - 2].line)
+    });
+    let saved = warn_line();
+    if let Some(line) = caller {
+        set_warn_line(line);
+    }
+    with_host(|h| h.warn(message));
+    set_warn_line(saved);
 }
