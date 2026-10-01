@@ -1616,3 +1616,31 @@ Stack trace:
 #0 Command line code(5): trigger_error('fatal', 256)
 #1 {main}
 
+#REC 77 exit=255 out=285 err=289
+
+Fatal error: Uncaught ArgumentCountError: sprintf() does not accept unknown named parameters in Command line code:2
+Stack trace:
+#0 Command line code(2): sprintf('1', 1, 'a', Array, nosuch: 2)
+#1 Command line code(3): show_unplaced()
+#2 {main}
+  thrown in Command line code on line 2
+PHP Fatal error:  Uncaught ArgumentCountError: sprintf() does not accept unknown named parameters in Command line code:2
+Stack trace:
+#0 Command line code(2): sprintf('1', 1, 'a', Array, nosuch: 2)
+#1 Command line code(3): show_unplaced()
+#2 {main}
+  thrown in Command line code on line 2
+
+#REC 78 exit=255 out=227 err=231
+
+Fatal error: Uncaught ArgumentCountError: printf() does not accept unknown named parameters in Command line code:1
+Stack trace:
+#0 Command line code(1): printf('1.5', 2, x: 1)
+#1 {main}
+  thrown in Command line code on line 1
+PHP Fatal error:  Uncaught ArgumentCountError: printf() does not accept unknown named parameters in Command line code:1
+Stack trace:
+#0 Command line code(1): printf('1.5', 2, x: 1)
+#1 {main}
+  thrown in Command line code on line 1
+

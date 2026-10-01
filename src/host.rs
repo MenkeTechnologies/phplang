@@ -7633,13 +7633,22 @@ pub fn call_function_named(
             Ok(bound) => {
                 // A name a variadic could not place is the LAST refusal, after
                 // the types: `sprintf([], x: 1)` reports the array in #1.
+                let mut shown = bound.shown;
                 let refusal = bound.refusal.or_else(|| {
-                    bound
-                        .unplaced_name
-                        .then(|| crate::argsig::refuse_unplaced(name, &bound.args))
+                    bound.unplaced_name.then(|| {
+                        // The parameters parsed ahead of the variadic have been
+                        // converted by then, and the trace shows them so:
+                        // `sprintf(1, x: 1)` prints `sprintf('1', x: 1)`.
+                        let head = crate::argsig::zpp_head_len(name).min(bound.args.len());
+                        let conv = crate::argtypes::trace_args(name, &bound.args[..head]);
+                        for (slot, v) in shown.iter_mut().zip(conv.iter()) {
+                            slot.1 = v.clone();
+                        }
+                        crate::argsig::refuse_unplaced(name, &bound.args)
+                    })
                 });
                 match refusal {
-                    Some(e) => throw_from_internal_named(name, &bound.shown, e),
+                    Some(e) => throw_from_internal_named(name, &shown, e),
                     None => call_function(name, bound.args),
                 }
             }

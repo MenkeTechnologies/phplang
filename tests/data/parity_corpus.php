@@ -963,3 +963,9 @@ trigger_error("handled", E_USER_ERROR);
 echo "after\n";
 trigger_error("fatal", E_USER_ERROR);
 echo "never\n";
+#==#
+// ── the unplaced-name refusal's trace shows the head parameters converted ──
+function show_unplaced() { return sprintf(1, 1, "a", [3], nosuch: 2); }
+show_unplaced();
+#==#
+printf(1.5, 2, x: 1);

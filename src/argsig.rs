@@ -398,6 +398,11 @@ fn zpp_fixed(name: &str, sig: &Sig) -> usize {
     }
 }
 
+/// [`zpp_fixed`] for `name`, or every argument when it has no signature here.
+pub fn zpp_head_len(name: &str) -> usize {
+    sig_of(name).map_or(usize::MAX, |sig| zpp_fixed(name, sig))
+}
+
 /// The refusal for a variadic call carrying a name it could not place: the
 /// count, then the types of the parameters parsed ahead of the variadic
 /// ([`zpp_fixed`]), and only then `does not accept unknown named parameters`.
