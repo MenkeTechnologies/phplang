@@ -194,3 +194,27 @@ fn an_uncaught_user_argument_type_error_says_where_the_function_is_defined() {
     );
     assert_eq!(status, 255);
 }
+
+// ── order on a shared stream ─────────────────────────────────────────────────
+
+#[test]
+fn the_log_copy_is_written_before_the_display_copy() {
+    // php -r 'echo "a\n"; echo $x; throw new Exception("x");' 2>&1
+    // `php_error_cb` logs first and displays second, so with both streams on
+    // one pipe the `PHP `-prefixed line precedes its stdout twin — for a
+    // warning and for the uncaught-exception fatal alike.
+    let out = Command::new("sh")
+        .arg("-c")
+        .arg(r#""$0" -r 'echo "a\n"; echo $x; throw new Exception("x");' 2>&1"#)
+        .arg(env!("CARGO_BIN_EXE_php"))
+        .stdin(Stdio::null())
+        .output()
+        .expect("spawn sh");
+    let warn = "Undefined variable $x in Command line code on line 1";
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        format!(
+            "a\nPHP Warning:  {warn}\n\nWarning: {warn}\nPHP Fatal error:  {FATAL_BODY}\n\nFatal error: {FATAL_BODY}\n"
+        )
+    );
+}

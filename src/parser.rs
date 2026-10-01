@@ -1226,11 +1226,15 @@ impl Parser {
     /// forms cannot drift apart.
     fn foreach_target(&mut self) -> Result<ForeachVal, String> {
         if self.eat_punct("[") {
-            return Ok(ForeachVal::Pattern(self.array_literal("]")?));
+            return Ok(ForeachVal::Pattern(
+                self.array_literal("]", ArraySyntax::Short)?,
+            ));
         }
         if self.at_kw("list") && self.nth_is_punct(1, "(") {
             self.pos += 2; // `list` `(`
-            return Ok(ForeachVal::Pattern(self.array_literal(")")?));
+            return Ok(ForeachVal::Pattern(
+                self.array_literal(")", ArraySyntax::List)?,
+            ));
         }
         Ok(ForeachVal::Var(self.expect_var()?))
     }
@@ -2643,10 +2647,10 @@ impl Parser {
                         Member::Dyn(d) => d.as_ref().clone(),
                     };
                     if let Some(fcc) = self.try_fcc(
-                        Expr::Array(vec![
-                            ArrayElem::new(None, e.clone()),
-                            ArrayElem::new(None, name),
-                        ]),
+                        Expr::Array(
+                            vec![ArrayElem::new(None, e.clone()), ArrayElem::new(None, name)],
+                            ArraySyntax::Short,
+                        ),
                         true,
                     )? {
                         e = fcc;
@@ -2695,10 +2699,13 @@ impl Parser {
                         // class-name string and an object.
                         let callable = match &class {
                             ClassRef::Name(c) => Expr::Str(format!("{c}::{member}")),
-                            ClassRef::Expr(ce) => Expr::Array(vec![
-                                ArrayElem::new(None, (**ce).clone()),
-                                ArrayElem::new(None, Expr::Str(member.clone())),
-                            ]),
+                            ClassRef::Expr(ce) => Expr::Array(
+                                vec![
+                                    ArrayElem::new(None, (**ce).clone()),
+                                    ArrayElem::new(None, Expr::Str(member.clone())),
+                                ],
+                                ArraySyntax::Short,
+                            ),
                         };
                         if let Some(fcc) = self.try_fcc(callable, false)? {
                             e = fcc;
@@ -2770,13 +2777,13 @@ impl Parser {
                 self.expect_punct(")")?;
                 Ok(e)
             }
-            Some(Tok::Punct("[")) => self.array_literal("]"),
+            Some(Tok::Punct("[")) => self.array_literal("]", ArraySyntax::Short),
             Some(Tok::Ident(kw)) if kw.eq_ignore_ascii_case("true") => Ok(Expr::Bool(true)),
             Some(Tok::Ident(kw)) if kw.eq_ignore_ascii_case("false") => Ok(Expr::Bool(false)),
             Some(Tok::Ident(kw)) if kw.eq_ignore_ascii_case("null") => Ok(Expr::Null),
             Some(Tok::Ident(kw)) if kw.eq_ignore_ascii_case("array") => {
                 self.expect_punct("(")?;
-                self.array_literal(")")
+                self.array_literal(")", ArraySyntax::Long)
             }
             // `list($a, $b)` / `list('k' => $v)` — a destructuring language
             // construct, not a function call. It is sugar for the `[...]` short
@@ -2785,7 +2792,7 @@ impl Parser {
             // when followed by `(`, so a bareword `list` still parses as a name.
             Some(Tok::Ident(kw)) if kw.eq_ignore_ascii_case("list") && self.at_punct("(") => {
                 self.expect_punct("(")?;
-                self.array_literal(")")
+                self.array_literal(")", ArraySyntax::List)
             }
             // `exit` / `die` — the one construct whose parentheses AND argument
             // are both optional, so `exit;` is a complete expression. Without
@@ -3061,16 +3068,16 @@ impl Parser {
     }
 
     /// Parse array elements up to `close` (already past the opener).
-    fn array_literal(&mut self, close: &str) -> Result<Expr, String> {
+    fn array_literal(&mut self, close: &str, syntax: ArraySyntax) -> Result<Expr, String> {
         let mut elems = Vec::new();
         while !self.at_punct(close) && !self.at_end() {
             // An empty slot — `[, $b]` / `list(, $b)` — is a skipped element in a
             // destructuring target. It still consumes a positional index, so it is
-            // recorded as a `Null`-valued element (a hole the compiler skips when
-            // this array is used as an assignment LHS).
+            // recorded as an `Expr::Hole` element (one the compiler skips when this
+            // array is used as an assignment LHS, and refuses anywhere else).
             if self.at_punct(",") {
                 self.next();
-                elems.push(ArrayElem::new(None, Expr::Null));
+                elems.push(ArrayElem::new(None, Expr::Hole));
                 continue;
             }
             // A leading `&` marks a by-reference element: `[&$x, $y] = $a` binds
@@ -3110,7 +3117,7 @@ impl Parser {
             }
         }
         self.expect_punct(close)?;
-        Ok(Expr::Array(elems))
+        Ok(Expr::Array(elems, syntax))
     }
 
     /// Parse a `match (subj) { A, B => R, default => D }` expression. The `match`

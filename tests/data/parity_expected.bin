@@ -1767,3 +1767,46 @@ PHP Parse error:  syntax error, unexpected end of file, expecting variable or "$
 Parse error: syntax error, unexpected end of file in Command line code on line 1
 PHP Parse error:  syntax error, unexpected end of file in Command line code on line 1
 
+#REC 89 exit=255 out=93 err=97
+
+Fatal error: Cannot mix [] and list() in Command line code on line 3
+Stack trace:
+#0 {main}
+PHP Fatal error:  Cannot mix [] and list() in Command line code on line 3
+Stack trace:
+#0 {main}
+
+#REC 90 exit=255 out=90 err=94
+
+Fatal error: Cannot use empty list in Command line code on line 3
+Stack trace:
+#0 {main}
+PHP Fatal error:  Cannot use empty list in Command line code on line 3
+Stack trace:
+#0 {main}
+
+#REC 91 exit=255 out=115 err=119
+
+Fatal error: Can't use method return value in write context in Command line code on line 3
+Stack trace:
+#0 {main}
+PHP Fatal error:  Can't use method return value in write context in Command line code on line 3
+Stack trace:
+#0 {main}
+
+#REC 92 exit=255 out=110 err=114
+
+Fatal error: Cannot use empty array elements in arrays in Command line code on line 3
+Stack trace:
+#0 {main}
+PHP Fatal error:  Cannot use empty array elements in arrays in Command line code on line 3
+Stack trace:
+#0 {main}
+
+#REC 93 exit=0 out=35 err=0
+int(2)
+int(4)
+int(7)
+int(8)
+int(9)
+

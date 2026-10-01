@@ -314,3 +314,110 @@ fn by_reference_target_inside_foreach_writes_into_the_row() {
         "[[1,[6]]]"
     );
 }
+
+// ── compile-time refusals (`zend_compile_list_assign`) ───────────────────────
+
+/// `php -d log_errors=0 -r <code>`: the displayed output and the exit status.
+/// These are `E_COMPILE_ERROR`s, raised before any statement runs, so the
+/// binary is driven rather than `eval_capture` (which drops a failed run).
+fn compile_refusal(code: &str) -> (String, i32) {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_php"))
+        .args(["-d", "log_errors=0", "-r", code])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("spawn php");
+    (
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        out.status.code().unwrap_or(-1),
+    )
+}
+
+fn fatal(msg: &str) -> (String, i32) {
+    (
+        format!("\nFatal error: {msg} in Command line code on line 1\nStack trace:\n#0 {{main}}\n"),
+        255,
+    )
+}
+
+#[test]
+fn a_nested_pattern_must_share_its_parents_spelling() {
+    // php -r 'echo "pre"; [$a, list($b)] = [1, [2]];' — nothing runs, "pre"
+    // included, because the whole script is compiled first.
+    let mix = fatal("Cannot mix [] and list()");
+    assert_eq!(
+        compile_refusal(r#"echo "pre"; [$a, list($b)] = [1, [2]];"#),
+        mix
+    );
+    assert_eq!(compile_refusal("list($a, [$b]) = [1, [2]];"), mix);
+    assert_eq!(
+        compile_refusal("[$a, [$b, list($c)]] = [1, [2, [3]]];"),
+        mix
+    );
+    assert_eq!(compile_refusal("foreach ([] as [$a, list($b)]) {}"), mix);
+    assert_eq!(
+        compile_refusal("[array($a)] = [[1]];"),
+        fatal("Cannot assign to array(), use [] instead")
+    );
+}
+
+#[test]
+fn a_pattern_that_binds_nothing_is_an_empty_list() {
+    let empty = fatal("Cannot use empty list");
+    for code in [
+        "list() = [1];",
+        "[] = [1];",
+        "[$a, [,]] = [1, [2]];",
+        "[[], $x] = [1];",
+        "foreach ([] as list()) {}",
+    ] {
+        assert_eq!(compile_refusal(code), empty, "{code}");
+    }
+}
+
+#[test]
+fn keyed_unkeyed_spread_and_gap_refusals() {
+    assert_eq!(
+        compile_refusal(r#"[$a, "k" => $b] = [1];"#),
+        fatal("Cannot mix keyed and unkeyed array entries in assignments")
+    );
+    assert_eq!(
+        compile_refusal(r#"["k" => $a, , ] = [1];"#),
+        fatal("Cannot use empty array entries in keyed array assignment")
+    );
+    assert_eq!(
+        compile_refusal("[$a, ...$b] = [1];"),
+        fatal("Spread operator is not supported in assignments")
+    );
+}
+
+#[test]
+fn a_target_that_is_not_a_place_is_refused() {
+    let ro = fatal("Assignments can only happen to writable values");
+    for code in [
+        "[null] = [1];",
+        "[1] = [1];",
+        r#"["k" => null] = [1];"#,
+        "[$a?->b] = [1];",
+        "[A::C] = [1];",
+        r#"[$a . "x"] = [1];"#,
+        "[$o?->m()] = [1];",
+    ] {
+        assert_eq!(compile_refusal(code), ro, "{code}");
+    }
+    assert_eq!(
+        compile_refusal("[f()] = [1];"),
+        fatal("Can't use function return value in write context")
+    );
+    assert_eq!(
+        compile_refusal("[$o->m()] = [1];"),
+        fatal("Can't use method return value in write context")
+    );
+}
+
+#[test]
+fn a_gap_outside_a_pattern_is_refused() {
+    // php -r '$a = [1, , 2];'
+    let gap = fatal("Cannot use empty array elements in arrays");
+    assert_eq!(compile_refusal("$a = [1, , 2];"), gap);
+    assert_eq!(compile_refusal(r#"echo "x"; $a = [,];"#), gap);
+}

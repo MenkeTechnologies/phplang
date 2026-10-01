@@ -103,6 +103,20 @@ impl ClassRef {
     }
 }
 
+/// How an [`Expr::Array`] was spelled — `ZEND_ARRAY_SYNTAX_SHORT` / `_LIST` /
+/// `_LONG`. All three build the same value; the spelling matters only to a
+/// destructuring target, where PHP refuses `array()` and a nested pattern
+/// whose spelling differs from its parent's (`Cannot mix [] and list()`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArraySyntax {
+    /// `[...]`
+    Short,
+    /// `list(...)`
+    List,
+    /// `array(...)`
+    Long,
+}
+
 /// One element of an [`Expr::Array`] — a literal entry, or one target of a
 /// destructuring pattern, since both spellings parse to the same node.
 ///
@@ -180,8 +194,15 @@ pub enum Expr {
     /// write, so the name is not known until the expression runs.
     VarVar(Box<Expr>),
     /// An array literal: `[k => v, v, ...]` / `array(...)`. Also every
-    /// destructuring pattern — see [`ArrayElem`].
-    Array(Vec<ArrayElem>),
+    /// destructuring pattern — see [`ArrayElem`]. The [`ArraySyntax`] is the
+    /// spelling, which only a destructuring target looks at.
+    Array(Vec<ArrayElem>, ArraySyntax),
+    /// An empty slot in an array literal — the gap in `[, $b]` / `list(, $b)`.
+    /// A destructuring target skips it (it still consumes an index); anywhere
+    /// else it is the compile error `Cannot use empty array elements in arrays`.
+    /// Kept apart from [`Expr::Null`] because `[null] = $a` is a different
+    /// error (`Assignments can only happen to writable values`).
+    Hole,
     /// `recv[index]`.
     Index(Box<Expr>, Box<Expr>),
     /// One element read of a destructuring assignment — `[$a, $b] = $src` and

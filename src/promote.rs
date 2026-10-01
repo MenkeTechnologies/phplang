@@ -114,7 +114,7 @@ fn numeric_literal(e: &Expr) -> bool {
 /// Whether a destructuring pattern binds any of its targets by reference.
 fn pattern_binds_by_ref(e: &Expr) -> bool {
     match e {
-        Expr::Array(elems) => elems
+        Expr::Array(elems, _) => elems
             .iter()
             .any(|el| el.by_ref || pattern_binds_by_ref(&el.value)),
         Expr::ListElem(_, v) => pattern_binds_by_ref(v),
@@ -164,7 +164,7 @@ impl Scan<'_> {
             Expr::Index(r, _) | Expr::Append(r) | Expr::PropGet(r, _) => self.ban_path_root(r),
             // A destructuring pattern binds every variable inside it, and `[&$a]`
             // binds one of them by reference.
-            Expr::Array(_) | Expr::ListElem(..) => self.ban_all_vars(e),
+            Expr::Array(..) | Expr::ListElem(..) => self.ban_all_vars(e),
             _ => {}
         }
     }
@@ -344,7 +344,7 @@ impl Scan<'_> {
                     self.ban(n);
                 }
             }
-            Expr::Null | Expr::Bool(_) | Expr::Int(_) | Expr::Float(_) => {}
+            Expr::Null | Expr::Hole | Expr::Bool(_) | Expr::Int(_) | Expr::Float(_) => {}
             Expr::Str(_) | Expr::ConstFetch(_) | Expr::Magic(_) => {}
             // `$cls::K` / `$cls::$p` / `$cls::m()` — the LEFT of a `::` can be an
             // expression, and it reads a variable. Skipping it (which every one
@@ -365,7 +365,7 @@ impl Scan<'_> {
                     }
                 }
             }
-            Expr::Array(elems) => {
+            Expr::Array(elems, _) => {
                 for el in elems {
                     if let Some(k) = &el.key {
                         self.expr(k);
@@ -738,7 +738,7 @@ impl Flow {
                     }
                 }
             }
-            Expr::Array(elems) => {
+            Expr::Array(elems, _) => {
                 for el in elems {
                     if let Some(k) = &el.key {
                         self.expr(k);
@@ -821,6 +821,7 @@ impl Flow {
             Expr::VarVar(x) => self.expr(x),
             Expr::Closure { .. } | Expr::ArrowFn { .. } => {}
             Expr::Null
+            | Expr::Hole
             | Expr::Bool(_)
             | Expr::Int(_)
             | Expr::Float(_)
@@ -996,7 +997,7 @@ impl GlobalScan {
                     }
                 }
             }
-            Expr::Array(elems) => {
+            Expr::Array(elems, _) => {
                 for el in elems {
                     if let Some(k) = &el.key {
                         self.expr(k);
@@ -1091,6 +1092,7 @@ impl GlobalScan {
                 }
             }
             Expr::Null
+            | Expr::Hole
             | Expr::Bool(_)
             | Expr::Int(_)
             | Expr::Float(_)

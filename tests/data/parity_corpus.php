@@ -1027,3 +1027,25 @@ and the next line is cut off
 echo "plain text, no closing quote
 #==#
 echo "with $interpolation and no closing quote
+#==#
+// ── a nested destructuring pattern spelled differently from its parent is a compile error ──
+echo "never printed\n";
+foreach ([[1, [2]]] as [$a, list($b)]) {}
+#==#
+// ── a destructuring pattern that binds nothing is an empty list ──
+echo "never printed\n";
+[$a, [, ]] = [1, [2]];
+#==#
+// ── a target that is not a place to store into ──
+echo "never printed\n";
+[$a, $o->m()] = [1, 2];
+#==#
+// ── a gap in an array literal that is not a destructuring target ──
+echo "never printed\n";
+$a = [1, , 2];
+#==#
+// ── gaps, keys and nesting in a valid pattern still bind ──
+[, $b, [, $c]] = [1, 2, [3, 4]];
+list(, list(, $d)) = [5, [6, 7]];
+['x' => $x, 'y' => ['z' => $z]] = ['x' => 8, 'y' => ['z' => 9]];
+var_dump($b, $c, $d, $x, $z);

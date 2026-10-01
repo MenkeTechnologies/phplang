@@ -2392,6 +2392,8 @@ impl PhpHost {
     /// sees on stdout, `log_errors` puts a `PHP `-prefixed copy on stderr. Both
     /// default on, so the ordinary run emits both; `-d log_errors=0` leaves only
     /// the stdout copy and `-d display_errors=0` only the stderr one.
+    /// The stderr copy is written FIRST: `php_error_cb` logs before it displays,
+    /// which is what an interleaved `2>&1` capture shows.
     pub fn diagnose(&mut self, severity: &str, level: i64, line: u32, msg: impl std::fmt::Display) {
         // `set_error_handler`: a level the live handler takes is queued for it
         // instead of displayed — the handler is PHP code, which cannot run
@@ -2438,11 +2440,11 @@ impl PhpHost {
             return;
         }
         let body = format!("{msg} in {} on line {line}", self.current_file());
-        if self.ini_flag("display_errors") {
-            self.write_out(&format!("\n{severity}: {body}\n"));
-        }
         if self.ini_flag("log_errors") {
             eprintln!("PHP {severity}:  {body}");
+        }
+        if self.ini_flag("display_errors") {
+            self.write_out(&format!("\n{severity}: {body}\n"));
         }
     }
 
@@ -2866,11 +2868,11 @@ impl PhpHost {
             self.fatal_reported = true;
             return;
         }
-        if self.ini_flag("display_errors") {
-            self.write_out(&format!("\n{severity}: {body}\n"));
-        }
         if self.ini_flag("log_errors") {
             eprintln!("PHP {severity}:  {body}");
+        }
+        if self.ini_flag("display_errors") {
+            self.write_out(&format!("\n{severity}: {body}\n"));
         }
         self.fatal_reported = true;
     }

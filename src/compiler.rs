@@ -2094,7 +2094,8 @@ impl Compiler {
         let Some(p) = pattern else {
             return Ok(());
         };
-        if let Expr::Array(elems) = p {
+        if let Expr::Array(elems, syntax) = p {
+            self.check_list_pattern(elems, *syntax)?;
             self.compile_list_targets(b, elems, val_var, ref_path)?;
             return Ok(());
         }
@@ -3119,6 +3120,13 @@ impl Compiler {
             Expr::Null => {
                 b.emit(Op::LoadUndef, 0);
             }
+            // A gap reaches value context only from an array literal that is not
+            // a destructuring target — `$a = [1, , 2]`.
+            Expr::Hole => {
+                return Err(
+                    self.compile_fatal(self.cur_line, "Cannot use empty array elements in arrays")
+                );
+            }
             Expr::Bool(v) => {
                 b.emit(if *v { Op::LoadTrue } else { Op::LoadFalse }, 0);
             }
@@ -3136,10 +3144,10 @@ impl Compiler {
             Expr::Var(name) => self.emit_get_var(b, name),
             // `&` in a VALUE array (`$arr = [&$a]`) makes the element and `$a`
             // one slot; see `compile_array_with_refs`.
-            Expr::Array(elems) if elems.iter().any(|e| e.by_ref) => {
+            Expr::Array(elems, _) if elems.iter().any(|e| e.by_ref) => {
                 self.compile_array_with_refs(b, elems)?
             }
-            Expr::Array(elems) => {
+            Expr::Array(elems, _) => {
                 // An array literal made only of constants is evaluated by the
                 // reference at COMPILE time, so unpacking a scalar inside one is
                 // a fatal raised before the script runs, not a catchable Error.
@@ -4262,7 +4270,11 @@ impl Compiler {
     fn compile_array_with_refs(&mut self, b: &mut ChunkBuilder, elems: &[ArrayElem]) -> Result<(), String> {
         let t = self.tmp_name("refarr");
         let tv = || Box::new(Expr::Var(t.clone()));
-        let init = Expr::Assign(tv(), None, Box::new(Expr::Array(Vec::new())));
+        let init = Expr::Assign(
+            tv(),
+            None,
+            Box::new(Expr::Array(Vec::new(), ArraySyntax::Short)),
+        );
         self.compile_expr(b, &init)?;
         b.emit(Op::Pop, self.cur_line);
         for e in elems {
@@ -4555,10 +4567,11 @@ impl Compiler {
             // assigned `@src[key]`. Unkeyed elements take successive integer
             // indices; a `Null` element is a hole (`[,$b]`) that still consumes an
             // index but binds nothing; a nested `Expr::Array` target recurses.
-            Expr::Array(elems) => {
+            Expr::Array(elems, syntax) => {
                 if op.is_some() {
                     return Err("compound assignment cannot target a list()/[] pattern".into());
                 }
+                self.check_list_pattern(elems, *syntax)?;
                 // A `&` target aliases the SUBJECT, so it needs a subject a
                 // reference can point into. Against a literal PHP refuses at
                 // COMPILE time — `echo "pre"; [&$x] = [1, 2];` prints nothing
@@ -4619,10 +4632,64 @@ impl Compiler {
         elems.iter().any(|e| {
             e.by_ref
                 || match &e.value {
-                    Expr::Array(inner) => Self::pattern_binds_by_ref(inner),
+                    Expr::Array(inner, _) => Self::pattern_binds_by_ref(inner),
                     _ => false,
                 }
         })
+    }
+
+    /// The compile-time checks `zend_compile_list_assign` makes on a
+    /// destructuring pattern, in its order: per element, a gap in a keyed
+    /// pattern, a spread, keyed/unkeyed mixing, then the target itself (a nested
+    /// pattern must share its parent's spelling and may not be `array()`, and is
+    /// checked in full before the next element); finally a pattern binding
+    /// nothing is an empty list. Each is an `E_COMPILE_ERROR`, so it fires
+    /// before any of the file runs.
+    fn check_list_pattern(&self, elems: &[ArrayElem], style: ArraySyntax) -> Result<(), String> {
+        let fatal = |msg: &str| Err(self.compile_fatal(self.cur_line, msg));
+        let is_keyed = elems
+            .first()
+            .is_some_and(|e| !matches!(e.value, Expr::Hole) && e.key.is_some());
+        let mut has_elems = false;
+        for e in elems {
+            match &e.value {
+                Expr::Hole if is_keyed => {
+                    return fatal("Cannot use empty array entries in keyed array assignment");
+                }
+                Expr::Hole => continue,
+                Expr::Spread(_) => return fatal("Spread operator is not supported in assignments"),
+                _ => {}
+            }
+            has_elems = true;
+            if e.key.is_some() != is_keyed {
+                return fatal("Cannot mix keyed and unkeyed array entries in assignments");
+            }
+            match &e.value {
+                Expr::Array(_, ArraySyntax::Long) => {
+                    return fatal("Cannot assign to array(), use [] instead");
+                }
+                Expr::Array(_, syntax) if *syntax != style => {
+                    return fatal("Cannot mix [] and list()");
+                }
+                Expr::Array(inner, syntax) => self.check_list_pattern(inner, *syntax)?,
+                // `zend_ensure_writable_variable`: a call is a variable to the
+                // grammar but not a place to store into.
+                Expr::Call(..) | Expr::CallValue(..) => {
+                    return fatal("Can't use function return value in write context");
+                }
+                Expr::MethodCall(..) | Expr::StaticCall(..) => {
+                    return fatal("Can't use method return value in write context");
+                }
+                target if !list_target_writable(target) => {
+                    return fatal("Assignments can only happen to writable values");
+                }
+                _ => {}
+            }
+        }
+        if !has_elems {
+            return fatal("Cannot use empty list");
+        }
+        Ok(())
     }
 
     /// Assign each target of a destructuring pattern.
@@ -4651,7 +4718,7 @@ impl Compiler {
                 }
             };
             // A hole binds nothing but has already consumed its index.
-            if matches!(e.value, Expr::Null) {
+            if matches!(e.value, Expr::Hole) {
                 continue;
             }
             let elem = Expr::ListElem(
@@ -4661,7 +4728,7 @@ impl Compiler {
             let deeper = ref_path.map(|p| Expr::Index(Box::new(p.clone()), Box::new(key.clone())));
             match &e.value {
                 // A nested pattern recurses, carrying both sources down.
-                Expr::Array(inner) => {
+                Expr::Array(inner, _) => {
                     let inner_tmp = self.tmp_name("list");
                     self.emit_set_var(b, &inner_tmp, |c, b| c.compile_expr(b, &elem))?;
                     self.compile_list_targets(b, inner, &inner_tmp, deeper.as_ref())?;
@@ -5729,7 +5796,7 @@ pub(crate) fn collect_free_vars(e: &Expr, out: &mut Vec<String>) {
                 }
             }
         }
-        Expr::Array(elems) => {
+        Expr::Array(elems, _) => {
             for e in elems {
                 if let Some(k) = &e.key {
                     collect_free_vars(k, out);
@@ -5868,7 +5935,7 @@ pub(crate) fn collect_free_vars(e: &Expr, out: &mut Vec<String>) {
         Expr::YieldFrom(src) => collect_free_vars(src, out),
         Expr::Print(a) => collect_free_vars(a, out),
         Expr::Include(_, a) | Expr::Eval(a) => collect_free_vars(a, out),
-        Expr::Null | Expr::Bool(_) | Expr::Int(_) | Expr::Float(_) | Expr::Str(_) => {}
+        Expr::Null | Expr::Hole | Expr::Bool(_) | Expr::Int(_) | Expr::Float(_) | Expr::Str(_) => {}
     }
 }
 
@@ -5973,7 +6040,7 @@ fn expr_has_yield(e: &Expr) -> bool {
                 || m.operand().is_some_and(expr_has_yield)
                 || args.iter().any(expr_has_yield)
         }
-        Expr::Array(items) => items
+        Expr::Array(items, _) => items
             .iter()
             .any(|e| e.key.as_ref().is_some_and(expr_has_yield) || expr_has_yield(&e.value)),
         // `Interp` parts are only literals and bare `$var`s — neither holds a yield.
@@ -6044,8 +6111,8 @@ fn is_const_operand(e: &Expr) -> bool {
 /// condition for the reference to build the array while compiling.
 fn is_const_array(elems: &[ArrayElem]) -> bool {
     let is_const = |e: &Expr| match e {
-        Expr::Array(inner) => is_const_array(inner),
-        Expr::Spread(x) => matches!(&**x, Expr::Array(inner) if is_const_array(inner)) || is_const_operand(x),
+        Expr::Array(inner, _) => is_const_array(inner),
+        Expr::Spread(x) => matches!(&**x, Expr::Array(inner, _) if is_const_array(inner)) || is_const_operand(x),
         _ => is_const_operand(e),
     };
     elems
@@ -6167,7 +6234,7 @@ fn is_literal(e: &Expr) -> bool {
             | Expr::Float(_)
             | Expr::Str(_)
             | Expr::Interp(_)
-            | Expr::Array(_)
+            | Expr::Array(..)
     )
 }
 
@@ -6473,7 +6540,7 @@ impl SlotScan {
                     }
                 }
             }
-            Expr::Array(elems) => {
+            Expr::Array(elems, _) => {
                 for el in elems {
                     if let Some(k) = &el.key {
                         self.expr(k);
@@ -6573,5 +6640,29 @@ fn yields_bool(e: &Expr) -> bool {
                 | BinOp::StrictNe
         ),
         _ => false,
+    }
+}
+
+/// `zend_can_write_to_variable`: whether a destructuring target is a place a
+/// value can be stored. Subscripts and property fetches are peeled down to
+/// their base, which must be a variable or a call (a call base is writable
+/// through its result, `f()[0]`), and a `?->` anywhere on that spine makes the
+/// whole target read-only.
+fn list_target_writable(target: &Expr) -> bool {
+    let mut cur = target;
+    loop {
+        match cur {
+            Expr::Index(r, _) | Expr::Append(r) | Expr::PropGet(r, _) => cur = r,
+            Expr::NullsafePropGet(..) | Expr::NullsafeMethodCall(..) => return false,
+            Expr::MethodCall(r, _, _) if chain_has_nullsafe(r) => return false,
+            Expr::Var(_)
+            | Expr::VarVar(_)
+            | Expr::StaticProp(..)
+            | Expr::Call(..)
+            | Expr::CallValue(..)
+            | Expr::MethodCall(..)
+            | Expr::StaticCall(..) => return true,
+            _ => return false,
+        }
     }
 }
