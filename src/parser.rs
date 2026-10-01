@@ -1599,9 +1599,8 @@ impl Parser {
     /// Parse a type as written in a declaration, or `None` when none is present.
     ///
     /// Handles the nullable shorthand (`?T`), unions (`A|B`), intersections (`A&B`)
-    /// and the PHP 8.2 DNF spelling (`(A&B)|C`). Only the SHAPE is recovered; a
-    /// non-scalar imposes no check, so an intersection is kept as one joined part
-    /// purely so it renders back the way it was written.
+    /// and the PHP 8.2 DNF spelling (`(A&B)|C`). An intersection is kept as one
+    /// `&`-joined part, which the type check splits again.
     ///
     /// In a parameter list `&` is ambiguous — `int &$x` is a by-reference marker,
     /// `A&B $x` an intersection. It is read as an intersection only when a type NAME
@@ -1736,6 +1735,7 @@ impl Parser {
                 let mut promoted = false;
                 let mut readonly = false;
                 let mut by_ref = false;
+                let mut promoted_vis = Visibility::Public;
                 // Leading modifiers, which precede the type: `public int $x`.
                 while let Some(Tok::Ident(kw)) = self.peek() {
                     match kw.to_ascii_lowercase().as_str() {
@@ -1743,7 +1743,15 @@ impl Parser {
                             promoted = true;
                             readonly = true;
                         }
-                        "public" | "private" | "protected" => promoted = true,
+                        "public" => promoted = true,
+                        "protected" => {
+                            promoted = true;
+                            promoted_vis = Visibility::Protected;
+                        }
+                        "private" => {
+                            promoted = true;
+                            promoted_vis = Visibility::Private;
+                        }
                         // Not a modifier — this identifier is the TYPE, which
                         // `type_hint` reads next.
                         _ => break,
@@ -1772,6 +1780,7 @@ impl Parser {
                     default,
                     variadic,
                     promoted,
+                    promoted_vis,
                     readonly,
                     by_ref,
                 });

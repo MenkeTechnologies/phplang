@@ -284,3 +284,56 @@ fn anonymous_class_is_named_class_at_anonymous() {
         "Typed property class@anonymous::$p must not be accessed before initialization\n"
     );
 }
+
+/// A write to a typed property is checked like an argument: coerced in the
+/// coercive mode (`"42"` → 42, `.=` on an int property included), refused with
+/// `Cannot assign T to property C::$p of type U` otherwise — instance, static and
+/// promoted properties alike. Recorded from `php` 8.5.11.
+#[test]
+fn writes_to_typed_properties_are_coerced_or_refused() {
+    let src = r##"<?php
+class P {}
+class A extends P {
+    public int $n = 0;
+    public ?A $next = null;
+    public int|string $v = 0;
+    public static float $rate = 1.0;
+    public function __construct(public array $tags = [], protected ?string $label = null) {}
+}
+$a = new A;
+$a->n = "42"; var_dump($a->n);
+$a->n .= "1"; var_dump($a->n);
+$a->v = 2.0; var_dump($a->v);
+A::$rate = 3; var_dump(A::$rate);
+$a->next = $a; $a->next = null;
+foreach ([fn() => $a->n = "x", fn() => $a->next = new P, fn() => $a->tags = 1, fn() => A::$rate = "y"] as $f) {
+    try { $f(); } catch (TypeError $e) { echo $e->getMessage(), "\n"; }
+}
+var_dump($a);
+"##;
+    assert_eq!(
+        run(src),
+        r##"int(42)
+int(421)
+int(2)
+float(3)
+Cannot assign string to property A::$n of type int
+Cannot assign P to property A::$next of type ?A
+Cannot assign int to property A::$tags of type array
+Cannot assign string to property A::$rate of type float
+object(A)#1 (5) {
+  ["n"]=>
+  int(421)
+  ["next"]=>
+  NULL
+  ["v"]=>
+  int(2)
+  ["tags"]=>
+  array(0) {
+  }
+  ["label":protected]=>
+  NULL
+}
+"##
+    );
+}

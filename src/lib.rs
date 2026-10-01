@@ -134,6 +134,16 @@ class JsonException extends Exception {}
 class CompileError extends Error {}
 class ParseError extends CompileError {}
 class UnhandledMatchError extends Error {}
+class BadFunctionCallException extends LogicException {}
+class BadMethodCallException extends BadFunctionCallException {}
+class DomainException extends LogicException {}
+class LengthException extends LogicException {}
+class OutOfRangeException extends LogicException {}
+class OutOfBoundsException extends RuntimeException {}
+class OverflowException extends RuntimeException {}
+class RangeException extends RuntimeException {}
+class UnderflowException extends RuntimeException {}
+class UnexpectedValueException extends RuntimeException {}
 "#;
 
 /// The date/time classes. Each method is a thin PHP shell over a
@@ -326,19 +336,106 @@ class SplFixedArray implements ArrayAccess, Countable, IteratorAggregate {
         return $fa;
     }
 }
-class ArrayObject implements ArrayAccess, Countable, IteratorAggregate {
-    public $storage = [];
-    public function __construct($array = []) { $this->storage = $array; }
-    public function offsetGet($k) { return $this->storage[$k]; }
-    public function offsetSet($k, $v) { if ($k === null) { $this->storage[] = $v; } else { $this->storage[$k] = $v; } }
-    public function offsetExists($k) { return isset($this->storage[$k]); }
-    public function offsetUnset($k) { unset($this->storage[$k]); }
-    public function append($v) { $this->storage[] = $v; }
-    public function count() { return count($this->storage); }
-    public function getArrayCopy() { return $this->storage; }
-    public function getIterator() { return $this->storage; }
+class ArrayObject implements IteratorAggregate, ArrayAccess, Countable {
+    const STD_PROP_LIST = 1;
+    const ARRAY_AS_PROPS = 2;
+    private $storage = [];
+    public function __construct(array|object $array = [], int $flags = 0, string $iteratorClass = ArrayIterator::class) { $this->storage = is_array($array) ? $array : get_object_vars($array); }
+    public function offsetGet(mixed $key): mixed { return $this->storage[$key]; }
+    public function offsetSet(mixed $key, mixed $value): void { if ($key === null) { $this->storage[] = $value; } else { $this->storage[$key] = $value; } }
+    public function offsetExists(mixed $key): bool { return isset($this->storage[$key]); }
+    public function offsetUnset(mixed $key): void { unset($this->storage[$key]); }
+    public function append(mixed $value): void { $this->storage[] = $value; }
+    public function count(): int { return count($this->storage); }
+    public function getArrayCopy(): array { return $this->storage; }
+    public function exchangeArray(array|object $array): array { $old = $this->storage; $this->storage = is_array($array) ? $array : get_object_vars($array); return $old; }
+    public function getIterator(): Iterator { return new ArrayIterator($this->storage); }
+    public function getFlags(): int { return 0; }
+    public function setFlags(int $flags): void {}
+    public function getIteratorClass(): string { return ArrayIterator::class; }
+    public function asort(int $flags = SORT_REGULAR): bool { return asort($this->storage, $flags); }
+    public function ksort(int $flags = SORT_REGULAR): bool { return ksort($this->storage, $flags); }
+    public function uasort(callable $callback): bool { return uasort($this->storage, $callback); }
+    public function uksort(callable $callback): bool { return uksort($this->storage, $callback); }
+    public function natsort(): bool { return natsort($this->storage); }
+    public function natcasesort(): bool { return natcasesort($this->storage); }
 }
-class ArrayIterator extends ArrayObject {}
+interface SeekableIterator extends Iterator {
+    public function seek(int $offset): void;
+}
+interface Serializable {
+    public function serialize();
+    public function unserialize(string $data);
+}
+interface SplObserver {
+    public function update(SplSubject $subject): void;
+}
+interface SplSubject {
+    public function attach(SplObserver $observer): void;
+    public function detach(SplObserver $observer): void;
+    public function notify(): void;
+}
+interface OuterIterator extends Iterator {
+    public function getInnerIterator(): ?Iterator;
+}
+interface RecursiveIterator extends Iterator {
+    public function hasChildren(): bool;
+    public function getChildren(): ?RecursiveIterator;
+}
+final class Attribute {
+    const TARGET_CLASS = 1;
+    const TARGET_FUNCTION = 2;
+    const TARGET_METHOD = 4;
+    const TARGET_PROPERTY = 8;
+    const TARGET_CLASS_CONSTANT = 16;
+    const TARGET_PARAMETER = 32;
+    const TARGET_CONSTANT = 64;
+    const TARGET_ALL = 127;
+    const IS_REPEATABLE = 128;
+    public int $flags;
+    public function __construct(int $flags = Attribute::TARGET_ALL) { $this->flags = $flags; }
+}
+final class ReturnTypeWillChange { public function __construct() {} }
+final class AllowDynamicProperties { public function __construct() {} }
+final class SensitiveParameter { public function __construct() {} }
+final class Override { public function __construct() {} }
+// An iterator over an array, positioned by a cursor kept outside the
+// instance (a static table keyed by object id) so the instance shows only
+// its storage, as the reference's does.
+class ArrayIterator implements SeekableIterator, ArrayAccess, Countable {
+    private $storage = [];
+    private static $__cursor = [];
+    public function __construct(array|object $array = [], int $flags = 0) { $this->storage = is_array($array) ? $array : get_object_vars($array); }
+    private function __at() {
+        $c = self::$__cursor[spl_object_id($this)] ?? [0, null];
+        if ($c[1] === null) { $c[1] = array_keys($this->storage); self::$__cursor[spl_object_id($this)] = $c; }
+        return $c;
+    }
+    public function current(): mixed { [$i, $keys] = $this->__at(); return $i < count($keys) ? $this->storage[$keys[$i]] : null; }
+    public function key(): string|int|null { [$i, $keys] = $this->__at(); return $keys[$i] ?? null; }
+    public function next(): void { [$i, $keys] = $this->__at(); self::$__cursor[spl_object_id($this)] = [$i + 1, $keys]; }
+    public function rewind(): void { self::$__cursor[spl_object_id($this)] = [0, array_keys($this->storage)]; }
+    public function valid(): bool { [$i, $keys] = $this->__at(); return $i < count($keys); }
+    public function seek(int $offset): void {
+        if ($offset < 0 || $offset >= count($this->storage)) { throw new OutOfBoundsException("Seek position $offset is out of range"); }
+        self::$__cursor[spl_object_id($this)] = [$offset, array_keys($this->storage)];
+    }
+    public function offsetGet(mixed $key): mixed { return $this->storage[$key]; }
+    public function offsetSet(mixed $key, mixed $value): void { if ($key === null) { $this->storage[] = $value; } else { $this->storage[$key] = $value; } self::$__cursor[spl_object_id($this)][1] = null; }
+    public function offsetExists(mixed $key): bool { return isset($this->storage[$key]); }
+    public function offsetUnset(mixed $key): void { unset($this->storage[$key]); self::$__cursor[spl_object_id($this)][1] = null; }
+    public function append(mixed $value): void { $this->storage[] = $value; self::$__cursor[spl_object_id($this)][1] = null; }
+    public function count(): int { return count($this->storage); }
+    public function getArrayCopy(): array { return $this->storage; }
+    public function getFlags(): int { return 0; }
+    public function setFlags(int $flags): void {}
+    public function asort(int $flags = SORT_REGULAR): bool { return asort($this->storage, $flags); }
+    public function ksort(int $flags = SORT_REGULAR): bool { return ksort($this->storage, $flags); }
+    public function uasort(callable $callback): bool { return uasort($this->storage, $callback); }
+    public function uksort(callable $callback): bool { return uksort($this->storage, $callback); }
+    public function natsort(): bool { return natsort($this->storage); }
+    public function natcasesort(): bool { return natcasesort($this->storage); }
+}
 class SplObjectStorage implements ArrayAccess, Countable {
     public $store = [];
     public function attach($obj, $data = null) { $this->store[spl_object_id($obj)] = $data; }

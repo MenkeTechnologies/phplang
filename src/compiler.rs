@@ -2723,6 +2723,7 @@ impl Compiler {
         let mut prop_vis: FxHashMap<String, Visibility> = FxHashMap::default();
         let mut readonly_props: FxHashSet<String> = FxHashSet::default();
         let mut uninit_props: FxHashMap<String, String> = FxHashMap::default();
+        let mut prop_types: FxHashMap<String, TypeHint> = FxHashMap::default();
         let mut method_vis: FxHashMap<String, Visibility> = FxHashMap::default();
         let mut static_methods: FxHashSet<String> = FxHashSet::default();
         let mut finals = Finals::default();
@@ -2789,6 +2790,7 @@ impl Compiler {
         for tname in &decl.uses {
             if let Some(t) = self.find_class(tname) {
                 uninit_props.extend(t.uninit_props.iter().map(|(n, ty)| (n.clone(), ty.clone())));
+                prop_types.extend(t.prop_types.iter().map(|(n, ty)| (n.clone(), ty.clone())));
             }
         }
         for prop in &decl.props {
@@ -2799,6 +2801,10 @@ impl Compiler {
             } else {
                 finals.props.remove(name);
             }
+            match &prop.ty {
+                Some(ty) => prop_types.insert(name.clone(), ty.clone()),
+                None => prop_types.remove(name),
+            };
             match (&prop.ty, &prop.default, prop.is_static) {
                 (Some(ty), None, false) => {
                     let display = ty.declared(&decl.name, decl.parent.as_deref());
@@ -2869,10 +2875,10 @@ impl Compiler {
                 for p in m.params.iter().filter(|p| p.promoted) {
                     // A promoted parameter DECLARES the property, so the synthetic
                     // assignment below must not read as creating a dynamic one.
-                    // The parser does not keep which visibility keyword promoted
-                    // it, and none is enforced on properties reached this way, so
-                    // the declaration is recorded as public.
-                    prop_vis.insert(p.name.clone(), Visibility::Public);
+                    prop_vis.insert(p.name.clone(), p.promoted_vis);
+                    if let Some(ty) = &p.ty {
+                        prop_types.insert(p.name.clone(), ty.clone());
+                    }
                     if p.readonly || decl.is_readonly {
                         readonly_props.insert(p.name.clone());
                     }
@@ -2969,6 +2975,7 @@ impl Compiler {
                 prop_vis,
                 readonly_props,
                 uninit_props,
+                prop_types,
                 method_vis,
                 static_methods,
                 is_enum: decl.is_enum,
@@ -5048,7 +5055,7 @@ impl Compiler {
                         self.emit_binop(b, cop);
                     }
                 }
-                b.emit(Op::CallBuiltin(ops::SPROP_SET, 3), 0);
+                b.emit(Op::CallBuiltin(ops::SPROP_SET, 3), self.cur_line);
             }
             // List destructuring — `list($a,$b) = …`, `[$a,$b] = …`, and the keyed
             // form `['k' => $v] = …`. Both `list(...)` and `[...]` parse to
@@ -5458,6 +5465,7 @@ impl Compiler {
             default: None,
             variadic: true,
             promoted: false,
+            promoted_vis: Visibility::Public,
             readonly: false,
             by_ref: false,
         };

@@ -2012,3 +2012,16 @@ bool(false)
 Invalid format type y
 PHP Warning:  unpack(): Type N: not enough input values, need 4 values but only 2 were provided in Command line code on line 6
 
+#REC 107 exit=0 out=312 err=0
+Sq
+int(7)
+float(1.5)
+bool(true)
+int(12)
+float(2)
+shape(): Argument #1 ($s) must be of type Shape, TD given
+TB::make(): Return value must be of type TD, TB returned
+Cannot assign Sq to property TB::$next of type ?TB
+Cannot assign string to property TB::$tags of type array
+0:5 1:6 Seek position 4 is out of range
+

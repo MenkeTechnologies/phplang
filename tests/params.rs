@@ -345,3 +345,51 @@ fn an_argument_refusal_is_raised_at_the_parameters_declared_line() {
         )
     );
 }
+
+/// Every declared type is checked, not only the scalars: class and interface
+/// names, unions, `iterable`/`callable`/`object`/`mixed`, and `self`/`static`
+/// resolved against the called class in the message. Recorded from `php` 8.5.11.
+#[test]
+fn class_union_and_pseudo_types_are_enforced() {
+    let src = r##"<?php
+interface Shape {}
+class Sq implements Shape {}
+class B {
+    public static function make(): static { return new B; }
+    public function self_(self $o): ?self { return $o; }
+}
+class D extends B {}
+function shape(Shape $s): string { return get_class($s); }
+function num(int|float $n) { var_dump($n); }
+function many(iterable $i, callable $c, object $o, mixed $m) { echo "ok\n"; }
+function bad(): array { return "x"; }
+echo shape(new Sq), "\n";
+num("7"); num("1.5");
+many([1], "strlen", new Sq, null);
+$calls = [
+    fn() => shape(new D),
+    fn() => num("abc"),
+    fn() => many(1, "strlen", new Sq, 1),
+    fn() => many([], "nope", new Sq, 1),
+    fn() => many([], "strlen", 1, 1),
+    fn() => D::make(),
+    fn() => (new D)->self_(new Sq),
+    fn() => bad(),
+];
+foreach ($calls as $f) {
+    try { $f(); } catch (TypeError $e) { echo preg_replace('/, called in.*/', '', $e->getMessage()), "\n"; }
+}
+"##;
+    assert_eq!(
+        run(src),
+        "Sq\nint(7)\nfloat(1.5)\nok\n\
+         shape(): Argument #1 ($s) must be of type Shape, D given\n\
+         num(): Argument #1 ($n) must be of type int|float, string given\n\
+         many(): Argument #1 ($i) must be of type Traversable|array, int given\n\
+         many(): Argument #2 ($c) must be of type callable, string given\n\
+         many(): Argument #3 ($o) must be of type object, int given\n\
+         B::make(): Return value must be of type D, B returned\n\
+         B::self_(): Argument #1 ($o) must be of type B, Sq given\n\
+         bad(): Return value must be of type array, string returned\n"
+    );
+}

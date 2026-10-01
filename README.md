@@ -476,12 +476,8 @@ end-to-end (see `tests/basic.rs`):
 True (non-flat) namespaces with `as` alias remapping. A few current deviations,
 documented in-code:
 
-- Only a SCALAR type declaration is enforced — `int`, `float`, `string`, `bool`
-  and their `?` nullable forms, on a parameter or a return. Every other type is
-  parsed and carried but checks nothing: a union (`int|string`), an intersection,
-  a class name, `array`, `iterable`, `callable`, `mixed`, `object`, and the
-  return-only `void`/`never`/`static`. A value that would not satisfy one of
-  those passes through where the reference raises a `TypeError`.
+- A namespaced class name in a type declaration is checked and reported by its
+  last segment (`Foo\Bar` reads as `Bar`), as class names are everywhere else.
 - `declare(strict_types=1)` is whole-program rather than per-file: the main
   script's declaration sets the mode for every call, and one in an `include`d
   file or `eval()`'d code is ignored. Upstream reads the mode from the file

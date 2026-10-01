@@ -361,20 +361,24 @@ fn an_unknown_declare_warns_and_an_encoding_one_warns_differently() {
     assert_eq!(output_of("<?php declare(ticks=1); echo \"ok\";"), "ok");
 }
 
-// ── types that parse but impose no check ─────────────────────────────────────
+// ── union, class and intersection types ──────────────────────────────────────
 
 #[test]
-fn union_and_qualified_types_parse_where_they_used_to_be_syntax_errors() {
-    // These were PARSE ERRORS before types were read properly. They impose no
-    // check (see `TypeHint::scalar`), so the assertion is that they run at all —
-    // and the value arrives untouched, which pins the "no check" half too.
+fn union_and_qualified_types_parse_and_are_checked() {
+    // These were PARSE ERRORS before types were read properly, then parsed but
+    // unchecked. A union takes the first part `zend_verify_weak_scalar_type_hint`
+    // tries that converts — int before string — so 1.5 truncates, with the
+    // precision deprecation, rather than becoming "1.5":
+    //   $ php -r 'function u(int|string $x) { var_dump($x); } u(1.5);'
     assert_eq!(
         output_of("<?php function u(int|string $x) { var_dump($x); } u(1.5);"),
-        "float(1.5)\n"
+        "\nDeprecated: Implicit conversion from float 1.5 to int loses precision \
+         in Command line code on line 1\nint(1)\n"
     );
-    assert_eq!(
-        output_of("<?php function q(\\Foo\\Bar $x) { echo \"ran\"; } q(1);"),
-        "ran"
+    // A class type refuses a scalar.
+    assert!(
+        output_of("<?php function q(\\Foo\\Bar $x) { echo \"ran\"; } q(1);")
+            .contains("Uncaught TypeError: q(): Argument #1 ($x) must be of type")
     );
     assert_eq!(
         output_of("<?php function d((A&B)|null $x) { echo \"ran\"; } d(null);"),

@@ -239,7 +239,7 @@ Sampled, reproduced; the reference throws and phplang continues:
 
 | call | reference | phplang |
 |---|---|---|
-| `new ArrayObject(1)` | `TypeError: ArrayObject::__construct(): Argument #1 ($array) must be of type array, int given` | accepted |
+| `new ArrayObject(1)` | `TypeError: ArrayObject::__construct(): Argument #1 ($array) must be of type array, int given` | the same `TypeError` naming the declared `object\|array` (the reference's constructor runs its own narrower check) |
 
 This is a systematic gap — `crate::argtypes` covers the names it has entries for
 and nothing else — rather than a handful of sites, so it is left for a round that

@@ -1140,3 +1140,20 @@ echo json_encode(unpack("A5a/Z*z", "ab   cd\0ef")), " ", json_encode(pack("a4A4Z
 echo pack("H*", "50485021"), " ", json_encode(unpack("H*", "PHP")), "\n";
 var_dump(unpack("N", "ab"));
 try { unpack("y", "a"); } catch (ValueError $e) { echo $e->getMessage(), "\n"; }
+#==#
+// ── declared types: classes, unions, pseudo-types, typed properties ──
+interface Shape {}
+class Sq implements Shape {}
+class TB { public int $n = 0; public ?TB $next = null; public static float $rate = 1.0;
+    public static function make(): static { return new TB; }
+    public function __construct(public array $tags = []) {} }
+class TD extends TB {}
+function shape(Shape $s): string { return get_class($s); }
+function num(int|float|bool $n) { var_dump($n); }
+echo shape(new Sq), "\n"; num("7"); num("1.5"); num("x1");
+$t = new TB; $t->n = "12"; TB::$rate = 2; var_dump($t->n, TB::$rate);
+foreach ([fn() => shape(new TD), fn() => TD::make(), fn() => $t->next = new Sq, fn() => $t->tags = "x"] as $f) {
+    try { $f(); } catch (TypeError $e) { echo preg_replace('/, called in.*/', '', $e->getMessage()), "\n"; }
+}
+$it = new ArrayIterator([5, 6]); foreach ($it as $k => $v) echo "$k:$v ";
+try { $it->seek(4); } catch (OutOfBoundsException $e) { echo $e->getMessage(), "\n"; }

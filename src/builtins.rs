@@ -520,6 +520,17 @@ fn b_sprop_set(vm: &mut VM, _: u8) -> Value {
     let val = vm.pop();
     let name = pop_name(vm);
     let class = pop_name(vm);
+    let declared = with_host(|h| {
+        h.resolve_static_owner(&class, &name)
+            .and_then(|owner| h.prop_type(&owner, &name))
+    });
+    let val = match declared {
+        Some((owner, ty)) => match check_prop_type(vm, &owner, &name, &ty, val) {
+            Some(v) => v,
+            None => return Value::Undef,
+        },
+        None => val,
+    };
     match host::static_prop_set(&class, &name, val) {
         Ok(v) => v,
         Err(e) => fail_or_throw(vm, e),
@@ -2525,6 +2536,9 @@ fn b_prop_set(vm: &mut VM, _: u8) -> Value {
                 return Value::Undef;
             }
             mark_warn_site(vm);
+            let Some(val) = typed_prop_value(vm, &recv, &name, val) else {
+                return Value::Undef;
+            };
             with_host(|h| h.prop_set_checked(&recv, &name, val.clone()));
             val
         }
@@ -2601,6 +2615,9 @@ fn b_prop_set_rw(vm: &mut VM, _: u8) -> Value {
                 return Value::Undef;
             }
             mark_warn_site(vm);
+            let Some(val) = typed_prop_value(vm, &recv, &name, val) else {
+                return Value::Undef;
+            };
             with_host(|h| h.prop_set_checked(&recv, &name, val.clone()));
             val
         }
@@ -2608,6 +2625,10 @@ fn b_prop_set_rw(vm: &mut VM, _: u8) -> Value {
             if readonly_refused(vm, &recv, &name) {
                 return Value::Undef;
             }
+            mark_warn_site(vm);
+            let Some(val) = typed_prop_value(vm, &recv, &name, val) else {
+                return Value::Undef;
+            };
             with_host(|h| h.prop_set(&recv, &name, val.clone()));
             val
         }
@@ -7684,5 +7705,46 @@ fn locale_point(num: String, localized: bool) -> String {
     match crate::stdlib::system::locale_decimal_point() {
         '.' => num,
         dp => num.replacen('.', &dp.to_string(), 1),
+    }
+}
+
+/// A write to `$recv->name` checked against the property's declared type
+/// (`zend_verify_property_type`): the value to store — coerced in the
+/// coercive mode — or `None` once the `TypeError` is thrown.
+fn typed_prop_value(vm: &mut VM, recv: &Value, name: &str, val: Value) -> Option<Value> {
+    let declared = with_host(|h| h.object_class(recv).and_then(|c| h.prop_type(&c, name)));
+    match declared {
+        Some((owner, ty)) => check_prop_type(vm, &owner, name, &ty, val),
+        None => Some(val),
+    }
+}
+
+fn check_prop_type(
+    vm: &mut VM,
+    owner: &str,
+    name: &str,
+    ty: &crate::ast::TypeHint,
+    val: Value,
+) -> Option<Value> {
+    let parent = with_host(|h| h.class_parent(owner));
+    let scope = host::TypeScope {
+        self_class: Some(owner.to_string()),
+        parent: parent.clone(),
+        static_class: None,
+    };
+    match host::verify_type(val, ty, &scope) {
+        Ok(v) => Some(v),
+        Err(given) => {
+            let parent_shown =
+                parent.map(|p| with_host(|h| h.class_display_name(&p.to_ascii_lowercase())));
+            let shown = ty.declared(owner, parent_shown.as_deref());
+            mark_frame_line(vm);
+            throw_php(
+                vm,
+                "TypeError",
+                &format!("Cannot assign {given} to property {owner}::${name} of type {shown}"),
+            );
+            None
+        }
     }
 }

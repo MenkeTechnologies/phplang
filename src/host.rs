@@ -662,6 +662,9 @@ pub struct ClassDef {
     /// absent from a new instance — and reading one before a write is an
     /// `Error`. A trait's are copied in by the class that uses it.
     pub uninit_props: FxHashMap<String, String>,
+    /// Every typed property THIS class (or a trait it uses) declares, instance
+    /// and static, by name — what a write to it is checked against.
+    pub prop_types: FxHashMap<String, crate::ast::TypeHint>,
     /// Declared visibility of methods declared in THIS class), by lowercased name.
     pub method_vis: FxHashMap<String, Visibility>,
     /// Methods THIS class declares `static`, by lowercased name. Looked up along
@@ -2169,94 +2172,6 @@ impl PhpHost {
                     .unwrap_or_else(|| "object".to_string()),
             },
             _ => "mixed".to_string(),
-        }
-    }
-
-    /// Apply a declared scalar type to `v`, returning the value the callee should
-    /// see, or `Err(actual_type_name)` when it does not satisfy the declaration.
-    ///
-    /// This is the ONE place the two typing modes differ, and the whole of what
-    /// `declare(strict_types=1)` changes:
-    ///
-    /// - **Coercive** (the default): a scalar is converted to the declared type on
-    ///   the way in. A string is accepted only when it is fully numeric — a
-    ///   trailing-garbage string like `"5abc"` is a `TypeError`, not a 5 — and a
-    ///   conversion that loses information (float `5.9`, or the float-string
-    ///   `"5.5"`, into an `int`) is performed but `Deprecated`-warned.
-    /// - **Strict**: the value must ALREADY be of the declared type. The single
-    ///   exception is the int→float widening, which is still allowed because it is
-    ///   the one conversion that cannot lose a value.
-    ///
-    /// `null` satisfies a nullable declaration in either mode and nothing else; an
-    /// array or object satisfies neither, in either mode.
-    fn apply_scalar_type(&mut self, v: Value, ty: &TypeHint) -> Result<Value, String> {
-        let Some(want) = ty.scalar() else {
-            return Ok(v);
-        };
-        if matches!(v, Value::Undef) {
-            return if ty.nullable() {
-                Ok(Value::Undef)
-            } else {
-                Err("null".to_string())
-            };
-        }
-        let strict = self.strict_types;
-        match (want, &v) {
-            // Already the declared type — nothing to do in either mode.
-            ("int", Value::Int(_))
-            | ("float", Value::Float(_))
-            | ("string", Value::Str(_))
-            | ("bool", Value::Bool(_)) => Ok(v),
-            // int→float widens even under strict: it is the one conversion PHP
-            // considers lossless, so `f(float $x)` takes `f(5)` in both modes.
-            ("float", Value::Int(i)) => Ok(Value::Float(*i as f64)),
-            _ if strict => Err(self.type_name_for_error(&v)),
-            // Below here the mode is coercive, and only scalars convert.
-            _ if !matches!(
-                v,
-                Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::Str(_)
-            ) =>
-            {
-                Err(self.type_name_for_error(&v))
-            }
-            ("bool", _) => Ok(Value::bool(self.is_truthy(&v))),
-            ("string", _) => Ok(Value::str(self.to_str(&v))),
-            ("int", Value::Str(_)) | ("float", Value::Str(_)) => {
-                let s = self.to_str(&v);
-                // Only a FULLY numeric string converts. A trailing-garbage string
-                // like `"5abc"` is a `TypeError` here, not a 5 — which is what
-                // separates a parameter bind from an arithmetic operand, where the
-                // same string would warn and carry on.
-                let Some(num) = parse_php_number_full(&s) else {
-                    return Err("string".to_string());
-                };
-                match (want, &num) {
-                    ("float", n) => Ok(Value::Float(n.to_float())),
-                    (_, Value::Int(i)) => Ok(Value::Int(*i)),
-                    (_, n) => {
-                        let f = n.to_float();
-                        if f.fract() != 0.0 {
-                            self.deprecated(format!(
-                                "Implicit conversion from float-string \"{s}\" to int loses precision"
-                            ));
-                        }
-                        Ok(Value::Int(f as i64))
-                    }
-                }
-            }
-            ("int", Value::Float(f)) => {
-                let f = *f;
-                if f.fract() != 0.0 {
-                    self.deprecated(format!(
-                        "Implicit conversion from float {} to int loses precision",
-                        self.to_str(&Value::Float(f))
-                    ));
-                }
-                Ok(Value::Int(f as i64))
-            }
-            ("int", Value::Bool(b)) => Ok(Value::Int(i64::from(*b))),
-            ("float", Value::Bool(b)) => Ok(Value::Float(f64::from(*b))),
-            _ => Err(self.type_name_for_error(&v)),
         }
     }
 
@@ -4031,6 +3946,23 @@ impl PhpHost {
         self.functions.contains_key(&name.to_ascii_lowercase())
     }
 
+    /// The declared type of property `name` as seen from `class`, with the class
+    /// (display spelling) that declares it — the nearest along the parent chain.
+    pub fn prop_type(&self, class: &str, name: &str) -> Option<(String, TypeHint)> {
+        let mut cur = Some(class.to_ascii_lowercase());
+        while let Some(c) = cur {
+            let def = self.classes.get(&c)?;
+            if let Some(ty) = def.prop_types.get(name) {
+                return Some((def.name.clone(), ty.clone()));
+            }
+            if def.prop_vis.contains_key(name) {
+                return None;
+            }
+            cur = def.parent.as_ref().map(|p| p.to_ascii_lowercase());
+        }
+        None
+    }
+
     /// The declared parent-class name of `name`, or `None` (no parent / unknown).
     pub fn class_parent(&self, name: &str) -> Option<String> {
         self.classes
@@ -5087,6 +5019,13 @@ impl PhpHost {
     /// Resolve `Class::$name` to its storage key and initializer chunk, walking
     /// the parent chain to the class that actually declares the static property.
     /// The key is `"declaringclass::name"` so a subclass shares the parent's cell.
+    /// The class (lowercased) that declares static property `name`, seen from
+    /// `class`.
+    pub fn resolve_static_owner(&self, class: &str, name: &str) -> Option<String> {
+        self.resolve_static_key(class, name)
+            .and_then(|(key, _)| key.split_once("::").map(|(c, _)| c.to_string()))
+    }
+
     fn resolve_static_key(&self, class: &str, name: &str) -> Option<(String, Chunk)> {
         let mut cur = Some(class.to_ascii_lowercase());
         while let Some(c) = cur {
@@ -7845,12 +7784,39 @@ fn check_call_shape(
             None => {}
         }
     }
-    // A parameter is filled positionally, filled by name, variadic, or has a
-    // default. Anything else leaves the call short.
+    // A method of a prelude class stands in for an INTERNAL one, whose count
+    // check is `zend_wrong_parameters_count_error`: it refuses too many
+    // arguments as well as too few, and words both as `expects`.
     let required = params
         .iter()
         .filter(|p| !p.variadic && p.default.is_none())
         .count();
+    if named.is_empty() && is_prelude_frame(frame) {
+        let declared = params.iter().filter(|p| !p.variadic).count();
+        let passed = args.len();
+        if passed < required || (!has_variadic && passed > declared) {
+            let (bound, n) = if required == declared && !has_variadic {
+                ("exactly", required)
+            } else if passed < required {
+                ("at least", required)
+            } else {
+                ("at most", declared)
+            };
+            let s = if n == 1 { "" } else { "s" };
+            throw_from_callee(
+                frame,
+                &called_with,
+                "ArgumentCountError",
+                &format!(
+                    "{}() expects {bound} {n} argument{s}, {passed} given",
+                    callee_shown(frame)
+                ),
+            )?;
+            return Ok(false);
+        }
+    }
+    // A parameter is filled positionally, filled by name, variadic, or has a
+    // default. Anything else leaves the call short.
     let unfilled = params.iter().enumerate().find(|(i, p)| {
         !p.variadic
             && p.default.is_none()
@@ -7860,7 +7826,7 @@ fn check_call_shape(
     let Some((i, p)) = unfilled else {
         return Ok(true);
     };
-    let shown = display_frame(frame);
+    let shown = callee_shown(frame);
     // A call that left a HOLE is reported by the parameter it left empty, not by
     // a count: the reference has no shortfall to report when the arguments
     // reached past it.
@@ -7941,6 +7907,7 @@ fn check_arg_types(
     }
     // The trace frame prints the arguments AS CALLED, so it is built from the
     // originals rather than from whatever survived coercion.
+    let scope = TypeScope::of_frame(frame, None);
     let called_with = args.clone();
     let mut out = Vec::with_capacity(args.len());
     for (i, a) in args.into_iter().enumerate() {
@@ -7949,7 +7916,7 @@ fn check_arg_types(
         let p = params
             .get(i)
             .or_else(|| params.last().filter(|p| p.variadic));
-        match coerce_arg(p, a)? {
+        match coerce_arg(p, a, &scope)? {
             Ok(v) => out.push(v),
             Err(given) => {
                 arg_type_error(frame, &called_with, p, i + 1, &given)?;
@@ -7961,7 +7928,7 @@ fn check_arg_types(
     for (n, v) in named {
         let pos = params.iter().position(|p| !p.variadic && p.name == n);
         let p = pos.map(|i| &params[i]);
-        match coerce_arg(p, v)? {
+        match coerce_arg(p, v, &scope)? {
             Ok(v) => nout.push((n, v)),
             Err(given) => {
                 arg_type_error(frame, &called_with, p, pos.map_or(0, |i| i + 1), &given)?;
@@ -7976,7 +7943,11 @@ fn check_arg_types(
 /// TYPE verdict — `Err(name)` carrying the type the value actually had — while the
 /// outer one is reserved for a host failure.
 #[allow(clippy::type_complexity)]
-fn coerce_arg(p: Option<&Param>, v: Value) -> Result<Result<Value, String>, String> {
+fn coerce_arg(
+    p: Option<&Param>,
+    v: Value,
+    scope: &TypeScope,
+) -> Result<Result<Value, String>, String> {
     let Some(p) = p else { return Ok(Ok(v)) };
     let Some(ty) = &p.ty else { return Ok(Ok(v)) };
     let ty = ty.clone();
@@ -7988,16 +7959,19 @@ fn coerce_arg(p: Option<&Param>, v: Value) -> Result<Result<Value, String>, Stri
     // the parameter still name one storage location.
     if p.by_ref {
         let line = p.line;
-        return Ok(with_host(|h| {
+        let (slot, cur) = with_host(|h| {
             let slot = h.ref_slot_of_value(&v);
             let cur = match slot {
                 Some(s) => h.ref_cell_value(s),
                 None => v.clone(),
             };
-            let saved = warn_line();
-            set_warn_line(line);
-            let r = h.apply_scalar_type(cur, &ty);
-            set_warn_line(saved);
+            (slot, cur)
+        });
+        let saved = warn_line();
+        set_warn_line(line);
+        let r = verify_type(cur, &ty, scope);
+        set_warn_line(saved);
+        return Ok(with_host(|h| {
             r.map(|converted| match slot {
                 Some(s) => {
                     h.ref_cell_set(s, converted);
@@ -8016,13 +7990,11 @@ fn coerce_arg(p: Option<&Param>, v: Value) -> Result<Result<Value, String>, Stri
     // not against the call — `f(int $x)` on line 2 called from line 9 names line 2
     // — so the diagnostic line is moved for the duration of the check and put back
     // after it, leaving the caller's line intact for anything the body warns about.
-    Ok(with_host(|h| {
-        let saved = warn_line();
-        set_warn_line(p.line);
-        let r = h.apply_scalar_type(v, &ty);
-        set_warn_line(saved);
-        r
-    }))
+    let saved = warn_line();
+    set_warn_line(p.line);
+    let r = verify_type(v, &ty, scope);
+    set_warn_line(saved);
+    Ok(r)
 }
 
 /// Throw a refusal of a user function's arguments. The reference raises it
@@ -8042,13 +8014,10 @@ fn throw_at_param(
     msg: &str,
     decl_line: u32,
 ) -> Result<Value, String> {
-    let r = throw_from_internal(frame, called_with, class, msg);
+    let r = throw_from_callee(frame, called_with, class, msg);
     // A method of a PHP-written prelude class stands in for an internal one,
     // which has no declaration to point at: the caller's line stays.
-    let internal = frame
-        .split_once("::")
-        .is_some_and(|(c, _)| crate::prelude_type(&c.to_ascii_lowercase()).is_some());
-    if internal {
+    if is_prelude_frame(frame) {
         return r;
     }
     with_host(|h| {
@@ -8057,6 +8026,14 @@ fn throw_at_param(
         }
     });
     r
+}
+
+/// Whether `frame` is a method of a PHP-written prelude class, which stands in
+/// for an internal one.
+fn is_prelude_frame(frame: &str) -> bool {
+    frame
+        .split_once("::")
+        .is_some_and(|(c, _)| crate::prelude_type(&c.to_ascii_lowercase()).is_some())
 }
 
 /// Raise the `TypeError` for an argument that did not satisfy its declared type,
@@ -8076,16 +8053,23 @@ fn arg_type_error(
         Some(p) => (format!(" (${})", p.name), p.ty.clone()),
         None => (String::new(), None),
     };
-    let rendered = ty.map(|t| t.render()).unwrap_or_default();
+    let rendered = ty
+        .map(|t| render_declared(&t, frame, None))
+        .unwrap_or_default();
     let (file, line) = with_host(|h| (h.current_file().to_string(), h.cur_frame_line()));
-    let shown = display_frame(frame);
+    let shown = callee_shown(frame);
+    // An internal function names no call site: it has no declaration either.
+    let site = if is_prelude_frame(frame) {
+        String::new()
+    } else {
+        format!(", called in {file} on line {line}")
+    };
     let msg = &format!(
-        "{shown}(): Argument #{pos}{name} must be of type {rendered}, {given} given, \
-         called in {file} on line {line}"
+        "{shown}(): Argument #{pos}{name} must be of type {rendered}, {given} given{site}"
     );
     match p {
         Some(p) => throw_at_param(frame, called_with, "TypeError", msg, p.line),
-        None => throw_from_internal(frame, called_with, "TypeError", msg),
+        None => throw_from_callee(frame, called_with, "TypeError", msg),
     }
 }
 
@@ -8096,24 +8080,36 @@ fn check_ret_type(
     ret: Option<&TypeHint>,
     called_with: &[Value],
     v: Value,
+    static_class: Option<String>,
 ) -> Result<Value, String> {
     let Some(ty) = ret else { return Ok(v) };
-    if ty.scalar().is_none() {
+    // `void` and `never` are refused while compiling; there is nothing left
+    // to check here.
+    if ty
+        .parts
+        .iter()
+        .any(|p| p.eq_ignore_ascii_case("void") || p.eq_ignore_ascii_case("never"))
+    {
         return Ok(v);
     }
     let ty = ty.clone();
-    match with_host(|h| h.apply_scalar_type(v, &ty)) {
+    let scope = TypeScope::of_frame(frame, static_class);
+    let scope_static = scope
+        .static_class
+        .clone()
+        .or_else(|| scope.self_class.clone());
+    match verify_type(v, &ty, &scope) {
         Ok(nv) => Ok(nv),
         // A return diagnostic names no call site — the `return` IS the site — but
         // the trace still enters the function the value was returned from.
-        Err(given) => throw_from_internal(
+        Err(given) => throw_from_callee(
             frame,
             called_with,
             "TypeError",
             &format!(
                 "{}(): Return value must be of type {}, {given} returned",
-                display_frame(frame),
-                ty.render()
+                callee_shown(frame),
+                render_declared(&ty, frame, scope_static.as_deref())
             ),
         ),
     }
@@ -8156,19 +8152,30 @@ fn invoke_with_locals(
     locals: &[String],
 ) -> Result<Value, String> {
     let Signature { params, ret } = sig;
-    if !check_call_shape(frame, params, &args, &named)? {
+    // What a refusal raised for this call puts in its frame: the bound `$this`
+    // (`A->m`) and a closure's site (`{closure:f.php:3}`).
+    let ctx = CalleeCtx {
+        this: pre
+            .iter()
+            .find(|(k, _)| k == "this")
+            .map(|(_, v)| v.clone()),
+        site: with_host(|h| h.pending_closure_site.clone()),
+    };
+    let checked = with_callee(&ctx, || check_call_shape(frame, params, &args, &named));
+    if !checked? {
         // The call was rejected before it began; the dispatcher unwinds the
         // pending error.
         return Ok(Value::Undef);
     }
-    let Some((args, named)) = check_arg_types(frame, params, args, named)? else {
+    let typed = with_callee(&ctx, || check_arg_types(frame, params, args, named));
+    let Some((args, named)) = typed? else {
         // The call was rejected before it began: a `TypeError` is pending and the
         // dispatcher will unwind it.
         return Ok(Value::Undef);
     };
     // The trace of a return-type failure prints the arguments the call was made
     // with, so they are kept only when there is such a type to fail.
-    let ret_args: Vec<Value> = match ret.filter(|t| t.scalar().is_some()) {
+    let ret_args: Vec<Value> = match ret {
         Some(_) => args.clone(),
         None => Vec::new(),
     };
@@ -8360,14 +8367,17 @@ fn invoke_with_locals(
             })
             .collect();
         h.byref_out_set(vals, params.iter().map(|p| p.by_ref).collect());
-        h.scopes.pop();
-        h.signal.take()
+        let static_class = h.scopes.pop().and_then(|s| s.static_class);
+        (h.signal.take(), static_class)
     });
+    let (sig, static_class) = sig;
     // A pending exception (set by `throw`, kept in its own field) survives the
     // scope pop and takes precedence — the caller's dispatcher checks
     // `has_pending_throw` and re-halts to keep it bubbling.
     match sig {
-        Some(Signal::Return(v)) => check_ret_type(frame, ret, &ret_args, v),
+        Some(Signal::Return(v)) => with_callee(&ctx, || {
+            check_ret_type(frame, ret, &ret_args, v, static_class)
+        }),
         // A `break`/`continue` that escapes a function body has no loop to
         // target; PHP treats it as falling off the end (null result). Falling off
         // the end is NOT checked against the return type: a `void` function does
@@ -11355,4 +11365,292 @@ pub fn warn_as_internal_method(message: &str) {
     }
     with_host(|h| h.warn(message));
     set_warn_line(saved);
+}
+
+/// The classes a declared type's `self`, `parent` and `static` stand for.
+#[derive(Debug, Clone, Default)]
+pub struct TypeScope {
+    pub self_class: Option<String>,
+    pub parent: Option<String>,
+    pub static_class: Option<String>,
+}
+
+impl TypeScope {
+    /// The scope of the function a frame name (`Class::method`) belongs to.
+    pub fn of_frame(frame: &str, static_class: Option<String>) -> TypeScope {
+        let self_class = frame.split_once("::").map(|(c, _)| c.to_string());
+        let parent = self_class
+            .as_ref()
+            .and_then(|c| with_host(|h| h.class_parent(c)));
+        TypeScope {
+            self_class,
+            parent,
+            static_class,
+        }
+    }
+}
+
+/// Whether `v` satisfies one alternative of a declared type as it stands —
+/// the `zend_check_type_slow` half that converts nothing.
+fn type_part_accepts(v: &Value, part: &str, scope: &TypeScope) -> bool {
+    let lower = part.to_ascii_lowercase();
+    if lower == "mixed" {
+        return true;
+    }
+    let (is_array, obj_class, is_closure) = with_host(|h| {
+        let arr = h.is_array(v);
+        let cls = if arr { None } else { h.instance_class(v) };
+        (arr, cls, h.is_closure(v))
+    });
+    let instance_of = |class: &str, target: &str| {
+        with_host(|h| h.is_a_class(&class.to_ascii_lowercase(), &target.to_ascii_lowercase()))
+    };
+    match (v, lower.as_str()) {
+        (Value::Undef, "null") => true,
+        (Value::Bool(_), "bool") => true,
+        (Value::Bool(true), "true") | (Value::Bool(false), "false") => true,
+        (Value::Int(_), "int") | (Value::Float(_), "float") | (Value::Str(_), "string") => true,
+        (Value::Str(_), "callable") => crate::stdlib::callable::callable_reason(v).is_none(),
+        (Value::Obj(_), _) if is_array => match lower.as_str() {
+            "array" | "iterable" => true,
+            "callable" => crate::stdlib::callable::callable_reason(v).is_none(),
+            _ => false,
+        },
+        (Value::Obj(_), _) => {
+            let Some(class) = obj_class else { return false };
+            match lower.as_str() {
+                "object" => true,
+                "iterable" => instance_of(&class, "Traversable"),
+                "callable" => is_closure || crate::stdlib::callable::callable_reason(v).is_none(),
+                "self" => scope
+                    .self_class
+                    .as_deref()
+                    .is_some_and(|s| instance_of(&class, s)),
+                "parent" => scope
+                    .parent
+                    .as_deref()
+                    .is_some_and(|s| instance_of(&class, s)),
+                "static" => scope
+                    .static_class
+                    .as_deref()
+                    .or(scope.self_class.as_deref())
+                    .is_some_and(|s| instance_of(&class, s)),
+                "array" | "int" | "float" | "string" | "bool" | "null" | "false" | "true"
+                | "void" | "never" => false,
+                _ => part
+                    .split('&')
+                    .all(|t| instance_of(&class, t.trim_start_matches('\\'))),
+            }
+        }
+        _ => false,
+    }
+}
+
+/// `zend_verify_weak_scalar_type_hint`: the coercive conversions a union
+/// tries, in its order — int, float, string, bool.
+fn weak_scalar(h: &mut PhpHost, v: &Value, has: &dyn Fn(&str) -> bool) -> Option<Value> {
+    fn fits(f: f64) -> bool {
+        f.is_finite() && (-9223372036854775808.0..9223372036854775808.0).contains(&f)
+    }
+    if has("int") {
+        if has("float") && matches!(v, Value::Str(_)) {
+            if let Some(n) = parse_php_number_full(&h.to_str(v)) {
+                return Some(n);
+            }
+        } else {
+            // `zend_parse_arg_long_weak`.
+            let long = match v {
+                Value::Float(f) if f.is_nan() || !fits(*f) => None,
+                Value::Float(f) => {
+                    if f.fract() != 0.0 {
+                        let shown = h.to_str(v);
+                        h.deprecated(format!(
+                            "Implicit conversion from float {shown} to int loses precision"
+                        ));
+                    }
+                    Some(*f as i64)
+                }
+                Value::Str(s) => match parse_php_number_full(s) {
+                    Some(Value::Int(i)) => Some(i),
+                    Some(n) => {
+                        let f = n.to_float();
+                        if !fits(f) {
+                            None
+                        } else {
+                            if f.fract() != 0.0 {
+                                h.deprecated(format!(
+                                    "Implicit conversion from float-string \"{s}\" to int loses precision"
+                                ));
+                            }
+                            Some(f as i64)
+                        }
+                    }
+                    None => None,
+                },
+                Value::Bool(b) => Some(i64::from(*b)),
+                _ => None,
+            };
+            if let Some(l) = long {
+                return Some(Value::Int(l));
+            }
+        }
+    }
+    if has("float") {
+        let d = match v {
+            Value::Int(i) => Some(*i as f64),
+            Value::Str(s) => parse_php_number_full(s).map(|n| n.to_float()),
+            Value::Bool(b) => Some(f64::from(u8::from(*b))),
+            _ => None,
+        };
+        if let Some(d) = d {
+            return Some(Value::Float(d));
+        }
+    }
+    if has("string") && matches!(v, Value::Int(_) | Value::Float(_) | Value::Bool(_)) {
+        return Some(Value::str(h.to_str(v)));
+    }
+    if has("bool") && matches!(v, Value::Int(_) | Value::Float(_) | Value::Str(_)) {
+        return Some(Value::bool(h.is_truthy(v)));
+    }
+    None
+}
+
+/// `zend_check_type` + `zend_verify_scalar_type_hint`: `v` against a declared
+/// type — classes (with `self`/`parent`/`static`), `array`, `callable`,
+/// `iterable`, `object`, `mixed`, `true`/`false`/`null`, unions and
+/// intersections. A value that does not satisfy it as it stands is converted
+/// when the mode is coercive and a scalar alternative takes it, in the
+/// reference's order; under `strict_types` only int widens to float. `Err`
+/// carries the type the value had, for the `TypeError`.
+pub fn verify_type(v: Value, ty: &TypeHint, scope: &TypeScope) -> Result<Value, String> {
+    if ty.parts.iter().any(|p| type_part_accepts(&v, p, scope)) {
+        return Ok(v);
+    }
+    let has = |want: &str| ty.parts.iter().any(|p| p.eq_ignore_ascii_case(want));
+    let strict = with_host(|h| h.strict_types);
+    if strict {
+        if let (Value::Int(i), true) = (&v, has("float")) {
+            return Ok(Value::Float(*i as f64));
+        }
+        return Err(with_host(|h| h.type_name_for_error(&v)));
+    }
+    // An object reaches a `string` alternative through `__toString`, the one
+    // conversion `zend_parse_arg_str_weak` makes for something not scalar.
+    if has("string") && with_host(|h| h.is_object(&v)) {
+        let stringable = with_host(|h| {
+            h.object_class(&v)
+                .is_some_and(|c| h.class_has_method(&c.to_ascii_lowercase(), "__tostring"))
+        });
+        if stringable {
+            return Ok(Value::str(to_str_ext(&v)));
+        }
+    }
+    with_host(|h| match weak_scalar(h, &v, &has) {
+        Some(converted) => Ok(converted),
+        None => Err(h.type_name_for_error(&v)),
+    })
+}
+
+/// A declared type as the reference prints it in a `TypeError` —
+/// `zend_type_to_string`, with `self`/`parent` resolved against the frame's
+/// class.
+fn render_declared(ty: &TypeHint, frame: &str, static_class: Option<&str>) -> String {
+    let (self_class, parent) = match frame.split_once("::") {
+        Some((c, _)) => with_host(|h| {
+            let shown = h.class_display_name(&c.to_ascii_lowercase());
+            let parent = h
+                .class_parent(c)
+                .map(|p| h.class_display_name(&p.to_ascii_lowercase()));
+            (shown, parent)
+        }),
+        None => ("self".to_string(), None),
+    };
+    // `static` is reported as the class it stood for in the call.
+    let mut ty = ty.clone();
+    if let Some(s) = static_class {
+        let shown = with_host(|h| h.class_display_name(&s.to_ascii_lowercase()));
+        for p in &mut ty.parts {
+            if p.eq_ignore_ascii_case("static") {
+                *p = shown.clone();
+            }
+        }
+    }
+    ty.declared(&self_class, parent.as_deref())
+}
+
+/// The callee a call-time refusal is raised for — see [`with_callee`].
+#[derive(Clone)]
+struct CalleeCtx {
+    this: Option<Value>,
+    site: Option<DeclSite>,
+}
+
+thread_local! {
+    static CALLEE: RefCell<Option<CalleeCtx>> = const { RefCell::new(None) };
+}
+
+/// Run a call's argument or return check with its callee recorded, so a
+/// refusal's frame reads `A->m(...)` / `{closure:f.php:3}(...)` as the
+/// reference's does.
+fn with_callee<R>(ctx: &CalleeCtx, f: impl FnOnce() -> R) -> R {
+    let saved = CALLEE.with(|c| c.replace(Some(ctx.clone())));
+    let r = f();
+    CALLEE.with(|c| *c.borrow_mut() = saved);
+    r
+}
+
+/// The callee's name as a refusal's message spells it: `A::m`, `f`, or
+/// `{closure:f.php:3}` (class-prefixed with `::` for a closure in a class).
+fn callee_shown(frame: &str) -> String {
+    let site = CALLEE.with(|c| c.borrow().as_ref().and_then(|x| x.site.clone()));
+    let Some(DeclSite::Closure(inner, line)) = site else {
+        return display_frame(frame);
+    };
+    let script = with_host(|h| h.script_name().to_string());
+    let rendered = format!("{{closure:{}:{line}}}", inner.render(&script));
+    match frame.split_once("::") {
+        Some((class, _)) => {
+            let shown = with_host(|h| h.class_display_name(&class.to_ascii_lowercase()));
+            format!("{shown}::{rendered}")
+        }
+        None => rendered,
+    }
+}
+
+/// [`throw_from_internal`] for a refusal of a USER function's call: the pushed
+/// frame carries the callee's `$this` and closure site.
+fn throw_from_callee(
+    func: &str,
+    args: &[Value],
+    class: &str,
+    message: &str,
+) -> Result<Value, String> {
+    let ctx = CALLEE.with(|c| c.borrow().clone());
+    let Some(ctx) = ctx else {
+        return throw_from_internal(func, args, class, message);
+    };
+    with_host(|h| {
+        let line = h.cur_frame_line();
+        h.scopes.push(Scope {
+            name: Some(func.to_string()),
+            line,
+            internal: true,
+            closure_site: ctx.site.clone(),
+            ..Scope::default()
+        });
+        let argsarr = h.new_array();
+        for a in args {
+            h.arr_push_auto(&argsarr, a.clone());
+        }
+        h.set_var("@args", argsarr);
+        if let Some(this) = &ctx.this {
+            h.set_var("this", this.clone());
+        }
+    });
+    let exc = new_object(class, vec![Value::str(message.to_string())]);
+    with_host(|h| {
+        h.scopes.pop();
+    });
+    set_pending_throw(exc?);
+    Ok(Value::Undef)
 }

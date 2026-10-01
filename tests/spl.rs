@@ -195,3 +195,35 @@ fn iterator_helpers_consume_a_generator() {
         "Array\n(\n    [a] => 1\n    [b] => 2\n)\nArray\n(\n    [0] => 1\n    [1] => 2\n)\n2"
     );
 }
+
+/// `ArrayIterator` is a real `SeekableIterator` (it was an alias of
+/// `ArrayObject` with no cursor), `ArrayObject::getIterator()` hands one out,
+/// the SPL exception family exists, and a prelude method refuses a wrong
+/// argument count the way an internal one does (`expects exactly N`).
+/// Recorded from `php` 8.5.11.
+#[test]
+fn array_iterator_cursor_and_internal_arity() {
+    let src = r##"<?php
+$it = new ArrayIterator(["a" => 1, "b" => 2, "c" => 3]);
+foreach ($it as $k => $v) echo "$k=$v ";
+echo "\n", count($it), " ", $it["b"], "\n";
+$it->seek(2); echo $it->key(), "\n";
+try { $it->seek(9); } catch (OutOfBoundsException $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+$o = new ArrayObject([3, 1, 2]);
+$o->asort();
+echo implode(",", iterator_to_array($o->getIterator())), " ", get_class($o->getIterator()), "\n";
+var_dump($o instanceof Traversable, $it instanceof SeekableIterator, new UnexpectedValueException("u") instanceof RuntimeException);
+foreach ([fn() => $it->count(1), fn() => (new DateTime)->modify(), fn() => (new DateTime)->setDate(1, 2)] as $f) {
+    try { $f(); } catch (ArgumentCountError $e) { echo $e->getMessage(), "\n"; }
+}
+"##;
+    assert_eq!(
+        run(src),
+        "a=1 b=2 c=3 \n3 2\nc\n\
+         OutOfBoundsException: Seek position 9 is out of range\n\
+         1,2,3 ArrayIterator\nbool(true)\nbool(true)\nbool(true)\n\
+         ArrayIterator::count() expects exactly 0 arguments, 1 given\n\
+         DateTime::modify() expects exactly 1 argument, 0 given\n\
+         DateTime::setDate() expects exactly 3 arguments, 2 given\n"
+    );
+}

@@ -610,13 +610,11 @@ pub struct CatchArm {
 ///
 /// `?T` is normalised on the way in to the two-part union `T|null`, so nullability
 /// has one spelling here rather than two. The parts keep their SOURCE order and
-/// spelling; PHP reorders a union when it renders one in a diagnostic, which this
-/// engine does not reproduce (it never renders a union — see below).
+/// spelling; [`TypeHint::declared`] renders them in the order PHP's own
+/// `zend_type_to_string` does.
 ///
-/// Only a single scalar type is enforced at a call. A union, an intersection, a
-/// class name, `array`, `iterable`, `callable`, `mixed`, `object` and the return-only
-/// `void`/`never`/`static` are parsed and carried so the syntax is accepted, but
-/// they impose no check — exactly the pre-existing behaviour for every hint.
+/// Every part is enforced — on a parameter, a return and a typed property — by
+/// `host::verify_type`, the port of `zend_check_type`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeHint {
     /// The alternatives of a union type. A plain type is a one-entry union.
@@ -624,31 +622,6 @@ pub struct TypeHint {
 }
 
 impl TypeHint {
-    /// The one scalar type this hint enforces, or `None` when it enforces nothing.
-    ///
-    /// A hint enforces a check only when it names exactly one type and that type is
-    /// one of PHP's four coercible scalars. `?int` reports `int` — the `null` part is
-    /// reported separately by [`TypeHint::nullable`] — because a nullable scalar
-    /// still checks its non-null case. Anything else (a union of two real types, a
-    /// class name, `array`, …) reports `None` and is left unchecked.
-    pub fn scalar(&self) -> Option<&str> {
-        let mut real = self
-            .parts
-            .iter()
-            .filter(|p| !p.eq_ignore_ascii_case("null"));
-        let one = real.next()?;
-        if real.next().is_some() {
-            return None;
-        }
-        match one.to_ascii_lowercase().as_str() {
-            "int" => Some("int"),
-            "float" => Some("float"),
-            "string" => Some("string"),
-            "bool" => Some("bool"),
-            _ => None,
-        }
-    }
-
     /// Whether `null` is one of the accepted alternatives (`?T`, or `T|null`).
     pub fn nullable(&self) -> bool {
         self.parts.iter().any(|p| p.eq_ignore_ascii_case("null"))
@@ -710,16 +683,6 @@ impl TypeHint {
         }
         out.join("|")
     }
-
-    /// How the type reads in a `TypeError`. A nullable scalar renders `?int`, which
-    /// is the spelling PHP uses for the single-type nullable form.
-    pub fn render(&self) -> String {
-        match (self.scalar(), self.nullable()) {
-            (Some(s), true) => format!("?{s}"),
-            (Some(s), false) => s.to_string(),
-            _ => self.parts.join("|"),
-        }
-    }
 }
 
 /// One formal parameter of a function definition: its name, an optional default
@@ -735,12 +698,14 @@ pub struct Param {
     /// has to know where the parameter was written.
     pub line: u32,
     /// The declared type (`int $x`, `?string $s`, `int|float $n`), or `None` for
-    /// an untyped parameter. Only a single scalar type is *enforced* — see
-    /// [`TypeHint::scalar`].
+    /// an untyped parameter.
     pub ty: Option<TypeHint>,
     pub default: Option<Expr>,
     pub variadic: bool,
     pub promoted: bool,
+    /// The visibility a promoted parameter declares its property with
+    /// (`public` when only `readonly` promoted it).
+    pub promoted_vis: Visibility,
     /// `readonly` on a promoted constructor parameter, which declares the
     /// property readonly exactly as a `readonly` member declaration would.
     pub readonly: bool,
