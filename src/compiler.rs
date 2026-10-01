@@ -5018,6 +5018,19 @@ impl Compiler {
                         })?;
                         self.compile_lvalue_assign(b, &t, &segs, op, rhs)?;
                     }
+                    // `Class::$p[k] = v`: the same, through the static's array.
+                    Expr::StaticProp(class, prop) => {
+                        let t = self.tmp_name("sp");
+                        let (class, prop) = (class.clone(), prop.clone());
+                        self.emit_set_var(b, &t, |c, b| {
+                            c.emit_class_ref(b, &class)?;
+                            let nidx = b.add_constant(Value::str(prop.clone()));
+                            b.emit(Op::LoadConst(nidx), 0);
+                            b.emit(Op::CallBuiltin(ops::SPROP_ENSURE_ARRAY, 2), c.cur_line);
+                            Ok(())
+                        })?;
+                        self.compile_lvalue_assign(b, &t, &segs, op, rhs)?;
+                    }
                     _ => return Err("unsupported assignment target".into()),
                 }
             }
@@ -5661,6 +5674,18 @@ impl Compiler {
                             c.compile_expr(b, recv)?;
                             c.emit_member(b, prop, 0)?;
                             b.emit(Op::CallBuiltin(ops::PROP_ENSURE_ARRAY, 2), c.cur_line);
+                            Ok(())
+                        })?;
+                        t
+                    }
+                    Expr::StaticProp(class, prop) => {
+                        let t = self.tmp_name("sp");
+                        let (class, prop) = (class.clone(), prop.clone());
+                        self.emit_set_var(b, &t, |c, b| {
+                            c.emit_class_ref(b, &class)?;
+                            let nidx = b.add_constant(Value::str(prop.clone()));
+                            b.emit(Op::LoadConst(nidx), 0);
+                            b.emit(Op::CallBuiltin(ops::SPROP_ENSURE_ARRAY, 2), c.cur_line);
                             Ok(())
                         })?;
                         t

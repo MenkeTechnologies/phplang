@@ -465,6 +465,10 @@ pub mod ops {
     /// `[object, (n,v)...]` argc=1+2k `-> object`. [`NEW_INIT`] with named
     /// arguments.
     pub const NEW_INIT_NAMED: u16 = 147;
+    /// `[class, name] -> array`. `Class::$p` fetched to be written through
+    /// (`Class::$p[] = v`, `Class::$p[k]++`): its array, vivified when the
+    /// property holds none.
+    pub const SPROP_ENSURE_ARRAY: u16 = 148;
 }
 
 /// The capture name a `static` closure carries from its creation site.
@@ -9634,6 +9638,17 @@ pub fn static_prop_set(class: &str, name: &str, val: Value) -> Result<Value, Str
     }
     with_host(|h| h.set_static_stored(&key, val.clone()));
     Ok(val)
+}
+
+/// `Class::$prop` as an array to write through — `ops::SPROP_ENSURE_ARRAY`.
+pub fn static_prop_ensure_array(class: &str, name: &str) -> Result<Value, String> {
+    let cur = static_prop_get(class, name)?;
+    if with_host(|h| h.is_array(&cur)) {
+        return Ok(cur);
+    }
+    let arr = with_host(|h| h.new_array());
+    static_prop_set(class, name, arr.clone())?;
+    Ok(arr)
 }
 
 /// Normalize a `foreach` subject to an iterable array. Arrays pass through; an

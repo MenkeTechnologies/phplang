@@ -814,3 +814,10 @@ fn compact_diagnoses_unbound_names_and_bad_arguments() {
         "\nWarning: compact(): Undefined variable $ in Command line code on line 1\n0"
     );
 }
+
+#[test]
+fn array_keys_filters_by_value_loosely_or_strictly() {
+    // php -r 'echo json_encode([array_keys(["a"=>1,"b"=>2,"c"=>1], 1), array_keys([1,"1",true,1.0,"a"], "1"), array_keys([1,"1",true], "1", true), array_keys(["x"=>null,"y"=>0], null)]);'
+    let src = r#"<?php echo json_encode([array_keys(["a"=>1,"b"=>2,"c"=>1], 1), array_keys([1,"1",true,1.0,"a"], "1"), array_keys([1,"1",true], "1", true), array_keys(["x"=>null,"y"=>0], null)]);"#;
+    assert_eq!(run(src), r#"[["a","c"],[0,1,2,3],[1],["x","y"]]"#);
+}

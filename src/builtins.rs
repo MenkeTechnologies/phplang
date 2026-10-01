@@ -165,6 +165,7 @@ pub fn install(vm: &mut VM) {
     reg!(vm, ops::SCALL_NAMED, b_scall_named);
     reg!(vm, ops::NEW_NAMED, b_new_named);
     reg!(vm, ops::NEW_ALLOC, b_new_alloc);
+    reg!(vm, ops::SPROP_ENSURE_ARRAY, b_sprop_ensure_array);
     reg!(vm, ops::NEW_INIT, b_new_init);
     reg!(vm, ops::NEW_INIT_NAMED, b_new_init_named);
     reg!(vm, ops::CALLVALUE_NAMED, b_callvalue_named);
@@ -480,6 +481,16 @@ fn b_new_named(vm: &mut VM, argc: u8) -> Value {
     mark_frame_line(vm);
     match host::new_object_named(&class, pos, named) {
         Ok(v) => bubbled(vm, v),
+        Err(e) => fail_or_throw(vm, e),
+    }
+}
+
+/// `Class::$prop` fetched to be written through — `ops::SPROP_ENSURE_ARRAY`.
+fn b_sprop_ensure_array(vm: &mut VM, _: u8) -> Value {
+    let name = pop_name(vm);
+    let class = pop_name(vm);
+    match host::static_prop_ensure_array(&class, &name) {
+        Ok(v) => v,
         Err(e) => fail_or_throw(vm, e),
     }
 }
@@ -4195,6 +4206,30 @@ pub fn call_library(name: &str, args: &[Value]) -> Result<Value, String> {
         "implode" | "join" => php_implode(&lname, args)?,
         "explode" => with_host(|h| php_explode(h, args))?,
         "in_array" => with_host(|h| php_in_array(h, args)),
+        // With a filter value, only the keys whose value equals it — loosely,
+        // or strictly when `$strict` is true.
+        "array_keys" if args.len() >= 2 => with_host(|h| {
+            let needle = arg(args, 1);
+            let strict = h.is_truthy(&arg(args, 2));
+            let keys: Vec<Value> = h
+                .array_pairs(&arg(args, 0))
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|(_, v)| {
+                    if strict {
+                        strict_eq(h, v, &needle)
+                    } else {
+                        loose_eq(h, v, &needle)
+                    }
+                })
+                .map(|(k, _)| k)
+                .collect();
+            let out = h.new_array();
+            for k in keys {
+                h.arr_push_auto(&out, k);
+            }
+            out
+        }),
         "array_keys" => with_host(|h| h.array_keys(&arg(args, 0))),
         "array_values" => with_host(|h| php_array_values(h, &arg(args, 0))),
         "array_push" => with_host(|h| php_array_push(h, args))?,

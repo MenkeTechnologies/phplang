@@ -202,3 +202,19 @@ fn a_later_call_does_not_inherit_an_earlier_ones_late_static_class() {
     let src = format!(r#"<?php {H} C::name(); echo A::name();"#);
     assert_eq!(run(&src), "A");
 }
+
+#[test]
+fn a_static_array_property_is_written_through() {
+    // Appends, keyed writes, compound writes, nested appends, `++` and `unset`
+    // on `Class::$p[...]` — through `static::` too — and an unset property is
+    // vivified. A copy taken before the write keeps its own array.
+    let src = r#"<?php
+        class B { static $r = ["a" => [1]]; public static $n;
+                  static function f() { static::$r[] = 7; return count(static::$r); } }
+        $copy = B::$r;
+        B::$r["a"][] = 2; B::$r["k"] = "v"; B::$r["k"] .= "w"; B::$n[] = 5;
+        echo B::f(), count(B::$r["a"]), B::$r["k"], count(B::$n), count($copy);
+        B::$r[0]++; unset(B::$r["a"]);
+        echo json_encode(B::$r);"#;
+    assert_eq!(run(src), "32vw11{\"k\":\"vw\",\"0\":8}");
+}
