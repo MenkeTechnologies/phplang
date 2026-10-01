@@ -1982,6 +1982,7 @@ impl Compiler {
     /// The lazy `foreach` loop for a `Generator` subject held in `@subj`:
     /// `rewind`, then repeatedly `valid`/`key`/`current`/(body)/`next`. Preserves
     /// side-effect ordering and supports infinite generators (unlike materializing).
+    #[allow(clippy::too_many_arguments)]
     fn compile_foreach_generator(
         &mut self,
         b: &mut ChunkBuilder,
@@ -5995,7 +5996,7 @@ fn is_const_array(elems: &[ArrayElem]) -> bool {
     };
     elems
         .iter()
-        .all(|e| !e.by_ref && e.key.as_ref().is_none_or(is_const_operand) && is_const(&e.value))
+        .all(|e| !e.by_ref && e.key.as_ref().map_or(true, is_const_operand) && is_const(&e.value))
 }
 
 /// The type name of the first scalar a CONSTANT array literal unpacks with
