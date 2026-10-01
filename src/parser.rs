@@ -817,6 +817,24 @@ impl Parser {
                 StmtKind::Block(vec![])
             }
             Some(Tok::Punct("{")) => StmtKind::Block(self.block()?),
+            // `goto label;` and a `label:` statement. A label is an identifier the
+            // scanner leaves an identifier, followed by a single `:`.
+            _ if self.at_kw("goto") => {
+                self.pos += 1;
+                let name = match self.next() {
+                    Some(Tok::Ident(n)) if reserved_spelling(&n).is_none() => n,
+                    _ => return Err(self.syntax_error_at(self.pos - 1)),
+                };
+                self.expect_punct(";")?;
+                StmtKind::Goto(name)
+            }
+            Some(Tok::Ident(n)) if reserved_spelling(n).is_none() && self.nth_is_punct(1, ":") => {
+                let Some(Tok::Ident(name)) = self.next() else {
+                    unreachable!()
+                };
+                self.pos += 1;
+                StmtKind::Label(name)
+            }
             _ if self.at_kw("echo") => {
                 self.pos += 1;
                 let mut args = vec![self.expression()?];

@@ -560,6 +560,10 @@ pub enum StmtKind {
     Return(Option<Expr>),
     /// `break [n];` — `n` is how many enclosing loop/switch levels to leave
     /// (1 = the innermost, PHP's default).
+    /// `goto label;`
+    Goto(String),
+    /// `label:` — a `goto` target.
+    Label(String),
     Break(u32),
     /// `continue [n];` — see [`StmtKind::Break`] for the level.
     Continue(u32),

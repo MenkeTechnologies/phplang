@@ -383,3 +383,35 @@ fn a_continue_that_lands_on_a_switch_warns_once() {
         )
     );
 }
+
+#[test]
+fn goto_jumps_within_a_function_and_out_of_loops() {
+    // php -r 'function g($n) { $r = []; top: if ($n <= 0) goto done; $r[] = $n; $n--; goto top; done: return implode(",", $r); } echo g(4); foreach ([1, 2, 3] as $v) { if ($v == 2) goto next; echo $v; next: echo "."; } foreach ([1,2] as $a) { foreach ([3,4] as $b) { if ($b == 4) goto out; echo $a, $b, " "; } } out: echo "out";'
+    assert_eq!(
+        php_r(
+            r#"function g($n) { $r = []; top: if ($n <= 0) goto done; $r[] = $n; $n--; goto top; done: return implode(",", $r); } echo g(4); foreach ([1, 2, 3] as $v) { if ($v == 2) goto next; echo $v; next: echo "."; } foreach ([1,2] as $a) { foreach ([3,4] as $b) { if ($b == 4) goto out; echo $a, $b, " "; } } out: echo "out";"#
+        ),
+        ("4,3,2,11..3.13 out".to_string(), 0)
+    );
+}
+
+#[test]
+fn goto_refuses_what_zend_resolve_goto_label_refuses() {
+    assert_eq!(
+        php_r("echo 1; goto a;"),
+        compile_fatal("'goto' to undefined label 'a'")
+    );
+    assert_eq!(
+        php_r("echo 1; a: a:"),
+        compile_fatal("Label 'a' already defined")
+    );
+    assert_eq!(
+        php_r("echo 1; goto x; while (1) { x: echo 1; break; }"),
+        compile_fatal("'goto' into loop or switch statement is disallowed")
+    );
+    // Labels are function-scoped.
+    assert_eq!(
+        php_r("echo 1; function f() { goto a; } a: echo 1;"),
+        compile_fatal("'goto' to undefined label 'a'")
+    );
+}

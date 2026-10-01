@@ -304,7 +304,11 @@ impl Scan<'_> {
             | StmtKind::InlineHtml(_)
             | StmtKind::Return(None)
             | StmtKind::Break(_)
+            | StmtKind::Label(_)
             | StmtKind::Continue(_) => {}
+            // A `goto` makes the flow unstructured, which no per-name rule here
+            // accounts for.
+            StmtKind::Goto(_) => self.poison(),
         }
     }
 
@@ -687,6 +691,8 @@ impl Flow {
             | StmtKind::InlineHtml(_)
             | StmtKind::Return(None)
             | StmtKind::Break(_)
+            | StmtKind::Goto(_)
+            | StmtKind::Label(_)
             | StmtKind::Continue(_) => {}
         }
     }
@@ -969,6 +975,8 @@ impl GlobalScan {
             StmtKind::InlineHtml(_)
             | StmtKind::Return(None)
             | StmtKind::Break(_)
+            | StmtKind::Goto(_)
+            | StmtKind::Label(_)
             | StmtKind::Continue(_) => {}
         }
     }

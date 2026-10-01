@@ -1125,3 +1125,10 @@ foreach ([fn() => new DateTime("31/12/2024"), fn() => new DateInterval("P1X"),
 var_dump(date_create("bogus"), date_get_last_errors());
 new DateTime("2024-02-31 25:00");
 echo DateTime::getLastErrors()["warnings"][16] ?? "none", "\n";
+#==#
+// ── goto: backward loops, jumps out of nested loops, function-scoped labels ──
+function collatz($n) { $steps = 0; again: if ($n == 1) goto done; $n = $n % 2 ? 3 * $n + 1 : intdiv($n, 2); $steps++; goto again; done: return $steps; }
+echo collatz(27), "\n";
+foreach ([1, 2] as $a) { foreach ([3, 4] as $b) { if ($b == 4) goto out; echo $a, $b, " "; } }
+out:
+echo "out\n";

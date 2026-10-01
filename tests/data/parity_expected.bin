@@ -1991,3 +1991,7 @@ Stack trace:
 #1 {main}
   thrown in Command line code on line 9
 
+#REC 105 exit=0 out=11 err=0
+111
+13 out
+

@@ -329,7 +329,7 @@ file's directory. The same value is what `get_include_path()` returns.
 | form | reference | phplang |
 |---|---|---|
 | `pack()` / `unpack()` | implemented | `Call to undefined function` |
-| `goto end; …; end: echo "done";` | `done` | `Parse error: syntax error, unexpected identifier "end"` |
+| `try { goto out; } finally { … } out:` — a `goto` out of a `try`/`catch`/`finally` body | runs the `finally`, then jumps | a phplang compile error: a `try` body is a chunk of its own and the jump cannot leave it |
 | `iconv_strlen("héllo")` | `int(5)` | `Call to undefined function iconv_strlen()` |
 | `strtotime("2024-03-01 10:00 Europe/Paris")`, `new DateTimeZone("Europe/Paris")` — any zone identifier whose offset is not fixed | `int(1709283600)`; a zone | `false`; `DateInvalidTimeZoneException`: there is no tz database, so only `UTC` and its aliases and the `Etc/GMT±N` zones resolve (abbreviations such as `CEST` do) |
 | `new DatePeriod("R2/2024-01-01T00:00:00Z/P1D")` — the deprecated ISO-string form | a period, with a deprecation | `TypeError`: only the date/interval forms are implemented |

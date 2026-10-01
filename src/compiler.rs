@@ -115,6 +115,9 @@ pub struct Counters {
 
 /// Break/continue jump fixups for the innermost loop.
 struct LoopCtx {
+    /// Unique per loop in the compilation — a `goto` label records the loops
+    /// around it by these.
+    id: usize,
     breaks: Vec<usize>,
     continues: Vec<usize>,
     /// For a `foreach` over a generator whose subject is not a plain variable:
@@ -388,6 +391,14 @@ pub struct Compiler {
     /// `switch` — the levels a `break` here can still reach through a control
     /// signal. A function body starts again from none.
     outer_loops: Vec<bool>,
+    /// Last [`LoopCtx::id`] handed out.
+    loop_seq: usize,
+    /// The `goto` labels and jumps of the function being compiled.
+    gotos: Gotos,
+    /// Which chunk the code being lowered lands in — a `try` body is a chunk
+    /// of its own — and the last id handed out.
+    cur_chunk: usize,
+    chunk_seq: usize,
     /// Monotonic counter for compiler-generated temporary variable names
     /// (`foreach` desugaring), kept out of the PHP identifier space with a `@`.
     tmp: usize,
@@ -529,6 +540,7 @@ fn compile_program(stmts: &[Stmt], debug: bool, prelude: bool) -> Result<Program
     let main_promoted = promoted.names.clone();
     let saved = c.enter_scope_promoting(main_order.clone(), promoted);
     c.compile_top_level(&mut b, stmts)?;
+    c.resolve_gotos(&mut b, 0, true)?;
     let main_locals = c.leave_scope(saved);
     let counters = c.counters();
     let (fn_sites, class_sites) = c.decl_sites();
@@ -573,6 +585,7 @@ pub fn compile_nested(stmts: &[Stmt], start: Counters, source: &str) -> Result<P
     let mut b = ChunkBuilder::new();
     let saved = c.enter_scope(Vec::new());
     c.compile_top_level(&mut b, stmts)?;
+    c.resolve_gotos(&mut b, 0, true)?;
     c.leave_scope(saved);
     let counters = c.counters();
     let (fn_sites, class_sites) = c.decl_sites();
@@ -1103,16 +1116,84 @@ impl Compiler {
     /// Enter a function, method or closure body: no `try` and no loop around
     /// it is visible from inside. Returns what [`Self::leave_own_loop_scope`]
     /// puts back. (`self.loops` itself is saved by each caller.)
-    fn enter_own_loop_scope(&mut self) -> (usize, Vec<bool>) {
-        (
-            std::mem::take(&mut self.in_try),
-            std::mem::take(&mut self.outer_loops),
-        )
+    fn enter_own_loop_scope(&mut self) -> OwnScope {
+        self.chunk_seq += 1;
+        OwnScope {
+            in_try: std::mem::take(&mut self.in_try),
+            outer_loops: std::mem::take(&mut self.outer_loops),
+            gotos: std::mem::take(&mut self.gotos),
+            chunk: std::mem::replace(&mut self.cur_chunk, self.chunk_seq),
+        }
     }
 
-    fn leave_own_loop_scope(&mut self, (in_try, outer_loops): (usize, Vec<bool>)) {
-        self.in_try = in_try;
-        self.outer_loops = outer_loops;
+    fn leave_own_loop_scope(&mut self, s: OwnScope) {
+        self.in_try = s.in_try;
+        self.outer_loops = s.outer_loops;
+        self.gotos = s.gotos;
+        self.cur_chunk = s.chunk;
+    }
+
+    /// `label:` — record where it stands.
+    fn define_label(&mut self, b: &ChunkBuilder, name: &str, line: u32) -> Result<(), String> {
+        if self.gotos.labels.contains_key(name) {
+            return Err(self.compile_fatal(line, &format!("Label '{name}' already defined")));
+        }
+        let at = LabelAt {
+            pos: b.current_pos(),
+            chunk: self.cur_chunk,
+            loops: self.loops.iter().map(|l| l.id).collect(),
+        };
+        self.gotos.labels.insert(name.to_string(), at);
+        Ok(())
+    }
+
+    /// Patch every waiting `goto` of chunk `chunk` whose label is known. With
+    /// `last`, the function is complete and a `goto` still waiting has no label.
+    /// The checks are `zend_resolve_goto_label`'s.
+    fn resolve_gotos(
+        &mut self,
+        b: &mut ChunkBuilder,
+        chunk: usize,
+        last: bool,
+    ) -> Result<(), String> {
+        let pending = std::mem::take(&mut self.gotos.pending);
+        for g in pending {
+            if g.chunk != chunk {
+                self.gotos.pending.push(g);
+                continue;
+            }
+            match self.gotos.labels.get(&g.label) {
+                Some(at) if at.chunk == chunk => {
+                    if !g.loops.starts_with(&at.loops) {
+                        return Err(self.compile_fatal(
+                            g.line,
+                            "'goto' into loop or switch statement is disallowed",
+                        ));
+                    }
+                    b.patch_jump(g.jump, at.pos);
+                }
+                Some(_) => {
+                    return Err(format!(
+                        "'goto' across a try/catch/finally boundary is not supported (label '{}')",
+                        g.label
+                    ))
+                }
+                None if last => {
+                    let msg = format!("'goto' to undefined label '{}'", g.label);
+                    return Err(self.compile_fatal(g.line, &msg));
+                }
+                None => self.gotos.pending.push(g),
+            }
+        }
+        if last {
+            if let Some(g) = self.gotos.pending.first() {
+                return Err(format!(
+                    "'goto' across a try/catch/finally boundary is not supported (label '{}')",
+                    g.label
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// How a `break`/`continue` of `level` leaves this chunk: `Ok(Some(i))` jumps
@@ -1516,6 +1597,18 @@ impl Compiler {
                 b.emit(Op::CallBuiltin(ops::SIG_RETURN, 1), line);
                 b.emit(Op::Pop, line);
             }
+            StmtKind::Label(name) => self.define_label(b, name, line)?,
+            StmtKind::Goto(name) => {
+                let jump = b.emit(Op::Jump(0), line);
+                let g = PendingGoto {
+                    label: name.clone(),
+                    jump,
+                    chunk: self.cur_chunk,
+                    loops: self.loops.iter().map(|l| l.id).collect(),
+                    line,
+                };
+                self.gotos.pending.push(g);
+            }
             StmtKind::Break(level) => {
                 // `break n` leaves the n-th enclosing loop, so index the loop
                 // stack from the top: level 1 is the innermost. Inside a loop in
@@ -1593,6 +1686,7 @@ impl Compiler {
                 let promoted = self.promotable_locals(params, body, body_has_yield(body));
                 let locals = self.enter_scope_promoting(scope_slots(params, body), promoted);
                 self.compile_seq(&mut fb, body)?;
+                self.resolve_gotos(&mut fb, self.cur_chunk, true)?;
                 let locals = self.leave_scope(locals);
                 self.decl_site = saved_site;
                 self.ret_by_ref = saved_ref;
@@ -1739,7 +1833,9 @@ impl Compiler {
         // code and saves one jump per iteration.
         let enter = b.emit(Op::Jump(0), 0);
         let body_pos = b.current_pos();
+        self.loop_seq += 1;
         self.loops.push(LoopCtx {
+            id: self.loop_seq,
             breaks: vec![],
             continues: vec![],
             gen_subj: None,
@@ -1769,7 +1865,9 @@ impl Compiler {
     ) -> Result<(), String> {
         // The body runs once before the condition is ever tested.
         let top = b.current_pos();
+        self.loop_seq += 1;
         self.loops.push(LoopCtx {
+            id: self.loop_seq,
             breaks: vec![],
             continues: vec![],
             gen_subj: None,
@@ -1823,7 +1921,9 @@ impl Compiler {
         let fallthrough = b.emit(Op::Jump(0), 0);
 
         // Bodies, emitted in source order (no jumps between them → fall-through).
+        self.loop_seq += 1;
         self.loops.push(LoopCtx {
+            id: self.loop_seq,
             breaks: vec![],
             continues: vec![],
             gen_subj: None,
@@ -1872,7 +1972,9 @@ impl Compiler {
         // condition to branch on and keeps its unconditional edge.
         let enter = cond.map(|_| b.emit(Op::Jump(0), 0));
         let body_pos = b.current_pos();
+        self.loop_seq += 1;
         self.loops.push(LoopCtx {
+            id: self.loop_seq,
             breaks: vec![],
             continues: vec![],
             gen_subj: None,
@@ -1963,8 +2065,34 @@ impl Compiler {
         // The body is lowered twice; its compile-time warnings are kept from the
         // array copy below only, so each is raised once.
         let diags = crate::lexer::diag_count();
+        // Labels in the body are defined again by the array copy: those this
+        // copy defines serve its own jumps and are then forgotten.
+        let labels_before: FxHashSet<String> = self.gotos.labels.keys().cloned().collect();
         self.compile_foreach_generator(b, &subj_t, mark_t.as_deref(), key_var, val_var, pattern, body)?;
         crate::lexer::truncate_diags(diags);
+        let fresh: Vec<String> = self
+            .gotos
+            .labels
+            .keys()
+            .filter(|k| !labels_before.contains(*k))
+            .cloned()
+            .collect();
+        let pending = std::mem::take(&mut self.gotos.pending);
+        for g in pending {
+            match self.gotos.labels.get(&g.label) {
+                Some(at)
+                    if fresh.contains(&g.label)
+                        && at.chunk == g.chunk
+                        && g.chunk == self.cur_chunk =>
+                {
+                    b.patch_jump(g.jump, at.pos);
+                }
+                _ => self.gotos.pending.push(g),
+            }
+        }
+        for k in fresh {
+            self.gotos.labels.remove(&k);
+        }
         let after_gen = b.emit(Op::Jump(0), 0);
         let array_start = b.current_pos();
         b.patch_jump(to_array, array_start);
@@ -2069,7 +2197,9 @@ impl Compiler {
         );
         self.emit_foreach_destructure(b, pattern, val_var, Some(&row_path))?;
 
+        self.loop_seq += 1;
         self.loops.push(LoopCtx {
+            id: self.loop_seq,
             breaks: vec![],
             continues: vec![],
             gen_subj: None,
@@ -2150,7 +2280,9 @@ impl Compiler {
         // target in the pattern has nothing to alias.
         self.emit_foreach_destructure(b, pattern, val_var, None)?;
 
+        self.loop_seq += 1;
         self.loops.push(LoopCtx {
+            id: self.loop_seq,
             breaks: vec![],
             continues: vec![],
             gen_subj: mark_t.map(|m| (subj_t.to_string(), m.to_string())),
@@ -2778,6 +2910,7 @@ impl Compiler {
                 }
                 c.compile_seq(&mut mb, &m.body)
             })?;
+            self.resolve_gotos(&mut mb, self.cur_chunk, true)?;
             self.decl_site = saved_site;
             self.ret_by_ref = saved_ref;
             self.loops = saved;
@@ -3272,11 +3405,15 @@ impl Compiler {
         // restoring what that scope zeroed.
         let around = (self.in_try, self.outer_loops.clone());
         self.outer_loops.extend(saved.iter().map(|l| l.is_switch));
+        self.chunk_seq += 1;
+        let chunk = std::mem::replace(&mut self.cur_chunk, self.chunk_seq);
         self.in_try += 1;
         let r = self.compile_seq(&mut fb, body);
         (self.in_try, self.outer_loops) = around;
         self.loops = saved;
         r?;
+        let id = std::mem::replace(&mut self.cur_chunk, chunk);
+        self.resolve_gotos(&mut fb, id, false)?;
         Ok(fb.build())
     }
 
@@ -5366,6 +5503,7 @@ impl Compiler {
         let site = host::DeclSite::Closure(Box::new(self.decl_site.clone()), line);
         let saved_site = std::mem::replace(&mut self.decl_site, site.clone());
         self.in_other_frame(|c| c.compile_seq(&mut fb, body))?;
+        self.resolve_gotos(&mut fb, self.cur_chunk, true)?;
         self.decl_site = saved_site;
         self.loops = saved;
         self.leave_own_loop_scope(saved_try);
@@ -6870,6 +7008,8 @@ impl SlotScan {
             | StmtKind::InlineHtml(_)
             | StmtKind::Return(None)
             | StmtKind::Break(_)
+            | StmtKind::Goto(_)
+            | StmtKind::Label(_)
             | StmtKind::Continue(_) => {}
         }
     }
@@ -7050,4 +7190,38 @@ fn ret_rule(ret: Option<&TypeHint>, body: &[Stmt]) -> Option<&'static str> {
     } else {
         None
     }
+}
+
+/// A `goto` label: where it stands, in which chunk, and inside which loops.
+#[derive(Clone)]
+struct LabelAt {
+    pos: usize,
+    chunk: usize,
+    loops: Vec<usize>,
+}
+
+/// A `goto` whose jump waits for its label.
+#[derive(Clone)]
+struct PendingGoto {
+    label: String,
+    jump: usize,
+    chunk: usize,
+    loops: Vec<usize>,
+    line: u32,
+}
+
+/// The labels and jumps of one function body (labels are function-scoped).
+#[derive(Clone, Default)]
+struct Gotos {
+    labels: FxHashMap<String, LabelAt>,
+    pending: Vec<PendingGoto>,
+}
+
+/// What a function, method or closure body hides from its surroundings —
+/// see [`Compiler::enter_own_loop_scope`].
+struct OwnScope {
+    in_try: usize,
+    outer_loops: Vec<bool>,
+    gotos: Gotos,
+    chunk: usize,
 }
