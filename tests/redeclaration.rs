@@ -28,7 +28,9 @@ fn run_r(code: &str) -> (String, i32) {
 
 fn fatal(before: &str, msg: &str, trace: &str) -> (String, i32) {
     (
-        format!("{before}\nFatal error: {msg} in Command line code on line 1\nStack trace:\n{trace}\n"),
+        format!(
+            "{before}\nFatal error: {msg} in Command line code on line 1\nStack trace:\n{trace}\n"
+        ),
         255,
     )
 }
@@ -60,7 +62,9 @@ fn a_namespaced_function_may_share_a_library_or_sibling_name() {
         ("ok".to_string(), 0)
     );
     assert_eq!(
-        run_r(r#"namespace A { function f(){ return 1; } } namespace B { function f(){ return 2; } } namespace { echo "ok"; }"#),
+        run_r(
+            r#"namespace A { function f(){ return 1; } } namespace B { function f(){ return 2; } } namespace { echo "ok"; }"#
+        ),
         ("ok".to_string(), 0)
     );
 }
@@ -68,7 +72,9 @@ fn a_namespaced_function_may_share_a_library_or_sibling_name() {
 #[test]
 fn a_function_in_a_block_is_declared_when_the_block_runs() {
     assert_eq!(
-        run_r(r#"var_dump(function_exists("g")); if (false) { function g(){} } var_dump(function_exists("g"));"#),
+        run_r(
+            r#"var_dump(function_exists("g")); if (false) { function g(){} } var_dump(function_exists("g"));"#
+        ),
         ("bool(false)\nbool(false)\n".to_string(), 0)
     );
     assert_eq!(
@@ -84,7 +90,9 @@ fn a_function_in_a_block_is_declared_when_the_block_runs() {
 #[test]
 fn a_polyfill_guarded_by_function_exists_does_not_replace_the_library_function() {
     assert_eq!(
-        run_r(r#"if (!function_exists("str_contains")) { function str_contains($a,$b){ return "user"; } } var_dump(str_contains("ab","b"));"#),
+        run_r(
+            r#"if (!function_exists("str_contains")) { function str_contains($a,$b){ return "user"; } } var_dump(str_contains("ab","b"));"#
+        ),
         ("bool(true)\n".to_string(), 0)
     );
 }
@@ -136,7 +144,9 @@ fn a_built_in_type_cannot_be_redeclared() {
 #[test]
 fn a_type_in_a_block_is_declared_when_the_block_runs() {
     assert_eq!(
-        run_r(r#"var_dump(class_exists("X")); if (false) { class X{} } var_dump(class_exists("X")); if (true) { class X { function m(){ return 5; } } } var_dump((new X)->m());"#),
+        run_r(
+            r#"var_dump(class_exists("X")); if (false) { class X{} } var_dump(class_exists("X")); if (true) { class X { function m(){ return 5; } } } var_dump((new X)->m());"#
+        ),
         ("bool(false)\nbool(false)\nint(5)\n".to_string(), 0)
     );
 }

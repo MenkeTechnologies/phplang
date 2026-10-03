@@ -664,9 +664,7 @@ impl Parser {
     /// ends in `class` starts here.
     fn at_class_modifiers(&self) -> bool {
         let mut i = self.pos;
-        let is_kw = |i: usize, kw: &str| {
-            matches!(self.toks.get(i).map(|s| &s.tok), Some(Tok::Ident(s)) if s.eq_ignore_ascii_case(kw))
-        };
+        let is_kw = |i: usize, kw: &str| matches!(self.toks.get(i).map(|s| &s.tok), Some(Tok::Ident(s)) if s.eq_ignore_ascii_case(kw));
         while is_kw(i, "abstract") || is_kw(i, "final") || is_kw(i, "readonly") {
             i += 1;
         }
@@ -2079,16 +2077,23 @@ impl Parser {
                     break;
                 };
                 if repeated {
-                    return Err(self.bare_fatal_at(line, format!("Multiple {word} modifiers are not allowed")));
+                    return Err(self.bare_fatal_at(
+                        line,
+                        format!("Multiple {word} modifiers are not allowed"),
+                    ));
                 }
             }
             let const_line = self.line();
             let misplaced = if self.at_kw("const") {
                 // A constant takes a visibility and `final`, nothing else.
-                [(m_abstract, "abstract"), (is_static, "static"), (seen_readonly, "readonly")]
-                    .into_iter()
-                    .find(|(set, _)| *set)
-                    .map(|(_, word)| format!("Cannot use the {word} modifier on a class constant"))
+                [
+                    (m_abstract, "abstract"),
+                    (is_static, "static"),
+                    (seen_readonly, "readonly"),
+                ]
+                .into_iter()
+                .find(|(set, _)| *set)
+                .map(|(_, word)| format!("Cannot use the {word} modifier on a class constant"))
             } else if self.at_kw("function") && seen_readonly {
                 Some("Cannot use the readonly modifier on a method".to_string())
             } else if self.at_kw("function") && m_abstract && m_final {

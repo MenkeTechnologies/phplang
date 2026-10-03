@@ -1806,7 +1806,11 @@ impl PhpHost {
             return None;
         }
         if let Some(def) = self.classes.get(&lname) {
-            return Some(format!("Cannot redeclare {} {}", class_kind_word(def), def.name));
+            return Some(format!(
+                "Cannot redeclare {} {}",
+                class_kind_word(def),
+                def.name
+            ));
         }
         if let Some((spelled, kind)) = crate::prelude_type(&lname) {
             return Some(format!("Cannot redeclare {kind} {spelled}"));
@@ -1819,7 +1823,13 @@ impl PhpHost {
     /// Declare a function whose definition was compiled under `key` (see
     /// `ops::DECLARE_FN`) as `name`, at `line` of the running file. `Err` is the
     /// redeclaration the reference refuses.
-    pub fn declare_fn_at(&mut self, key: &str, name: &str, ns: &str, line: u32) -> Result<(), String> {
+    pub fn declare_fn_at(
+        &mut self,
+        key: &str,
+        name: &str,
+        ns: &str,
+        line: u32,
+    ) -> Result<(), String> {
         if let Some(msg) = self.fn_redeclare_msg(name, ns) {
             return Err(msg);
         }
@@ -4403,7 +4413,12 @@ impl PhpHost {
     /// `None` when the method does not resolve or that parameter is by value.
     /// The class named is the one that DECLARES the method. A variadic tail is
     /// left alone.
-    pub fn method_byref_param(&self, recv: &Value, method: &str, argno: usize) -> Option<(String, String)> {
+    pub fn method_byref_param(
+        &self,
+        recv: &Value,
+        method: &str,
+        argno: usize,
+    ) -> Option<(String, String)> {
         let class = match recv {
             Value::Obj(_) => self.object_class(recv)?,
             other => self.to_str(other),
@@ -4411,7 +4426,10 @@ impl PhpHost {
         let (decl, def) = self.resolve_method(&class, &method.to_ascii_lowercase())?;
         let p = def.params.get(argno.checked_sub(1)?)?;
         (p.by_ref && !p.variadic).then(|| {
-            (format!("{}::{method}", self.class_display_name(&decl)), p.name.clone())
+            (
+                format!("{}::{method}", self.class_display_name(&decl)),
+                p.name.clone(),
+            )
         })
     }
 
@@ -7038,19 +7056,27 @@ impl PhpHost {
     fn handle_held(&self, handle: u32) -> bool {
         let is = |v: &Value| matches!(v, Value::Obj(o) if *o == handle);
         let frame_holds = |s: &Scope| {
-            s.vars.slots.iter().any(|slot| matches!(slot, Slot::Val(v) if is(v)))
+            s.vars
+                .slots
+                .iter()
+                .any(|slot| matches!(slot, Slot::Val(v) if is(v)))
         };
         self.scopes.iter().any(frame_holds)
-            || self.generators.iter().any(|g| g.ctx.frames.iter().any(frame_holds))
+            || self
+                .generators
+                .iter()
+                .any(|g| g.ctx.frames.iter().any(frame_holds))
             || self.ref_cells.iter().any(is)
             || self.static_props.values().any(is)
             || self.constants.values().any(is)
             || self.objs.iter().any(|o| match o {
                 PhpObj::Array { entries, .. } => entries.values().any(is),
                 PhpObj::Object { props, .. } => props.values().any(is),
-                PhpObj::Closure { captured, bound_this, .. } => {
-                    captured.iter().any(|(_, v)| is(v)) || bound_this.as_ref().is_some_and(is)
-                }
+                PhpObj::Closure {
+                    captured,
+                    bound_this,
+                    ..
+                } => captured.iter().any(|(_, v)| is(v)) || bound_this.as_ref().is_some_and(is),
                 _ => false,
             })
     }

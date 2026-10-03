@@ -31,7 +31,10 @@ fn fatal(msg: &str) -> (String, i32) {
 }
 
 fn bare_fatal(msg: &str) -> (String, i32) {
-    (format!("\nFatal error: {msg} in Command line code on line 1\n"), 255)
+    (
+        format!("\nFatal error: {msg} in Command line code on line 1\n"),
+        255,
+    )
 }
 
 #[test]
@@ -40,7 +43,10 @@ fn a_repeated_member_is_diagnosed_per_kind() {
         run_r("echo 1; class A { const X = 1; const X = 2; }"),
         fatal("Cannot redefine class constant A::X")
     );
-    assert_eq!(run_r("echo 1; class A { public $a; public $a; }"), fatal("Cannot redeclare A::$a"));
+    assert_eq!(
+        run_r("echo 1; class A { public $a; public $a; }"),
+        fatal("Cannot redeclare A::$a")
+    );
     assert_eq!(
         run_r("echo 1; class A { function f() {} function F() {} }"),
         fatal("Cannot redeclare A::F()")
@@ -77,7 +83,10 @@ fn a_method_body_must_match_its_modifiers() {
 
 #[test]
 fn a_parameter_named_twice_is_diagnosed() {
-    assert_eq!(run_r("echo 1; function f($a, $a) {}"), fatal("Redefinition of parameter $a"));
+    assert_eq!(
+        run_r("echo 1; function f($a, $a) {}"),
+        fatal("Redefinition of parameter $a")
+    );
 }
 
 #[test]

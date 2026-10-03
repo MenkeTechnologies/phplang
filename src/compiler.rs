@@ -1347,7 +1347,9 @@ impl Compiler {
         for s in stmts {
             match &s.kind {
                 StmtKind::Block(body) => self.early_bind(body),
-                StmtKind::Class(d) if d.implements.is_empty() && d.uses.is_empty() && !d.is_enum => {
+                StmtKind::Class(d)
+                    if d.implements.is_empty() && d.uses.is_empty() && !d.is_enum =>
+                {
                     let linked = match &d.parent {
                         None => true,
                         Some(p) => {
@@ -1589,8 +1591,12 @@ impl Compiler {
                 // The value is computed first; then every generator loop this
                 // `return` leaves frees its iterator, as the reference does
                 // before the frame exits.
-                let subjects: Vec<(String, String)> =
-                    self.loops.iter().rev().filter_map(|l| l.gen_subj.clone()).collect();
+                let subjects: Vec<(String, String)> = self
+                    .loops
+                    .iter()
+                    .rev()
+                    .filter_map(|l| l.gen_subj.clone())
+                    .collect();
                 for (s, m) in &subjects {
                     self.emit_gen_release(b, s, m)?;
                 }
@@ -2068,7 +2074,15 @@ impl Compiler {
         // Labels in the body are defined again by the array copy: those this
         // copy defines serve its own jumps and are then forgotten.
         let labels_before: FxHashSet<String> = self.gotos.labels.keys().cloned().collect();
-        self.compile_foreach_generator(b, &subj_t, mark_t.as_deref(), key_var, val_var, pattern, body)?;
+        self.compile_foreach_generator(
+            b,
+            &subj_t,
+            mark_t.as_deref(),
+            key_var,
+            val_var,
+            pattern,
+            body,
+        )?;
         crate::lexer::truncate_diags(diags);
         let fresh: Vec<String> = self
             .gotos
@@ -2394,14 +2408,18 @@ impl Compiler {
                 }
                 Member::Prop(p) => {
                     if !props.insert(&p.name) {
-                        return Err(self.compile_fatal(p.line, &format!("Cannot redeclare {class}::${}", p.name)));
+                        return Err(self.compile_fatal(
+                            p.line,
+                            &format!("Cannot redeclare {class}::${}", p.name),
+                        ));
                     }
                     if p.readonly && p.ty.is_none() {
                         let msg = format!("Readonly property {class}::${} must have type", p.name);
                         return Err(self.compile_fatal(p.line, &msg));
                     }
                     if p.readonly && p.is_static {
-                        let msg = format!("Static property {class}::${} cannot be readonly", p.name);
+                        let msg =
+                            format!("Static property {class}::${} cannot be readonly", p.name);
                         return Err(self.compile_fatal(p.line, &msg));
                     }
                 }
@@ -2414,7 +2432,9 @@ impl Compiler {
                         ));
                     }
                     if decl.is_enum && m.is_abstract {
-                        return fatal(format!("Enum method {class}::{name}() must not be abstract"));
+                        return fatal(format!(
+                            "Enum method {class}::{name}() must not be abstract"
+                        ));
                     }
                     if m.is_abstract && !decl.is_interface && !decl.is_abstract && !decl.is_trait {
                         return fatal(format!(
@@ -2426,16 +2446,24 @@ impl Compiler {
                         && !decl.is_trait
                         && m.visibility == Visibility::Private
                     {
-                        return fatal(format!("Abstract function {class}::{name}() cannot be declared private"));
+                        return fatal(format!(
+                            "Abstract function {class}::{name}() cannot be declared private"
+                        ));
                     }
                     if decl.is_interface && m.has_body {
-                        return fatal(format!("Interface function {class}::{name}() cannot contain body"));
+                        return fatal(format!(
+                            "Interface function {class}::{name}() cannot contain body"
+                        ));
                     }
                     if !decl.is_interface && m.is_abstract && m.has_body {
-                        return fatal(format!("Abstract function {class}::{name}() cannot contain body"));
+                        return fatal(format!(
+                            "Abstract function {class}::{name}() cannot contain body"
+                        ));
                     }
                     if !m.is_abstract && !m.has_body {
-                        return fatal(format!("Non-abstract method {class}::{name}() must contain body"));
+                        return fatal(format!(
+                            "Non-abstract method {class}::{name}() must contain body"
+                        ));
                     }
                     if !methods.insert(name.to_ascii_lowercase()) {
                         return fatal(format!("Cannot redeclare {class}::{name}()"));
@@ -3722,9 +3750,11 @@ impl Compiler {
                         .iter()
                         .enumerate()
                         .filter_map(|(i, a)| match a {
-                            Expr::NamedArg(n, v) => {
-                                f.params.iter().position(|p| p == n).map(|p| ((**v).clone(), p))
-                            }
+                            Expr::NamedArg(n, v) => f
+                                .params
+                                .iter()
+                                .position(|p| p == n)
+                                .map(|p| ((**v).clone(), p)),
                             Expr::Spread(_) => None,
                             _ => Some((a.clone(), i)),
                         })
@@ -4105,10 +4135,16 @@ impl Compiler {
                 for (i, a) in args.iter().enumerate() {
                     self.compile_expr(b, a)?;
                     if let Some(t) = &recv_t {
-                        self.emit_byref_arg_diag_m(b, |c, b| {
-                            c.emit_get_var(b, t);
-                            Ok(())
-                        }, name, i, a)?;
+                        self.emit_byref_arg_diag_m(
+                            b,
+                            |c, b| {
+                                c.emit_get_var(b, t);
+                                Ok(())
+                            },
+                            name,
+                            i,
+                            a,
+                        )?;
                     }
                 }
                 b.emit(
@@ -4182,7 +4218,13 @@ impl Compiler {
                     // `$expr::m()` is left unjudged.
                     if matches!(class, ClassRef::Name(_)) {
                         let member = Member::Name(name.clone());
-                        self.emit_byref_arg_diag_m(b, |c, b| c.emit_class_ref(b, class), &member, i, a)?;
+                        self.emit_byref_arg_diag_m(
+                            b,
+                            |c, b| c.emit_class_ref(b, class),
+                            &member,
+                            i,
+                            a,
+                        )?;
                     }
                 }
                 b.emit(
@@ -4747,7 +4789,11 @@ impl Compiler {
     /// equivalent sequence of writes would build it: `$t[k] = v` for a value and
     /// `$t[k] = &lv` for a reference, which binds the element and the lvalue to
     /// one slot. The literal's value is the temporary.
-    fn compile_array_with_refs(&mut self, b: &mut ChunkBuilder, elems: &[ArrayElem]) -> Result<(), String> {
+    fn compile_array_with_refs(
+        &mut self,
+        b: &mut ChunkBuilder,
+        elems: &[ArrayElem],
+    ) -> Result<(), String> {
         let t = self.tmp_name("refarr");
         let tv = || Box::new(Expr::Var(t.clone()));
         let init = Expr::Assign(
@@ -4840,8 +4886,10 @@ impl Compiler {
         // `*` and the three bitwise operators `|`, `&`, `^`. `+` is not
         // swapped even though it commutes on numbers — it is also array union,
         // which does not. `-`, `/`, `%` and `**` all report in source order.
-        let swap = matches!(op, BinOp::Mul | BinOp::BitOr | BinOp::BitAnd | BinOp::BitXor)
-            && is_const_operand(l)
+        let swap = matches!(
+            op,
+            BinOp::Mul | BinOp::BitOr | BinOp::BitAnd | BinOp::BitXor
+        ) && is_const_operand(l)
             && is_definitely_runtime(r);
         if swap {
             self.compile_expr(b, r)?;
@@ -6031,10 +6079,16 @@ impl Compiler {
                         None => self.compile_expr(b, a)?,
                     }
                     if let (true, Some((t, m))) = (positional, method) {
-                        self.emit_byref_arg_diag_m(b, |c, b| {
-                            c.emit_get_var(b, t);
-                            Ok(())
-                        }, m, i, a)?;
+                        self.emit_byref_arg_diag_m(
+                            b,
+                            |c, b| {
+                                c.emit_get_var(b, t);
+                                Ok(())
+                            },
+                            m,
+                            i,
+                            a,
+                        )?;
                     }
                     found
                 }
@@ -6210,7 +6264,12 @@ impl Compiler {
     /// the read-and-write fetch of a compound assignment or `++`: it still
     /// warns about the missing link (and an undefined variable), as a read
     /// does. A plain `=` warns about neither. Anything else is an ordinary read.
-    fn compile_prop_write_recv(&mut self, b: &mut ChunkBuilder, recv: &Expr, rw: bool) -> Result<(), String> {
+    fn compile_prop_write_recv(
+        &mut self,
+        b: &mut ChunkBuilder,
+        recv: &Expr,
+        rw: bool,
+    ) -> Result<(), String> {
         match recv {
             // `$this` is fetched like any read: with no object bound that is
             // `Using $this when not in object context`, not a write on null.
@@ -6226,11 +6285,15 @@ impl Compiler {
         }
     }
 
-
     /// Release the hidden temporary holding a `foreach` subject: read it, clear
     /// the slot, and hand the value to [`ops::GEN_RELEASE`], which destroys a
     /// suspended generator once no variable, element or property still holds it.
-    fn emit_gen_release(&mut self, b: &mut ChunkBuilder, subj_t: &str, mark_t: &str) -> Result<(), String> {
+    fn emit_gen_release(
+        &mut self,
+        b: &mut ChunkBuilder,
+        subj_t: &str,
+        mark_t: &str,
+    ) -> Result<(), String> {
         self.emit_get_var(b, subj_t);
         self.emit_get_var(b, mark_t);
         self.emit_set_var(b, subj_t, |_, b| {
@@ -6633,7 +6696,9 @@ fn is_const_operand(e: &Expr) -> bool {
 fn is_const_array(elems: &[ArrayElem]) -> bool {
     let is_const = |e: &Expr| match e {
         Expr::Array(inner, _) => is_const_array(inner),
-        Expr::Spread(x) => matches!(&**x, Expr::Array(inner, _) if is_const_array(inner)) || is_const_operand(x),
+        Expr::Spread(x) => {
+            matches!(&**x, Expr::Array(inner, _) if is_const_array(inner)) || is_const_operand(x)
+        }
         _ => is_const_operand(e),
     };
     elems
@@ -6692,7 +6757,9 @@ fn is_definitely_runtime(e: &Expr) -> bool {
         // A bitwise operator over a float constant with a fractional part
         // deprecates the lossy conversion, so the reference does not fold it.
         Expr::Binary(BinOp::BitOr | BinOp::BitAnd | BinOp::BitXor, a, b) => {
-            is_const_operand(a) && is_const_operand(b) && (is_fractional_float(a) || is_fractional_float(b))
+            is_const_operand(a)
+                && is_const_operand(b)
+                && (is_fractional_float(a) || is_fractional_float(b))
         }
         _ => false,
     }
