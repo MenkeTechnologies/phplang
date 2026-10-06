@@ -445,6 +445,24 @@ fn error_reporting_cannot_retract_a_compile_time_notice() {
     );
 }
 
+#[test]
+fn the_dollar_brace_notice_names_the_line_its_text_run_began_on() {
+    // The reference attributes the notice to the start of the literal text that
+    // precedes `${` — or, with none, to the token before it — not to the line
+    // the `${` itself is on. A multi-line string therefore reports an EARLIER
+    // line than the interpolation's.
+    let line = |n: u32| {
+        format!(
+            "\nDeprecated: Using ${{var}} in strings is deprecated, use {{$var}} instead \
+             in Command line code on line {n}\n"
+        )
+    };
+    assert_eq!(
+        run("<?php $x=1;\n$a = \"\n${x}\";\n$b = \"${x}\n${x}\";\n$c = \"$x\n\n${x}\";\n$s = <<<EOT\na\nb ${x}\nEOT;\necho \"end\";"),
+        format!("{}{}{}{}{}end", line(2), line(4), line(4), line(6), line(10))
+    );
+}
+
 // ── the error_reporting mask ─────────────────────────────────────────────────
 
 #[test]

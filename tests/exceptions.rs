@@ -315,3 +315,36 @@ fn exceptions_carry_a_previous() {
         "NULL\n"
     );
 }
+
+#[test]
+fn the_spl_exception_hierarchy_and_error_exception_are_declared() {
+    // Every one of these was `Class "…" not found`. Parents and the
+    // `ErrorException` constructor's file/line rule are the reference's: a
+    // non-null `$filename` replaces the file and the line (0 when `$line` is
+    // null); a `$line` alone replaces only the line.
+    assert_eq!(
+        run(
+            r#"<?php foreach (["BadFunctionCallException","BadMethodCallException","DomainException","LengthException","OutOfRangeException","OutOfBoundsException","OverflowException","RangeException","UnderflowException","UnexpectedValueException","ErrorException","CompileError","ParseError","AssertionError"] as $c) { $o = new $c("m", 3); echo $c, "<", implode("<", class_parents($o)), "|", $o->getMessage(), $o->getCode(), "\n"; }
+$e = new ErrorException("a"); echo $e->getSeverity(), $e->getLine(), "\n";
+$e = new ErrorException("a", 1, E_WARNING, "x.php"); echo $e->getSeverity(), $e->getFile(), $e->getLine(), "\n";
+$e = new ErrorException("a", 1, E_NOTICE, null, 77); echo $e->getLine(), "\n";
+$e = new ErrorException("a", 1, E_NOTICE, "f", 9, new LogicException("p")); echo $e->getFile(), $e->getLine(), $e->getPrevious()->getMessage(), "\n";
+try { throw new OutOfBoundsException("oob"); } catch (RuntimeException $e) { echo get_class($e), "\n"; }"#
+        ),
+        "BadFunctionCallException<LogicException<Exception|m3\n\
+         BadMethodCallException<BadFunctionCallException<LogicException<Exception|m3\n\
+         DomainException<LogicException<Exception|m3\n\
+         LengthException<LogicException<Exception|m3\n\
+         OutOfRangeException<LogicException<Exception|m3\n\
+         OutOfBoundsException<RuntimeException<Exception|m3\n\
+         OverflowException<RuntimeException<Exception|m3\n\
+         RangeException<RuntimeException<Exception|m3\n\
+         UnderflowException<RuntimeException<Exception|m3\n\
+         UnexpectedValueException<RuntimeException<Exception|m3\n\
+         ErrorException<Exception|m3\n\
+         CompileError<Error|m3\n\
+         ParseError<CompileError<Error|m3\n\
+         AssertionError<Error|m3\n\
+         12\n2x.php0\n77\nf9p\nOutOfBoundsException\n"
+    );
+}

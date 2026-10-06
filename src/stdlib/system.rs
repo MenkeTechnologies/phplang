@@ -96,34 +96,32 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             if let Some(e) = iterator_arg_refusal(name, &arg(args, 0), true) {
                 return Some(Err(e));
             }
-            let arr = match crate::host::foreach_prep(arg(args, 0)) {
-                Ok(a) => a,
-                Err(e) => return Some(Err(e)),
-            };
-            // $preserve_keys defaults to true; false re-indexes 0..n.
+            // $preserve_keys defaults to true. false keeps EVERY element,
+            // including ones whose keys repeat — `yield from` restarts its
+            // inner keys at 0 — so it cannot be read back off the key-merged
+            // array a `foreach` builds.
             let preserve = args.len() < 2 || with_host(|h| h.is_truthy(&arg(args, 1)));
             if preserve {
-                arr
+                match crate::host::foreach_prep(arg(args, 0)) {
+                    Ok(a) => a,
+                    Err(e) => return Some(Err(e)),
+                }
             } else {
-                let vals = with_host(|h| {
-                    h.array_pairs(&arr)
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(|(_, v)| v)
-                        .collect::<Vec<_>>()
-                });
-                make_list(vals)
+                match crate::host::traversable_pairs(arg(args, 0)) {
+                    Ok(pairs) => make_list(pairs.into_iter().map(|(_, v)| v).collect()),
+                    Err(e) => return Some(Err(e)),
+                }
             }
         }
+        // Counts what a `foreach` visits, so a repeated key still counts twice.
         "iterator_count" => {
             if let Some(e) = iterator_arg_refusal(name, &arg(args, 0), true) {
                 return Some(Err(e));
             }
-            let arr = match crate::host::foreach_prep(arg(args, 0)) {
-                Ok(a) => a,
+            match crate::host::traversable_pairs(arg(args, 0)) {
+                Ok(pairs) => Value::int(pairs.len() as i64),
                 Err(e) => return Some(Err(e)),
-            };
-            Value::int(with_host(|h| h.array_len(&arr)))
+            }
         }
         "iterator_apply" => {
             if let Some(e) = iterator_arg_refusal(name, &arg(args, 0), false) {

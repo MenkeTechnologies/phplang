@@ -3868,6 +3868,7 @@ const STRING_PARAM_BUILTINS: &[&str] = &[
     "str_ends_with",
     "str_pad",
     "str_repeat",
+    "str_shuffle",
     "str_split",
     "str_starts_with",
     "str_word_count",
@@ -6477,9 +6478,17 @@ fn lcfirst(s: &str) -> String {
     }
 }
 
+/// Port of `number_format()` (`ext/standard/math.c`, PHP 8.3+).
+///
+/// An `int` argument takes `_php_math_number_format_long`: it never passes
+/// through a double, so every digit of `PHP_INT_MAX` survives, and a negative
+/// `$decimals` rounds the integer to a power of ten half away from zero — in a
+/// width that can carry `PHP_INT_MAX` rounded up past `i64`. A `float` is
+/// rounded to `$decimals` places first (negative places included) and only
+/// then is `$decimals` clamped to zero for the formatting.
 fn php_number_format(h: &host::PhpHost, args: &[Value]) -> String {
-    let num = h.to_number(&arg(args, 0)).to_float();
-    let dec = args.get(1).map(|v| v.to_int()).unwrap_or(0).max(0) as usize;
+    let dec_arg = args.get(1).map(|v| v.to_int()).unwrap_or(0);
+    let dec = dec_arg.max(0) as usize;
     let dp = args
         .get(2)
         .map(|v| h.to_str(v))
@@ -6488,14 +6497,36 @@ fn php_number_format(h: &host::PhpHost, args: &[Value]) -> String {
         .get(3)
         .map(|v| h.to_str(v))
         .unwrap_or_else(|| ",".to_string());
-    let neg = num < 0.0;
-    // PHP rounds the value with _php_math_round (half away from zero, with
-    // pre-rounding) before formatting, so 1.005 becomes "1.01".
-    let rounded = php_round(num, dec as i32, 1).abs();
-    let formatted = format!("{:.*}", dec, rounded);
-    let (int_part, frac_part) = match formatted.split_once('.') {
-        Some((i, f)) => (i.to_string(), f.to_string()),
-        None => (formatted.clone(), String::new()),
+    let (neg, int_part, frac_part) = match h.to_number(&arg(args, 0)) {
+        Value::Int(n) => {
+            let mut mag = (n as i128).abs();
+            if dec_arg < 0 {
+                // |n| < 10^19, so any power past 10^19 rounds it to zero.
+                mag = match 10i128.checked_pow(dec_arg.unsigned_abs().min(20) as u32) {
+                    Some(p) if dec_arg >= -19 => (mag + p / 2) / p * p,
+                    _ => 0,
+                };
+            }
+            (n < 0 && mag != 0, mag.to_string(), "0".repeat(dec))
+        }
+        v => {
+            let num = v.to_float();
+            // PHP rounds the value with _php_math_round (half away from zero,
+            // with pre-rounding) before formatting, so 1.005 becomes "1.01".
+            let rounded = php_round(
+                num,
+                dec_arg.clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+                1,
+            )
+            .abs();
+            let formatted = format!("{:.*}", dec, rounded);
+            let (i, f) = match formatted.split_once('.') {
+                Some((i, f)) => (i.to_string(), f.to_string()),
+                None => (formatted.clone(), String::new()),
+            };
+            let nonzero = i.chars().any(|c| c != '0') || f.chars().any(|c| c != '0');
+            (num < 0.0 && nonzero, i, f)
+        }
     };
     // Group the integer part into threes.
     let bytes: Vec<char> = int_part.chars().collect();
@@ -6507,7 +6538,7 @@ fn php_number_format(h: &host::PhpHost, args: &[Value]) -> String {
         grouped.push(*c);
     }
     let mut out = String::new();
-    if neg && (grouped.chars().any(|c| c != '0') || frac_part.chars().any(|c| c != '0')) {
+    if neg {
         out.push('-');
     }
     out.push_str(&grouped);

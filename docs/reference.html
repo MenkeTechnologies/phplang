@@ -173,7 +173,7 @@ declare(directive=value) { body }   //  not for strict_types</code></pre>
           <h3><a class="doc-anchor" href="#doc-keyword-16">#</a> <code>function</code></h3>
           <pre><code class="lang-php">function name(params) [: type] { body }
 function (params) [use (vars)] [: type] { body }   //  closure</code></pre>
-          <p>Declares a named function as a statement, or an anonymous closure as an expression. A scalar parameter or return type (`int`, `float`, `string`, `bool`, and their `?` nullable forms) is ENFORCED: coerced on the way in by default, required exactly under `declare(strict_types=1)`. Any other type — a union, an intersection, a class name, `array`, `iterable`, `callable`, `mixed`, `object`, `void`, `never`, `static` — is parsed and carried but imposes no check. A function with no `return` yields null.</p>
+          <p>Declares a named function as a statement, or an anonymous closure as an expression. Parameter and return types are ENFORCED — scalars, unions, intersections, class names, `self`/`parent`/`static`, `array`, `iterable`, `callable`, `object`, `mixed`: a scalar is coerced on the way in by default and required exactly under `declare(strict_types=1)`, and a value no part accepts raises `TypeError`. A function with no `return` yields null.</p>
           <pre><code class="lang-php">function sq($x) { return $x * $x; } echo sq(4);   // =&gt; 16</code></pre>
         </article>
         <article class="doc-entry" id="doc-keyword-17">
@@ -1835,7 +1835,7 @@ catch (Exception $e) { echo "E"; } catch (Error $e) { echo "R"; }   // =&gt; R</
         <article class="doc-entry" id="doc-prelude-class-3">
           <h3><a class="doc-anchor" href="#doc-prelude-class-3">#</a> <code>ErrorException</code></h3>
           <pre><code class="lang-php">class ErrorException extends Exception { __construct($message = "", $code = 0, $severity = E_ERROR, $filename = null, $line = null, $previous = null); getSeverity(): int }</code></pre>
-          <p>An exception carrying an error level, the usual way an error handler turns a warning into something `catch` can take. A non-null `$filename` / `$line` replace where it was raised.</p>
+          <p>An exception carrying an error level, the usual way an error handler turns a warning into something `catch` can take. A non-null `$filename` replaces the recorded file and with it the line — `0` when `$line` is null — while a `$line` given alone replaces only the line, as the reference's constructor does.</p>
           <pre><code class="lang-php">set_error_handler(fn($n, $s, $f, $l) =&gt; throw new ErrorException($s, 0, $n, $f, $l));</code></pre>
         </article>
         <article class="doc-entry" id="doc-prelude-class-4">
@@ -1849,81 +1849,153 @@ catch (Exception $e) { echo "E"; } catch (Error $e) { echo "R"; }   // =&gt; R</
           <p>Thrown for an error in the program's logic that should be caught at development time.</p>
         </article>
         <article class="doc-entry" id="doc-prelude-class-6">
-          <h3><a class="doc-anchor" href="#doc-prelude-class-6">#</a> <code>InvalidArgumentException</code></h3>
+          <h3><a class="doc-anchor" href="#doc-prelude-class-6">#</a> <code>BadFunctionCallException</code></h3>
+          <pre><code class="lang-php">class BadFunctionCallException extends LogicException {}</code></pre>
+          <p>Thrown when a callback refers to an undefined function or is called with missing arguments. Adds no members of its own.</p>
+        </article>
+        <article class="doc-entry" id="doc-prelude-class-7">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-7">#</a> <code>BadMethodCallException</code></h3>
+          <pre><code class="lang-php">class BadMethodCallException extends BadFunctionCallException {}</code></pre>
+          <p>Thrown when a callback refers to an undefined method or is called with missing arguments. Adds no members of its own.</p>
+        </article>
+        <article class="doc-entry" id="doc-prelude-class-8">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-8">#</a> <code>DomainException</code></h3>
+          <pre><code class="lang-php">class DomainException extends LogicException {}</code></pre>
+          <p>Thrown when a value does not belong to a defined data domain. Adds no members of its own.</p>
+        </article>
+        <article class="doc-entry" id="doc-prelude-class-9">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-9">#</a> <code>LengthException</code></h3>
+          <pre><code class="lang-php">class LengthException extends LogicException {}</code></pre>
+          <p>Thrown when a length is invalid. Adds no members of its own.</p>
+        </article>
+        <article class="doc-entry" id="doc-prelude-class-10">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-10">#</a> <code>OutOfRangeException</code></h3>
+          <pre><code class="lang-php">class OutOfRangeException extends LogicException {}</code></pre>
+          <p>Thrown for an illegal index requested at compile time. Adds no members of its own.</p>
+        </article>
+        <article class="doc-entry" id="doc-prelude-class-11">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-11">#</a> <code>OutOfBoundsException</code></h3>
+          <pre><code class="lang-php">class OutOfBoundsException extends RuntimeException {}</code></pre>
+          <p>Thrown when a value is not a valid key; `ArrayIterator::seek()` raises it. Adds no members of its own.</p>
+        </article>
+        <article class="doc-entry" id="doc-prelude-class-12">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-12">#</a> <code>OverflowException</code></h3>
+          <pre><code class="lang-php">class OverflowException extends RuntimeException {}</code></pre>
+          <p>Thrown when adding an element to a full container. Adds no members of its own.</p>
+        </article>
+        <article class="doc-entry" id="doc-prelude-class-13">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-13">#</a> <code>RangeException</code></h3>
+          <pre><code class="lang-php">class RangeException extends RuntimeException {}</code></pre>
+          <p>Thrown for a range error at run time. Adds no members of its own.</p>
+        </article>
+        <article class="doc-entry" id="doc-prelude-class-14">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-14">#</a> <code>UnderflowException</code></h3>
+          <pre><code class="lang-php">class UnderflowException extends RuntimeException {}</code></pre>
+          <p>Thrown when removing an element from an empty container. Adds no members of its own.</p>
+        </article>
+        <article class="doc-entry" id="doc-prelude-class-15">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-15">#</a> <code>UnexpectedValueException</code></h3>
+          <pre><code class="lang-php">class UnexpectedValueException extends RuntimeException {}</code></pre>
+          <p>Thrown when a value does not match an expected set of values. Adds no members of its own.</p>
+        </article>
+        <article class="doc-entry" id="doc-prelude-class-16">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-16">#</a> <code>InvalidArgumentException</code></h3>
           <pre><code class="lang-php">class InvalidArgumentException extends LogicException {}</code></pre>
           <p>Thrown when an argument does not match the expected type or value.</p>
         </article>
-        <article class="doc-entry" id="doc-prelude-class-7">
-          <h3><a class="doc-anchor" href="#doc-prelude-class-7">#</a> <code>ArithmeticError</code></h3>
+        <article class="doc-entry" id="doc-prelude-class-17">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-17">#</a> <code>CompileError</code></h3>
+          <pre><code class="lang-php">class CompileError extends Error {}</code></pre>
+          <p>The parent of `ParseError`, so `catch (CompileError $e)` catches what `eval` throws for unparseable source.</p>
+        </article>
+        <article class="doc-entry" id="doc-prelude-class-18">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-18">#</a> <code>ParseError</code></h3>
+          <pre><code class="lang-php">class ParseError extends CompileError {}</code></pre>
+          <p>Thrown by `eval` for source that does not parse, catchable like any `Error`; a syntax error in the program itself is the fatal `Parse error:` block instead.</p>
+        </article>
+        <article class="doc-entry" id="doc-prelude-class-19">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-19">#</a> <code>AssertionError</code></h3>
+          <pre><code class="lang-php">class AssertionError extends Error {}</code></pre>
+          <p>Declared so user code can construct, throw and catch it.</p>
+        </article>
+        <article class="doc-entry" id="doc-prelude-class-20">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-20">#</a> <code>ArithmeticError</code></h3>
           <pre><code class="lang-php">class ArithmeticError extends Error {}</code></pre>
           <p>Thrown for an arithmetic failure, such as a shift by a negative count.</p>
         </article>
-        <article class="doc-entry" id="doc-prelude-class-8">
-          <h3><a class="doc-anchor" href="#doc-prelude-class-8">#</a> <code>DivisionByZeroError</code></h3>
+        <article class="doc-entry" id="doc-prelude-class-21">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-21">#</a> <code>DivisionByZeroError</code></h3>
           <pre><code class="lang-php">class DivisionByZeroError extends ArithmeticError {}</code></pre>
           <p>The class raised for a zero divisor. `/` and `intdiv()` throw it with the message `Division by zero`, `%` with `Modulo by zero`, and a program may throw and catch it itself.</p>
           <pre><code class="lang-php">try { throw new DivisionByZeroError("x"); }
 catch (ArithmeticError $e) { echo get_class($e); }   // =&gt; DivisionByZeroError</code></pre>
         </article>
-        <article class="doc-entry" id="doc-prelude-class-9">
-          <h3><a class="doc-anchor" href="#doc-prelude-class-9">#</a> <code>TypeError</code></h3>
+        <article class="doc-entry" id="doc-prelude-class-22">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-22">#</a> <code>TypeError</code></h3>
           <pre><code class="lang-php">class TypeError extends Error {}</code></pre>
           <p>Thrown when a value has the wrong type for the operation. phplang enforces no declared parameter types, so it is raised far less often than in PHP.</p>
         </article>
-        <article class="doc-entry" id="doc-prelude-class-10">
-          <h3><a class="doc-anchor" href="#doc-prelude-class-10">#</a> <code>ValueError</code></h3>
+        <article class="doc-entry" id="doc-prelude-class-23">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-23">#</a> <code>ValueError</code></h3>
           <pre><code class="lang-php">class ValueError extends Error {}</code></pre>
           <p>Thrown when a value is of the right type but outside the accepted domain — the class the standard library's range and argument errors report.</p>
         </article>
-        <article class="doc-entry" id="doc-prelude-class-11">
-          <h3><a class="doc-anchor" href="#doc-prelude-class-11">#</a> <code>UnhandledMatchError</code></h3>
+        <article class="doc-entry" id="doc-prelude-class-24">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-24">#</a> <code>UnhandledMatchError</code></h3>
           <pre><code class="lang-php">class UnhandledMatchError extends Error {}</code></pre>
           <p>Thrown by a `match` expression whose subject matched no arm and which had no `default`. The message reads `Unhandled match case &lt;subject&gt;`.</p>
           <pre><code class="lang-php">try { echo match (5) { 1 =&gt; "a" }; }
 catch (UnhandledMatchError $e) { echo $e-&gt;getMessage(); }   // =&gt; Unhandled match case 5</code></pre>
         </article>
-        <article class="doc-entry" id="doc-prelude-class-12">
-          <h3><a class="doc-anchor" href="#doc-prelude-class-12">#</a> <code>DateInterval</code></h3>
+        <article class="doc-entry" id="doc-prelude-class-25">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-25">#</a> <code>DateInterval</code></h3>
           <pre><code class="lang-php">class DateInterval {
-    public $y, $m, $d, $h, $i, $s, $f, $invert, $days;
-    __construct($spec = "")
-    _seconds(): int   format($fmt): string
+    __construct(string $duration)
+    format(string $format): string
+    static createFromDateString(string $datetime): DateInterval
 }</code></pre>
-          <p>A duration parsed from an ISO 8601 spec such as `P1Y2M3DT4H5M6S`, with `W` weeks folded into days. `_seconds()` is the phplang-specific helper `DateTime::add`/`sub` use, converting with the fixed approximations of 30 days per month and 365 days per year. `format()` handles `%y %m %d %h %i %s %a %R %%`. DIVERGENCE: `$days` is only set by `DateTime::diff`, and PHP's `createFromDateString` static is absent.</p>
+          <p>A duration. The constructor ports `timelib_strtointerval`: `P1Y2M3DT4H5M6S` (weeks fold into days), the combined form `P0001-02-03T04:05:06`, or two ISO date-times whose difference it takes. Its state is the properties the reference shows — `y m d h i s f invert days from_string` — or, for one made by `createFromDateString`, only `from_string` and `date_string`, with the fields still readable. A bad spec throws `DateMalformedIntervalStringException`.</p>
           <pre><code class="lang-php">$i = new DateInterval("P1DT2H"); echo $i-&gt;d, $i-&gt;h;   // =&gt; 12</code></pre>
         </article>
-        <article class="doc-entry" id="doc-prelude-class-13">
-          <h3><a class="doc-anchor" href="#doc-prelude-class-13">#</a> <code>DateTime</code></h3>
-          <pre><code class="lang-php">class DateTime {
-    public $ts;
-    __construct($datetime = "now")
-    format($format)   getTimestamp()   setTimestamp($ts)
-    modify($modifier)  setDate($y,$m,$d)  setTime($h,$i,$s = 0)
-    add($interval)     sub($interval)     diff($other)
+        <article class="doc-entry" id="doc-prelude-class-26">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-26">#</a> <code>DateTime</code></h3>
+          <pre><code class="lang-php">class DateTime implements DateTimeInterface {
+    __construct(string $datetime = "now", ?DateTimeZone $timezone = null)
+    format  modify  add  sub  diff  getTimestamp  getMicrosecond  getOffset
+    getTimezone  setTimezone  setDate  setISODate  setTime  setTimestamp  setMicrosecond
+    static createFromFormat  createFromImmutable  createFromInterface  createFromTimestamp  getLastErrors
 }</code></pre>
-          <p>A mutable date/time built on the `date`/`strtotime`/`mktime` functions, so everything it computes is UTC. The mutators return `$this` for chaining. DIVERGENCE: it stores a plain integer timestamp in the public `$ts`, has no timezone parameter or `DateTimeZone` support, no sub-second precision, and none of PHP's `createFromFormat`/`setISODate`/`getTimezone` API.</p>
-          <pre><code class="lang-php">$d = new DateTime("@0"); echo $d-&gt;format("Y-m-d");   // =&gt; 1970-01-01</code></pre>
+          <p>A mutable date and time with microseconds and a zone (an identifier, an offset, or an abbreviation). Each method is a shell over a port of its `php_date.c` routine; the state is the `date`/`timezone_type`/`timezone` properties the reference shows, so `var_dump`, `json_encode`, `serialize` and `clone` agree with it, and two dates compare by instant. A string the scanner refuses throws `DateMalformedStringException`. DIVERGENCE: only fixed-offset zone identifiers resolve (no tz database).</p>
+          <pre><code class="lang-php">$d = new DateTime("2024-01-31"); echo $d-&gt;modify("+1 month")-&gt;format("Y-m-d");   // =&gt; 2024-03-02</code></pre>
         </article>
-        <article class="doc-entry" id="doc-prelude-class-14">
-          <h3><a class="doc-anchor" href="#doc-prelude-class-14">#</a> <code>DateTimeImmutable</code></h3>
-          <pre><code class="lang-php">class DateTimeImmutable {
-    public $ts;
-    __construct($datetime = "now")
-    format($format)   getTimestamp()
-    modify($modifier)  add($interval)  sub($interval)
+        <article class="doc-entry" id="doc-prelude-class-27">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-27">#</a> <code>DateTimeImmutable</code></h3>
+          <pre><code class="lang-php">class DateTimeImmutable implements DateTimeInterface {
+    __construct(string $datetime = "now", ?DateTimeZone $timezone = null)
+    (the DateTime API; every mutator returns a new instance)
+    static createFromMutable(DateTime $object): static
 }</code></pre>
-          <p>The immutable counterpart of `DateTime`: `modify`, `add`, and `sub` each return a NEW instance and leave the receiver untouched. DIVERGENCE: it declares a smaller API than `DateTime` — there is no `setTimestamp`, `setDate`, `setTime`, or `diff` — and it does not share an interface with `DateTime`.</p>
+          <p>The immutable counterpart of `DateTime`: `modify`, `add`, `sub`, `setTimezone` and the setters each return a NEW instance and leave the receiver untouched.</p>
           <pre><code class="lang-php">$a = new DateTimeImmutable("@0"); $b = $a-&gt;add(new DateInterval("P1D"));
 echo $a-&gt;getTimestamp(), " ", $b-&gt;getTimestamp();   // =&gt; 0 86400</code></pre>
         </article>
-        <article class="doc-entry" id="doc-prelude-class-15">
-          <h3><a class="doc-anchor" href="#doc-prelude-class-15">#</a> <code>stdClass</code></h3>
+        <article class="doc-entry" id="doc-prelude-class-28">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-28">#</a> <code>DateTimeZone</code></h3>
+          <pre><code class="lang-php">class DateTimeZone {
+    __construct(string $timezone)
+    getName(): string   getOffset(DateTimeInterface $datetime): int
+}</code></pre>
+          <p>A zone: an identifier, a `±HH:MM` offset, or an abbreviation (`EST`), parsed by timelib's `timelib_parse_zone`; its state is the `timezone_type`/`timezone` properties the reference shows. An unknown zone throws `DateInvalidTimeZoneException`. DIVERGENCE: only fixed-offset identifiers resolve (no tz database).</p>
+          <pre><code class="lang-php">echo (new DateTimeZone("+05:30"))-&gt;getOffset(new DateTime("@0"));   // =&gt; 19800</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-prelude-class-29">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-29">#</a> <code>stdClass</code></h3>
           <pre><code class="lang-php">class stdClass {}</code></pre>
           <p>The empty generic object. Properties are added dynamically at assignment. Produced by `new stdClass` and by the `(object)` cast. DIVERGENCE: `json_decode` always yields arrays, so it never produces one.</p>
           <pre><code class="lang-php">$o = new stdClass; $o-&gt;x = 1; echo $o-&gt;x, get_class($o);   // =&gt; 1stdClass</code></pre>
         </article>
-        <article class="doc-entry" id="doc-prelude-class-16">
-          <h3><a class="doc-anchor" href="#doc-prelude-class-16">#</a> <code>SplDoublyLinkedList</code></h3>
+        <article class="doc-entry" id="doc-prelude-class-30">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-30">#</a> <code>SplDoublyLinkedList</code></h3>
           <pre><code class="lang-php">class SplDoublyLinkedList {
     public $dll = [];
     push($v)  pop()  shift()  unshift($v)  top()  bottom()
@@ -1935,22 +2007,22 @@ echo $a-&gt;getTimestamp(), " ", $b-&gt;getTimestamp();   // =&gt; 0 86400</code
           <pre><code class="lang-php">$l = new SplDoublyLinkedList; $l-&gt;push(1); $l-&gt;push(2);
 echo $l-&gt;count(), $l-&gt;top();   // =&gt; 22</code></pre>
         </article>
-        <article class="doc-entry" id="doc-prelude-class-17">
-          <h3><a class="doc-anchor" href="#doc-prelude-class-17">#</a> <code>SplStack</code></h3>
+        <article class="doc-entry" id="doc-prelude-class-31">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-31">#</a> <code>SplStack</code></h3>
           <pre><code class="lang-php">class SplStack extends SplDoublyLinkedList {}</code></pre>
           <p>A LIFO view over `SplDoublyLinkedList`, using `push()`/`pop()`/`top()`. It adds no members and does not reverse the iteration order.</p>
           <pre><code class="lang-php">$s = new SplStack; $s-&gt;push(1); $s-&gt;push(2); echo $s-&gt;pop();   // =&gt; 2</code></pre>
         </article>
-        <article class="doc-entry" id="doc-prelude-class-18">
-          <h3><a class="doc-anchor" href="#doc-prelude-class-18">#</a> <code>SplQueue</code></h3>
+        <article class="doc-entry" id="doc-prelude-class-32">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-32">#</a> <code>SplQueue</code></h3>
           <pre><code class="lang-php">class SplQueue extends SplDoublyLinkedList {
     enqueue($v)   dequeue()
 }</code></pre>
           <p>A FIFO view over `SplDoublyLinkedList`: `enqueue()` appends and `dequeue()` removes from the front.</p>
           <pre><code class="lang-php">$q = new SplQueue; $q-&gt;enqueue(1); $q-&gt;enqueue(2); echo $q-&gt;dequeue();   // =&gt; 1</code></pre>
         </article>
-        <article class="doc-entry" id="doc-prelude-class-19">
-          <h3><a class="doc-anchor" href="#doc-prelude-class-19">#</a> <code>SplFixedArray</code></h3>
+        <article class="doc-entry" id="doc-prelude-class-33">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-33">#</a> <code>SplFixedArray</code></h3>
           <pre><code class="lang-php">class SplFixedArray {
     public $data = []; public $sz = 0;
     __construct($size = 0)
@@ -1961,25 +2033,31 @@ echo $l-&gt;count(), $l-&gt;top();   // =&gt; 22</code></pre>
           <pre><code class="lang-php">$a = new SplFixedArray(3); $a-&gt;offsetSet(0, "x");
 echo $a-&gt;getSize(), $a-&gt;offsetGet(0);   // =&gt; 3x</code></pre>
         </article>
-        <article class="doc-entry" id="doc-prelude-class-20">
-          <h3><a class="doc-anchor" href="#doc-prelude-class-20">#</a> <code>ArrayObject</code></h3>
-          <pre><code class="lang-php">class ArrayObject {
-    public $storage = [];
-    __construct($array = [])
-    offsetGet($k)  offsetSet($k,$v)  offsetExists($k)  offsetUnset($k)
-    append($v)  count()  getArrayCopy()  getIterator()
+        <article class="doc-entry" id="doc-prelude-class-34">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-34">#</a> <code>ArrayObject</code></h3>
+          <pre><code class="lang-php">class ArrayObject implements IteratorAggregate, ArrayAccess, Countable {
+    private $storage = [];
+    __construct(array|object $array = [], int $flags = 0, string $iteratorClass = ArrayIterator::class)
+    offsetGet  offsetSet  offsetExists  offsetUnset  append  count  getArrayCopy  exchangeArray
+    getIterator(): Iterator  asort  ksort  uasort  uksort  natsort  natcasesort
 }</code></pre>
-          <p>An object wrapper around an array. DIVERGENCE: `getArrayCopy()` returns the backing handle rather than a copy, so mutating the result also mutates the object; and because no interface is implemented, `$obj[$k]` and `foreach` over the object do not work.</p>
+          <p>An object wrapper around an array: `$obj[$k]`, `count($obj)` and `foreach` reach the wrapped array, and `getIterator()` hands out an `ArrayIterator` over a copy of it. DIVERGENCE: the `STD_PROP_LIST` / `ARRAY_AS_PROPS` flags are accepted and ignored, and an object passed in is copied by its public properties rather than wrapped.</p>
           <pre><code class="lang-php">$o = new ArrayObject(["a" =&gt; 1]); $o-&gt;append(2);
 echo $o-&gt;count(), $o-&gt;offsetGet("a");   // =&gt; 21</code></pre>
         </article>
-        <article class="doc-entry" id="doc-prelude-class-21">
-          <h3><a class="doc-anchor" href="#doc-prelude-class-21">#</a> <code>ArrayIterator</code></h3>
-          <pre><code class="lang-php">class ArrayIterator extends ArrayObject {}</code></pre>
-          <p>An alias of `ArrayObject` with no added members. DIVERGENCE: it implements no `Iterator` interface and has none of PHP's `current`/`key`/`next`/`valid`/`rewind` cursor methods.</p>
+        <article class="doc-entry" id="doc-prelude-class-35">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-35">#</a> <code>ArrayIterator</code></h3>
+          <pre><code class="lang-php">class ArrayIterator implements SeekableIterator, ArrayAccess, Countable {
+    private $storage = [];
+    current()  key()  next()  rewind()  valid()  seek(int $offset)
+    offsetGet  offsetSet  offsetExists  offsetUnset  append  count  getArrayCopy  asort  ksort ...
+}</code></pre>
+          <p>An iterator over an array, with the array access and sorting of `ArrayObject`. `seek()` past the end throws `OutOfBoundsException`. DIVERGENCE: a write while iterating restarts the key order the cursor walks.</p>
+          <pre><code class="lang-php">$it = new ArrayIterator([10, 20, 30]); $it-&gt;seek(1);
+echo $it-&gt;current();   // =&gt; 20</code></pre>
         </article>
-        <article class="doc-entry" id="doc-prelude-class-22">
-          <h3><a class="doc-anchor" href="#doc-prelude-class-22">#</a> <code>SplObjectStorage</code></h3>
+        <article class="doc-entry" id="doc-prelude-class-36">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-36">#</a> <code>SplObjectStorage</code></h3>
           <pre><code class="lang-php">class SplObjectStorage {
     public $store = [];
     attach($obj, $data = null)   detach($obj)
@@ -1989,8 +2067,8 @@ echo $o-&gt;count(), $o-&gt;offsetGet("a");   // =&gt; 21</code></pre>
           <pre><code class="lang-php">$s = new SplObjectStorage; $o = new stdClass; $s-&gt;attach($o);
 var_dump($s-&gt;contains($o), $s-&gt;count());   // =&gt; bool(true) int(1)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-prelude-class-23">
-          <h3><a class="doc-anchor" href="#doc-prelude-class-23">#</a> <code>SplPriorityQueue</code></h3>
+        <article class="doc-entry" id="doc-prelude-class-37">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-37">#</a> <code>SplPriorityQueue</code></h3>
           <pre><code class="lang-php">class SplPriorityQueue {
     public $items = [];
     insert($value, $priority)   extract()   top()
@@ -2000,8 +2078,8 @@ var_dump($s-&gt;contains($o), $s-&gt;count());   // =&gt; bool(true) int(1)</cod
           <pre><code class="lang-php">$q = new SplPriorityQueue; $q-&gt;insert("lo", 1); $q-&gt;insert("hi", 9);
 echo $q-&gt;extract();   // =&gt; hi</code></pre>
         </article>
-        <article class="doc-entry" id="doc-prelude-class-24">
-          <h3><a class="doc-anchor" href="#doc-prelude-class-24">#</a> <code>SplHeap</code></h3>
+        <article class="doc-entry" id="doc-prelude-class-38">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-38">#</a> <code>SplHeap</code></h3>
           <pre><code class="lang-php">class SplHeap {
     public $items = [];
     insert($v)   extract()   top()
@@ -2010,16 +2088,16 @@ echo $q-&gt;extract();   // =&gt; hi</code></pre>
           <p>The base heap class. DIVERGENCE: it is concrete rather than abstract and stores an unordered list, so `_best()` linear-scans with `compare()` on every `top()`/`extract()`. Override `compare()` to change the ordering; the base implementation is `$a &lt;=&gt; $b`, i.e. max-first.</p>
           <pre><code class="lang-php">$h = new SplHeap; $h-&gt;insert(3); $h-&gt;insert(9); echo $h-&gt;extract();   // =&gt; 9</code></pre>
         </article>
-        <article class="doc-entry" id="doc-prelude-class-25">
-          <h3><a class="doc-anchor" href="#doc-prelude-class-25">#</a> <code>SplMaxHeap</code></h3>
+        <article class="doc-entry" id="doc-prelude-class-39">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-39">#</a> <code>SplMaxHeap</code></h3>
           <pre><code class="lang-php">class SplMaxHeap extends SplHeap {
     compare($a, $b): int   //  $a &lt;=&gt; $b
 }</code></pre>
           <p>A heap whose `extract()` yields the largest element first.</p>
           <pre><code class="lang-php">$h = new SplMaxHeap; $h-&gt;insert(1); $h-&gt;insert(5); echo $h-&gt;extract();   // =&gt; 5</code></pre>
         </article>
-        <article class="doc-entry" id="doc-prelude-class-26">
-          <h3><a class="doc-anchor" href="#doc-prelude-class-26">#</a> <code>SplMinHeap</code></h3>
+        <article class="doc-entry" id="doc-prelude-class-40">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-40">#</a> <code>SplMinHeap</code></h3>
           <pre><code class="lang-php">class SplMinHeap extends SplHeap {
     compare($a, $b): int   //  $b &lt;=&gt; $a
 }</code></pre>
@@ -2096,139 +2174,145 @@ echo $q-&gt;extract();   // =&gt; hi</code></pre>
           <pre><code class="lang-php">echo str_repeat("ab", 3);   // =&gt; ababab</code></pre>
         </article>
         <article class="doc-entry" id="doc-core-library-strings-12">
-          <h3><a class="doc-anchor" href="#doc-core-library-strings-12">#</a> <code>strrev</code></h3>
+          <h3><a class="doc-anchor" href="#doc-core-library-strings-12">#</a> <code>str_shuffle</code></h3>
+          <pre><code class="lang-php">str_shuffle(string $string): string</code></pre>
+          <p>A random permutation of the string, by the reference's own walk over the shared Mt19937 engine, so a seeded program gets the reference's permutation. DIVERGENCE: the permutation is of CHARACTERS, not bytes — identical for ASCII; the reference would split a multibyte character.</p>
+          <pre><code class="lang-php">mt_srand(3); echo str_shuffle("abcdef");   // =&gt; fcabde</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-core-library-strings-13">
+          <h3><a class="doc-anchor" href="#doc-core-library-strings-13">#</a> <code>strrev</code></h3>
           <pre><code class="lang-php">strrev(string $string): string</code></pre>
           <p>Reverses the string by CHARACTER, not by byte. DIVERGENCE: PHP reverses bytes, which corrupts multibyte text; this version leaves each character intact.</p>
           <pre><code class="lang-php">echo strrev("abc");   // =&gt; cba</code></pre>
         </article>
-        <article class="doc-entry" id="doc-core-library-strings-13">
-          <h3><a class="doc-anchor" href="#doc-core-library-strings-13">#</a> <code>wordwrap</code></h3>
+        <article class="doc-entry" id="doc-core-library-strings-14">
+          <h3><a class="doc-anchor" href="#doc-core-library-strings-14">#</a> <code>wordwrap</code></h3>
           <pre><code class="lang-php">wordwrap(string $string, int $width = 75, string $break = "\n", bool $cut = false): string</code></pre>
           <p>Wraps the text to `$width` columns, breaking at spaces. With `$cut` true a word longer than the width is split rather than left overlong; a zero `$width` with `$cut` true has no answer and raises `ValueError: wordwrap(): Argument #4 ($cut_long_words) cannot be true when argument #2 ($width) is 0`.</p>
           <pre><code class="lang-php">echo wordwrap("a b c", 3, "|", true);   // =&gt; a b|c</code></pre>
         </article>
-        <article class="doc-entry" id="doc-core-library-strings-14">
-          <h3><a class="doc-anchor" href="#doc-core-library-strings-14">#</a> <code>substr</code></h3>
+        <article class="doc-entry" id="doc-core-library-strings-15">
+          <h3><a class="doc-anchor" href="#doc-core-library-strings-15">#</a> <code>substr</code></h3>
           <pre><code class="lang-php">substr(string $string, int $offset, ?int $length = null): string</code></pre>
           <p>A substring counted in CHARACTERS. A negative offset counts from the end and a negative length omits that many trailing characters. DIVERGENCE: PHP's `substr` uses byte offsets, so results differ on multibyte input. It never returns `false`.</p>
           <pre><code class="lang-php">echo substr("hello", 1, 3);   // =&gt; ell</code></pre>
         </article>
-        <article class="doc-entry" id="doc-core-library-strings-15">
-          <h3><a class="doc-anchor" href="#doc-core-library-strings-15">#</a> <code>strpos</code></h3>
+        <article class="doc-entry" id="doc-core-library-strings-16">
+          <h3><a class="doc-anchor" href="#doc-core-library-strings-16">#</a> <code>strpos</code></h3>
           <pre><code class="lang-php">strpos(string $haystack, string $needle): int|false</code></pre>
           <p>BYTE offset of the first occurrence at or after `$offset`, or `false` when absent. A negative `$offset` counts from the end; one outside `[-strlen, strlen]` raises `ValueError: strpos(): Argument #3 ($offset) must be contained in argument #1 ($haystack)` rather than reporting no match. An empty needle returns the offset itself.</p>
           <pre><code class="lang-php">var_dump(strpos("hello", "l"), strpos("hello", "z"));   // =&gt; int(2) bool(false)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-core-library-strings-16">
-          <h3><a class="doc-anchor" href="#doc-core-library-strings-16">#</a> <code>str_replace</code></h3>
+        <article class="doc-entry" id="doc-core-library-strings-17">
+          <h3><a class="doc-anchor" href="#doc-core-library-strings-17">#</a> <code>str_replace</code></h3>
           <pre><code class="lang-php">str_replace(string $search, string $replace, string $subject): string</code></pre>
           <p>Replaces every occurrence of the search string. `$search`/`$replace` may be arrays (paired by position, or one replacement for every needle), an array `$subject` is processed element-wise, and the by-reference `$count` receives the number of replacements.</p>
           <pre><code class="lang-php">echo str_replace("a", "b", "aaa");   // =&gt; bbb</code></pre>
         </article>
-        <article class="doc-entry" id="doc-core-library-strings-17">
-          <h3><a class="doc-anchor" href="#doc-core-library-strings-17">#</a> <code>str_split</code></h3>
+        <article class="doc-entry" id="doc-core-library-strings-18">
+          <h3><a class="doc-anchor" href="#doc-core-library-strings-18">#</a> <code>str_split</code></h3>
           <pre><code class="lang-php">str_split(string $string, int $length = 1): array</code></pre>
           <p>Splits the string into chunks of `$length` characters; the last chunk may be shorter.</p>
           <pre><code class="lang-php">echo str_split("ab")[0];   // =&gt; a</code></pre>
         </article>
-        <article class="doc-entry" id="doc-core-library-strings-18">
-          <h3><a class="doc-anchor" href="#doc-core-library-strings-18">#</a> <code>str_pad</code></h3>
+        <article class="doc-entry" id="doc-core-library-strings-19">
+          <h3><a class="doc-anchor" href="#doc-core-library-strings-19">#</a> <code>str_pad</code></h3>
           <pre><code class="lang-php">str_pad(string $string, int $length, string $pad = " ", int $type = STR_PAD_RIGHT): string</code></pre>
           <p>Pads the string to `$length` by cycling `$pad`. `STR_PAD_RIGHT`, `STR_PAD_LEFT`, and `STR_PAD_BOTH` are all honoured; a string already at least that long is returned unchanged.</p>
           <pre><code class="lang-php">echo str_pad("5", 3, "0"), " ", str_pad("5", 3, "0", STR_PAD_LEFT);   // =&gt; 500 005</code></pre>
         </article>
-        <article class="doc-entry" id="doc-core-library-strings-19">
-          <h3><a class="doc-anchor" href="#doc-core-library-strings-19">#</a> <code>str_contains</code></h3>
+        <article class="doc-entry" id="doc-core-library-strings-20">
+          <h3><a class="doc-anchor" href="#doc-core-library-strings-20">#</a> <code>str_contains</code></h3>
           <pre><code class="lang-php">str_contains(string $haystack, string $needle): bool</code></pre>
           <p>True when the haystack contains the needle. An empty needle is always found.</p>
           <pre><code class="lang-php">var_dump(str_contains("hello", "ell"));   // =&gt; bool(true)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-core-library-strings-20">
-          <h3><a class="doc-anchor" href="#doc-core-library-strings-20">#</a> <code>str_starts_with</code></h3>
+        <article class="doc-entry" id="doc-core-library-strings-21">
+          <h3><a class="doc-anchor" href="#doc-core-library-strings-21">#</a> <code>str_starts_with</code></h3>
           <pre><code class="lang-php">str_starts_with(string $haystack, string $needle): bool</code></pre>
           <p>True when the haystack begins with the needle.</p>
           <pre><code class="lang-php">var_dump(str_starts_with("hello", "he"));   // =&gt; bool(true)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-core-library-strings-21">
-          <h3><a class="doc-anchor" href="#doc-core-library-strings-21">#</a> <code>str_ends_with</code></h3>
+        <article class="doc-entry" id="doc-core-library-strings-22">
+          <h3><a class="doc-anchor" href="#doc-core-library-strings-22">#</a> <code>str_ends_with</code></h3>
           <pre><code class="lang-php">str_ends_with(string $haystack, string $needle): bool</code></pre>
           <p>True when the haystack ends with the needle.</p>
           <pre><code class="lang-php">var_dump(str_ends_with("hello", "lo"));   // =&gt; bool(true)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-core-library-strings-22">
-          <h3><a class="doc-anchor" href="#doc-core-library-strings-22">#</a> <code>number_format</code></h3>
+        <article class="doc-entry" id="doc-core-library-strings-23">
+          <h3><a class="doc-anchor" href="#doc-core-library-strings-23">#</a> <code>number_format</code></h3>
           <pre><code class="lang-php">number_format(float $num, int $decimals = 0, string $decimal_separator = ".", string $thousands_separator = ","): string</code></pre>
           <p>Formats a number with grouped thousands and a fixed number of decimals, rounding half away from zero.</p>
           <pre><code class="lang-php">echo number_format(1234.567, 2);   // =&gt; 1,234.57</code></pre>
         </article>
-        <article class="doc-entry" id="doc-core-library-strings-23">
-          <h3><a class="doc-anchor" href="#doc-core-library-strings-23">#</a> <code>htmlspecialchars</code></h3>
+        <article class="doc-entry" id="doc-core-library-strings-24">
+          <h3><a class="doc-anchor" href="#doc-core-library-strings-24">#</a> <code>htmlspecialchars</code></h3>
           <pre><code class="lang-php">htmlspecialchars(string $string): string</code></pre>
           <p>Escapes `&amp;`, `&lt;`, `&gt;`, and — as `$flags` selects — `"` (`ENT_COMPAT`) and `'` (`ENT_QUOTES`, the default since PHP 8.1, written as the numeric `&amp;#039;` under `ENT_HTML401`). DIVERGENCE: `$encoding` and `$double_encode` are not read, so `&amp;` is always re-encoded.</p>
           <pre><code class="lang-php">echo htmlspecialchars("a&lt;b");   // =&gt; a&amp;lt;b</code></pre>
         </article>
-        <article class="doc-entry" id="doc-core-library-strings-24">
-          <h3><a class="doc-anchor" href="#doc-core-library-strings-24">#</a> <code>htmlentities</code></h3>
+        <article class="doc-entry" id="doc-core-library-strings-25">
+          <h3><a class="doc-anchor" href="#doc-core-library-strings-25">#</a> <code>htmlentities</code></h3>
           <pre><code class="lang-php">htmlentities(string $string): string</code></pre>
           <p>`htmlspecialchars` plus the full HTML 4.01 named-entity table, so `é` becomes `&amp;eacute;`, `€` `&amp;euro;`, and `α` `&amp;alpha;`. `$flags` selects quote handling as it does there. DIVERGENCE: `$encoding` and `$double_encode` are not read.</p>
           <pre><code class="lang-php">echo htmlentities("café");   // =&gt; caf&amp;eacute;</code></pre>
         </article>
-        <article class="doc-entry" id="doc-core-library-strings-25">
-          <h3><a class="doc-anchor" href="#doc-core-library-strings-25">#</a> <code>strcmp</code></h3>
+        <article class="doc-entry" id="doc-core-library-strings-26">
+          <h3><a class="doc-anchor" href="#doc-core-library-strings-26">#</a> <code>strcmp</code></h3>
           <pre><code class="lang-php">strcmp(string $string1, string $string2): int</code></pre>
           <p>Byte comparison returning only the sign: `-1`, `0`, or `1`. PHP 8 also normalizes to the sign, so this matches.</p>
           <pre><code class="lang-php">echo strcmp("a", "b");   // =&gt; -1</code></pre>
         </article>
-        <article class="doc-entry" id="doc-core-library-strings-26">
-          <h3><a class="doc-anchor" href="#doc-core-library-strings-26">#</a> <code>strcasecmp</code></h3>
+        <article class="doc-entry" id="doc-core-library-strings-27">
+          <h3><a class="doc-anchor" href="#doc-core-library-strings-27">#</a> <code>strcasecmp</code></h3>
           <pre><code class="lang-php">strcasecmp(string $string1, string $string2): int</code></pre>
           <p>Compares after lowercasing both operands with full Unicode folding, returning `-1`, `0`, or `1`.</p>
           <pre><code class="lang-php">echo strcasecmp("A", "a");   // =&gt; 0</code></pre>
         </article>
-        <article class="doc-entry" id="doc-core-library-strings-27">
-          <h3><a class="doc-anchor" href="#doc-core-library-strings-27">#</a> <code>strncmp</code></h3>
+        <article class="doc-entry" id="doc-core-library-strings-28">
+          <h3><a class="doc-anchor" href="#doc-core-library-strings-28">#</a> <code>strncmp</code></h3>
           <pre><code class="lang-php">strncmp(string $string1, string $string2, int $length): int</code></pre>
           <p>Compares at most the first `$length` BYTES of each string, returning the sign. A length beyond either string simply compares what is there.</p>
           <pre><code class="lang-php">echo strncmp("abcd", "abzz", 2);   // =&gt; 0</code></pre>
         </article>
-        <article class="doc-entry" id="doc-core-library-strings-28">
-          <h3><a class="doc-anchor" href="#doc-core-library-strings-28">#</a> <code>substr_compare</code></h3>
+        <article class="doc-entry" id="doc-core-library-strings-29">
+          <h3><a class="doc-anchor" href="#doc-core-library-strings-29">#</a> <code>substr_compare</code></h3>
           <pre><code class="lang-php">substr_compare(string $haystack, string $needle, int $offset, ?int $length = null, bool $case_insensitive = false): int</code></pre>
           <p>Compares `$needle` against the slice of `$haystack` starting at `$offset` (negatives count from the end), over `$length` bytes or, when that is null, `max(strlen($needle), strlen($haystack) - $offset)`. The result is NOT normalized: differing bytes answer their signed difference, and only a tie on content falls back to -1/0/1 on length. An `$offset` past the haystack, or a negative `$length`, throws `ValueError`; a `$length` of 0 answers 0.</p>
           <pre><code class="lang-php">echo substr_compare("Hello", "llo", 2);   // =&gt; 0</code></pre>
         </article>
-        <article class="doc-entry" id="doc-core-library-strings-29">
-          <h3><a class="doc-anchor" href="#doc-core-library-strings-29">#</a> <code>chr</code></h3>
+        <article class="doc-entry" id="doc-core-library-strings-30">
+          <h3><a class="doc-anchor" href="#doc-core-library-strings-30">#</a> <code>chr</code></h3>
           <pre><code class="lang-php">chr(int $codepoint): string</code></pre>
           <p>The one-character string for a byte value, reduced modulo 256 so any integer is accepted — a value outside `0..=255` raises `Deprecated: chr(): Providing a value not in-between 0 and 255 is deprecated…` first. DIVERGENCE: the result is that CODEPOINT, so `chr(233)` yields a two-byte UTF-8 `é` rather than PHP's single 0xE9 byte.</p>
           <pre><code class="lang-php">echo chr(65);   // =&gt; A</code></pre>
         </article>
-        <article class="doc-entry" id="doc-core-library-strings-30">
-          <h3><a class="doc-anchor" href="#doc-core-library-strings-30">#</a> <code>ord</code></h3>
+        <article class="doc-entry" id="doc-core-library-strings-31">
+          <h3><a class="doc-anchor" href="#doc-core-library-strings-31">#</a> <code>ord</code></h3>
           <pre><code class="lang-php">ord(string $character): int</code></pre>
           <p>The value of the first BYTE of the string, so a multibyte character reports its leading byte (`ord("é")` is 195). The empty string returns 0 and raises `Deprecated: ord(): Providing an empty string is deprecated`.</p>
           <pre><code class="lang-php">echo ord("A");   // =&gt; 65</code></pre>
         </article>
-        <article class="doc-entry" id="doc-core-library-strings-31">
-          <h3><a class="doc-anchor" href="#doc-core-library-strings-31">#</a> <code>dechex</code></h3>
+        <article class="doc-entry" id="doc-core-library-strings-32">
+          <h3><a class="doc-anchor" href="#doc-core-library-strings-32">#</a> <code>dechex</code></h3>
           <pre><code class="lang-php">dechex(int $num): string</code></pre>
           <p>Lowercase hexadecimal rendering of an integer. DIVERGENCE: a negative number renders as `-` plus the magnitude, where PHP renders the unsigned 64-bit two's-complement form.</p>
           <pre><code class="lang-php">echo dechex(255);   // =&gt; ff</code></pre>
         </article>
-        <article class="doc-entry" id="doc-core-library-strings-32">
-          <h3><a class="doc-anchor" href="#doc-core-library-strings-32">#</a> <code>hexdec</code></h3>
+        <article class="doc-entry" id="doc-core-library-strings-33">
+          <h3><a class="doc-anchor" href="#doc-core-library-strings-33">#</a> <code>hexdec</code></h3>
           <pre><code class="lang-php">hexdec(string $hex_string): int</code></pre>
           <p>The integer value of a hexadecimal string, after trimming surrounding whitespace. A leading `0x`/`0X` is dropped. Characters that are not hex digits are skipped, and skipping ANY raises `Deprecated: Invalid characters passed for attempted conversion, these have been ignored` before returning. The result is an integer when it fits `PHP_INT_MAX` and a float otherwise.</p>
           <pre><code class="lang-php">echo hexdec("ff");   // =&gt; 255</code></pre>
         </article>
-        <article class="doc-entry" id="doc-core-library-strings-33">
-          <h3><a class="doc-anchor" href="#doc-core-library-strings-33">#</a> <code>bin2hex</code></h3>
+        <article class="doc-entry" id="doc-core-library-strings-34">
+          <h3><a class="doc-anchor" href="#doc-core-library-strings-34">#</a> <code>bin2hex</code></h3>
           <pre><code class="lang-php">bin2hex(string $string): string</code></pre>
           <p>Two lowercase hex digits per byte of the string's UTF-8 encoding.</p>
           <pre><code class="lang-php">echo bin2hex("AB");   // =&gt; 4142</code></pre>
         </article>
-        <article class="doc-entry" id="doc-core-library-strings-34">
-          <h3><a class="doc-anchor" href="#doc-core-library-strings-34">#</a> <code>sprintf</code></h3>
+        <article class="doc-entry" id="doc-core-library-strings-35">
+          <h3><a class="doc-anchor" href="#doc-core-library-strings-35">#</a> <code>sprintf</code></h3>
           <pre><code class="lang-php">sprintf(string $format, mixed ...$values): string</code></pre>
           <p>Formats the arguments into a string. Supports the `%b %c %d %u %e %E %f %F %g %G %o %s %x %X %%` conversions with width, precision, `-` left-align, `0` and `'` custom padding, `+` sign, and `%n$` argument reordering.</p>
           <pre><code class="lang-php">echo sprintf("%05.2f|%s|%x|%b", 3.14159, "s", 255, 5);   // =&gt; 03.14|s|ff|101</code></pre>
@@ -3202,12 +3286,13 @@ echo implode(",", array_keys($a));   // =&gt; a,b</code></pre>
         <article class="doc-entry" id="doc-arrays-21">
           <h3><a class="doc-anchor" href="#doc-arrays-21">#</a> <code>shuffle</code></h3>
           <pre><code class="lang-php">shuffle(array $array): bool</code></pre>
-          <p>Randomizes the order in place with Fisher-Yates and reindexes from 0. DIVERGENCE: the generator is a thread-local xorshift64 seeded lazily from the wall clock, not PHP's Mt19937, so `mt_srand()` does not make the order reproducible.</p>
+          <p>Randomizes the order in place and reindexes from 0, with the reference's own walk (`php_array_data_shuffle`) over the shared Mt19937 engine — so after `mt_srand($seed)` the order is the reference's.</p>
+          <pre><code class="lang-php">mt_srand(3); $a = [1, 2, 3, 4, 5]; shuffle($a); echo implode(",", $a);   // =&gt; 4,3,5,1,2</code></pre>
         </article>
         <article class="doc-entry" id="doc-arrays-22">
           <h3><a class="doc-anchor" href="#doc-arrays-22">#</a> <code>array_rand</code></h3>
           <pre><code class="lang-php">array_rand(array $array, int $num = 1): mixed</code></pre>
-          <p>One random key, or an array of `$num` distinct keys in their original order. An EMPTY array raises `ValueError: array_rand(): Argument #1 ($array) must not be empty` — there is no `$num` that would work — while a `$num` outside `1..count($array)` on a non-empty array names argument #2 instead. Uses the same non-reproducible xorshift64 generator as `shuffle`.</p>
+          <p>One random key, or an array of `$num` distinct keys in their original order. An EMPTY array raises `ValueError: array_rand(): Argument #1 ($array) must not be empty` — there is no `$num` that would work — while a `$num` outside `1..count($array)` on a non-empty array names argument #2 instead. Picks with the reference's `php_array_pick_keys` over the shared Mt19937 engine, so a seeded program picks the reference's keys.</p>
         </article>
         <article class="doc-entry" id="doc-arrays-23">
           <h3><a class="doc-anchor" href="#doc-arrays-23">#</a> <code>array_walk</code></h3>
@@ -3431,22 +3516,24 @@ echo implode(",", array_keys($a));   // =&gt; a,b</code></pre>
         <article class="doc-entry" id="doc-math-27">
           <h3><a class="doc-anchor" href="#doc-math-27">#</a> <code>srand</code></h3>
           <pre><code class="lang-php">srand(?int $seed = null): void</code></pre>
-          <p>Reseeds the shared generator, or reseeds from clock and counter entropy when called with no argument. DIVERGENCE: the generator is SplitMix64, not PHP's libc or Mt19937, so a given seed does not reproduce PHP's sequence — and `srand` and `mt_srand` share one generator.</p>
+          <p>Seeds the shared Mt19937 engine with the low 32 bits of `$seed`, or from clock and counter entropy when called with no argument. As in the reference, `srand` is an alias of `mt_srand`, and the one engine feeds `rand`, `mt_rand`, `shuffle`, `str_shuffle` and `array_rand` — a seeded program reproduces the reference's sequence.</p>
         </article>
         <article class="doc-entry" id="doc-math-28">
           <h3><a class="doc-anchor" href="#doc-math-28">#</a> <code>mt_srand</code></h3>
           <pre><code class="lang-php">mt_srand(?int $seed = null, int $mode = MT_RAND_MT19937): void</code></pre>
-          <p>Shares the `srand` arm and therefore the same SplitMix64 state. The `$mode` argument is accepted and ignored.</p>
+          <p>Shares the `srand` arm and therefore the same Mt19937 engine (a port of `ext/random/engine_mt19937.c`). The `$mode` argument is accepted and ignored: only `MT_RAND_MT19937` is modelled.</p>
         </article>
         <article class="doc-entry" id="doc-math-29">
           <h3><a class="doc-anchor" href="#doc-math-29">#</a> <code>rand</code></h3>
           <pre><code class="lang-php">rand(int $min = 0, int $max = 2147483647): int</code></pre>
-          <p>A value in the inclusive range. Inverted bounds are swapped rather than raising. DIVERGENCE: SplitMix64 rather than PHP's generator, and the modulo range mapping is slightly biased for spans that do not divide evenly into 2^64.</p>
+          <p>A value in the inclusive range, from the shared Mt19937 engine through the reference's unbiased range reduction (`php_random_range`). Inverted bounds are swapped rather than raising. With no arguments it is the engine's 32-bit output shifted right by one.</p>
+          <pre><code class="lang-php">srand(5); echo rand(1, 6);   // =&gt; 6</code></pre>
         </article>
         <article class="doc-entry" id="doc-math-30">
           <h3><a class="doc-anchor" href="#doc-math-30">#</a> <code>mt_rand</code></h3>
           <pre><code class="lang-php">mt_rand(int $min = 0, int $max = 2147483647): int</code></pre>
-          <p>The same generator and range mapping as `rand`, except that `$min &gt; $max` raises `Argument #2 ($max) must be greater than or equal to argument #1 ($min)`. It is NOT Mt19937.</p>
+          <p>The same Mt19937 engine and range reduction as `rand`, except that `$min &gt; $max` raises `Argument #2 ($max) must be greater than or equal to argument #1 ($min)`.</p>
+          <pre><code class="lang-php">mt_srand(1); echo mt_rand(1, 100), " ", mt_rand();   // =&gt; 46 2141438069</code></pre>
         </article>
         <article class="doc-entry" id="doc-math-31">
           <h3><a class="doc-anchor" href="#doc-math-31">#</a> <code>random_int</code></h3>
@@ -3826,31 +3913,37 @@ echo implode(",", array_keys($a));   // =&gt; a,b</code></pre>
           <pre><code class="lang-php">echo preg_replace_callback("/\d/", fn($m) =&gt; $m[0] * 2, "a1b2");   // =&gt; a2b4</code></pre>
         </article>
         <article class="doc-entry" id="doc-regular-expressions-5">
-          <h3><a class="doc-anchor" href="#doc-regular-expressions-5">#</a> <code>preg_split</code></h3>
+          <h3><a class="doc-anchor" href="#doc-regular-expressions-5">#</a> <code>preg_replace_callback_array</code></h3>
+          <pre><code class="lang-php">preg_replace_callback_array(array $pattern, string|array $subject, int $limit = -1, int &amp;$count = null, int $flags = 0): string|array|null</code></pre>
+          <p>Applies each `pattern =&gt; callback` entry in turn to the WHOLE subject — every element of an array subject — before the next entry runs, so later patterns see earlier replacements. `$limit` bounds each pattern on each string, `&amp;$count` totals every replacement, and `$flags` reshapes `$matches` as for `preg_replace_callback`. A value in the map that is not callable raises `TypeError: preg_replace_callback_array(): Argument #1 ($pattern) must contain only valid callbacks` before anything runs; a pattern that will not compile warns and the result is null.</p>
+          <pre><code class="lang-php">echo preg_replace_callback_array(["/\d+/" =&gt; fn($m) =&gt; "N", "/[a-z]+/" =&gt; fn($m) =&gt; "W"], "abc 123");   // =&gt; W N</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-regular-expressions-6">
+          <h3><a class="doc-anchor" href="#doc-regular-expressions-6">#</a> <code>preg_split</code></h3>
           <pre><code class="lang-php">preg_split(string $pattern, string $subject, int $limit = -1, int $flags = 0): array|false</code></pre>
           <p>Splits on each match. All three flag bits are honoured: `PREG_SPLIT_NO_EMPTY`, `PREG_SPLIT_DELIM_CAPTURE`, and `PREG_SPLIT_OFFSET_CAPTURE`. A zero-width match sitting right after a non-empty one is emitted, as PCRE does, so `/x*/` and `/\d*/` split the way the reference splits them. The captured delimiters `PREG_SPLIT_DELIM_CAPTURE` interleaves are positional — unlike `$matches`, they are not keyed by group name.</p>
           <pre><code class="lang-php">echo implode("-", preg_split("/[\s,]+/", "a, b  c"));   // =&gt; a-b-c</code></pre>
         </article>
-        <article class="doc-entry" id="doc-regular-expressions-6">
-          <h3><a class="doc-anchor" href="#doc-regular-expressions-6">#</a> <code>preg_quote</code></h3>
+        <article class="doc-entry" id="doc-regular-expressions-7">
+          <h3><a class="doc-anchor" href="#doc-regular-expressions-7">#</a> <code>preg_quote</code></h3>
           <pre><code class="lang-php">preg_quote(string $str, ?string $delimiter = null): string</code></pre>
           <p>Backslash-escapes the PCRE special set `.\+*?[^]$(){}=!&lt;&gt;|:-#`, plus the first character of `$delimiter` when supplied. A NUL byte becomes the four-character sequence `\000`. It compiles nothing, so it never touches `preg_last_error()`.</p>
           <pre><code class="lang-php">echo preg_quote("1+1");   // =&gt; 1\+1</code></pre>
         </article>
-        <article class="doc-entry" id="doc-regular-expressions-7">
-          <h3><a class="doc-anchor" href="#doc-regular-expressions-7">#</a> <code>preg_grep</code></h3>
+        <article class="doc-entry" id="doc-regular-expressions-8">
+          <h3><a class="doc-anchor" href="#doc-regular-expressions-8">#</a> <code>preg_grep</code></h3>
           <pre><code class="lang-php">preg_grep(string $pattern, array $array, int $flags = 0): array|false</code></pre>
           <p>The entries whose string value matches the pattern, PRESERVING keys. The `PREG_GREP_INVERT` bit inverts the test. A non-array subject yields an empty array rather than raising.</p>
           <pre><code class="lang-php">echo implode(",", preg_grep("/^a/", ["apple", "pear"]));   // =&gt; apple</code></pre>
         </article>
-        <article class="doc-entry" id="doc-regular-expressions-8">
-          <h3><a class="doc-anchor" href="#doc-regular-expressions-8">#</a> <code>preg_last_error</code></h3>
+        <article class="doc-entry" id="doc-regular-expressions-9">
+          <h3><a class="doc-anchor" href="#doc-regular-expressions-9">#</a> <code>preg_last_error</code></h3>
           <pre><code class="lang-php">preg_last_error(): int</code></pre>
           <p>The outcome of the last `preg_*` call that reached the regex compiler: `PREG_INTERNAL_ERROR` (1) after a pattern the engine rejected, `PREG_NO_ERROR` (0) after one it accepted. The state is STICKY and cleared only by another compile — reading it does not clear it, and `preg_quote()` does not touch it — so a pattern that compiles resets it even when the match then finds nothing. DIVERGENCE: only these two codes are produced; the reference also reports backtrack- and recursion-limit exhaustion, which this engine has no equivalent of.</p>
           <pre><code class="lang-php">@preg_match("/[a", "x"); echo preg_last_error();   // =&gt; 1</code></pre>
         </article>
-        <article class="doc-entry" id="doc-regular-expressions-9">
-          <h3><a class="doc-anchor" href="#doc-regular-expressions-9">#</a> <code>preg_last_error_msg</code></h3>
+        <article class="doc-entry" id="doc-regular-expressions-10">
+          <h3><a class="doc-anchor" href="#doc-regular-expressions-10">#</a> <code>preg_last_error_msg</code></h3>
           <pre><code class="lang-php">preg_last_error_msg(): string</code></pre>
           <p>The message for the `preg_last_error()` code, and like it a pure reader that clears nothing. `"No error"` or `"Internal error"` in practice, the two codes this engine produces.</p>
           <pre><code class="lang-php">@preg_match("/[a", "x"); echo preg_last_error_msg();   // =&gt; Internal error</code></pre>
@@ -4086,20 +4179,20 @@ echo implode(",", array_keys($a));   // =&gt; a,b</code></pre>
         <article class="doc-entry" id="doc-date-and-time-3">
           <h3><a class="doc-anchor" href="#doc-date-and-time-3">#</a> <code>gmmktime</code></h3>
           <pre><code class="lang-php">gmmktime(int $hour = ?, int $minute = ?, int $second = ?, int $month = ?, int $day = ?, int $year = ?): int|false</code></pre>
-          <p>Shares the `mktime` arm and is therefore identical to it, because every computation in this module is already UTC.</p>
+          <p>Shares the `mktime` arm and is therefore identical to it.</p>
           <pre><code class="lang-php">echo gmmktime(0, 0, 0, 1, 1, 1970);   // =&gt; 0</code></pre>
         </article>
         <article class="doc-entry" id="doc-date-and-time-4">
           <h3><a class="doc-anchor" href="#doc-date-and-time-4">#</a> <code>date</code></h3>
           <pre><code class="lang-php">date(string $format, int $timestamp = time()): string</code></pre>
-          <p>Formats in UTC regardless of `date_default_timezone_set()`. Handled format characters, exactly: `d j D l N w S z W F M m n t L Y y a A g G h H i s U o u v c r`; a backslash escapes the next character. Every OTHER character — including the timezone specifiers `e T O P p Z I` — is emitted LITERALLY. `u`/`v` always render zeros, `c` always ends `+00:00`, and `r` always ends `+0000`.</p>
-          <pre><code class="lang-php">echo date("Y-m-d H:i:s", 0);   // =&gt; 1970-01-01 00:00:00</code></pre>
+          <p>The timestamp broken down in the default zone and rendered by a port of the reference's `date_format`: every format character, including the zone ones (`e T O P p Z I`), Swatch time `B`, ISO week `W`/`o` and the expanded years `x`/`X`; a backslash escapes the next character.</p>
+          <pre><code class="lang-php">echo date("Y-m-d H:i:s T", 0);   // =&gt; 1970-01-01 00:00:00 UTC</code></pre>
         </article>
         <article class="doc-entry" id="doc-date-and-time-5">
           <h3><a class="doc-anchor" href="#doc-date-and-time-5">#</a> <code>gmdate</code></h3>
           <pre><code class="lang-php">gmdate(string $format, int $timestamp = time()): string</code></pre>
-          <p>Shares the `date` arm — same UTC formatting, same exact set of supported format characters.</p>
-          <pre><code class="lang-php">echo gmdate("Y-m-d", 0);   // =&gt; 1970-01-01</code></pre>
+          <p>As `date`, but in UTC with the zone reported as GMT (`T` is `GMT`, `e` is `UTC`).</p>
+          <pre><code class="lang-php">echo gmdate("Y-m-d T", 0);   // =&gt; 1970-01-01 GMT</code></pre>
         </article>
         <article class="doc-entry" id="doc-date-and-time-6">
           <h3><a class="doc-anchor" href="#doc-date-and-time-6">#</a> <code>checkdate</code></h3>
@@ -4108,31 +4201,37 @@ echo implode(",", array_keys($a));   // =&gt; a,b</code></pre>
           <pre><code class="lang-php">var_dump(checkdate(2, 29, 2024), checkdate(2, 30, 2024));   // =&gt; bool(true) bool(false)</code></pre>
         </article>
         <article class="doc-entry" id="doc-date-and-time-7">
-          <h3><a class="doc-anchor" href="#doc-date-and-time-7">#</a> <code>microtime</code></h3>
+          <h3><a class="doc-anchor" href="#doc-date-and-time-7">#</a> <code>idate</code></h3>
+          <pre><code class="lang-php">idate(string $format, ?int $timestamp = null): int|false</code></pre>
+          <p>One `date()` field as an int (`php_idate`): `d j N w z W m n t L y Y o B g h H G i s I Z U`. A format longer than one character, or an unknown one, warns and returns `false`.</p>
+          <pre><code class="lang-php">echo idate("Y", 0), idate("z", 86400 * 40);   // =&gt; 197040</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-date-and-time-8">
+          <h3><a class="doc-anchor" href="#doc-date-and-time-8">#</a> <code>microtime</code></h3>
           <pre><code class="lang-php">microtime(bool $as_float = false): float|string</code></pre>
           <p>With a truthy argument the timestamp as a float; otherwise the classic `"0.12345678 1712345678"` string with the fraction first.</p>
           <pre><code class="lang-php">var_dump(microtime(true) &gt; 0);   // =&gt; bool(true)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-date-and-time-8">
-          <h3><a class="doc-anchor" href="#doc-date-and-time-8">#</a> <code>strtotime</code></h3>
-          <pre><code class="lang-php">strtotime(string $datetime, int $baseTimestamp = time()): int|false</code></pre>
-          <p>Parses only this SUBSET, all in UTC: the keywords `now`, `today`, `midnight`, `yesterday`, `tomorrow`; `@&lt;int&gt;` for explicit Unix seconds; the absolute forms `YYYY-MM-DD HH:MM:SS` and `YYYY-MM-DD`; and chained relative tokens matching `[+-]N (sec|min|hour|day|week|month|year)[s] [ago]`. Anything else — a month name, a slashed date, `next monday`, a timezone suffix — returns `false`. Month and year arithmetic uses PHP's OVERFLOWING day rule, so `2011-01-31 +1 month` lands in March.</p>
-          <pre><code class="lang-php">echo strtotime("1970-01-02");   // =&gt; 86400</code></pre>
-        </article>
         <article class="doc-entry" id="doc-date-and-time-9">
-          <h3><a class="doc-anchor" href="#doc-date-and-time-9">#</a> <code>getdate</code></h3>
+          <h3><a class="doc-anchor" href="#doc-date-and-time-9">#</a> <code>strtotime</code></h3>
+          <pre><code class="lang-php">strtotime(string $datetime, ?int $baseTimestamp = null): int|false</code></pre>
+          <p>timelib's free-form scanner, ported rule for rule: ISO, American, textual and pointed dates, 12- and 24-hour times, `@&lt;seconds&gt;[.&lt;fraction&gt;]`, zone offsets and abbreviations, ISO weeks, relative offsets (`+1 week 2 days`, `3 days ago`, `+5 weekdays`), weekday and "first/last … of" phrases, `next`/`last`/`this`. Holes are filled from the base timestamp in the default zone. `false` when the scanner reports an error. DIVERGENCE: a zone identifier resolves only when its offset is fixed (no tz database).</p>
+          <pre><code class="lang-php">echo date("Y-m-d", strtotime("last friday of next month", 0));   // =&gt; 1970-02-27</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-date-and-time-10">
+          <h3><a class="doc-anchor" href="#doc-date-and-time-10">#</a> <code>getdate</code></h3>
           <pre><code class="lang-php">getdate(int $timestamp = time()): array</code></pre>
           <p>A UTC-computed map with the keys `seconds minutes hours mday wday mon year yday weekday month` plus the integer key `0` holding the timestamp. DIVERGENCE: only key `0` is numeric — PHP's other numeric indices are absent.</p>
           <pre><code class="lang-php">echo getdate(0)["year"], getdate(0)["weekday"];   // =&gt; 1970Thursday</code></pre>
         </article>
-        <article class="doc-entry" id="doc-date-and-time-10">
-          <h3><a class="doc-anchor" href="#doc-date-and-time-10">#</a> <code>date_default_timezone_set</code></h3>
+        <article class="doc-entry" id="doc-date-and-time-11">
+          <h3><a class="doc-anchor" href="#doc-date-and-time-11">#</a> <code>date_default_timezone_set</code></h3>
           <pre><code class="lang-php">date_default_timezone_set(string $timezoneId): true</code></pre>
-          <p>Stores the name and ALWAYS returns true. DIVERGENCE: an unknown name is not rejected (PHP returns false), and setting a non-UTC zone shifts NOTHING — every calculation in the module stays UTC.</p>
+          <p>Stores the name and ALWAYS returns true. A fixed-offset zone (`UTC`, `Etc/GMT+5`) then shifts the date functions; any other name is computed as UTC. DIVERGENCE: an unknown name is not rejected (PHP returns false), and a zone with transitions cannot be honoured without a tz database.</p>
           <pre><code class="lang-php">var_dump(date_default_timezone_set("America/New_York"));   // =&gt; bool(true)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-date-and-time-11">
-          <h3><a class="doc-anchor" href="#doc-date-and-time-11">#</a> <code>date_default_timezone_get</code></h3>
+        <article class="doc-entry" id="doc-date-and-time-12">
+          <h3><a class="doc-anchor" href="#doc-date-and-time-12">#</a> <code>date_default_timezone_get</code></h3>
           <pre><code class="lang-php">date_default_timezone_get(): string</code></pre>
           <p>The name last stored, defaulting to `UTC`. It round-trips whatever string was set, valid or not.</p>
           <pre><code class="lang-php">echo date_default_timezone_get();   // =&gt; UTC</code></pre>
@@ -4143,75 +4242,153 @@ echo implode(",", array_keys($a));   // =&gt; a,b</code></pre>
         <h2>Date and time — object API</h2>
         <article class="doc-entry" id="doc-date-and-time-object-api-1">
           <h3><a class="doc-anchor" href="#doc-date-and-time-object-api-1">#</a> <code>date_create</code></h3>
-          <pre><code class="lang-php">date_create(string $datetime = "now"): object</code></pre>
-          <p>Constructs a prelude `DateTime`. DIVERGENCE: PHP's `$timezone` parameter does not exist.</p>
+          <pre><code class="lang-php">date_create(string $datetime = "now", ?DateTimeZone $timezone = null): DateTime|false</code></pre>
+          <p>`new DateTime($datetime, $timezone)`, except that a string the scanner refuses returns `false` instead of throwing.</p>
           <pre><code class="lang-php">echo date_create("@0")-&gt;format("Y");   // =&gt; 1970</code></pre>
         </article>
         <article class="doc-entry" id="doc-date-and-time-object-api-2">
           <h3><a class="doc-anchor" href="#doc-date-and-time-object-api-2">#</a> <code>date_create_immutable</code></h3>
-          <pre><code class="lang-php">date_create_immutable(string $datetime = "now"): object</code></pre>
-          <p>Constructs a prelude `DateTimeImmutable`, again with no `$timezone` parameter.</p>
+          <pre><code class="lang-php">date_create_immutable(string $datetime = "now", ?DateTimeZone $timezone = null): DateTimeImmutable|false</code></pre>
+          <p>The `DateTimeImmutable` counterpart of `date_create`.</p>
           <pre><code class="lang-php">echo date_create_immutable("@0")-&gt;getTimestamp();   // =&gt; 0</code></pre>
         </article>
         <article class="doc-entry" id="doc-date-and-time-object-api-3">
-          <h3><a class="doc-anchor" href="#doc-date-and-time-object-api-3">#</a> <code>date_interval_create_from_date_string</code></h3>
-          <pre><code class="lang-php">date_interval_create_from_date_string(string $datetime): object</code></pre>
-          <p>DIVERGENCE: it constructs a `DateInterval` from the EMPTY string — the `$datetime` argument is accepted and ignored, so the returned interval always carries a zero duration regardless of what you pass.</p>
-          <pre><code class="lang-php">echo date_interval_create_from_date_string("1 day")-&gt;d;   // =&gt; 0</code></pre>
+          <h3><a class="doc-anchor" href="#doc-date-and-time-object-api-3">#</a> <code>date_create_from_format</code></h3>
+          <pre><code class="lang-php">date_create_from_format(string $format, string $datetime, ?DateTimeZone $timezone = null): DateTime|false</code></pre>
+          <p>Parses `$datetime` against `$format` with a port of `timelib_parse_from_format`; fields the format does not set come from the current time unless `!` or `|` resets them. `false` on any parse error.</p>
+          <pre><code class="lang-php">echo date_create_from_format("d/m/Y", "15/08/2024")-&gt;format("Y-m-d");   // =&gt; 2024-08-15</code></pre>
         </article>
         <article class="doc-entry" id="doc-date-and-time-object-api-4">
-          <h3><a class="doc-anchor" href="#doc-date-and-time-object-api-4">#</a> <code>date_format</code></h3>
-          <pre><code class="lang-php">date_format(object $object, string $format): string|false</code></pre>
-          <p>Calls `-&gt;format($format)` on the receiver's own class. A non-object first argument returns `false`.</p>
-          <pre><code class="lang-php">echo date_format(date_create("@0"), "Y-m-d");   // =&gt; 1970-01-01</code></pre>
+          <h3><a class="doc-anchor" href="#doc-date-and-time-object-api-4">#</a> <code>date_create_immutable_from_format</code></h3>
+          <pre><code class="lang-php">date_create_immutable_from_format(string $format, string $datetime, ?DateTimeZone $timezone = null): DateTimeImmutable|false</code></pre>
+          <p>The `DateTimeImmutable` counterpart of `date_create_from_format`.</p>
+          <pre><code class="lang-php">echo date_create_immutable_from_format("!Y", "2024")-&gt;format("c");   // =&gt; 2024-01-01T00:00:00+00:00</code></pre>
         </article>
         <article class="doc-entry" id="doc-date-and-time-object-api-5">
-          <h3><a class="doc-anchor" href="#doc-date-and-time-object-api-5">#</a> <code>date_add</code></h3>
-          <pre><code class="lang-php">date_add(object $object, object $interval): mixed</code></pre>
-          <p>Calls `-&gt;add($interval)`. On a `DateTime` this mutates and returns the receiver; on a `DateTimeImmutable` it returns a new instance.</p>
-          <pre><code class="lang-php">echo date_add(date_create("@0"), new DateInterval("P1D"))-&gt;getTimestamp();   // =&gt; 86400</code></pre>
+          <h3><a class="doc-anchor" href="#doc-date-and-time-object-api-5">#</a> <code>date_interval_create_from_date_string</code></h3>
+          <pre><code class="lang-php">date_interval_create_from_date_string(string $datetime): DateInterval|false</code></pre>
+          <p>A `DateInterval` holding the RELATIVE part of a strtotime string (`3 days`, `last monday`). A string with an absolute date, time or zone warns `contains non-relative elements` and returns `false`.</p>
+          <pre><code class="lang-php">echo date_interval_create_from_date_string("1 day")-&gt;d;   // =&gt; 1</code></pre>
         </article>
         <article class="doc-entry" id="doc-date-and-time-object-api-6">
-          <h3><a class="doc-anchor" href="#doc-date-and-time-object-api-6">#</a> <code>date_sub</code></h3>
-          <pre><code class="lang-php">date_sub(object $object, object $interval): mixed</code></pre>
-          <p>Calls `-&gt;sub($interval)` with the same mutable-versus-immutable behaviour as `date_add`.</p>
-          <pre><code class="lang-php">echo date_sub(date_create("@86400"), new DateInterval("P1D"))-&gt;getTimestamp();   // =&gt; 0</code></pre>
+          <h3><a class="doc-anchor" href="#doc-date-and-time-object-api-6">#</a> <code>date_format</code></h3>
+          <pre><code class="lang-php">date_format(DateTimeInterface $object, string $format): string</code></pre>
+          <p>`$object-&gt;format($format)`.</p>
+          <pre><code class="lang-php">echo date_format(date_create("@0"), "Y-m-d");   // =&gt; 1970-01-01</code></pre>
         </article>
         <article class="doc-entry" id="doc-date-and-time-object-api-7">
-          <h3><a class="doc-anchor" href="#doc-date-and-time-object-api-7">#</a> <code>date_diff</code></h3>
-          <pre><code class="lang-php">date_diff(object $baseObject, object $targetObject): mixed</code></pre>
-          <p>Calls `-&gt;diff($target)` and returns a `DateInterval`. DIVERGENCE: PHP's `$absolute` third parameter is not forwarded, so the interval's `invert` flag is always the one `diff` computes.</p>
-          <pre><code class="lang-php">echo date_diff(date_create("@0"), date_create("@86400"))-&gt;d;   // =&gt; 1</code></pre>
+          <h3><a class="doc-anchor" href="#doc-date-and-time-object-api-7">#</a> <code>date_add</code></h3>
+          <pre><code class="lang-php">date_add(DateTime $object, DateInterval $interval): DateTime</code></pre>
+          <p>Adds the interval in place (calendar fields first, then the clock) and returns the object.</p>
+          <pre><code class="lang-php">echo date_add(date_create("@0"), new DateInterval("P1D"))-&gt;getTimestamp();   // =&gt; 86400</code></pre>
         </article>
         <article class="doc-entry" id="doc-date-and-time-object-api-8">
-          <h3><a class="doc-anchor" href="#doc-date-and-time-object-api-8">#</a> <code>date_modify</code></h3>
-          <pre><code class="lang-php">date_modify(object $object, string $modifier): mixed</code></pre>
-          <p>Calls `-&gt;modify($modifier)`, which routes through `strtotime` and therefore accepts only that function's documented subset.</p>
-          <pre><code class="lang-php">echo date_modify(date_create("@0"), "+1 day")-&gt;getTimestamp();   // =&gt; 86400</code></pre>
+          <h3><a class="doc-anchor" href="#doc-date-and-time-object-api-8">#</a> <code>date_sub</code></h3>
+          <pre><code class="lang-php">date_sub(DateTime $object, DateInterval $interval): DateTime</code></pre>
+          <p>Subtracts the interval in place. A weekday or special relative interval warns and leaves the date alone.</p>
+          <pre><code class="lang-php">echo date_sub(date_create("@86400"), new DateInterval("P1D"))-&gt;getTimestamp();   // =&gt; 0</code></pre>
         </article>
         <article class="doc-entry" id="doc-date-and-time-object-api-9">
-          <h3><a class="doc-anchor" href="#doc-date-and-time-object-api-9">#</a> <code>date_timestamp_get</code></h3>
-          <pre><code class="lang-php">date_timestamp_get(object $object): mixed</code></pre>
-          <p>Calls `-&gt;getTimestamp()`, returning `false` for a non-object argument.</p>
-          <pre><code class="lang-php">echo date_timestamp_get(date_create("@42"));   // =&gt; 42</code></pre>
+          <h3><a class="doc-anchor" href="#doc-date-and-time-object-api-9">#</a> <code>date_diff</code></h3>
+          <pre><code class="lang-php">date_diff(DateTimeInterface $baseObject, DateTimeInterface $targetObject, bool $absolute = false): DateInterval</code></pre>
+          <p>timelib's `timelib_diff`: years, months and days borrowed against the calendar, `days` the whole-day count, `invert` set when the target is earlier (cleared by `$absolute`).</p>
+          <pre><code class="lang-php">echo date_diff(date_create("2024-01-31"), date_create("2024-03-01"))-&gt;format("%m %d %a");   // =&gt; 0 30 30</code></pre>
         </article>
         <article class="doc-entry" id="doc-date-and-time-object-api-10">
-          <h3><a class="doc-anchor" href="#doc-date-and-time-object-api-10">#</a> <code>date_timestamp_set</code></h3>
-          <pre><code class="lang-php">date_timestamp_set(object $object, int $timestamp): mixed</code></pre>
-          <p>Calls `-&gt;setTimestamp($timestamp)`. Only `DateTime` declares that method, so an immutable receiver has nothing to dispatch to.</p>
-          <pre><code class="lang-php">echo date_timestamp_set(date_create("@0"), 99)-&gt;getTimestamp();   // =&gt; 99</code></pre>
+          <h3><a class="doc-anchor" href="#doc-date-and-time-object-api-10">#</a> <code>date_modify</code></h3>
+          <pre><code class="lang-php">date_modify(DateTime $object, string $modifier): DateTime|false</code></pre>
+          <p>Applies a strtotime string to the object in place. A string the scanner refuses warns `Failed to parse time string` and returns `false`.</p>
+          <pre><code class="lang-php">echo date_modify(date_create("@0"), "+1 day")-&gt;getTimestamp();   // =&gt; 86400</code></pre>
         </article>
         <article class="doc-entry" id="doc-date-and-time-object-api-11">
-          <h3><a class="doc-anchor" href="#doc-date-and-time-object-api-11">#</a> <code>date_interval_format</code></h3>
-          <pre><code class="lang-php">date_interval_format(object $object, string $format): mixed</code></pre>
-          <p>Calls `-&gt;format($format)` on a `DateInterval` — the identical code path as `date_format`, differing only in which class resolves the method.</p>
-          <pre><code class="lang-php">echo date_interval_format(new DateInterval("P2D"), "%d");   // =&gt; 2</code></pre>
+          <h3><a class="doc-anchor" href="#doc-date-and-time-object-api-11">#</a> <code>date_timestamp_get</code></h3>
+          <pre><code class="lang-php">date_timestamp_get(DateTimeInterface $object): int</code></pre>
+          <p>`$object-&gt;getTimestamp()`.</p>
+          <pre><code class="lang-php">echo date_timestamp_get(date_create("@42"));   // =&gt; 42</code></pre>
         </article>
         <article class="doc-entry" id="doc-date-and-time-object-api-12">
-          <h3><a class="doc-anchor" href="#doc-date-and-time-object-api-12">#</a> <code>date_offset_get</code></h3>
-          <pre><code class="lang-php">date_offset_get(object $object): int</code></pre>
-          <p>DIVERGENCE: always returns 0 and ignores its argument, because the runtime is UTC-only and has no offset to report.</p>
-          <pre><code class="lang-php">echo date_offset_get(date_create("@0"));   // =&gt; 0</code></pre>
+          <h3><a class="doc-anchor" href="#doc-date-and-time-object-api-12">#</a> <code>date_timestamp_set</code></h3>
+          <pre><code class="lang-php">date_timestamp_set(DateTime $object, int $timestamp): DateTime</code></pre>
+          <p>Moves the object to the timestamp, in its own zone, and drops the microseconds.</p>
+          <pre><code class="lang-php">echo date_timestamp_set(date_create("@0"), 99)-&gt;getTimestamp();   // =&gt; 99</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-date-and-time-object-api-13">
+          <h3><a class="doc-anchor" href="#doc-date-and-time-object-api-13">#</a> <code>date_date_set</code></h3>
+          <pre><code class="lang-php">date_date_set(DateTime $object, int $year, int $month, int $day): DateTime</code></pre>
+          <p>Sets the calendar date, normalizing an out-of-range month or day.</p>
+          <pre><code class="lang-php">echo date_date_set(date_create("@0"), 2024, 2, 30)-&gt;format("Y-m-d");   // =&gt; 2024-03-01</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-date-and-time-object-api-14">
+          <h3><a class="doc-anchor" href="#doc-date-and-time-object-api-14">#</a> <code>date_isodate_set</code></h3>
+          <pre><code class="lang-php">date_isodate_set(DateTime $object, int $year, int $week, int $dayOfWeek = 1): DateTime</code></pre>
+          <p>Sets the date from an ISO year, week and weekday.</p>
+          <pre><code class="lang-php">echo date_isodate_set(date_create("@0"), 2024, 1)-&gt;format("Y-m-d");   // =&gt; 2024-01-01</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-date-and-time-object-api-15">
+          <h3><a class="doc-anchor" href="#doc-date-and-time-object-api-15">#</a> <code>date_time_set</code></h3>
+          <pre><code class="lang-php">date_time_set(DateTime $object, int $hour, int $minute, int $second = 0, int $microsecond = 0): DateTime</code></pre>
+          <p>Sets the clock, carrying an out-of-range field into the date.</p>
+          <pre><code class="lang-php">echo date_time_set(date_create("@0"), 25, 0)-&gt;format("Y-m-d H:i");   // =&gt; 1970-01-02 01:00</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-date-and-time-object-api-16">
+          <h3><a class="doc-anchor" href="#doc-date-and-time-object-api-16">#</a> <code>date_timezone_get</code></h3>
+          <pre><code class="lang-php">date_timezone_get(DateTimeInterface $object): DateTimeZone|false</code></pre>
+          <p>The object's zone as a `DateTimeZone`.</p>
+          <pre><code class="lang-php">echo date_timezone_get(date_create("2024-01-01 +05:30"))-&gt;getName();   // =&gt; +05:30</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-date-and-time-object-api-17">
+          <h3><a class="doc-anchor" href="#doc-date-and-time-object-api-17">#</a> <code>date_timezone_set</code></h3>
+          <pre><code class="lang-php">date_timezone_set(DateTime $object, DateTimeZone $timezone): DateTime</code></pre>
+          <p>Keeps the instant and moves the object into `$timezone`.</p>
+          <pre><code class="lang-php">echo date_timezone_set(date_create("@0"), timezone_open("+02:00"))-&gt;format("H:i");   // =&gt; 02:00</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-date-and-time-object-api-18">
+          <h3><a class="doc-anchor" href="#doc-date-and-time-object-api-18">#</a> <code>date_offset_get</code></h3>
+          <pre><code class="lang-php">date_offset_get(DateTimeInterface $object): int</code></pre>
+          <p>The object's offset from UTC in seconds.</p>
+          <pre><code class="lang-php">echo date_offset_get(date_create("2024-01-01 EST"));   // =&gt; -18000</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-date-and-time-object-api-19">
+          <h3><a class="doc-anchor" href="#doc-date-and-time-object-api-19">#</a> <code>date_interval_format</code></h3>
+          <pre><code class="lang-php">date_interval_format(DateInterval $object, string $format): string</code></pre>
+          <p>`$object-&gt;format($format)`: `%Y %y %M %m %D %d %H %h %I %i %S %s %F %f %a %R %r %%`; any other `%x` is copied as written.</p>
+          <pre><code class="lang-php">echo date_interval_format(new DateInterval("P2D"), "%d %a");   // =&gt; 2 (unknown)</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-date-and-time-object-api-20">
+          <h3><a class="doc-anchor" href="#doc-date-and-time-object-api-20">#</a> <code>date_parse</code></h3>
+          <pre><code class="lang-php">date_parse(string $datetime): array</code></pre>
+          <p>What the scanner read, unresolved: the fields it set (`false` for the rest), the warnings and errors by position, the zone, and the relative part.</p>
+          <pre><code class="lang-php">echo date_parse("2024-02-30 10:00")["warnings"][17];   // =&gt; The parsed date was invalid</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-date-and-time-object-api-21">
+          <h3><a class="doc-anchor" href="#doc-date-and-time-object-api-21">#</a> <code>date_parse_from_format</code></h3>
+          <pre><code class="lang-php">date_parse_from_format(string $format, string $datetime): array</code></pre>
+          <p>As `date_parse`, for `timelib_parse_from_format`.</p>
+          <pre><code class="lang-php">echo date_parse_from_format("Y-m-d", "2024-05-06")["day"];   // =&gt; 6</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-date-and-time-object-api-22">
+          <h3><a class="doc-anchor" href="#doc-date-and-time-object-api-22">#</a> <code>date_get_last_errors</code></h3>
+          <pre><code class="lang-php">date_get_last_errors(): array|false</code></pre>
+          <p>The warnings and errors of the last date parse that had any, or `false`.</p>
+          <pre><code class="lang-php">date_create("2024-02-30"); echo date_get_last_errors()["warning_count"];   // =&gt; 1</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-date-and-time-object-api-23">
+          <h3><a class="doc-anchor" href="#doc-date-and-time-object-api-23">#</a> <code>timezone_open</code></h3>
+          <pre><code class="lang-php">timezone_open(string $timezone): DateTimeZone|false</code></pre>
+          <p>`new DateTimeZone($timezone)`, except that an unknown zone warns and returns `false`. DIVERGENCE: only fixed-offset identifiers resolve (no tz database).</p>
+          <pre><code class="lang-php">echo timezone_open("-0330")-&gt;getName();   // =&gt; -03:30</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-date-and-time-object-api-24">
+          <h3><a class="doc-anchor" href="#doc-date-and-time-object-api-24">#</a> <code>timezone_name_get</code></h3>
+          <pre><code class="lang-php">timezone_name_get(DateTimeZone $object): string</code></pre>
+          <p>`$object-&gt;getName()`.</p>
+          <pre><code class="lang-php">echo timezone_name_get(timezone_open("EST"));   // =&gt; EST</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-date-and-time-object-api-25">
+          <h3><a class="doc-anchor" href="#doc-date-and-time-object-api-25">#</a> <code>timezone_offset_get</code></h3>
+          <pre><code class="lang-php">timezone_offset_get(DateTimeZone $object, DateTimeInterface $datetime): int</code></pre>
+          <p>The zone's offset from UTC in seconds at `$datetime`.</p>
+          <pre><code class="lang-php">echo timezone_offset_get(timezone_open("+01:00"), date_create("@0"));   // =&gt; 3600</code></pre>
         </article>
       </section>
 
@@ -4808,6 +4985,18 @@ echo implode(",", $a), "|", implode(",", $b);   // =&gt; 1,2,3|a,b,c</code></pre
           <pre><code class="lang-php">uniqid(string $prefix = "", bool $more_entropy = false): string</code></pre>
           <p>A hex timestamp of the form `%08x%05x` from the wall clock's seconds and microseconds, prefixed by `$prefix`. `$more_entropy` is honoured and appends a fractional suffix of PHP's shape, but with only 1000 distinct values. DIVERGENCE: the clock is the ONLY entropy source — there is no RNG, no counter, and no collision avoidance, so two calls in the same microsecond return IDENTICAL strings. It is not suitable as a unique identifier under load.</p>
           <pre><code class="lang-php">var_dump(strlen(uniqid()) === 13);   // =&gt; bool(true)</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-misc-18">
+          <h3><a class="doc-anchor" href="#doc-misc-18">#</a> <code>pack</code></h3>
+          <pre><code class="lang-php">pack(string $format, mixed ...$values): string</code></pre>
+          <p>A port of ext/standard/pack.c: every format code (`a A Z h H c C s S n v i I l L N V q Q J P f g G d e E x X @`), repeat counts and `*`, and its warnings and `ValueError`s. Bytes come out one per character, as `chr` makes them, so a byte of 0x80 or more is two bytes in this UTF-8 runtime (see BUGS.md).</p>
+          <pre><code class="lang-php">echo bin2hex(pack("nv", 0x1234, 0x1234));   // =&gt; 12343412</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-misc-19">
+          <h3><a class="doc-anchor" href="#doc-misc-19">#</a> <code>unpack</code></h3>
+          <pre><code class="lang-php">unpack(string $format, string $string, int $offset = 0): array|false</code></pre>
+          <p>A port of ext/standard/pack.c's `unpack`: `code[repeat]name` items separated by `/`, numbered keys for a repeat, and its warnings for short input. It reads the string's bytes, as `ord` does.</p>
+          <pre><code class="lang-php">print_r(unpack("nbig/C2c", "\x12\x34AB"));   // =&gt; Array ( [big] =&gt; 4660 [c1] =&gt; 65 [c2] =&gt; 66 )</code></pre>
         </article>
       </section>
 

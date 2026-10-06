@@ -1260,3 +1260,29 @@ fn a_reused_pattern_keeps_per_call_state_out_of_the_engine() {
         "2|0|1|"
     );
 }
+
+#[test]
+fn a_braced_escape_argument_is_not_a_quantifier() {
+    // `\p{Lu}`, `\x{41}`, `\g{1}`, `\k{n}`: the braces belong to the escape.
+    // They reached the `{n,m}` rewrite, which escaped the brace and broke the
+    // pattern, so every one of these failed to compile.
+    assert_eq!(
+        run(r#"<?php var_dump(preg_match("/^\\p{Lu}/u", "Élan"), preg_replace("/\\p{Ll}+/u", "_", "abCDef"), preg_match("/\\p{Lu}{2}/", "xABy", $m), $m[0], preg_match("/\\x{41}/", "A"), preg_replace("/(a)\\g{1}/", "X", "aab"), preg_replace("/(a)(b)\\g{-1}/", "X", "abb"), preg_match("/(?<n>a)\\k{n}/", "aa"));"#),
+        "int(1)\nstring(4) \"_CD_\"\nint(1)\nstring(2) \"AB\"\nint(1)\nstring(2) \"Xb\"\nstring(1) \"X\"\nint(1)\n"
+    );
+}
+
+#[test]
+fn preg_replace_callback_array_runs_each_pattern_over_the_whole_subject() {
+    // Entry-major: the `/a/` callback sees both elements before `/b/` runs, and
+    // `/b/` then sees the `b`s `/a/` produced. `$count` totals all of them.
+    assert_eq!(
+        run(
+            r#"<?php $log = []; $r = preg_replace_callback_array(["/a/" => function ($m) use (&$log) { $log[] = "A"; return "b"; }, "/b/" => function ($m) use (&$log) { $log[] = "B"; return "c"; }], ["k1" => "ab", "k2" => "ba"], -1, $cnt); echo json_encode($r), $cnt, implode("", $log), "\n";
+echo preg_replace_callback_array(["/x/" => fn($m) => "y"], "xxx", 2, $c2), $c2, "\n";
+try { preg_replace_callback_array(["/a/" => "nope"], "a"); } catch (TypeError $e) { echo $e->getMessage(), "\n"; }"#
+        ),
+        "{\"k1\":\"cc\",\"k2\":\"cc\"}6AABBBB\nyyx2\n\
+         preg_replace_callback_array(): Argument #1 ($pattern) must contain only valid callbacks\n"
+    );
+}

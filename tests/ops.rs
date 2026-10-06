@@ -597,3 +597,14 @@ fn a_refused_operand_throws_from_the_operators_line() {
     let src = "<?php function f() {\n    return 1 + [];\n}\ntry { f(); } catch (TypeError $e) { echo $e->getLine(), \"|\"; }\ntry { $x = PHP_EOL - 1; } catch (TypeError $e) { echo $e->getLine(); }\n";
     assert_eq!(run(src), "2|5");
 }
+
+#[test]
+fn concatenation_binds_looser_than_additive_and_shift() {
+    // PHP 8 moved `.` below `+`/`-` and `<<`/`>>`, so `"a" . 1 + 2` is
+    // `"a" . 3`. Expectations recorded from the reference:
+    //   $ php -r 'var_dump("a" . 1 + 2, "a" . 2 * 3 - 1, "x" . 1 << 2, 1 + 2 . "3", "a" . "b" == "ab", -1 . "");'
+    assert_eq!(
+        run(r#"<?php var_dump("a" . 1 + 2, "a" . 2 * 3 - 1, "x" . 1 << 2, 1 + 2 . "3", "a" . "b" == "ab", -1 . "");"#),
+        "string(2) \"a3\"\nstring(2) \"a5\"\nstring(2) \"x4\"\nstring(2) \"33\"\nbool(true)\nstring(2) \"-1\"\n"
+    );
+}

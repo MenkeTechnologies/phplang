@@ -200,6 +200,7 @@ fn byref_arg_class(e: &Expr) -> ByRefArg {
         | Expr::NullsafeMethodCall(..)
         | Expr::StaticCall(..)
         | Expr::New(..)
+        | Expr::NewDyn(..)
         | Expr::NewAnon { .. } => ByRefArg::VarTemp,
         _ => ByRefArg::TmpConst,
     }
@@ -284,6 +285,7 @@ const BYREF_ARG_DIAG: &[(&str, u32, &str)] = &[
     ("str_ireplace", 4, "count"),
     ("preg_replace", 5, "count"),
     ("preg_replace_callback", 5, "count"),
+    ("preg_replace_callback_array", 4, "count"),
 ];
 
 /// The highest argument number [`BYREF_ARG_DIAG`] describes. A named argument
@@ -1021,6 +1023,7 @@ impl Compiler {
             ("preg_match_all", &[2]),
             ("preg_replace", &[4]),
             ("preg_replace_callback", &[4]),
+            ("preg_replace_callback_array", &[3]),
             ("parse_str", &[1]),
             ("similar_text", &[2]),
             ("str_replace", &[3]),
@@ -4080,6 +4083,31 @@ impl Compiler {
                     self.cur_line,
                 );
             }
+            // The class operand is evaluated first and resolved to a name the
+            // way every dynamic `::` is (`DYN_CLASS`: a string as written, an
+            // object's own class, anything else an `Error`), and then the
+            // ordinary `new` sequence runs on that name.
+            Expr::NewDyn(class, args) => {
+                self.compile_expr(b, class)?;
+                b.emit(Op::CallBuiltin(ops::DYN_CLASS, 1), self.cur_line);
+                self.emit_callee_check(b, ops::CALL_CLASS_CHECK, args.len());
+                b.emit(Op::CallBuiltin(ops::NEW_ALLOC, 1), self.cur_line);
+                if needs_arg_pairs(args) {
+                    self.compile_arg_pairs(b, args)?;
+                    b.emit(
+                        Op::CallBuiltin(ops::NEW_INIT_NAMED, (args.len() * 2 + 1) as u8),
+                        self.cur_line,
+                    );
+                } else {
+                    for a in args {
+                        self.compile_expr(b, a)?;
+                    }
+                    b.emit(
+                        Op::CallBuiltin(ops::NEW_INIT, (args.len() + 1) as u8),
+                        self.cur_line,
+                    );
+                }
+            }
             Expr::New(class, args) => {
                 self.emit_class_name(b, class)?;
                 self.emit_callee_check(b, ops::CALL_CLASS_CHECK, args.len());
@@ -6461,6 +6489,12 @@ pub(crate) fn collect_free_vars(e: &Expr, out: &mut Vec<String>) {
                 collect_free_vars(a, out);
             }
         }
+        Expr::NewDyn(class, args) => {
+            collect_free_vars(class, out);
+            for a in args {
+                collect_free_vars(a, out);
+            }
+        }
         Expr::StaticCall(class, _, args) => {
             if let ClassRef::Expr(c) = class {
                 collect_free_vars(c, out);
@@ -6607,6 +6641,7 @@ fn expr_has_yield(e: &Expr) -> bool {
         Expr::Call(_, args) | Expr::New(_, args) | Expr::NewAnon { args, .. } => {
             args.iter().any(expr_has_yield)
         }
+        Expr::NewDyn(class, args) => expr_has_yield(class) || args.iter().any(expr_has_yield),
         Expr::StaticCall(class, _, args) => {
             class.operand().is_some_and(expr_has_yield) || args.iter().any(expr_has_yield)
         }
@@ -7173,6 +7208,10 @@ impl SlotScan {
             }
             Expr::CallValue(f, args) => {
                 self.expr(f);
+                self.exprs(args);
+            }
+            Expr::NewDyn(class, args) => {
+                self.expr(class);
                 self.exprs(args);
             }
             Expr::MethodCall(r, m, args) | Expr::NullsafeMethodCall(r, m, args) => {

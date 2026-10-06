@@ -2179,6 +2179,7 @@ impl PhpHost {
                 Some(PhpObj::Resource(_)) => "resource".to_string(),
                 _ => self
                     .instance_class(v)
+                    .map(|c| display_class(&c).to_string())
                     .unwrap_or_else(|| "object".to_string()),
             },
             _ => "mixed".to_string(),
@@ -7518,6 +7519,7 @@ pub(crate) const CALLS_BACK: &[&str] = &[
     "uasort",
     "uksort",
     "preg_replace_callback",
+    "preg_replace_callback_array",
     "iterator_apply",
 ];
 
@@ -9687,12 +9689,6 @@ pub fn static_prop_ensure_array(class: &str, name: &str) -> Result<Value, String
     Ok(arr)
 }
 
-/// Normalize a `foreach` subject to an iterable array. Arrays pass through; an
-/// object is iterated eagerly into a `(key, value)` array: `IteratorAggregate`
-/// via `getIterator()`, the `Iterator` protocol (`rewind`/`valid`/`current`/
-/// `key`/`next`), or — as a fallthrough — its public properties. Eager
-/// materialization is fine for the finite iterators phplang supports; an infinite
-/// iterator would not terminate (documented). A non-iterable yields an empty array.
 /// Whether `v` is something `...` may unpack: an array, a Generator, or an
 /// object following the `Traversable` protocols — the same shapes
 /// [`foreach_prep`] drives. A PLAIN object is NOT one: `foreach` walks its
@@ -9710,39 +9706,76 @@ pub fn is_unpackable(v: &Value) -> bool {
     })
 }
 
+/// Normalize a `foreach` subject to an iterable array. Arrays pass through; an
+/// object is iterated eagerly into a `(key, value)` array: `IteratorAggregate`
+/// via `getIterator()`, the `Iterator` protocol (`rewind`/`valid`/`current`/
+/// `key`/`next`), or — as a fallthrough — its public properties. Eager
+/// materialization is fine for the finite iterators phplang supports; an infinite
+/// iterator would not terminate (documented). A non-iterable yields an empty array.
+///
+/// Building an array MERGES repeated keys, which a Traversable is free to
+/// produce (`yield from` restarts its inner generator's keys at 0). A caller
+/// that must see every element — `iterator_to_array($it, false)`,
+/// `iterator_count` — takes [`traversable_pairs`] instead.
 pub fn foreach_prep(v: Value) -> Result<Value, String> {
     if with_host(|h| h.is_array(&v)) {
         return Ok(v);
     }
+    let arr = with_host(|h| h.new_array());
+    let set = |key: Value, cur: Value| {
+        with_host(|h| match key {
+            Value::Undef => h.arr_push_auto(&arr, cur),
+            k => h.arr_set_key(&arr, &k, cur),
+        })
+    };
+    if let Some(inner) = traverse(&v, &mut |k, c| set(k, c))? {
+        return foreach_prep(inner);
+    }
+    Ok(arr)
+}
+
+/// Every `(key, value)` a `foreach` over `v` would bind, in order and with
+/// repeated keys kept. `Value::Undef` as a key means the source named none (an
+/// `Iterator` without `key()`), which an array build turns into an append.
+pub fn traversable_pairs(v: Value) -> Result<Vec<(Value, Value)>, String> {
+    if with_host(|h| h.is_array(&v)) {
+        return Ok(with_host(|h| h.array_pairs(&v).unwrap_or_default()));
+    }
+    let mut out = Vec::new();
+    if let Some(inner) = traverse(&v, &mut |k, c| out.push((k, c)))? {
+        return traversable_pairs(inner);
+    }
+    Ok(out)
+}
+
+/// Drive one non-array `foreach` subject, handing each `(key, value)` to `sink`.
+///
+/// `Ok(Some(inner))` means `v` is an `IteratorAggregate` and nothing was
+/// emitted: the caller walks `inner`, which may itself be an array.
+fn traverse(v: &Value, sink: &mut dyn FnMut(Value, Value)) -> Result<Option<Value>, String> {
     // A Generator is not a class instance — it has no entry in the class table —
     // so it is driven through its own protocol before the object paths below.
     // Materializing CONSUMES it, exactly as the reference's
     // `iterator_to_array($gen)` does.
-    if with_host(|h| h.is_generator_val(&v)) {
-        let arr = with_host(|h| h.new_array());
-        while gen_valid(&v)? {
-            let cur = gen_current(&v)?;
-            let key = gen_key(&v)?;
-            with_host(|h| match key {
-                Value::Undef => h.arr_push_auto(&arr, cur),
-                k => h.arr_set_key(&arr, &k, cur),
-            });
-            gen_next(&v)?;
+    if with_host(|h| h.is_generator_val(v)) {
+        while gen_valid(v)? {
+            let cur = gen_current(v)?;
+            let key = gen_key(v)?;
+            sink(key, cur);
+            gen_next(v)?;
         }
-        return Ok(arr);
+        return Ok(None);
     }
-    let Some(class) = with_host(|h| h.object_class(&v)) else {
-        return Ok(with_host(|h| h.new_array()));
+    let Some(class) = with_host(|h| h.object_class(v)) else {
+        return Ok(None);
     };
     // IteratorAggregate: `getIterator()` returns the real iterator (or a backing
-    // array, for the SPL preludes) — recurse on it.
+    // array, for the SPL preludes) — the caller recurses on it.
     if with_host(|h| h.class_has_method(&class, "getIterator")) {
-        let it = call_method(&class, "getIterator", Some(v.clone()), Vec::new())?;
-        return foreach_prep(it);
+        return call_method(&class, "getIterator", Some(v.clone()), Vec::new()).map(Some);
     }
     // Iterator protocol.
     if with_host(|h| h.class_has_method(&class, "valid") && h.class_has_method(&class, "current")) {
-        let arr = with_host(|h| h.new_array());
         if with_host(|h| h.class_has_method(&class, "rewind")) {
             call_method(&class, "rewind", Some(v.clone()), Vec::new())?;
         }
@@ -9759,23 +9792,18 @@ pub fn foreach_prep(v: Value) -> Result<Value, String> {
             } else {
                 Value::Undef
             };
-            with_host(|h| match key {
-                Value::Undef => h.arr_push_auto(&arr, cur),
-                k => h.arr_set_key(&arr, &k, cur),
-            });
+            sink(key, cur);
             call_method(&class, "next", Some(v.clone()), Vec::new())?;
         }
-        return Ok(arr);
+        return Ok(None);
     }
-    // Plain object: iterate its public properties (name => value).
-    let props = with_host(|h| h.object_props(&v));
-    Ok(with_host(|h| {
-        let a = h.new_array();
-        for (k, val) in props {
-            h.arr_set_key(&a, &Value::str(k), val);
-        }
-        a
-    }))
+    // Plain object: the properties the CALLING scope may see — public ones
+    // from outside, private and protected ones too from inside the class —
+    // which is the set `get_object_vars` answers with.
+    for (k, val) in with_host(|h| h.object_props_visible(v)) {
+        sink(Value::str(k), val);
+    }
+    Ok(None)
 }
 
 /// Whether the run already displayed a fatal in PHP's own shape, so the CLI
@@ -11532,10 +11560,15 @@ fn weak_scalar(h: &mut PhpHost, v: &Value, has: &dyn Fn(&str) -> bool) -> Option
             return Some(Value::Float(d));
         }
     }
+    // PHP 8.5's weak string and bool parses warn on a NaN: the value converts,
+    // but `"NAN"`/`true` do not read back as the number it was.
     if has("string") && matches!(v, Value::Int(_) | Value::Float(_) | Value::Bool(_)) {
-        return Some(Value::str(h.to_str(v)));
+        return Some(Value::str(h.to_str_diag(v)));
     }
     if has("bool") && matches!(v, Value::Int(_) | Value::Float(_) | Value::Str(_)) {
+        if matches!(v, Value::Float(f) if f.is_nan()) {
+            h.warn("unexpected NAN value was coerced to bool");
+        }
         return Some(Value::bool(h.is_truthy(v)));
     }
     None

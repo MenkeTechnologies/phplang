@@ -4419,6 +4419,20 @@ static SIGS: &[(&str, Sig)] = &[
         },
     ),
     (
+        "preg_replace_callback_array",
+        Sig {
+            req: 2,
+            params: &[
+                p("pattern", Required, "array"),
+                p("subject", Required, "array|string"),
+                p("limit", Int(-1), "int"),
+                p("count", Null, ""),
+                p("flags", Int(0), "int"),
+            ],
+            variadic: false,
+        },
+    ),
+    (
         "preg_split",
         Sig {
             req: 2,
@@ -4991,6 +5005,14 @@ static SIGS: &[(&str, Sig)] = &[
     ),
     (
         "str_rot13",
+        Sig {
+            req: 1,
+            params: &[p("string", Required, "string")],
+            variadic: false,
+        },
+    ),
+    (
+        "str_shuffle",
         Sig {
             req: 1,
             params: &[p("string", Required, "string")],

@@ -157,6 +157,7 @@ fn is_dyn_class_operand(e: &Expr) -> bool {
             | Expr::NullsafeMethodCall(..)
             | Expr::StaticCall(..)
             | Expr::New(..)
+            | Expr::NewDyn(..)
             | Expr::NewAnon { .. }
     )
 }
@@ -2527,8 +2528,10 @@ impl Parser {
             _ => return None,
         };
         // (left bp, right bp), following PHP operator precedence (loosest first):
-        // || < && < | < ^ < & < equality < relational < shift < additive <
-        // multiplicative. Right bp < left bp ⇒ right-associative.
+        // || < && < | < ^ < & < equality < relational < `.` < shift < additive <
+        // multiplicative. Right bp < left bp ⇒ right-associative. Since PHP 8 `.`
+        // binds looser than `+`/`-` and `<<`/`>>` (zend_language_parser.y), so
+        // `"a" . 1 + 2` is `"a" . 3`.
         let (l, r) = match op {
             BinOp::Or => (1, 2),
             BinOp::And => (3, 4),
@@ -2541,10 +2544,11 @@ impl Parser {
             | BinOp::StrictNe
             | BinOp::Spaceship => (11, 12),
             BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => (13, 14),
-            BinOp::Shl | BinOp::Shr => (15, 16),
-            BinOp::Add | BinOp::Sub | BinOp::Concat => (17, 18),
-            BinOp::Mul | BinOp::Div | BinOp::Mod => (19, 20),
-            BinOp::Pow => (22, 21),
+            BinOp::Concat => (15, 16),
+            BinOp::Shl | BinOp::Shr => (17, 18),
+            BinOp::Add | BinOp::Sub => (19, 20),
+            BinOp::Mul | BinOp::Div | BinOp::Mod => (21, 22),
+            BinOp::Pow => (24, 23),
         };
         Some((op, l, r))
     }
@@ -2784,6 +2788,62 @@ impl Parser {
         Ok(e)
     }
 
+    /// The class operand of `new` when it is not a bareword name — the
+    /// grammar's `class_name_reference` minus `class_name`, or `None` when a
+    /// bareword follows (and nothing was consumed).
+    ///
+    /// `(expr)` is any expression. Otherwise it is `new_variable`: a simple
+    /// variable (`$c`, `$$c`, `${expr}`) or `Class::$prop`, extended by `[k]`,
+    /// `->p`, `?->p` and `::$p` but never by a call — the `(` that follows is
+    /// the constructor's argument list, so `new $a->b['k']()` instantiates the
+    /// class named by `$a->b['k']`.
+    fn new_dynamic_class(&mut self) -> Result<Option<Expr>, String> {
+        let mut e = match self.peek() {
+            Some(Tok::Punct("(")) => {
+                self.pos += 1;
+                let e = self.expression()?;
+                self.expect_punct(")")?;
+                return Ok(Some(e));
+            }
+            Some(Tok::Var(_)) | Some(Tok::Punct("$")) => self.primary()?,
+            Some(Tok::Ident(name))
+                if matches!(
+                    self.toks.get(self.pos + 1).map(|s| &s.tok),
+                    Some(Tok::Punct("::"))
+                ) && matches!(
+                    self.toks.get(self.pos + 2).map(|s| &s.tok),
+                    Some(Tok::Var(_))
+                ) =>
+            {
+                let class = ClassRef::Name(name.clone());
+                self.pos += 2;
+                Expr::StaticProp(class, self.expect_var()?)
+            }
+            _ => return Ok(None),
+        };
+        loop {
+            if self.eat_punct("[") {
+                let idx = self.expression()?;
+                self.expect_punct("]")?;
+                e = Expr::Index(Box::new(e), Box::new(idx));
+            } else if self.eat_punct("->") {
+                e = Expr::PropGet(Box::new(e), self.object_member()?);
+            } else if self.eat_punct("?->") {
+                e = Expr::NullsafePropGet(Box::new(e), self.object_member()?);
+            } else if self.at_punct("::")
+                && matches!(
+                    self.toks.get(self.pos + 1).map(|s| &s.tok),
+                    Some(Tok::Var(_))
+                )
+            {
+                self.pos += 1;
+                e = Expr::StaticProp(ClassRef::Expr(Box::new(e)), self.expect_var()?);
+            } else {
+                return Ok(Some(e));
+            }
+        }
+    }
+
     fn primary(&mut self) -> Result<Expr, String> {
         // A leading `\` is the global-namespace prefix. phplang has no namespaces,
         // so `\Exception` / `\strlen(…)` are the same as the bare name — skip it.
@@ -2890,6 +2950,14 @@ impl Parser {
                     });
                 }
                 self.eat_punct("\\"); // optional global-namespace prefix
+                if let Some(class) = self.new_dynamic_class()? {
+                    let args = if self.eat_punct("(") {
+                        self.arg_list()?
+                    } else {
+                        Vec::new()
+                    };
+                    return Ok(Expr::NewDyn(Box::new(class), args));
+                }
                 let class = match self.next() {
                     Some(Tok::Ident(n)) => n,
                     _ => return Err(self.syntax_error_at(self.pos - 1)),

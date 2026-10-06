@@ -117,14 +117,22 @@ class ErrorException extends Exception {
     public function __construct($message = "", $code = 0, $severity = 1, $filename = null, $line = null, $previous = null) {
         parent::__construct($message, $code, $previous);
         $this->severity = $severity;
-        if ($filename !== null) { $this->file = $filename; }
-        if ($line !== null) { $this->line = $line; }
+        // A filename replaces the recorded line too — with 0 when none is
+        // given — while a line alone replaces only the line
+        // (`ErrorException::__construct`, `Zend/zend_exceptions.c`).
+        if ($filename !== null) {
+            $this->file = $filename;
+            $this->line = $line === null ? 0 : $line;
+        } elseif ($line !== null) {
+            $this->line = $line;
+        }
     }
     final public function getSeverity() { return $this->severity; }
 }
 class RuntimeException extends Exception {}
 class LogicException extends Exception {}
 class InvalidArgumentException extends LogicException {}
+class AssertionError extends Error {}
 class ArithmeticError extends Error {}
 class DivisionByZeroError extends ArithmeticError {}
 class TypeError extends Error {}

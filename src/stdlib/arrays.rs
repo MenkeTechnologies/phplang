@@ -10,8 +10,9 @@
 
 use crate::host;
 use crate::stdlib::common::*;
+use crate::stdlib::math::php_random_range;
 use fusevm::Value;
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
@@ -630,39 +631,14 @@ pub fn nat_cmp(a: &str, b: &str, fold_case: bool) -> Ordering {
 }
 
 // ── shuffle / array_rand ─────────────────────────────────────────────────────
-
-thread_local! {
-    /// xorshift64 state for `shuffle`/`array_rand`, lazily seeded from the clock.
-    static RNG: Cell<u64> = const { Cell::new(0) };
-}
-
-/// A pseudo-random `u64` (xorshift64). Seeded lazily from the wall clock the
-/// first time it runs; adequate for `shuffle`/`array_rand` (no crypto use).
-fn next_rand() -> u64 {
-    RNG.with(|r| {
-        let mut x = r.get();
-        if x == 0 {
-            use std::time::{SystemTime, UNIX_EPOCH};
-            x = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_nanos() as u64)
-                .unwrap_or(0x9e37_79b9_7f4a_7c15)
-                | 1;
-        }
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        r.set(x);
-        x
-    })
-}
-
-/// A uniform-ish index in `0..n` (`n > 0`).
-fn rand_below(n: usize) -> usize {
-    (next_rand() % n as u64) as usize
-}
+// Both draw from the default Mt19937 engine that `mt_srand` seeds, through the
+// reference's own range reduction — so a seeded program sees the reference's
+// order. See `crate::stdlib::math::php_random_range`.
 
 /// `shuffle($array)` — randomize order and reindex 0..n in place; returns `true`.
+///
+/// Port of `php_array_data_shuffle`: walk `n_left` down from the last index,
+/// swapping it with a uniform pick from `0..=n_left`.
 fn php_shuffle(h: &mut host::PhpHost, args: &[Value]) -> Value {
     let arr = arg(args, 0);
     let mut vals: Vec<Value> = h
@@ -671,10 +647,9 @@ fn php_shuffle(h: &mut host::PhpHost, args: &[Value]) -> Value {
         .into_iter()
         .map(|(_, v)| v)
         .collect();
-    // Fisher-Yates.
-    for i in (1..vals.len()).rev() {
-        let j = rand_below(i + 1);
-        vals.swap(i, j);
+    for n_left in (1..vals.len()).rev() {
+        let j = php_random_range(0, n_left as i64) as usize;
+        vals.swap(n_left, j);
     }
     h.arr_set_reindexed(&arr, vals);
     Value::bool(true)
@@ -682,6 +657,11 @@ fn php_shuffle(h: &mut host::PhpHost, args: &[Value]) -> Value {
 
 /// `array_rand($array, $num = 1)` — a random key (num == 1) or an array of `num`
 /// distinct keys (in original order). `$num` outside `1..=count` is a fatal error.
+///
+/// Port of `php_array_pick_keys`. One key is a single draw over the positions.
+/// Several are chosen by drawing positions into a bitset until `num` distinct
+/// ones are in — or, when `num` is more than half the array, the `count - num`
+/// positions to LEAVE OUT — and the keys are then read off in array order.
 fn php_array_rand(h: &mut host::PhpHost, args: &[Value]) -> Result<Value, String> {
     let arr = arg(args, 0);
     let keys: Vec<Value> = h
@@ -704,6 +684,9 @@ fn php_array_rand(h: &mut host::PhpHost, args: &[Value]) -> Result<Value, String
             "array_rand(): Argument #1 ($array) must not be empty",
         ));
     }
+    if num == 1 {
+        return Ok(keys[php_random_range(0, len as i64 - 1) as usize].clone());
+    }
     if num < 1 || num as usize > len {
         return Err(throws(
             "ValueError",
@@ -711,22 +694,24 @@ fn php_array_rand(h: &mut host::PhpHost, args: &[Value]) -> Result<Value, String
              argument #1 ($array)",
         ));
     }
-    let num = num as usize;
-    if num == 1 {
-        return Ok(keys[rand_below(len)].clone());
+    let mut want = num as usize;
+    let negative = want > len >> 1;
+    if negative {
+        want = len - want;
     }
-    // Partial Fisher-Yates to pick `num` distinct indices, then restore original
-    // order (PHP yields the keys in the order they appear in the array).
-    let mut idx: Vec<usize> = (0..len).collect();
-    for i in 0..num {
-        let j = i + rand_below(len - i);
-        idx.swap(i, j);
+    let mut picked = vec![false; len];
+    while want > 0 {
+        let i = php_random_range(0, len as i64 - 1) as usize;
+        if !picked[i] {
+            picked[i] = true;
+            want -= 1;
+        }
     }
-    let mut chosen = idx[..num].to_vec();
-    chosen.sort_unstable();
     let out = h.new_array();
-    for i in chosen {
-        h.arr_push_auto(&out, keys[i].clone());
+    for (key, hit) in keys.into_iter().zip(picked) {
+        if hit != negative {
+            h.arr_push_auto(&out, key);
+        }
     }
     Ok(out)
 }

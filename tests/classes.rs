@@ -830,3 +830,22 @@ fn instantiating_a_trait_is_a_catchable_error_but_its_user_is_not() {
         echo "|", (new U)->hi();"#;
     assert_eq!(run(src), "Error|Cannot instantiate trait T|hi");
 }
+
+#[test]
+fn new_takes_a_class_named_at_run_time() {
+    // `new $c`, `new (expr)`, and the `new_variable` forms — `$o->p`, `$a[k]`,
+    // `C::$p`, `$$n` — were parse errors. The `(` after them is the
+    // constructor's argument list, not a call; an object names its own class;
+    // anything else is the reference's `Error`, raised before the arguments run.
+    assert_eq!(
+        run(r#"<?php $c = "ArrayObject"; echo count(new $c([1, 2])), count(new ($c)([1, 2, 3])), count(new $c), "\n";
+$o = new stdClass; $o->k = "ArrayObject"; $a = ["ArrayObject"]; echo count(new $o->k([1])), count(new $a[0]([1, 2])), "\n";
+class A { static $n = "ArrayObject"; public $cls = "stdClass"; function m() { return get_class(new $this->cls); } } echo count(new A::$n([1])), (new A)->m(), "\n";
+$x = new ArrayObject([1]); $y = new $x([5, 6]); echo get_class($y), count($y), "\n";
+class P { function __construct(public $a = 0, public $b = 0) {} } $p = "P"; $n = "p"; echo json_encode(new $p(b: 2)), json_encode(new $$n(1)), "\n";
+$bad = 5; try { new $bad; } catch (Error $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+$none = "Nope"; try { new $none(print("arg")); } catch (Error $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }"#),
+        "230\n12\n1stdClass\nArrayObject2\n{\"a\":0,\"b\":2}{\"a\":1,\"b\":0}\n\
+         Error: Class name must be a valid object or a string\nError: Class \"Nope\" not found\n"
+    );
+}

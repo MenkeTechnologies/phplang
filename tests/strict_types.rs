@@ -432,3 +432,72 @@ fn a_by_reference_typed_parameter_is_coerced_through_the_reference() {
          called in Command line code on line 1"
     );
 }
+
+// ── scalar unions, and the edges of a single scalar ──────────────────────────
+
+#[test]
+fn a_scalar_union_coerces_in_the_references_preference_order() {
+    // `zend_verify_weak_scalar_type_hint`: a value already of a member type is
+    // kept; otherwise `int`, `float`, `string`, `bool` are tried in that order,
+    // `int|float` picks a numeric string's own form, and `bool` is a fallback
+    // only when both `true` and `false` are members. The type is rendered in
+    // the engine's order (`int|string` reads `string|int`).
+    let program = r#"<?php function a(int|string $x) { return var_export($x, true); } function b(int|float $x) { return var_export($x, true); } function d(bool|int $x) { return var_export($x, true); } function f(int|false $x) { return var_export($x, true); } function h(string|int|null $x) { return var_export($x, true); } function i(float|bool $x) { return var_export($x, true); }
+foreach (["a", "b", "d", "f", "h", "i"] as $fn) { echo $fn, ":"; foreach ([1.0, 1.5, "1.5", "1e2", "abc", " 1", true, null, [], 1e30] as $v) { try { echo " ", $fn($v); } catch (TypeError $e) { echo " ", preg_replace("/, called in.*/", "", $e->getMessage()); } } echo "\n"; }"#;
+    let lossy = |what: &str| {
+        format!(
+            "\nDeprecated: Implicit conversion from {what} to int loses precision in \
+             Command line code on line 1\n"
+        )
+    };
+    let float = lossy("float 1.5");
+    let float_string = lossy("float-string \"1.5\"");
+    let expected = format!(
+        "a: 1 {float}1 '1.5' '1e2' 'abc' ' 1' 1  a(): Argument #1 ($x) must be of type string|int, null given  a(): Argument #1 ($x) must be of type string|int, array given '1.0E+30'\n\
+         b: 1.0 1.5 1.5 100.0  b(): Argument #1 ($x) must be of type int|float, string given 1 1  b(): Argument #1 ($x) must be of type int|float, null given  b(): Argument #1 ($x) must be of type int|float, array given 1.0E+30\n\
+         d: 1 {float}1 {float_string}1 100 true 1 true  d(): Argument #1 ($x) must be of type int|bool, null given  d(): Argument #1 ($x) must be of type int|bool, array given true\n\
+         f: 1 {float}1 {float_string}1 100  f(): Argument #1 ($x) must be of type int|false, string given 1 1  f(): Argument #1 ($x) must be of type int|false, null given  f(): Argument #1 ($x) must be of type int|false, array given  f(): Argument #1 ($x) must be of type int|false, float given\n\
+         h: 1 {float}1 '1.5' '1e2' 'abc' ' 1' 1 NULL  h(): Argument #1 ($x) must be of type string|int|null, array given '1.0E+30'\n\
+         i: 1.0 1.5 1.5 100.0 true 1.0 true  i(): Argument #1 ($x) must be of type float|bool, null given  i(): Argument #1 ($x) must be of type float|bool, array given 1.0E+30\n"
+    );
+    assert_eq!(output_of(program), expected);
+}
+
+#[test]
+fn a_strict_scalar_union_widens_only_int_to_float() {
+    assert_eq!(
+        output_of(
+            r#"<?php declare(strict_types=1); function u(int|string $x) { return $x; } function v(float|bool $x) { return $x; } foreach ([[ "u", 1.0], ["u", true], ["v", 3], ["v", "1"]] as [$f, $a]) { try { var_dump($f($a)); } catch (TypeError $e) { echo preg_replace("/, called in.*/", "", $e->getMessage()), "\n"; } }"#
+        ),
+        "u(): Argument #1 ($x) must be of type string|int, float given\n\
+         u(): Argument #1 ($x) must be of type string|int, true given\n\
+         float(3)\n\
+         v(): Argument #1 ($x) must be of type float|bool, string given\n"
+    );
+}
+
+#[test]
+fn a_single_scalar_refuses_what_int_cannot_hold_and_takes_a_stringable() {
+    // A float that is NaN, infinite or out of `int`'s range — or a numeric
+    // string spelling one — is refused rather than saturated; NaN bound to
+    // `string` or `bool` converts with a warning; an object with `__toString`
+    // binds to `string`; a scalar union is checked on RETURN too.
+    assert_eq!(
+        output_of(
+            r#"<?php function k(int $x) { return $x; } function s(string $x) { return $x; } function bo(bool $x) { return $x; } function r($v): int|string { return $v; }
+foreach ([["k", 1e30], ["k", NAN], ["k", INF], ["k", "1e30"], ["s", NAN], ["s", new class { function __toString() { return "ts"; } }], ["bo", NAN], ["r", 2.0], ["r", []], ["r", new class {}]] as [$f, $v]) { try { var_dump($f($v)); } catch (TypeError $e) { echo preg_replace("/, called in.*/", "", $e->getMessage()), "\n"; } }"#
+        ),
+        "k(): Argument #1 ($x) must be of type int, float given\n\
+         k(): Argument #1 ($x) must be of type int, float given\n\
+         k(): Argument #1 ($x) must be of type int, float given\n\
+         k(): Argument #1 ($x) must be of type int, string given\n\
+         \nWarning: unexpected NAN value was coerced to string in Command line code on line 1\n\
+         string(3) \"NAN\"\n\
+         string(2) \"ts\"\n\
+         \nWarning: unexpected NAN value was coerced to bool in Command line code on line 1\n\
+         bool(true)\n\
+         int(2)\n\
+         r(): Return value must be of type string|int, array returned\n\
+         r(): Return value must be of type string|int, class@anonymous returned\n"
+    );
+}

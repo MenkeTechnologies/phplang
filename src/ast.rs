@@ -282,6 +282,9 @@ pub enum Expr {
     /// `new Class(args)` — instantiate an object (class name literal, or the
     /// `self`/`parent`/`static` keyword resolved at compile time).
     New(String, Vec<Expr>),
+    /// `new $c(args)`, `new ($expr)(args)`, `new $o->p[k]` — the class is
+    /// named at run time by a string or by an object (whose class is used).
+    NewDyn(Box<Expr>, Vec<Expr>),
     /// `new class(args) [extends P] [implements I] { members }` — an anonymous
     /// class. The declaration is compiled once, at the point the expression is
     /// lowered, under a generated name; every evaluation of the expression then

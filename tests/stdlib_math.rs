@@ -1,8 +1,9 @@
 //! End-to-end tests for the `math` stdlib category (`src/stdlib/math.rs`):
 //! the extended trig/hyperbolic family, radian/degree helpers, IEEE division and
 //! predicates, base conversion, and the PRNG functions. Deterministic functions
-//! assert exact echoed output (PHP `precision=14` formatting); the pseudo-random
-//! generators assert only range/bounds, since the bit sequence is unspecified.
+//! assert exact echoed output (PHP `precision=14` formatting). The pseudo-random
+//! generators are a port of the reference's Mt19937, so a SEEDED sequence is
+//! asserted exactly; an unseeded one only by range.
 
 use phplang::eval_capture;
 
@@ -211,7 +212,8 @@ fn randmax_constants() {
 #[test]
 fn rand_bounds_are_inclusive_and_respected() {
     // A degenerate range [7,7] must always yield 7; a seeded sequence must stay
-    // within [1,6]. Exact values are unspecified, only membership is asserted.
+    // within [1,6]. Only membership is asserted here; the exact seeded sequence
+    // is pinned by `seeded_generator_reproduces_the_reference_sequence`.
     assert_eq!(run("<?php echo rand(7, 7);"), "7");
     assert_eq!(run("<?php echo mt_rand(3, 3);"), "3");
     assert_eq!(
@@ -406,5 +408,36 @@ fn round_honours_every_half_mode() {
     assert_eq!(
         run("<?php echo round(5.045, 2, PHP_ROUND_HALF_EVEN);"),
         "5.04"
+    );
+}
+
+#[test]
+fn number_format_rounds_to_negative_decimals_and_keeps_every_int_digit() {
+    // PHP 8.3+: a negative `$decimals` rounds to a power of ten, and an `int`
+    // argument is formatted without passing through a double, so the digits of
+    // `PHP_INT_MAX` survive — and rounding it up passes `PHP_INT_MAX`.
+    assert_eq!(
+        run(r#"<?php var_dump(number_format(1255, -2), number_format(-15, -1), number_format(PHP_INT_MAX), number_format(PHP_INT_MAX, -1), number_format(9007199254740993, 2), number_format(5, -19), number_format(1255.5, -1), number_format(-0.4, -1), number_format(123, -1, ",", "."));"#),
+        "string(5) \"1,300\"\nstring(3) \"-20\"\nstring(25) \"9,223,372,036,854,775,807\"\nstring(25) \"9,223,372,036,854,775,810\"\nstring(24) \"9,007,199,254,740,993.00\"\nstring(1) \"0\"\nstring(5) \"1,260\"\nstring(1) \"0\"\nstring(3) \"120\"\n"
+    );
+}
+
+#[test]
+fn seeded_generator_reproduces_the_reference_sequence() {
+    // `mt_srand` seeds the reference's Mt19937 (truncated to 32 bits), and
+    // `rand`, `mt_rand` and `str_shuffle` all draw from it through the same
+    // range reduction — one output for a span that fits 32 bits, two for a wider
+    // one. Expectations recorded from the reference with the same program.
+    assert_eq!(
+        run(
+            r#"<?php foreach ([0, 42, -1, 4294967303] as $s) { mt_srand($s); echo mt_rand(), " ", mt_rand(1, 6), " ", mt_rand(-1000, 1000), " ", mt_rand(PHP_INT_MIN, PHP_INT_MAX), " ", mt_rand(0, 5000000000), " ", rand(10, 3), " ", rand(), "\n"; } srand(9); echo rand(), " ", mt_rand(), "\n"; mt_srand(1); for ($i = 0; $i < 700; $i++) mt_rand(); echo mt_rand(), "\n"; mt_srand(3); echo str_shuffle("The quick brown fox"), "\n";"#
+        ),
+        "1178568022 4 844 1895649597139832000 4926099667 10 909791748\n\
+         804318771 6 -747 4279532807823660302 4906338879 7 335047475\n\
+         209663185 1 -872 5331760257503636551 3931364285 5 38525164\n\
+         163870807 5 696 -1136149265103967754 4389597896 10 2100216494\n\
+         22278335 782674094\n\
+         1654075076\n\
+         oexqhrT c kouibf nw\n"
     );
 }

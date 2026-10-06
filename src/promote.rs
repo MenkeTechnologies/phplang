@@ -475,6 +475,10 @@ impl Scan<'_> {
             }
             Expr::New(_, args) => self.call_args(None, args),
             Expr::NewAnon { args, .. } => self.call_args(None, args),
+            Expr::NewDyn(class, args) => {
+                self.expr(class);
+                self.call_args(None, args);
+            }
             // A closure captures by NAME at creation; an arrow function does the
             // same for every free variable of its body. Either way the captured
             // name has to be readable from the host scope.
@@ -775,6 +779,10 @@ impl Flow {
                 self.exprs(args);
             }
             Expr::NewAnon { args, .. } => self.exprs(args),
+            Expr::NewDyn(class, args) => {
+                self.expr(class);
+                self.exprs(args);
+            }
             // `callee(...)` evaluates its callable HERE, so the variables it
             // reads are reads of this scope, exactly like a call's callee.
             Expr::Fcc { callable, .. } => self.expr(callable),
@@ -1049,6 +1057,10 @@ impl GlobalScan {
             Expr::IncDec { target, .. } => self.expr(target),
             Expr::Call(_, args) | Expr::New(_, args) | Expr::NewAnon { args, .. } => {
                 self.exprs(args)
+            }
+            Expr::NewDyn(class, args) => {
+                self.expr(class);
+                self.exprs(args);
             }
             Expr::StaticCall(class, _, args) => {
                 if let Some(op) = class.operand() {

@@ -1120,6 +1120,15 @@ static PARAMS: &[(&str, Params)] = &[
         ],
     ),
     (
+        "preg_replace_callback_array",
+        &[
+            (1, "pattern", "array"),
+            (2, "subject", "array|string"),
+            (3, "limit", "int"),
+            (5, "flags", "int"),
+        ],
+    ),
+    (
         "preg_split",
         &[
             (1, "pattern", "string"),
@@ -1248,6 +1257,7 @@ static PARAMS: &[(&str, Params)] = &[
         ],
     ),
     ("str_rot13", &[(1, "string", "string")]),
+    ("str_shuffle", &[(1, "string", "string")]),
     (
         "str_split",
         &[(1, "string", "string"), (2, "length", "int")],

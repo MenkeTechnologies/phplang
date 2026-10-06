@@ -200,3 +200,16 @@ fn a_closure_can_be_a_generator() {
         foreach ($g() as $v) echo $v;"#;
     assert_eq!(run(src), "xy");
 }
+
+#[test]
+fn iterator_to_array_without_keys_and_iterator_count_keep_repeated_keys() {
+    // `yield from` restarts the inner generator's keys at 0, so `outer()`
+    // yields keys 0, 1, 0. Building an array merges them; dropping the keys or
+    // counting must not, because both visit every element.
+    assert_eq!(
+        run(
+            r#"<?php function inner() { yield 1; yield 2; return 3; } function outer() { $r = yield from inner(); yield $r; } function kk() { yield "a" => 1; yield "a" => 2; } echo json_encode(iterator_to_array(outer(), false)), iterator_count(outer()), json_encode(iterator_to_array(outer())), json_encode(iterator_to_array(kk(), false)), iterator_count(kk()), json_encode(iterator_to_array(kk())), iterator_count(new ArrayIterator([1, 2, 3])), json_encode(iterator_to_array(new ArrayIterator(["x" => 1, "y" => 2]), false));"#
+        ),
+        "[1,2,3]3[3,2][1,2]2{\"a\":2}3[1,2]"
+    );
+}

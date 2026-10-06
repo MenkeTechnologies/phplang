@@ -26,6 +26,44 @@ comment above it.
 
 ---
 
+## Round 18 — operator precedence, the default random engine, `new $class`
+
+Measured under `PHP 8.5.11 (cli) (built: Sep 22 2026 13:32:06) (NTS)`; ini state
+and environment otherwise as recorded in the oracle table above. Every
+expectation added this round was recorded from that binary.
+
+* **`.` bound as tightly as `+`.** PHP 8 moved concatenation below `+`/`-` and
+  `<<`/`>>`; phplang still parsed `"a" . 1 + 2` as `("a" . 1) + 2`, a
+  `TypeError`, where the reference answers `"a3"`.
+* **`number_format` with a negative `$decimals`** formatted as if it were 0. It
+  now rounds to the power of ten, and an `int` argument takes the reference's
+  integer path, so `number_format(PHP_INT_MAX)` keeps its last digits and
+  `number_format(PHP_INT_MAX, -1)` is `9,223,372,036,854,775,810`.
+* **`iterator_to_array($it, false)` and `iterator_count` lost elements** whose
+  keys repeated (`yield from` restarts its keys at 0): both read the key-merged
+  array a `foreach` builds instead of the element sequence.
+* **The randomizing functions are the reference's Mt19937.** `rand`, `mt_rand`,
+  `shuffle` and `array_rand` drew from two unrelated generators (SplitMix64 and
+  xorshift64), so `mt_srand($seed)` reproduced nothing. They now share one port of
+  `ext/random/engine_mt19937.c` with the reference's range reduction
+  (`php_random_range32`/`64`), shuffle walk and `array_rand` bitset pick.
+  `str_shuffle` was missing and is added on the same engine.
+* **The `${var}` deprecation named the wrong line** in a multi-line string: the
+  reference attributes it to the start of the text run before the `${`.
+* **`ErrorException`'s constructor** now follows the reference's file/line rule:
+  a `$filename` replaces the line too (`0` when `$line` is null).
+  `AssertionError` is declared.
+* **`new $class` was a parse error**, with every other run-time class operand:
+  `new ($expr)`, `new $o->prop`, `new $a['k']`, `new C::$prop`, `new $$n`. The
+  operand is the grammar's `new_variable`, so the `(` that follows is the
+  constructor's argument list.
+* **`foreach` over an object visited every property**, private ones included,
+  from any scope. It now visits what the calling scope may see.
+* **A NaN bound to a `string` or `bool` parameter** in weak mode now warns as
+  the reference does.
+* **`\p{Lu}`, `\x{41}`, `\g{1}` and `\k{n}` did not compile**: the escape's
+  braces reached the `{n,m}` rewrite. `preg_replace_callback_array` was missing.
+
 ## Round 17 — generator destruction, property writes on non-objects, by-reference method arguments
 
 Measured under `PHP 8.5.11 (cli) (built: Sep 22 2026 13:32:06) (NTS)`; ini state

@@ -11,19 +11,148 @@
 use crate::host::with_host;
 use crate::stdlib::common::*;
 use fusevm::Value;
-use std::cell::Cell;
+use std::cell::RefCell;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// PHP `RAND_MAX` / `MT_RAND_MAX` on every supported platform.
 const RAND_MAX: i64 = 2_147_483_647;
 
-// ── seeded PRNG (rand / mt_rand) ─────────────────────────────────────────────
-// A per-thread SplitMix64. PHP's `rand`/`mt_rand` share a mutable generator that
-// `srand`/`mt_srand` reseed; we mirror that with thread-local state. Callers only
-// assert range/bounds, so the exact bit sequence need not match the C library.
+// ── the default engine: Mt19937 (rand / mt_rand / shuffle / array_rand / …) ──
+// Port of `ext/random/engine_mt19937.c` and the range reduction in
+// `ext/random/random.c`. Every legacy randomizing function in the reference —
+// `rand`, `mt_rand`, `shuffle`, `str_shuffle`, `array_rand` — draws from ONE
+// per-request Mt19937 that `srand`/`mt_srand` seed, so a seeded program
+// reproduces the reference's sequence exactly. Only `MT_RAND_MT19937` is
+// modelled; the deprecated `MT_RAND_PHP` mode is accepted and ignored.
+
+const MT_N: usize = 624;
+const MT_M: usize = 397;
+
+struct Mt19937 {
+    state: [u32; MT_N],
+    count: usize,
+}
+
 thread_local! {
-    static RNG_STATE: Cell<u64> = const { Cell::new(0) };
-    static RNG_SEEDED: Cell<bool> = const { Cell::new(false) };
+    /// `None` until first use or an explicit seed, as the reference seeds its
+    /// default engine lazily from a random source.
+    static MT: RefCell<Option<Box<Mt19937>>> = const { RefCell::new(None) };
+}
+
+/// `twist()` for `MT_RAND_MT19937` — the corrected recurrence that reads the
+/// low bit of `v`.
+fn mt_twist(m: u32, u: u32, v: u32) -> u32 {
+    let mix = (u & 0x8000_0000) | (v & 0x7FFF_FFFF);
+    m ^ (mix >> 1) ^ ((v & 1).wrapping_neg() & 0x9908_b0df)
+}
+
+impl Mt19937 {
+    /// `mt19937_seed_state`: Knuth's initializer, then the first reload.
+    fn seeded(seed: u32) -> Box<Self> {
+        let mut s = Box::new(Mt19937 {
+            state: [0; MT_N],
+            count: 0,
+        });
+        s.state[0] = seed;
+        for i in 1..MT_N {
+            let prev = s.state[i - 1];
+            s.state[i] = 1_812_433_253u32
+                .wrapping_mul(prev ^ (prev >> 30))
+                .wrapping_add(i as u32);
+        }
+        s.reload();
+        s
+    }
+
+    /// `mt19937_reload`.
+    fn reload(&mut self) {
+        let s = &mut self.state;
+        for i in 0..MT_N - MT_M {
+            s[i] = mt_twist(s[i + MT_M], s[i], s[i + 1]);
+        }
+        for i in MT_N - MT_M..MT_N - 1 {
+            s[i] = mt_twist(s[i + MT_M - MT_N], s[i], s[i + 1]);
+        }
+        s[MT_N - 1] = mt_twist(s[MT_M - 1], s[MT_N - 1], s[0]);
+        self.count = 0;
+    }
+
+    /// `generate`: one tempered 32-bit output.
+    fn next(&mut self) -> u32 {
+        if self.count >= MT_N {
+            self.reload();
+        }
+        let mut s1 = self.state[self.count];
+        self.count += 1;
+        s1 ^= s1 >> 11;
+        s1 ^= (s1 << 7) & 0x9d2c_5680;
+        s1 ^= (s1 << 15) & 0xefc6_0000;
+        s1 ^ (s1 >> 18)
+    }
+}
+
+/// Reseed the shared engine (`srand`/`mt_srand`): the seed is truncated to 32
+/// bits, as `php_mt_srand` takes a `uint32_t`.
+fn seed(v: u32) {
+    MT.with(|m| *m.borrow_mut() = Some(Mt19937::seeded(v)));
+}
+
+/// One raw 32-bit output of the shared engine, seeding it on first use.
+fn mt_next32() -> u32 {
+    MT.with(|m| {
+        m.borrow_mut()
+            .get_or_insert_with(|| Mt19937::seeded(os_entropy() as u32))
+            .next()
+    })
+}
+
+/// `php_mt_rand() >> 1` — what `rand()` and `mt_rand()` return with no bounds.
+fn mt_rand_31() -> i64 {
+    (mt_next32() >> 1) as i64
+}
+
+/// Port of `php_random_range` over the default engine: a uniform value in
+/// `[min, max]` (the caller guarantees `min <= max`). A span that fits in 32
+/// bits takes ONE engine output (`php_random_range32`), a wider one TWO, low
+/// word first (`php_random_range64`); a power-of-two span is masked, anything
+/// else rejection-sampled below the largest multiple of the span. The number of
+/// outputs consumed is part of the observable sequence.
+pub(crate) fn php_random_range(min: i64, max: i64) -> i64 {
+    let umax = (max as u64).wrapping_sub(min as u64);
+    let r = if umax > u32::MAX as u64 {
+        let draw = || mt_next32() as u64 | ((mt_next32() as u64) << 32);
+        let mut result = draw();
+        if umax != u64::MAX {
+            let span = umax + 1;
+            if span & (span - 1) == 0 {
+                result &= span - 1;
+            } else {
+                let limit = u64::MAX - (u64::MAX % span) - 1;
+                while result > limit {
+                    result = draw();
+                }
+                result %= span;
+            }
+        }
+        result
+    } else {
+        let umax = umax as u32;
+        let mut result = mt_next32();
+        if umax != u32::MAX {
+            let span = umax + 1;
+            if span & (span - 1) == 0 {
+                result &= span - 1;
+            } else {
+                let limit = u32::MAX - (u32::MAX % span) - 1;
+                while result > limit {
+                    result = mt_next32();
+                }
+                result %= span;
+            }
+        }
+        result as u64
+    };
+    r.wrapping_add(min as u64) as i64
 }
 
 /// SplitMix64 mixing step over `z`.
@@ -45,28 +174,8 @@ fn os_entropy() -> u64 {
     splitmix(t ^ c.wrapping_mul(0x9E37_79B9_7F4A_7C15))
 }
 
-/// Reseed the shared generator (`srand`/`mt_srand`).
-fn seed(v: u64) {
-    RNG_STATE.with(|st| st.set(v));
-    RNG_SEEDED.with(|s| s.set(true));
-}
-
-/// Next 64 bits from the shared generator, auto-seeding on first use.
-fn next_u64() -> u64 {
-    RNG_SEEDED.with(|s| {
-        if !s.get() {
-            RNG_STATE.with(|st| st.set(os_entropy() | 1));
-            s.set(true);
-        }
-    });
-    RNG_STATE.with(|st| {
-        let z = st.get().wrapping_add(0x9E37_79B9_7F4A_7C15);
-        st.set(z);
-        splitmix(z)
-    })
-}
-
-/// Map a random `u64` into the inclusive range `[min, max]`. The caller must
+/// Map a random `u64` into the inclusive range `[min, max]` — `random_int`'s
+/// mapping over the clock entropy, NOT the seeded engine. The caller must
 /// guarantee `min <= max`: `rand()` swaps inverted bounds first, while
 /// `mt_rand()`/`random_int()` reject them (each with its own PHP 8 message).
 fn to_range(bits: u64, min: i64, max: i64) -> Value {
@@ -243,9 +352,9 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         "mt_getrandmax" | "getrandmax" => Ok(Value::int(RAND_MAX)),
         "srand" | "mt_srand" => {
             if args.is_empty() {
-                seed(os_entropy() | 1);
+                seed(os_entropy() as u32);
             } else {
-                seed(int_arg(args, 0) as u64);
+                seed(int_arg(args, 0) as u32);
             }
             Ok(Value::Undef)
         }
@@ -256,7 +365,11 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             if min > max {
                 std::mem::swap(&mut min, &mut max);
             }
-            return Some(Ok(to_range(next_u64(), min, max)));
+            return Some(Ok(Value::int(if args.is_empty() {
+                mt_rand_31()
+            } else {
+                php_random_range(min, max)
+            })));
         }
         "mt_rand" => {
             let (min, max) = rand_bounds(args);
@@ -266,7 +379,23 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
                         "mt_rand(): Argument #2 ($max) must be greater than or equal to argument #1 ($min)",
                     )));
             }
-            return Some(Ok(to_range(next_u64(), min, max)));
+            return Some(Ok(Value::int(if args.is_empty() {
+                mt_rand_31()
+            } else {
+                php_random_range(min, max)
+            })));
+        }
+        // Port of `php_binary_string_shuffle`: the same walk `shuffle` makes,
+        // over the default engine. phplang strings are UTF-8, so the walk runs
+        // over CHARACTERS — identical to the reference for ASCII, where the
+        // reference's bytes are the characters.
+        "str_shuffle" => {
+            let mut chars: Vec<char> = with_host(|h| h.to_str(&arg(args, 0))).chars().collect();
+            for n_left in (1..chars.len()).rev() {
+                let j = php_random_range(0, n_left as i64) as usize;
+                chars.swap(n_left, j);
+            }
+            Ok(Value::str(chars.into_iter().collect::<String>()))
         }
         "random_int" => {
             let min = int_arg(args, 0);

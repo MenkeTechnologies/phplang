@@ -141,6 +141,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         "preg_match_all" => preg_match_all(args),
         "preg_replace" => preg_replace(args),
         "preg_replace_callback" => preg_replace_callback(args),
+        "preg_replace_callback_array" => preg_replace_callback_array(args),
         "preg_split" => preg_split(args),
         "preg_quote" => preg_quote(args),
         "preg_grep" => preg_grep(args),
@@ -867,6 +868,31 @@ fn scan_body(body: &str, no_auto_capture: bool) -> Result<Scanned, String> {
                 // subject-dependent variant.
                 if c[i + 1] == 'Z' {
                     out.push_str(END_ANCHOR);
+                } else if matches!(c[i + 1], 'p' | 'P' | 'x' | 'o' | 'g' | 'k')
+                    && c.get(i + 2) == Some(&'{')
+                {
+                    // `\p{Lu}`, `\x{e9}`, `\g{1}` … — the braces are the escape's
+                    // own argument, not a `{n,m}` quantifier, so they are copied
+                    // through whole rather than reaching the `{` arm below,
+                    // which would escape the brace and break the escape.
+                    let end = c[i + 2..]
+                        .iter()
+                        .position(|&ch| ch == '}')
+                        .map(|n| i + 2 + n);
+                    let stop = end.map_or(c.len(), |e| e + 1);
+                    match (c[i + 1], end) {
+                        // A back-reference by number or name: PCRE's `\g{…}` and
+                        // `\k{…}` are both the backtracking engine's `\k<…>`.
+                        ('g' | 'k', Some(e)) => {
+                            out.push_str("\\k<");
+                            out.extend(&c[i + 3..e]);
+                            out.push('>');
+                        }
+                        _ => out.extend(&c[i..stop]),
+                    }
+                    repeatable = true;
+                    i = stop;
+                    continue;
                 } else {
                     out.push(c[i]);
                     out.push(c[i + 1]);
@@ -1616,6 +1642,61 @@ fn preg_replace_callback(args: &[Value]) -> Result<Value, String> {
         with_host(|h| h.byref_out_put(4, Value::int(count)));
     }
     Ok(out)
+}
+
+/// `preg_replace_callback_array($pattern, $subject, $limit = -1, &$count, $flags = 0)`.
+///
+/// Port of `PHP_FUNCTION(preg_replace_callback_array)`: each `pattern =>
+/// callback` entry in turn is applied to the WHOLE subject — every element of
+/// an array subject — before the next entry runs, so with an array subject
+/// the callbacks run entry-major, not element-major as a multi-pattern
+/// `preg_replace_callback` does. `$limit` bounds each pattern on each string;
+/// `$count` totals every replacement. A non-callable value anywhere in the map
+/// is refused before any pattern runs, and a pattern that fails to compile
+/// makes the result `null`.
+fn preg_replace_callback_array(args: &[Value]) -> Result<Value, String> {
+    let map = with_host(|h| h.array_pairs(&arg(args, 0))).unwrap_or_default();
+    if map
+        .iter()
+        .any(|(_, cb)| crate::stdlib::callable::callable_reason(cb).is_some())
+    {
+        return Err(crate::builtins::throws(
+            "TypeError",
+            "preg_replace_callback_array(): Argument #1 ($pattern) must contain only valid callbacks",
+        ));
+    }
+    let limit = args.get(2).map(|v| v.to_int()).unwrap_or(-1);
+    let fmt = CellFmt::from_flags(args.get(4).map(|v| v.to_int()).unwrap_or(0));
+    let mut subj = arg(args, 1);
+    let mut count: i64 = 0;
+    for (pat, cb) in &map {
+        let p = with_host(|h| h.to_str(pat));
+        let Some(re) = compile_for("preg_replace_callback_array", &p) else {
+            return Ok(Value::Undef);
+        };
+        subj = if with_host(|h| h.is_array(&subj)) {
+            let pairs = with_host(|h| h.array_pairs(&subj)).unwrap_or_default();
+            let mut out = Vec::with_capacity(pairs.len());
+            for (k, v) in pairs {
+                let s = with_host(|h| h.to_str(&v));
+                out.push((
+                    k,
+                    Value::str(replace_all_cb(&re, &s, cb, limit, fmt, &mut count)?),
+                ));
+            }
+            make_map(out)
+        } else {
+            let s = with_host(|h| h.to_str(&subj));
+            Value::str(replace_all_cb(&re, &s, cb, limit, fmt, &mut count)?)
+        };
+        if crate::host::unwinding() {
+            return Ok(Value::Undef);
+        }
+    }
+    if args.len() > 3 {
+        with_host(|h| h.byref_out_put(3, Value::int(count)));
+    }
+    Ok(subj)
 }
 
 /// Replace every (up to `limit`) match of `re` in `s`, calling `cb($matches)`

@@ -447,6 +447,13 @@ impl<'a> Lexer<'a> {
     fn scan_interp(&mut self, end: InterpEnd) -> Result<Vec<StrPart>, String> {
         let mut parts: Vec<StrPart> = Vec::new();
         let mut lit = String::new();
+        // The line the current literal run began on: the string's opening, or
+        // just past the interpolation that ended the previous run. The `${`
+        // deprecation is reported HERE rather than on the `${` itself — the
+        // reference attributes it to the start of the text token before it, so
+        // `"a\n${x}"` reports the line of the `a`, and `"\n${x}"` the line
+        // of the opening quote.
+        let mut seg_line = self.line;
         while self.pos < self.src.len() {
             let c = self.src[self.pos];
             match c {
@@ -511,6 +518,7 @@ impl<'a> Lexer<'a> {
                             self.pos += 1;
                         }
                     }
+                    seg_line = self.line;
                 }
                 // `${name}` — the pre-8.2 form, deprecated but still substituted.
                 // The notice is raised HERE, at lex time, because that is when the
@@ -523,7 +531,7 @@ impl<'a> Lexer<'a> {
                     push_diag(
                         "Deprecated",
                         E_DEPRECATED,
-                        self.line,
+                        seg_line,
                         "Using ${var} in strings is deprecated, use {$var} instead",
                     );
                     self.pos += 2; // `${`
@@ -536,6 +544,7 @@ impl<'a> Lexer<'a> {
                         self.pos += 1;
                     }
                     parts.push(StrPart::Var(name));
+                    seg_line = self.line;
                 }
                 b'$' if matches!(self.peek(1), Some(b) if b == b'_' || b.is_ascii_alphabetic()) => {
                     if !lit.is_empty() {
@@ -554,6 +563,7 @@ impl<'a> Lexer<'a> {
                         Some(src) => parts.push(StrPart::Raw(src)),
                         None => parts.push(StrPart::Var(name)),
                     }
+                    seg_line = self.line;
                 }
                 b'\n' => {
                     self.line += 1;
