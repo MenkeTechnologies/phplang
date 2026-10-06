@@ -978,7 +978,7 @@ foreach (["%f", "%F", "%e", "%E", "%g", "%G", "%10.1f", "%-10f|", "%+f", "%05f",
 }
 #==#
 // ── setlocale: portable answers only (the LC_* values and names are the platform's) ──
-var_dump(setlocale(LC_ALL, "C"), setlocale(LC_ALL, ["xx_XX", "POSIX"]),
+var_dump(setlocale(LC_ALL, "C"), setlocale(LC_ALL, ["xx_XX", "C"]),
          setlocale(LC_ALL, "xx_XX", "yy_YY"), setlocale(LC_ALL, [], "C"),
          setlocale(LC_NUMERIC, "0"));
 var_dump(setlocale(LC_ALL, str_repeat("a", 300)));

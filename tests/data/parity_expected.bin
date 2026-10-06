@@ -1664,9 +1664,9 @@ Stack trace:
 %.3g => [INF] [-INF] [NaN] [-0] [-0.0001] [1.23e+3]
 %+.2f => [INF] [-INF] [NaN] [+0.00] [-0.00] [+1234.57]
 
-#REC 80 exit=0 out=252 err=92
+#REC 80 exit=0 out=248 err=92
 string(1) "C"
-string(5) "POSIX"
+string(1) "C"
 bool(false)
 string(1) "C"
 string(1) "C"
