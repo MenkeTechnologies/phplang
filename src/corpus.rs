@@ -6398,7 +6398,7 @@ pub const CORPUS: &[Entry] = &[
         "get_class_methods",
         "Reflection",
         "get_class_methods(object|string $object_or_class): array",
-        "The method names reachable through the class and its parents. DIVERGENCE: names come back LOWERCASED because the host stores them that way, private and protected methods are included, and an undeclared class yields an empty array rather than a `TypeError`.",
+        "The methods the class has, in the reference's function-table order — its own, then its traits', then each ancestor's it does not override (an enum adds `cases`/`from`/`tryFrom`) — keeping the private and protected ones only where the calling scope may call them. Anything but an object or a declared class name is the reference's `TypeError`. DIVERGENCE: names come back LOWERCASED.",
         "class C { function Hello() {} } echo get_class_methods(\"C\")[0];   // => hello",
     ),
     (

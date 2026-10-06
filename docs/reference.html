@@ -5520,7 +5520,7 @@ echo implode(",", $a), "|", implode(",", $b);   // =&gt; 1,2,3|a,b,c</code></pre
         <article class="doc-entry" id="doc-reflection-8">
           <h3><a class="doc-anchor" href="#doc-reflection-8">#</a> <code>get_class_methods</code></h3>
           <pre><code class="lang-php">get_class_methods(object|string $object_or_class): array</code></pre>
-          <p>The method names reachable through the class and its parents. DIVERGENCE: names come back LOWERCASED because the host stores them that way, private and protected methods are included, and an undeclared class yields an empty array rather than a `TypeError`.</p>
+          <p>The methods the class has, in the reference's function-table order — its own, then its traits', then each ancestor's it does not override (an enum adds `cases`/`from`/`tryFrom`) — keeping the private and protected ones only where the calling scope may call them. Anything but an object or a declared class name is the reference's `TypeError`. DIVERGENCE: names come back LOWERCASED.</p>
           <pre><code class="lang-php">class C { function Hello() {} } echo get_class_methods("C")[0];   // =&gt; hello</code></pre>
         </article>
         <article class="doc-entry" id="doc-reflection-9">

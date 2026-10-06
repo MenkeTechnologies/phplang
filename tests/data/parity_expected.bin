@@ -2546,3 +2546,39 @@ Called current() on invalid iterator
 12
 12
 
+#REC 124 exit=0 out=263 err=67
+bool(true)
+bool(true)
+bool(false)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(false)
+
+Warning: Undefined variable $n in Command line code on line 9
+Error: Class name must be a valid object or a string
+Class name must be a valid object or a string
+PHP Warning:  Undefined variable $n in Command line code on line 9
+
+#REC 125 exit=0 out=340 err=0
+12Exception: Cannot rewind a generator that was already run
+Cannot traverse an already closed generator
+Cannot traverse an already closed generator
+11Cannot rewind a generator that was already run
+11Cannot rewind a generator that was already run
+ok
+Cannot traverse an already closed generator
+Cannot rewind a generator that was already run
+
+#REC 126 exit=0 out=465 err=0
+c1,inner,t1,a,p1,list
+c1,inner,t1,a,p1,priv,prot,list
+c1,inner,t1,a,p1,prot,list
+f,cases
+rewind,valid,current,key,next,send,throw,getReturn,__debugInfo
+get_class_methods(): Argument #1 ($object_or_class) must be an object or a valid class name, string given
+get_class_methods(): Argument #1 ($object_or_class) must be an object or a valid class name, int given
+get_class_methods(): Argument #1 ($object_or_class) must be an object or a valid class name, null given
+

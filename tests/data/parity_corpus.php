@@ -1374,3 +1374,39 @@ $s->rewind(); try { $s->next(); $s->current(); } catch (RuntimeException $e) { e
 $c = clone $s; $c[$p] = 5; echo count($s), count($c), "\n";
 class HS extends SplObjectStorage { public function getHash($o): string { return get_class($o); } }
 $h = new HS; $h[new stdClass] = 1; $h[new stdClass] = 2; echo count($h), $h[new stdClass], "\n";
+#==#
+// `instanceof` with a class given by an expression: a variable, an array
+// element, a static property, a property — an object stands for its class, a
+// string names one, anything else is an Error.
+$c = "stdClass"; $o = new stdClass; var_dump($o instanceof $c, $o instanceof $o, 5 instanceof $c);
+$a = ["k" => "ArrayObject"]; var_dump(new ArrayObject instanceof $a["k"]);
+class P { static $cls = "Countable"; public $p = "P"; } $pp = new P;
+var_dump(new ArrayObject instanceof P::$cls, $pp instanceof $pp->p, $pp instanceof ("P"));
+$f = fn($x) => $x instanceof $c; var_dump($f($o), !$o instanceof $c);
+try { var_dump($o instanceof $n); } catch (Error $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+$i = 5; try { var_dump($o instanceof $i); } catch (Error $e) { echo $e->getMessage(), "\n"; }
+#==#
+// A generator rewinds only at its first yield, and a finished one cannot be
+// traversed again.
+function g() { yield 1; yield 2; }
+$g = g(); foreach ($g as $v) echo $v;
+try { $g->rewind(); } catch (Exception $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+try { foreach ($g as $v); } catch (Exception $e) { echo $e->getMessage(), "\n"; }
+try { iterator_to_array($g); } catch (Exception $e) { echo $e->getMessage(), "\n"; }
+$h = g(); echo $h->current(); $h->rewind(); echo $h->current(); $h->next();
+try { $h->rewind(); } catch (Exception $e) { echo $e->getMessage(), "\n"; }
+$k = g(); foreach ($k as $v) { echo $v; break; } foreach ($k as $v) { echo $v; break; } $k->next();
+try { foreach ($k as $v) {} } catch (Exception $e) { echo $e->getMessage(), "\n"; }
+function e() { return; yield; } $z = e(); foreach ($z as $v); $z->rewind(); echo "ok\n";
+try { foreach ($z as $v); } catch (Exception $e) { echo $e->getMessage(), "\n"; }
+$s = g(); $s->send("x"); try { $s->rewind(); } catch (Exception $e) { echo $e->getMessage(), "\n"; }
+#==#
+// get_class_methods: own methods, then trait methods, then inherited ones,
+// filtered by what the calling scope may call; an undeclared class is refused.
+trait T { function t1() {} function a() {} }
+class P { function a() {} function p1() {} private function priv() {} protected function prot() {} static function list() { return get_class_methods(static::class); } }
+class C extends P { use T; function c1() {} function inner() { return get_class_methods($this); } }
+echo implode(",", get_class_methods("C")), "\n", implode(",", C::list()), "\n", implode(",", (new C)->inner()), "\n";
+enum E { case A; function f() {} } echo implode(",", get_class_methods("E")), "\n";
+echo implode(",", get_class_methods("Generator")), "\n";
+foreach (["Nope", 5, null] as $x) { try { get_class_methods($x); } catch (TypeError $e) { echo $e->getMessage(), "\n"; } }

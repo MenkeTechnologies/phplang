@@ -392,7 +392,10 @@ impl Scan<'_> {
             }
             Expr::Append(r) => self.expr(r),
             Expr::Unary(_, x) | Expr::Spread(x) | Expr::NamedArg(_, x) => self.expr(x),
-            Expr::Binary(_, a, b) | Expr::Elvis(a, b) | Expr::Coalesce(a, b) => {
+            Expr::Binary(_, a, b)
+            | Expr::InstanceOfDyn(a, b)
+            | Expr::Elvis(a, b)
+            | Expr::Coalesce(a, b) => {
                 self.expr(a);
                 self.expr(b);
             }
@@ -763,7 +766,10 @@ impl Flow {
             Expr::Append(x) | Expr::Unary(_, x) | Expr::Spread(x) | Expr::NamedArg(_, x) => {
                 self.expr(x)
             }
-            Expr::Binary(_, a, b) | Expr::Elvis(a, b) | Expr::Coalesce(a, b) => {
+            Expr::Binary(_, a, b)
+            | Expr::InstanceOfDyn(a, b)
+            | Expr::Elvis(a, b)
+            | Expr::Coalesce(a, b) => {
                 self.expr(a);
                 self.expr(b);
             }
@@ -1024,6 +1030,7 @@ impl GlobalScan {
             Expr::Index(a, b)
             | Expr::ListElem(a, b)
             | Expr::Binary(_, a, b)
+            | Expr::InstanceOfDyn(a, b)
             | Expr::Elvis(a, b)
             | Expr::Coalesce(a, b)
             | Expr::RefAssign(a, b) => {

@@ -356,6 +356,10 @@ pub enum Expr {
     /// `$x instanceof ClassName` — true if `$x` is an instance of the class or one
     /// of its ancestors/interfaces.
     InstanceOf(Box<Expr>, String),
+    /// `$x instanceof $c` — the class given by an expression (`new_variable` or
+    /// `(expr)`): an object stands for its class, a string names one, and
+    /// anything else is an `Error`.
+    InstanceOfDyn(Box<Expr>, Box<Expr>),
     /// `$target = &$source` — bind `target` as a reference alias of `source`.
     RefAssign(Box<Expr>, Box<Expr>),
     /// A read in PHP's "isset mode": the operand of `empty()` and the left operand

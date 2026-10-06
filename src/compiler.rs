@@ -3016,6 +3016,14 @@ impl Compiler {
             .retain(|m| m == "__construct" || method_vis.get(m) != Some(&Visibility::Private));
         self.method_order
             .insert(decl.name.to_ascii_lowercase(), order);
+        // The reference's function table holds the class's own methods in
+        // declaration order, then the methods its traits add: the traits were
+        // seeded first here, so the class's own move ahead of them.
+        let (mut own, traits): (Vec<_>, Vec<_>) = std::mem::take(&mut finals.method_sites)
+            .into_iter()
+            .partition(|(n, _)| decl.methods.iter().any(|m| m.name.eq_ignore_ascii_case(n)));
+        own.extend(traits);
+        finals.method_sites = own;
         self.classes.push((
             decl.name.to_ascii_lowercase(),
             ClassDef {
@@ -4437,6 +4445,14 @@ impl Compiler {
             Expr::InstanceOf(e, class) => {
                 self.compile_expr(b, e)?;
                 self.emit_class_name(b, class)?;
+                b.emit(Op::CallBuiltin(ops::INSTANCEOF, 2), 0);
+            }
+            // `ZEND_FETCH_CLASS` on the right operand runs after the left is
+            // evaluated, and refuses a value that is neither object nor string.
+            Expr::InstanceOfDyn(e, class) => {
+                self.compile_expr(b, e)?;
+                self.compile_expr(b, class)?;
+                b.emit(Op::CallBuiltin(ops::DYN_CLASS, 1), self.cur_line);
                 b.emit(Op::CallBuiltin(ops::INSTANCEOF, 2), 0);
             }
             Expr::RefAssign(lhs, rhs) => self.compile_ref_assign(b, lhs, rhs)?,
@@ -6449,6 +6465,7 @@ pub(crate) fn collect_free_vars(e: &Expr, out: &mut Vec<String>) {
         Expr::Index(a, b)
         | Expr::ListElem(a, b)
         | Expr::Binary(_, a, b)
+        | Expr::InstanceOfDyn(a, b)
         | Expr::Elvis(a, b)
         | Expr::Coalesce(a, b) => {
             collect_free_vars(a, out);
@@ -6664,6 +6681,7 @@ fn expr_has_yield(e: &Expr) -> bool {
         | Expr::InstanceOf(a, _)
         | Expr::NamedArg(_, a) => expr_has_yield(a),
         Expr::Binary(_, a, b)
+        | Expr::InstanceOfDyn(a, b)
         | Expr::Elvis(a, b)
         | Expr::Coalesce(a, b)
         | Expr::RefAssign(a, b) => expr_has_yield(a) || expr_has_yield(b),
@@ -7015,7 +7033,11 @@ fn never_array(e: &Expr) -> bool {
             | BinOp::Spaceship => true,
             _ => false,
         },
-        Expr::IncDec { .. } | Expr::InstanceOf(..) | Expr::IssetOf(_) | Expr::EmptyOf(_) => true,
+        Expr::IncDec { .. }
+        | Expr::InstanceOf(..)
+        | Expr::InstanceOfDyn(..)
+        | Expr::IssetOf(_)
+        | Expr::EmptyOf(_) => true,
         Expr::Unary(op, x) => match op {
             // `!` is a bool; `-`/`+` are numbers; `~` is an int or string.
             UnOp::Not => true,
@@ -7205,7 +7227,10 @@ impl SlotScan {
                     self.expr(&el.value);
                 }
             }
-            Expr::Index(a, b) | Expr::ListElem(a, b) | Expr::Binary(_, a, b) => {
+            Expr::Index(a, b)
+            | Expr::ListElem(a, b)
+            | Expr::Binary(_, a, b)
+            | Expr::InstanceOfDyn(a, b) => {
                 self.expr(a);
                 self.expr(b);
             }
@@ -7288,6 +7313,7 @@ fn yields_bool(e: &Expr) -> bool {
     match e {
         Expr::Bool(_) => true,
         Expr::InstanceOf(..) => true,
+        Expr::InstanceOfDyn(..) => true,
         Expr::Unary(UnOp::Not, _) => true,
         Expr::Binary(op, ..) => matches!(
             op,

@@ -168,15 +168,26 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
                 arr
             })
         }
-        // `get_class_methods($object_or_class)`: method names, walking the parent
-        // chain. NOTE: the host stores/returns method names lowercased, so the
-        // returned names are lowercased rather than PHP's declared casing.
+        // `get_class_methods($object_or_class)`: see `class_methods_visible`.
         "get_class_methods" => {
             let a = arg(args, 0);
+            // `Z_PARAM_OBJ_OR_CLASS_NAME`: an object, or a string naming a
+            // declared class.
+            let named = with_host(|h| match &a {
+                Value::Str(s) => h.class_exists(s),
+                _ => h.instance_class(&a).is_some(),
+            });
+            if !named {
+                let t = with_host(|h| h.type_name_for_error(&a));
+                return Some(Err(throws(
+                    "TypeError",
+                    format!("get_class_methods(): Argument #1 ($object_or_class) must be an object or a valid class name, {t} given"),
+                )));
+            }
             with_host(|h| {
                 let class = h.instance_class(&a).unwrap_or_else(|| h.to_str(&a));
                 let arr = h.new_array();
-                for m in h.class_method_names(&class) {
+                for m in h.class_methods_visible(&class) {
                     h.arr_push_auto(&arr, Value::str(m));
                 }
                 arr

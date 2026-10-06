@@ -79,6 +79,22 @@ block in `tests/data/parity_corpus.php`.
   `seek` walks, `Object not found`, and the reference's `__debugInfo` and
   `__serialize` views. Its 8.5 deprecations of `attach`/`detach`/`contains`
   are withheld (see BUGS.md).
+* **`$x instanceof $c` was a parse error.** The class may now be given by
+  an expression — a variable, an element, a property, a static property, or a
+  parenthesised expression — which stands for its class when it is an object
+  and names one when it is a string; anything else is `Error: Class name must
+  be a valid object or a string`.
+* **A generator could be rewound and re-traversed after running.**
+  `rewind()` past the first `yield` is `Exception: Cannot rewind a generator
+  that was already run`, and a `foreach` or `iterator_to_array` over a finished
+  generator is `Cannot traverse an already closed generator`
+  (`zend_generator_rewind`, `zend_generator_get_iterator`).
+* **`get_class_methods` listed every method in hash order.** It now follows
+  the function table: the class's own methods, then its traits', then each
+  ancestor's, with private and protected ones only where the calling scope may
+  call them, the prelude's helpers left out, an enum's `cases`/`from`/`tryFrom`,
+  and the reference's `TypeError` for an undeclared class. Names stay
+  lowercased (see BUGS.md).
 
 ## Round 19 — `Throwable::__toString`, the SPL data structures
 

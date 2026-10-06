@@ -280,7 +280,7 @@ fn b_gen_rewind(vm: &mut VM, _: u8) -> Value {
     let g = vm.pop();
     mark_foreach_line(vm);
     let r = if with_host(|h| h.is_generator_val(&g)) {
-        host::gen_rewind(&g).map(|()| Value::Undef)
+        host::gen_foreach_rewind(&g).map(|()| Value::Undef)
     } else {
         host::iter_call(&g, "rewind").map(|_| Value::Undef)
     };

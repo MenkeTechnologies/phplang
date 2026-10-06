@@ -4062,6 +4062,63 @@ impl PhpHost {
 
     /// Method names visible on `class`, walking the parent chain (lowercased, as
     /// stored). For `get_class_methods`.
+    /// `get_class_methods`: the methods `class` has, in its function table's
+    /// order — its own and its traits', then each ancestor's that it does not
+    /// override — keeping those the calling scope may call
+    /// (`zend_check_method_accessible`). DIVERGENCE: a name is lowercased
+    /// rather than spelled as declared — `tests/stdlib_reflection.rs` pins that
+    /// (see BUGS.md). An enum's synthesized `cases`, `from`
+    /// and `tryFrom` follow its own methods. The prelude's helpers, which the
+    /// internal classes it stands in for do not have, are left out.
+    pub fn class_methods_visible(&self, class: &str) -> Vec<String> {
+        let scope = self.current_class_ctx().map(|s| s.to_ascii_lowercase());
+        let mut seen: Vec<String> = Vec::new();
+        let mut out = Vec::new();
+        let mut cur = Some(class.to_ascii_lowercase());
+        while let Some(c) = cur {
+            let Some(def) = self.classes.get(&c) else {
+                out.extend(builtin_type_methods(&c).iter().map(|m| m.to_string()));
+                break;
+            };
+            let mut names: Vec<String> = def.method_sites.iter().map(|(n, _)| n.clone()).collect();
+            if def.is_enum {
+                names.push("cases".to_string());
+                if def
+                    .interfaces
+                    .iter()
+                    .any(|i| i.eq_ignore_ascii_case("BackedEnum"))
+                {
+                    names.push("from".to_string());
+                    names.push("tryFrom".to_string());
+                }
+            }
+            for name in names {
+                let lname = name.to_ascii_lowercase();
+                if seen.contains(&lname) {
+                    continue;
+                }
+                seen.push(lname.clone());
+                if crate::prelude_type(&c).is_some()
+                    && is_prelude_helper_name(&format!("{c}::{name}"))
+                {
+                    continue;
+                }
+                let accessible = match def.method_vis.get(&lname) {
+                    Some(Visibility::Private) => scope.as_deref() == Some(c.as_str()),
+                    Some(Visibility::Protected) => scope
+                        .as_deref()
+                        .is_some_and(|s| self.class_is_a(s, &c) || self.class_is_a(&c, s)),
+                    _ => true,
+                };
+                if accessible {
+                    out.push(lname);
+                }
+            }
+            cur = def.parent.as_ref().map(|p| p.to_ascii_lowercase());
+        }
+        out
+    }
+
     pub fn class_method_names(&self, class: &str) -> Vec<String> {
         let mut out = Vec::new();
         let mut cur = Some(class.to_ascii_lowercase());
@@ -6695,6 +6752,9 @@ struct GenCell {
     /// The body's `return` value, once it has finished (`getReturn`).
     ret: Value,
     started: bool,
+    /// `ZEND_GENERATOR_AT_FIRST_YIELD`: primed, and not resumed since — the
+    /// only state `rewind()` accepts.
+    at_first_yield: bool,
     done: bool,
     inject: Option<GenInject>,
     /// Being destroyed while suspended: a `yield` reached now (one in a
@@ -6749,6 +6809,7 @@ fn make_generator(body: Chunk, frame: Scope) -> Value {
             auto_key: 0,
             ret: Value::Undef,
             started: false,
+            at_first_yield: false,
             done: false,
             inject: None,
             destroying: false,
@@ -6865,7 +6926,7 @@ fn gen_yield_from(src: Value) -> Result<Value, String> {
     // A sub-generator is driven lazily (preserving side-effect order and passing
     // sent values through). Anything else is normalized to an array and replayed.
     if with_host(|h| h.is_generator_val(&src)) {
-        gen_rewind(&src)?;
+        gen_ensure_init(&src)?;
         loop {
             if !gen_valid(&src)? {
                 break;
@@ -6912,7 +6973,13 @@ fn gen_resume(id: u32, send: Value) -> Result<(), String> {
         Some(c) => c,
         None => return Err("cannot resume an already-running generator".to_string()),
     };
-    with_host(|h| h.generators[id as usize].started = true);
+    with_host(|h| {
+        let g = &mut h.generators[id as usize];
+        if g.started {
+            g.at_first_yield = false;
+        }
+        g.started = true;
+    });
     let gen_ctx = with_host(|h| std::mem::take(&mut h.generators[id as usize].ctx));
     let caller_ctx = with_host(|h| h.install_gen_ctx(gen_ctx));
     let prev = CUR_GEN.with(|c| c.replace(Some(id)));
@@ -6956,40 +7023,75 @@ fn gen_resume(id: u32, send: Value) -> Result<(), String> {
     result
 }
 
-/// Prime an unstarted generator to its first `yield` (PHP `rewind`/implicit on the
-/// first `current`/`valid`/`foreach`). A no-op once started.
-pub fn gen_rewind(gen: &Value) -> Result<(), String> {
+/// `zend_generator_ensure_initialized`: prime an unstarted generator to its
+/// first `yield` (implicit on the first `current`/`valid`/`key`/`next`). A
+/// no-op once started.
+pub fn gen_ensure_init(gen: &Value) -> Result<(), String> {
     let id = with_host(|h| h.gen_id(gen)).ok_or("not a generator")?;
     if !with_host(|h| h.generators[id as usize].started) {
         gen_resume(id, Value::Undef)?;
+        with_host(|h| h.generators[id as usize].at_first_yield = true);
     }
     Ok(())
 }
 
+/// `->rewind()` (`zend_generator_rewind`): prime the generator, and refuse one
+/// already resumed past its first `yield` with the reference's `Exception`.
+pub fn gen_rewind(gen: &Value) -> Result<(), String> {
+    gen_ensure_init(gen)?;
+    if with_host(|h| h.pending_throw.is_some()) {
+        return Ok(());
+    }
+    let id = with_host(|h| h.gen_id(gen)).ok_or("not a generator")?;
+    if !with_host(|h| h.generators[id as usize].at_first_yield) {
+        let exc = new_object(
+            "Exception",
+            vec![Value::str("Cannot rewind a generator that was already run")],
+        )?;
+        set_pending_throw(exc);
+    }
+    Ok(())
+}
+
+/// A `foreach` (or `iterator_to_array`) over a generator: `zend_generator_get_iterator`
+/// refuses a finished one, then the walk rewinds it.
+pub fn gen_foreach_rewind(gen: &Value) -> Result<(), String> {
+    let id = with_host(|h| h.gen_id(gen)).ok_or("not a generator")?;
+    if with_host(|h| h.generators[id as usize].done) {
+        let exc = new_object(
+            "Exception",
+            vec![Value::str("Cannot traverse an already closed generator")],
+        )?;
+        set_pending_throw(exc);
+        return Ok(());
+    }
+    gen_rewind(gen)
+}
+
 /// `->valid()` — whether the generator has not yet finished (priming it first).
 pub fn gen_valid(gen: &Value) -> Result<bool, String> {
-    gen_rewind(gen)?;
+    gen_ensure_init(gen)?;
     let id = with_host(|h| h.gen_id(gen)).ok_or("not a generator")?;
     Ok(with_host(|h| !h.generators[id as usize].done))
 }
 
 /// `->current()` — the current yielded value (priming first). Null once finished.
 pub fn gen_current(gen: &Value) -> Result<Value, String> {
-    gen_rewind(gen)?;
+    gen_ensure_init(gen)?;
     let id = with_host(|h| h.gen_id(gen)).ok_or("not a generator")?;
     Ok(with_host(|h| h.generators[id as usize].cur_val.clone()))
 }
 
 /// `->key()` — the current yielded key (priming first). Null once finished.
 pub fn gen_key(gen: &Value) -> Result<Value, String> {
-    gen_rewind(gen)?;
+    gen_ensure_init(gen)?;
     let id = with_host(|h| h.gen_id(gen)).ok_or("not a generator")?;
     Ok(with_host(|h| h.generators[id as usize].cur_key.clone()))
 }
 
 /// `->next()` — advance to the next yield (priming first, then resuming with null).
 pub fn gen_next(gen: &Value) -> Result<Value, String> {
-    gen_rewind(gen)?;
+    gen_ensure_init(gen)?;
     let id = with_host(|h| h.gen_id(gen)).ok_or("not a generator")?;
     if !with_host(|h| h.generators[id as usize].done) {
         gen_resume(id, Value::Undef)?;
@@ -7025,7 +7127,7 @@ pub fn gen_send(gen: &Value, sent: Value) -> Result<Value, String> {
 /// try/catch/finally in the body), then return the next yielded value.
 pub fn gen_throw(gen: &Value, e: Value) -> Result<Value, String> {
     let id = with_host(|h| h.gen_id(gen)).ok_or("not a generator")?;
-    gen_rewind(gen)?;
+    gen_ensure_init(gen)?;
     if with_host(|h| h.generators[id as usize].done) {
         // Throw into a finished generator: it propagates straight to the caller.
         set_pending_throw(e);
@@ -10009,6 +10111,10 @@ fn traverse(v: &Value, sink: &mut dyn FnMut(Value, Value)) -> Result<Option<Valu
     // Materializing CONSUMES it, exactly as the reference's
     // `iterator_to_array($gen)` does.
     if with_host(|h| h.is_generator_val(v)) {
+        gen_foreach_rewind(v)?;
+        if with_host(|h| h.pending_throw.is_some()) {
+            return Ok(None);
+        }
         while gen_valid(v)? {
             let cur = gen_current(v)?;
             let key = gen_key(v)?;

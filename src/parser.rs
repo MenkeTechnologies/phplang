@@ -2702,6 +2702,9 @@ impl Parser {
         };
         // `$x instanceof ClassName` (bareword class, optionally `\`-qualified).
         if self.eat_kw("instanceof") {
+            if let Some(class) = self.new_dynamic_class()? {
+                return Ok(Expr::InstanceOfDyn(Box::new(e), Box::new(class)));
+            }
             let cls = self.expect_type_name()?;
             return Ok(Expr::InstanceOf(Box::new(e), cls));
         }
