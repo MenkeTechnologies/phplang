@@ -487,10 +487,6 @@ documented in-code:
   whatever mode the program declared. Upstream treats an internal caller as
   having no strict-mode file and so coerces, while `call_user_func` forwards the
   caller's mode; phplang forwards it in both cases.
-- The UNCAUGHT rendering of a parameter/return `TypeError` names the CALL site
-  where the reference names the function's DEFINITION — `in file:9` rather than
-  ` and defined in file:2` — because no definition line is recorded for a
-  function. `getMessage()` itself is byte-exact, which is what a `catch` sees.
 - Default parameter values are not restricted to constant expressions, and a
   default is not checked against the parameter's declared type (upstream checks
   it once, at declaration).

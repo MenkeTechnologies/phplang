@@ -90,7 +90,7 @@ class Exception {
     final public function getFile() { return $this->file; }
     final public function getLine() { return $this->line; }
     final public function getTraceAsString() { return $this->trace; }
-    public function __toString() { return $this->message; }
+    public function __toString() { return __phplang_throwable_string($this); }
 }
 class Error {
     protected $message = "";
@@ -110,7 +110,7 @@ class Error {
     final public function getFile() { return $this->file; }
     final public function getLine() { return $this->line; }
     final public function getTraceAsString() { return $this->trace; }
-    public function __toString() { return $this->message; }
+    public function __toString() { return __phplang_throwable_string($this); }
 }
 class ErrorException extends Exception {
     protected $severity = 1;

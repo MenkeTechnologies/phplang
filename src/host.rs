@@ -7274,6 +7274,57 @@ pub fn run_main(chunk: Chunk) -> Result<Value, String> {
     r
 }
 
+/// Port of `Exception::__toString` (`Zend/zend_exceptions.c`), shared by
+/// `Exception` and `Error` through the prelude's `__phplang_throwable_string`.
+///
+/// Walks the `previous` chain from `this` outward-in, rendering each throwable
+/// as `Class: message in file:line\nStack trace:\n<trace>` (no `: message`
+/// when the message is empty) and appending what was rendered so far after
+/// `\n\nNext `, so the innermost exception reads first. The trace is the
+/// object's own `getTraceAsString()`, `#0 {main}\n` when that is empty. A
+/// user function's argument-type refusal (exactly `TypeError` or
+/// `ArgumentCountError`) is extended with ` and defined`, because the file and
+/// line that follow are the declaration's.
+pub fn throwable_string(this: &Value) -> Result<Value, String> {
+    let mut out = String::new();
+    let mut exc = this.clone();
+    while let Some(class) = with_host(|h| {
+        h.object_class(&exc)
+            // Throwable: phplang roots it at the two prelude classes.
+            .filter(|c| h.class_is_a_pub(c, "Exception") || h.class_is_a_pub(c, "Error"))
+    }) {
+        let (message, file, line) = with_host(|h| {
+            (
+                h.to_str(&h.prop_get(&exc, "message")),
+                h.to_str(&h.prop_get(&exc, "file")),
+                h.prop_get(&exc, "line").to_int(),
+            )
+        });
+        let trace = call_method(&class, "getTraceAsString", Some(exc.clone()), Vec::new())?;
+        let trace = match trace {
+            Value::Str(s) if !s.is_empty() => s.to_string(),
+            _ => "#0 {main}\n".to_string(),
+        };
+        let message = if (class.eq_ignore_ascii_case("TypeError")
+            || class.eq_ignore_ascii_case("ArgumentCountError"))
+            && message.contains(", called in ")
+        {
+            format!("{message} and defined")
+        } else {
+            message
+        };
+        let name = display_class(&class).to_string();
+        let next = if out.is_empty() { "" } else { "\n\nNext " };
+        out = if message.is_empty() {
+            format!("{name} in {file}:{line}\nStack trace:\n{trace}{next}{out}")
+        } else {
+            format!("{name}: {message} in {file}:{line}\nStack trace:\n{trace}{next}{out}")
+        };
+        exc = with_host(|h| h.prop_get(&exc, "previous"));
+    }
+    Ok(Value::str(out))
+}
+
 /// Display an exception nothing caught as the reference's fatal, on stdout
 /// (inside any open output buffer), and answer the stderr log copy, which the
 /// CLI wrapper reports without re-displaying.
@@ -7301,30 +7352,26 @@ fn report_uncaught(exc: Value) -> String {
             });
             return format!("Parse error:  {body}");
         }
+        // `zend_exception_error`: the text is the exception's own `__toString()`
+        // — a user override included — and an exception thrown BY that
+        // `__toString` is what gets reported instead.
+        let class = with_host(|h| h.object_class(&exc)).unwrap_or_else(|| "Exception".to_string());
+        // The engine makes the call, so a trace names its site
+        // `[internal function]`.
+        with_host(|h| {
+            if let Some(g) = h.scopes.first_mut() {
+                g.internal = true;
+            }
+        });
+        let r = call_method(&class, "__toString", Some(exc.clone()), Vec::new());
+        if let Some(inner) = with_host(|h| h.pending_throw.take()) {
+            return report_uncaught(inner);
+        }
+        let str = r.map(|v| with_host(|h| h.to_str(&v))).unwrap_or_default();
         let body = with_host(|h| {
-            let class = h
-                .object_class(&exc)
-                .unwrap_or_else(|| "Exception".to_string());
-            let msg = h.to_str(&h.prop_get(&exc, "message"));
             let file = h.to_str(&h.prop_get(&exc, "file"));
             let line = h.prop_get(&exc, "line").to_int();
-            let trace = h.to_str(&h.prop_get(&exc, "trace"));
-            // `Exception::__toString` reads a user function's argument-type
-            // refusal as `…, called in <site> and defined in <file>:<line>`:
-            // the exception's file and line are the DECLARATION's, so the
-            // message is extended to say so. Exactly these two classes.
-            let msg = if (class.eq_ignore_ascii_case("TypeError")
-                || class.eq_ignore_ascii_case("ArgumentCountError"))
-                && msg.contains(", called in ")
-            {
-                format!("{msg} and defined")
-            } else {
-                msg
-            };
-            format!(
-                "Uncaught {class}: {msg} in {file}:{line}\nStack trace:\n{trace}\n  \
-                 thrown in {file} on line {line}"
-            )
+            format!("Uncaught {str}\n  thrown in {file} on line {line}")
         });
         with_host(|h| {
             h.fatal("Fatal error", &body);

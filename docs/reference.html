@@ -1814,7 +1814,7 @@ $o = new C; unset($o-&gt;zz);   // =&gt; unset:zz</code></pre>
     final getFile(): string   final getLine(): int   final getTraceAsString(): string
     __toString(): string
 }</code></pre>
-          <p>One of the two disjoint roots of the exception hierarchy. `catch (Throwable)` is special-cased in the host to match this root or `Error`. `file`, `line` and `trace` are recorded when the object is *constructed*, as the reference engine records them, so `getLine()` reports the `new` site even when the `throw` is on a later line. DIVERGENCE: `getTrace()` — the structured array form — is not declared; only the rendered `getTraceAsString()` is.</p>
+          <p>One of the two disjoint roots of the exception hierarchy. `catch (Throwable)` is special-cased in the host to match this root or `Error`. `file`, `line` and `trace` are recorded when the object is *constructed*, as the reference engine records them, so `getLine()` reports the `new` site even when the `throw` is on a later line. `__toString()` is the reference's rendering: `Class: message in file:line`, `Stack trace:` and the trace, for every exception down the `previous` chain, innermost first and joined by `Next `. DIVERGENCE: `getTrace()` — the structured array form — is not declared; only the rendered `getTraceAsString()` is.</p>
           <pre><code class="lang-php">try { throw new Exception("boom", 7); }
 catch (Exception $e) { echo $e-&gt;getMessage(), $e-&gt;getCode(); }   // =&gt; boom7</code></pre>
         </article>
@@ -1828,7 +1828,7 @@ catch (Exception $e) { echo $e-&gt;getMessage(), $e-&gt;getCode(); }   // =&gt; 
     final getFile(): string   final getLine(): int   final getTraceAsString(): string
     __toString(): string
 }</code></pre>
-          <p>The other root of the hierarchy, for engine-level failures. It does NOT extend `Exception` — the two roots are disjoint, exactly as in PHP, so `catch (Exception)` never catches an `Error`. A zero divisor throws `DivisionByZeroError`, and a method call on a non-object throws `Error`. Reaching the top uncaught prints the reference's `Fatal error: Uncaught &lt;Class&gt;: &lt;message&gt; in &lt;file&gt;:&lt;line&gt;` block, stack trace and all, on stdout. DIVERGENCE: most other runtime failures — a bad standard-library argument, a call to an undefined function — still abort with a host-level `php: &lt;message&gt;` on stderr that no `catch` block can intercept.</p>
+          <p>The other root of the hierarchy, for engine-level failures. It does NOT extend `Exception` — the two roots are disjoint, exactly as in PHP, so `catch (Exception)` never catches an `Error`. A zero divisor throws `DivisionByZeroError`, and a method call on a non-object throws `Error`. Reaching the top uncaught prints the reference's `Fatal error: Uncaught &lt;__toString()&gt;` block on stdout — a user override of `__toString` included, and an exception that override throws is reported in its place. DIVERGENCE: most other runtime failures — a bad standard-library argument, a call to an undefined function — still abort with a host-level `php: &lt;message&gt;` on stderr that no `catch` block can intercept.</p>
           <pre><code class="lang-php">try { throw new TypeError("t"); }
 catch (Exception $e) { echo "E"; } catch (Error $e) { echo "R"; }   // =&gt; R</code></pre>
         </article>

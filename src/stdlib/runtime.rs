@@ -17,6 +17,8 @@ use fusevm::Value;
 /// Dispatch a runtime-category PHP function by lowercased name.
 pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
     let v = match name {
+        // `Exception::__toString` / `Error::__toString`, called by the prelude.
+        "__phplang_throwable_string" => return Some(crate::host::throwable_string(&arg(args, 0))),
         // assert($assertion, $description = null): bool
         // Assertions are "enabled" but non-fatal here — a falsy assertion yields
         // false rather than throwing AssertionError (phplang has no throw path in

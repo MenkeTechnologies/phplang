@@ -26,6 +26,25 @@ comment above it.
 
 ---
 
+## Round 19 — `Throwable::__toString`, the SPL data structures
+
+Measured under `PHP 8.5.11 (cli) (built: Sep 22 2026 13:32:06) (NTS)`; ini state
+and environment otherwise as recorded in the oracle table above. Each fix has a
+block in `tests/data/parity_corpus.php`.
+
+* **`Exception::__toString` / `Error::__toString` returned only the message.**
+  They are now a port of `ZEND_METHOD(Exception, __toString)`
+  (`Zend/zend_exceptions.c`): `Class: message in file:line`, `Stack trace:` and
+  the object's own `getTraceAsString()` (`#0 {main}` when that is empty), for
+  every throwable down the `previous` chain, innermost first and joined by
+  `Next `. An empty message drops the `: `; a user `TypeError` /
+  `ArgumentCountError` whose message has `, called in ` gains ` and defined`.
+* **An uncaught exception ignored its `previous` chain and any user
+  `__toString`.** The fatal is now `Uncaught <__toString()>` followed by
+  `thrown in`, as `zend_exception_error` builds it, and an exception thrown by
+  that `__toString` is reported in its place, from an `[internal function]`
+  frame.
+
 ## Round 18 — operator precedence, the default random engine, `new $class`
 
 Measured under `PHP 8.5.11 (cli) (built: Sep 22 2026 13:32:06) (NTS)`; ini state

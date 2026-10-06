@@ -2025,3 +2025,72 @@ Cannot assign Sq to property TB::$next of type ?TB
 Cannot assign string to property TB::$tags of type array
 0:5 1:6 Seek position 4 is out of range
 
+#REC 108 exit=0 out=685 err=0
+DomainException: in fn in Command line code:4
+Stack trace:
+#0 Command line code(5): thrower()
+#1 Command line code(6): TS->m(Array)
+#2 {main}
+---
+bool(true)
+InvalidArgumentException: inner in Command line code:7
+Stack trace:
+#0 {main}
+
+Next LogicException: outer in Command line code:7
+Stack trace:
+#0 {main}
+TypeError: t in Command line code:8
+Stack trace:
+#0 {main}
+
+Next Error in Command line code:8
+Stack trace:
+#0 {main}
+TypeError: typed(): Argument #1 ($x) must be of type int, string given, called in Command line code on line 10 and defined in Command line code:9
+Stack trace:
+#0 Command line code(10): typed('x')
+#1 {main}
+ErrorException: ee in x.php:9
+Stack trace:
+#0 {main}
+
+#REC 109 exit=255 out=207 err=211
+
+Fatal error: Uncaught RuntimeException: inner in Command line code:3
+Stack trace:
+#0 {main}
+
+Next LogicException: outer in Command line code:3
+Stack trace:
+#0 {main}
+  thrown in Command line code on line 3
+PHP Fatal error:  Uncaught RuntimeException: inner in Command line code:3
+Stack trace:
+#0 {main}
+
+Next LogicException: outer in Command line code:3
+Stack trace:
+#0 {main}
+  thrown in Command line code on line 3
+
+#REC 110 exit=255 out=71 err=75
+
+Fatal error: Uncaught custom!
+  thrown in Command line code on line 3
+PHP Fatal error:  Uncaught custom!
+  thrown in Command line code on line 3
+
+#REC 111 exit=255 out=169 err=173
+
+Fatal error: Uncaught Exception: boom in Command line code:3
+Stack trace:
+#0 [internal function]: BadEx->__toString()
+#1 {main}
+  thrown in Command line code on line 3
+PHP Fatal error:  Uncaught Exception: boom in Command line code:3
+Stack trace:
+#0 [internal function]: BadEx->__toString()
+#1 {main}
+  thrown in Command line code on line 3
+

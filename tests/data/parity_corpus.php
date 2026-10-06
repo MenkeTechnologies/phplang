@@ -1157,3 +1157,28 @@ foreach ([fn() => shape(new TD), fn() => TD::make(), fn() => $t->next = new Sq, 
 }
 $it = new ArrayIterator([5, 6]); foreach ($it as $k => $v) echo "$k:$v ";
 try { $it->seek(4); } catch (OutOfBoundsException $e) { echo $e->getMessage(), "\n"; }
+#==#
+// Exception::__toString renders the whole `previous` chain, innermost first,
+// each with its own trace; an empty message drops the `: `; a user
+// TypeError's ", called in" message gains " and defined".
+function thrower() { throw new DomainException("in fn"); }
+class TS { function m($a) { thrower(); } }
+try { (new TS)->m([1, 2]); } catch (Exception $e) { echo $e, "\n---\n"; var_dump((string)$e === $e->__toString()); }
+echo new LogicException("outer", 1, new InvalidArgumentException("inner")), "\n";
+echo new Error("", 0, new TypeError("t")), "\n";
+function typed(int $x) {}
+try { typed("x"); } catch (TypeError $e) { echo $e, "\n"; }
+echo new ErrorException("ee", 3, E_WARNING, "x.php", 9), "\n";
+#==#
+// An uncaught exception is reported through its own __toString, previous
+// chain included.
+throw new LogicException("outer", 1, new RuntimeException("inner"));
+#==#
+// A user __toString override is what the uncaught fatal prints.
+class MyEx extends Exception { public function __toString(): string { return "custom!"; } }
+throw new MyEx("m");
+#==#
+// An exception thrown BY __toString while reporting is what goes uncaught,
+// from an [internal function] frame.
+class BadEx extends Exception { public function __toString(): string { throw new Exception("boom"); } }
+throw new BadEx("m");
