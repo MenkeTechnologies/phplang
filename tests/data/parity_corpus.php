@@ -1241,3 +1241,11 @@ $it = new ArrayIterator([1]);
 try { $it->seek(5); } catch (Exception $e) { echo $e->getLine(), " ", $e->getFile(), "\n", $e->getTraceAsString(), "\n"; }
 function f() { $it = new ArrayIterator([1]); $it->seek(9); }
 f();
+#==#
+// The prelude's closures keep their own names when the program declares
+// closures of its own, and a prelude method's helper frames stay out of a
+// trace: the user method it calls back into was entered from internal code.
+class H extends SplMinHeap { protected function compare($a, $b): int { throw new Exception("x"); } }
+$h = new H; $h->insert(1);
+try { $h->insert(2); } catch (Exception $e) { echo $e->getTraceAsString(), "\n"; }
+$f = function ($x, $y) {};

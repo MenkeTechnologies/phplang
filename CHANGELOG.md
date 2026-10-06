@@ -26,6 +26,23 @@ comment above it.
 
 ---
 
+## Round 20 — prelude closures and frames, SPL iterators
+
+Measured under `PHP 8.5.11 (cli) (built: Sep 22 2026 13:32:06) (NTS)`; ini state
+and environment otherwise as recorded in the oracle table above. Each fix has a
+block in `tests/data/parity_corpus.php`.
+
+* **A closure written in the prelude was replaced by the program's first
+  closure.** Both were compiled under the name `@closure1`, and the prelude is
+  merged before the program, so an `SplHeap` whose `compare()` threw failed with
+  an `ArgumentCountError` from the user's closure once the program declared
+  one. Prelude closures now have names of their own.
+* **A trace showed the prelude's helper frames.** A prelude method stands in
+  for an internal one: the frames it opens for itself (private helpers,
+  closures, library calls) are left out, and a user method it calls back into
+  (`compare()`, `accept()`) is entered from `[internal function]`, as
+  `zend_fetch_debug_backtrace` reports a call made by internal code.
+
 ## Round 19 — `Throwable::__toString`, the SPL data structures
 
 Measured under `PHP 8.5.11 (cli) (built: Sep 22 2026 13:32:06) (NTS)`; ini state

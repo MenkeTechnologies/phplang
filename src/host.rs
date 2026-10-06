@@ -2663,6 +2663,9 @@ impl PhpHost {
             file: &'a str,
             line: u32,
             internal: bool,
+            // A method of a PHP-written prelude class, which stands in for
+            // an internal one.
+            prelude: bool,
         }
         let mut frames: Vec<Frame<'_>> = Vec::new();
         for (i, scope) in self.scopes.iter().enumerate() {
@@ -2690,6 +2693,7 @@ impl PhpHost {
                 file: self.scope_file(i),
                 line: incs.first().map_or(scope.line, |f| f.call_line),
                 internal: scope.internal,
+                prelude: scope.name.as_deref().is_some_and(is_prelude_frame),
             });
             for (k, inc) in incs.iter().enumerate() {
                 frames.push(Frame {
@@ -2697,6 +2701,7 @@ impl PhpHost {
                     file: &inc.file,
                     line: incs.get(k + 1).map_or(scope.line, |f| f.call_line),
                     internal: false,
+                    prelude: false,
                 });
             }
         }
@@ -2704,7 +2709,14 @@ impl PhpHost {
         let mut n = 0;
         for j in (1..frames.len()).rev() {
             let caller = &frames[j - 1];
-            let site = if caller.internal {
+            // A prelude method is internal code: whatever IT calls on its own
+            // behalf (its private helpers, the library functions it uses) is
+            // invisible, and a user method it calls back into — a `compare()`,
+            // an `accept()` — was entered from `[internal function]`.
+            if caller.prelude && (frames[j].prelude || frames[j].internal) {
+                continue;
+            }
+            let site = if caller.internal || caller.prelude {
                 "[internal function]".to_string()
             } else {
                 format!("{}({})", caller.file, caller.line)

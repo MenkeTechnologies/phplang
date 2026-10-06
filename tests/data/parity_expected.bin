@@ -2319,3 +2319,8 @@ Stack trace:
 #2 {main}
   thrown in Command line code on line 5
 
+#REC 116 exit=0 out=95 err=0
+#0 [internal function]: H->compare(1, 2)
+#1 Command line code(6): SplHeap->insert(2)
+#2 {main}
+

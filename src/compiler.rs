@@ -5604,7 +5604,14 @@ impl Compiler {
         self.decl_site = saved_site;
         self.loops = saved;
         self.leave_own_loop_scope(saved_try);
-        let def_name = self.tmp_name("closure");
+        // The prelude is merged onto every host BEFORE the user program, whose
+        // own closures count from the same `@closure1`; a name of its own keeps a
+        // user closure from replacing the prelude's in the function table.
+        let def_name = self.tmp_name(if self.prelude {
+            "prelude_closure"
+        } else {
+            "closure"
+        });
         self.functions.push((
             def_name.clone(),
             FuncDef {
