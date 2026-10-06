@@ -67,7 +67,37 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         // ── serialization ───────────────────────────────────────────────────
         "serialize" => {
             let a = arg(args, 0);
-            let out = with_host(|h| php_serialize(h, &a));
+            // `__serialize` is PHP code: every answer is collected before the
+            // render, and a non-array one is the reference's `TypeError`.
+            let answers = crate::host::collect_object_hooks(
+                std::slice::from_ref(&a),
+                "__serialize",
+                &|class, r| {
+                    if with_host(|h| h.is_array(&r)) {
+                        return Some(r);
+                    }
+                    let msg = format!(
+                        "{}::__serialize() must return an array",
+                        crate::host::display_class(class)
+                    );
+                    let _ = crate::host::throw_from_internal(
+                        "serialize",
+                        std::slice::from_ref(&a),
+                        "TypeError",
+                        &msg,
+                    );
+                    None
+                },
+            );
+            let Some(answers) = answers else {
+                return Some(Ok(Value::Undef));
+            };
+            let out = with_host(|h| {
+                let outer = std::mem::replace(&mut h.serialize_info, answers);
+                let s = php_serialize(h, &a);
+                h.serialize_info = outer;
+                s
+            });
             Value::str(out)
         }
         "unserialize" => {
@@ -78,7 +108,22 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             if total == 0 {
                 return Some(Ok(Value::bool(false)));
             }
-            match php_unserialize(bytes) {
+            let mut deferred = Vec::new();
+            let result = php_unserialize(bytes, &mut deferred);
+            // `__unserialize` runs once the whole payload has parsed, in the
+            // order the objects were created, as the reference's delayed calls
+            // do — and not at all when the payload was malformed.
+            if !matches!(result, Unser::Failed(..)) {
+                for (obj, data) in deferred {
+                    let class = with_host(|h| h.object_class(&obj)).unwrap_or_default();
+                    let _ =
+                        crate::host::call_method(&class, "__unserialize", Some(obj), vec![data]);
+                    if crate::host::unwinding() {
+                        return Some(Ok(Value::Undef));
+                    }
+                }
+            }
+            match result {
                 Unser::Value(v) => v,
                 Unser::Saturated(v) => {
                     with_host(|h| h.warn("unserialize(): Numerical result out of range"));
@@ -238,6 +283,21 @@ fn php_serialize_object(
         let tag = format!("{class}:{case}");
         return format!("E:{}:\"{tag}\";", tag.len());
     }
+    // A `__serialize` answer replaces the properties, its keys as written.
+    let answer = match v {
+        Value::Obj(id) => h.serialize_info.get(id),
+        _ => None,
+    };
+    if let Some(data) = answer {
+        let pairs = h.array_pairs(data).unwrap_or_default();
+        let mut out = format!("O:{}:\"{class}\":{}:{{", class.len(), pairs.len());
+        for (k, val) in pairs {
+            out.push_str(&php_serialize_seen(h, &k, seen));
+            out.push_str(&php_serialize_seen(h, &val, seen));
+        }
+        out.push('}');
+        return out;
+    }
     let props = h.object_props(v);
     let mut out = format!("O:{}:\"{class}\":{}:{{", class.len(), props.len());
     for (name, val) in props {
@@ -335,9 +395,10 @@ enum Unser {
 
 /// Parse a PHP serialization payload. Byte-oriented so string lengths are
 /// binary-safe.
-fn php_unserialize(b: &[u8]) -> Unser {
+fn php_unserialize(b: &[u8], deferred: &mut Vec<(Value, Value)>) -> Unser {
     let mut p = Parser {
         b,
+        deferred,
         pos: 0,
         fail_at: None,
         unexpected_end: false,
@@ -357,6 +418,9 @@ fn php_unserialize(b: &[u8]) -> Unser {
 
 struct Parser<'a> {
     b: &'a [u8],
+    /// `(object, data)` for each object of a class with `__unserialize`, in
+    /// creation order, for the caller to hand its data once parsing ends.
+    deferred: &'a mut Vec<(Value, Value)>,
     pos: usize,
     /// Where the reference would report the parse as having failed. Written by
     /// the FIRST branch to fail, which is the innermost one — a bad element deep
@@ -568,6 +632,29 @@ impl<'a> Parser<'a> {
                     return None;
                 }
                 self.eat(b"{")?;
+                // A class with `__unserialize` is allocated first (defaults, no
+                // constructor) and handed its data — keys as written — later.
+                let custom = with_host(|h| {
+                    h.class_exists(&class) && h.class_has_method(&class, "__unserialize")
+                });
+                if custom {
+                    let obj = crate::host::alloc_object(&class).ok()?;
+                    let mut pairs = Vec::with_capacity(count as usize);
+                    for _ in 0..count {
+                        if let Some(fail) = self.container_exhausted() {
+                            return fail;
+                        }
+                        let k = self.value()?;
+                        if let Some(fail) = self.container_exhausted() {
+                            return fail;
+                        }
+                        pairs.push((k, self.value()?));
+                    }
+                    self.close_container()?;
+                    self.deferred
+                        .push((obj.clone(), super::common::make_map(pairs)));
+                    return Some(obj);
+                }
                 let mut props: Vec<(String, Value)> = Vec::with_capacity(count as usize);
                 for _ in 0..count {
                     if let Some(fail) = self.container_exhausted() {

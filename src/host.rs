@@ -1006,6 +1006,13 @@ pub struct PhpHost {
     /// caught. Kept apart from `signal` so it survives function-frame unwinding
     /// and bubbles through nested VMs on its own.
     pending_throw: Option<Value>,
+    /// What `__debugInfo` answered for each object handle in the value a
+    /// `var_dump` / `print_r` is rendering, collected before the render starts
+    /// (calling PHP code needs the host unborrowed). Empty outside a dump.
+    pub(crate) debug_info: FxHashMap<u32, Value>,
+    /// What `__serialize` answered for each object handle in the value a
+    /// `serialize` is rendering, collected the same way. Empty outside one.
+    pub(crate) serialize_info: FxHashMap<u32, Value>,
     /// The status an `exit`/`die` asked the process to end with, once one has
     /// run. Like [`PhpHost::pending_throw`] it unwinds every frame, but it is
     /// NOT catchable and does NOT run a `finally` — PHP ends the request where
@@ -1465,6 +1472,8 @@ impl PhpHost {
             error: None,
             signal: None,
             pending_throw: None,
+            debug_info: FxHashMap::default(),
+            serialize_info: FxHashMap::default(),
             pending_exit: None,
             exception_handlers: Vec::new(),
             error_handlers: Vec::new(),
@@ -2345,6 +2354,9 @@ impl PhpHost {
     /// The stderr copy is written FIRST: `php_error_cb` logs before it displays,
     /// which is what an interleaved `2>&1` capture shows.
     pub fn diagnose(&mut self, severity: &str, level: i64, line: u32, msg: impl std::fmt::Display) {
+        // Code a PHP-written prelude method runs stands for an internal
+        // function, whose diagnostics name the user's call site.
+        let line = prelude_call_site_line(self).unwrap_or(line);
         // `set_error_handler`: a level the live handler takes is queued for it
         // instead of displayed — the handler is PHP code, which cannot run
         // inside this borrow, so it runs at the next builtin boundary (see
@@ -8869,8 +8881,19 @@ fn seed_throwable(class: &str, obj: &Value) {
         if !h.class_is_a(&cl, "exception") && !h.class_is_a(&cl, "error") {
             return;
         }
-        let file = h.current_file().to_string();
-        let line = h.cur_frame_line() as i64;
+        // A `new` run by a PHP-written prelude method stands for a throw from
+        // an internal one, which has no line of its own: the exception takes
+        // the file and line of the first frame below that runs user code.
+        let top = h.scopes.len() - 1;
+        let mut i = top;
+        while i > 0 && h.scopes[i].name.as_deref().is_some_and(is_prelude_frame) {
+            i -= 1;
+        }
+        let (file, line) = if i == top {
+            (h.current_file().to_string(), h.cur_frame_line() as i64)
+        } else {
+            (h.scope_file(i).to_string(), h.scopes[i].line as i64)
+        };
         let trace = h.backtrace();
         h.prop_set(obj, "file", Value::str(file));
         h.prop_set(obj, "line", Value::int(line));
@@ -11430,6 +11453,151 @@ impl PhpHost {
             .last()
             .filter(|(c, mask)| !matches!(c, Value::Undef) && mask & level != 0)
             .map(|(c, _)| c.clone())
+    }
+}
+
+/// Answer a magic method — `__debugInfo`, `__serialize` — for every object
+/// reachable from `roots` whose class defines it, keyed by object handle.
+///
+/// A renderer that consults such a method (`var_dump`, `print_r`,
+/// `serialize`) runs inside a host borrow and cannot call PHP code, so the
+/// reachable values are walked first, depth-first in render order, and each
+/// object's answer is collected here. `answer` shapes what the method returned
+/// into the array the renderer will use, or answers `None` having left an
+/// exception pending. The walk descends into an answer rather than into the
+/// object's own properties, as the render will. `None` when a method threw.
+pub fn collect_object_hooks(
+    roots: &[Value],
+    method: &str,
+    answer: &dyn Fn(&str, Value) -> Option<Value>,
+) -> Option<FxHashMap<u32, Value>> {
+    fn walk(
+        v: &Value,
+        method: &str,
+        answer: &dyn Fn(&str, Value) -> Option<Value>,
+        map: &mut FxHashMap<u32, Value>,
+        seen: &mut FxHashSet<u32>,
+    ) -> bool {
+        let Value::Obj(id) = v else { return true };
+        if !seen.insert(*id) {
+            return true;
+        }
+        let class = with_host(|h| h.object_class(v).filter(|c| h.class_has_method(c, method)));
+        let target = match class {
+            Some(class) => {
+                let r = call_method(&class, method, Some(v.clone()), Vec::new());
+                if unwinding() {
+                    return false;
+                }
+                let Some(arr) = answer(&class, r.unwrap_or(Value::Undef)) else {
+                    return false;
+                };
+                map.insert(*id, arr.clone());
+                arr
+            }
+            None => v.clone(),
+        };
+        let children: Vec<Value> = with_host(|h| {
+            if h.is_object(&target) {
+                h.object_props(&target)
+                    .into_iter()
+                    .map(|(_, x)| x)
+                    .collect()
+            } else {
+                h.array_pairs(&target)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(_, x)| x)
+                    .collect()
+            }
+        });
+        children.iter().all(|c| walk(c, method, answer, map, seen))
+    }
+    let mut map = FxHashMap::default();
+    let mut seen = FxHashSet::default();
+    roots
+        .iter()
+        .all(|r| walk(r, method, answer, &mut map, &mut seen))
+        .then_some(map)
+}
+
+/// `__phplang_try_call($fn)`: run the closure and answer `[true, $result]`,
+/// or `[false, $exception]` with the exception it threw taken off the stack.
+/// The prelude's stand-in for a `try`/`catch (Throwable)`, which prelude
+/// source cannot hold — its try-defs are not loaded beside the program's.
+pub fn try_call(f: Value) -> Result<Value, String> {
+    let r = call_value(f, Vec::new());
+    let thrown = with_host(|h| h.pending_throw.take());
+    let pair = match thrown {
+        Some(exc) => vec![Value::bool(false), exc],
+        None => vec![Value::bool(true), r?],
+    };
+    Ok(with_host(|h| {
+        let arr = h.new_array();
+        for v in pair {
+            h.arr_push_auto(&arr, v);
+        }
+        arr
+    }))
+}
+
+/// The line of the innermost frame running USER code, when PHP-written
+/// prelude methods sit above it: the call site an internal method's
+/// diagnostics name. `None` when the running frame is user code itself.
+fn prelude_call_site_line(h: &PhpHost) -> Option<u32> {
+    let top = h.scopes.len() - 1;
+    let mut i = top;
+    while i > 0 && h.scopes[i].name.as_deref().is_some_and(is_prelude_frame) {
+        i -= 1;
+    }
+    (i < top).then(|| h.scopes[i].line)
+}
+
+/// Port of `spl_offset_convert_to_ulong` (`ext/spl/spl_fixedarray.c`) for the
+/// prelude's `SplFixedArray`: the integer an offset names. An int passes, a
+/// canonical integer string converts, a bool is 0/1, and a float goes through
+/// `zend_dval_to_lval_safe` — the cast's `not representable` warning, then the
+/// `loses precision` deprecation for a fractional value that fits. Anything
+/// else is `zend_illegal_container_offset`'s `TypeError`. Diagnostics name the
+/// user's call site. A negative result is the caller's out-of-range case.
+pub fn spl_offset(offset: &Value) -> Result<Value, String> {
+    let v = with_host(|h| h.deref(offset.clone()));
+    let n = match &v {
+        Value::Int(n) => Some(*n),
+        Value::Str(s) => canonical_int_key(s),
+        Value::Bool(b) => Some(*b as i64),
+        Value::Float(f) => {
+            let f = *f;
+            let saved = warn_line();
+            if let Some(line) = with_host(|h| prelude_call_site_line(h)) {
+                set_warn_line(line);
+            }
+            let l = with_host(|h| {
+                let l = h.to_int_cast(&v);
+                const TWO_63: f64 = 9223372036854775808.0;
+                let fits = !(f >= TWO_63 || f < -TWO_63);
+                if l as f64 != f && fits {
+                    let shown = h.to_str(&v);
+                    h.deprecated(format!(
+                        "Implicit conversion from float {shown} to int loses precision"
+                    ));
+                }
+                l
+            });
+            set_warn_line(saved);
+            Some(l)
+        }
+        _ => None,
+    };
+    match n {
+        Some(n) => Ok(Value::int(n)),
+        None => {
+            let ty = with_host(|h| crate::stdlib::types::debug_type(h, &v));
+            throw_as_internal_method(
+                "TypeError",
+                &format!("Cannot access offset of type {ty} on SplFixedArray"),
+            )
+        }
     }
 }
 

@@ -395,7 +395,8 @@ end-to-end (see `tests/basic.rs`):
 - The `DateTime`/`DateTimeImmutable`/`DateInterval` classes and the SPL data
   structures (`SplStack`, `SplQueue`, `SplDoublyLinkedList`, `SplFixedArray`,
   `ArrayObject`, `SplObjectStorage`, `SplPriorityQueue`, `SplMinHeap`/`SplMaxHeap`)
-  plus `stdClass`, all as PHP preludes; output buffering (`ob_start`/`ob_get_clean`/…),
+  plus `stdClass`, all as PHP preludes — the list, heap and fixed-array classes
+  ports of `ext/spl` (iterator modes, heap sift order, the reference's exceptions); output buffering (`ob_start`/`ob_get_clean`/…),
   variadic introspection (`func_get_args`/`func_num_args`), the stream functions
   (`fread`/`fwrite`/`fgets`/`fgetc`/`fseek`/`ftruncate`/`fstat`/`fclose`/…), the
   `unset()` construct, `spl_object_id`,

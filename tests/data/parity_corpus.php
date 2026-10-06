@@ -1182,3 +1182,62 @@ throw new MyEx("m");
 // from an [internal function] frame.
 class BadEx extends Exception { public function __toString(): string { throw new Exception("boom"); } }
 throw new BadEx("m");
+#==#
+// __debugInfo replaces what var_dump and print_r show; "\0Class\0p" and "\0*\0p" keys
+// read as private and protected, an int key prints bare, null is deprecated.
+class D { public $x = 1; protected $hid = 0; function __debugInfo() { return ["\0D\0flags" => 1, "\0*\0p" => 2, "z" => 3, 7 => [new E]]; } }
+class E { private $q = 5; function __debugInfo() { return ['shown' => $this->q * 2]; } }
+var_dump(new D); print_r(new D); echo "\n"; print_r([new D, 1], false); echo print_r(new E, true), "\n";
+var_export(new D); echo "\n"; var_dump((array)new D, get_object_vars(new E));
+class N { function __debugInfo() { return null; } }
+print_r(new N); echo "
+";
+#==#
+// serialize() writes what __serialize() answers; unserialize() hands __unserialize()
+// the data once the payload has parsed. A non-array answer is a TypeError.
+class U { function __serialize() { return 5; } }
+try { serialize(new U); } catch (Throwable $e) { echo get_class($e), $e->getMessage(), "\n", $e->getTraceAsString(), "\n"; }
+class V { public $a = 1; function __serialize(): array { return ["x" => 1, 3 => [2], "\0*\0p" => 1]; } function __unserialize(array $d): void { echo "unser:"; var_dump($d); $this->a = $d["x"] + 10; } }
+echo $s = serialize([new V, new V]), "\n"; foreach (unserialize($s) as $o) echo $o->a, "\n";
+$st = new SplStack; $st->push(1); $st->push([2]); $st->dyn = "d"; echo $s = serialize($st), "\n"; $u = unserialize($s); print_r($u); foreach ($u as $v) echo json_encode($v); echo "\n";
+$h = new SplMinHeap; $h->insert(3); $h->insert(1); echo $s = serialize($h), "\n"; $u = unserialize($s); echo $u->extract(), $u->count(), "\n";
+$pq = new SplPriorityQueue; $pq->insert("a", 2); $pq->insert("b", 9); echo $s = serialize($pq), "\n"; echo unserialize($s)->extract(), "\n";
+$f = SplFixedArray::fromArray([1, 2]); echo $s = serialize($f), "\n"; var_dump(unserialize($s)->toArray());
+#==#
+// SplDoublyLinkedList/SplQueue/SplStack, SplHeap/SplPriorityQueue and SplFixedArray
+// follow ext/spl: iterator modes, heap sift order for ties, corruption, messages.
+$pq = new SplPriorityQueue;
+foreach (["a" => 1, "b" => 3, "c" => 3, "d" => 2, "e" => 3, "f" => 1, "g" => 2] as $d => $p) $pq->insert($d, $p);
+$pq->setExtractFlags(SplPriorityQueue::EXTR_BOTH); print_r($pq->top()); $pq->setExtractFlags(SplPriorityQueue::EXTR_DATA);
+foreach ($pq as $k => $v) echo "$k:$v "; echo count($pq), "\n";
+class RevHeap extends SplHeap { protected function compare($a, $b): int { return strlen($b) - strlen($a); } }
+$h = new RevHeap; foreach (["ccc", "a", "bb", "dddd", "e", "ff"] as $x) $h->insert($x); while ($h->valid()) { echo $h->key(), "=", $h->current(), " "; $h->next(); } echo "\n";
+class Bad extends SplMinHeap { public $boom = false; protected function compare($a, $b): int { if ($this->boom) throw new LogicException("cmp"); return parent::compare($a, $b); } }
+$b = new Bad; $b->insert(1); $b->insert(2); $b->boom = true;
+try { $b->insert(0); } catch (LogicException $e) { echo "caught ", $e->getMessage(), " ", var_export($b->isCorrupted(), true), count($b), "\n"; }
+try { $b->top(); } catch (RuntimeException $e) { echo $e->getMessage(), "\n"; }
+$b->recoverFromCorruption(); $b->boom = false; echo $b->extract(), "\n";
+try { (new SplMinHeap)->extract(); } catch (RuntimeException $e) { echo $e->getMessage(), "\n"; }
+try { new SplHeap; } catch (Error $e) { echo $e->getMessage(), "\n"; }
+try { $pq->setExtractFlags(0); } catch (RuntimeException $e) { echo $e->getMessage(), "\n"; }
+$l = new SplDoublyLinkedList; foreach ([1, 2, 3, 4] as $x) $l->push($x);
+$l->setIteratorMode(SplDoublyLinkedList::IT_MODE_LIFO | SplDoublyLinkedList::IT_MODE_DELETE);
+foreach ($l as $k => $v) echo "$k=$v "; echo count($l), "\n";
+$l = new SplDoublyLinkedList; foreach ([1, 2, 3] as $x) $l->push($x); $l->add(1, "X"); $l->unshift(0); $l->offsetUnset(2); print_r($l); echo $l->getIteratorMode(), "\n";
+$l->rewind(); $l->next(); echo $l->current(), $l->key(); $l->prev(); echo $l->current(), $l->key(), "\n";
+$q = new SplQueue; $q[] = 1; $q[] = 2; echo $q->dequeue(), $q[0], "\n"; var_dump($q->isEmpty(), $q->toArray ?? null);
+try { $q->setIteratorMode(SplDoublyLinkedList::IT_MODE_LIFO); } catch (RuntimeException $e) { echo $e->getMessage(), "\n"; }
+$s = new SplStack; $s[] = 1; $s[] = 2; echo $s[0], $s->top(), $s->bottom(), "\n"; $c = clone $s; $c->push(9); echo count($s), count($c), "\n";
+var_dump($s instanceof Iterator, $s instanceof ArrayAccess, $s instanceof Countable, $h instanceof Iterator);
+$f = new SplFixedArray(3); $f[0] = "a"; echo count($f), isset($f[1]) ? "y" : "n", isset($f[0]) ? "y" : "n", isset($f[7]) ? "y" : "n", "\n";
+$f->setSize(1); print_r($f->toArray()); $f->setSize(2); print_r($f); echo json_encode($f), "\n";
+print_r(SplFixedArray::fromArray([3 => "x", 1 => "y"])->toArray()); print_r(SplFixedArray::fromArray(["p" => 1, "q" => 2], false)->toArray());
+try { SplFixedArray::fromArray(["p" => 1]); } catch (InvalidArgumentException $e) { echo $e->getMessage(), "\n"; }
+foreach (SplFixedArray::fromArray([7, 8]) as $k => $v) echo "$k$v"; echo "\n";
+#==#
+// An exception thrown inside a prelude (internal) method carries the caller's line.
+$it = new ArrayIterator([1]);
+
+try { $it->seek(5); } catch (Exception $e) { echo $e->getLine(), " ", $e->getFile(), "\n", $e->getTraceAsString(), "\n"; }
+function f() { $it = new ArrayIterator([1]); $it->seek(9); }
+f();

@@ -1996,42 +1996,40 @@ echo $a-&gt;getTimestamp(), " ", $b-&gt;getTimestamp();   // =&gt; 0 86400</code
         </article>
         <article class="doc-entry" id="doc-prelude-class-30">
           <h3><a class="doc-anchor" href="#doc-prelude-class-30">#</a> <code>SplDoublyLinkedList</code></h3>
-          <pre><code class="lang-php">class SplDoublyLinkedList {
-    public $dll = [];
-    push($v)  pop()  shift()  unshift($v)  top()  bottom()
-    count()   isEmpty()  toArray()
-    offsetGet($i)  offsetSet($i,$v)  offsetExists($i)  offsetUnset($i)
-    getIterator()
+          <pre><code class="lang-php">class SplDoublyLinkedList implements Iterator, Countable, ArrayAccess, Serializable {
+    const IT_MODE_LIFO = 2; const IT_MODE_FIFO = 0; const IT_MODE_DELETE = 1; const IT_MODE_KEEP = 0;
+    add  pop  shift  push  unshift  top  bottom  count  isEmpty
+    setIteratorMode  getIteratorMode  offsetExists  offsetGet  offsetSet  offsetUnset
+    rewind  current  key  prev  next  valid  serialize  __serialize  __unserialize  __debugInfo
 }</code></pre>
-          <p>A list backed by the public `$dll` array. Because phplang arrays are reference-based handles, the methods alias the property to a local and mutate it in place. DIVERGENCE: it implements no interface, so `$list[0]` array syntax and `foreach ($list as …)` do not work — use `offsetGet()` and iterate `getIterator()`.</p>
+          <p>A port of `ext/spl/spl_dllist.c`: the iterator modes (FIFO/LIFO, KEEP/DELETE), offsets counted from the tail in LIFO mode, the reference's `RuntimeException` / `OutOfRangeException` messages, `__serialize` as `[flags, elements, members]`, and `var_dump`/`print_r` showing `flags` and `dllist` through `__debugInfo`. DIVERGENCE: the list is held in private properties, so `(array)` and `var_export` show them where the reference shows none; the legacy `unserialize(string)` method restores nothing; `foreach` moves the object's own cursor rather than a separate iterator's.</p>
           <pre><code class="lang-php">$l = new SplDoublyLinkedList; $l-&gt;push(1); $l-&gt;push(2);
 echo $l-&gt;count(), $l-&gt;top();   // =&gt; 22</code></pre>
         </article>
         <article class="doc-entry" id="doc-prelude-class-31">
           <h3><a class="doc-anchor" href="#doc-prelude-class-31">#</a> <code>SplStack</code></h3>
           <pre><code class="lang-php">class SplStack extends SplDoublyLinkedList {}</code></pre>
-          <p>A LIFO view over `SplDoublyLinkedList`, using `push()`/`pop()`/`top()`. It adds no members and does not reverse the iteration order.</p>
+          <p>A `SplDoublyLinkedList` whose iteration is fixed to LIFO (`getIteratorMode()` is 6): `foreach` and `$s[0]` start from the top. Asking for FIFO is the reference's `RuntimeException`.</p>
           <pre><code class="lang-php">$s = new SplStack; $s-&gt;push(1); $s-&gt;push(2); echo $s-&gt;pop();   // =&gt; 2</code></pre>
         </article>
         <article class="doc-entry" id="doc-prelude-class-32">
           <h3><a class="doc-anchor" href="#doc-prelude-class-32">#</a> <code>SplQueue</code></h3>
           <pre><code class="lang-php">class SplQueue extends SplDoublyLinkedList {
-    enqueue($v)   dequeue()
+    enqueue(mixed $value): void   dequeue(): mixed
 }</code></pre>
-          <p>A FIFO view over `SplDoublyLinkedList`: `enqueue()` appends and `dequeue()` removes from the front.</p>
+          <p>A `SplDoublyLinkedList` whose iteration is fixed to FIFO: `enqueue()` is `push()` and `dequeue()` is `shift()`.</p>
           <pre><code class="lang-php">$q = new SplQueue; $q-&gt;enqueue(1); $q-&gt;enqueue(2); echo $q-&gt;dequeue();   // =&gt; 1</code></pre>
         </article>
         <article class="doc-entry" id="doc-prelude-class-33">
           <h3><a class="doc-anchor" href="#doc-prelude-class-33">#</a> <code>SplFixedArray</code></h3>
-          <pre><code class="lang-php">class SplFixedArray {
-    public $data = []; public $sz = 0;
-    __construct($size = 0)
-    offsetGet($i)  offsetSet($i,$v)  offsetExists($i)
-    getSize()  setSize($size)  count()  toArray()  getIterator()
+          <pre><code class="lang-php">class SplFixedArray implements IteratorAggregate, ArrayAccess, Countable, JsonSerializable {
+    __construct(int $size = 0)   count  toArray  fromArray(array $array, bool $preserveKeys = true)
+    getSize  setSize  offsetExists  offsetGet  offsetSet  offsetUnset  getIterator  jsonSerialize
+    __serialize  __unserialize  __debugInfo
 }</code></pre>
-          <p>A fixed-length array pre-filled with nulls. DIVERGENCE: `offsetSet` performs no bounds check, so writing past `getSize()` grows the backing array instead of throwing `RuntimeException`, and `setSize()` only updates the recorded size without truncating or extending the storage.</p>
-          <pre><code class="lang-php">$a = new SplFixedArray(3); $a-&gt;offsetSet(0, "x");
-echo $a-&gt;getSize(), $a-&gt;offsetGet(0);   // =&gt; 3x</code></pre>
+          <p>A port of `ext/spl/spl_fixedarray.c`: offsets convert as `spl_offset_convert_to_ulong` does, an index past either end is `OutOfBoundsException: Index invalid or out of range`, a negative size is the reference's `ValueError`, and `var_dump`/`json_encode`/`serialize` show the elements. DIVERGENCE: the elements are a private property, so `(array)` and `var_export` show it; `$f[] = $v` reports the offset `TypeError` rather than `[] operator not supported`; `getIterator()` answers an `ArrayIterator`.</p>
+          <pre><code class="lang-php">$a = new SplFixedArray(3); $a[0] = "x";
+echo $a-&gt;getSize(), $a[0];   // =&gt; 3x</code></pre>
         </article>
         <article class="doc-entry" id="doc-prelude-class-34">
           <h3><a class="doc-anchor" href="#doc-prelude-class-34">#</a> <code>ArrayObject</code></h3>
@@ -2069,29 +2067,30 @@ var_dump($s-&gt;contains($o), $s-&gt;count());   // =&gt; bool(true) int(1)</cod
         </article>
         <article class="doc-entry" id="doc-prelude-class-37">
           <h3><a class="doc-anchor" href="#doc-prelude-class-37">#</a> <code>SplPriorityQueue</code></h3>
-          <pre><code class="lang-php">class SplPriorityQueue {
-    public $items = [];
-    insert($value, $priority)   extract()   top()
-    count()   isEmpty()   _best()
+          <pre><code class="lang-php">class SplPriorityQueue implements Iterator, Countable {
+    const EXTR_BOTH = 3; const EXTR_PRIORITY = 2; const EXTR_DATA = 1;
+    compare  insert  setExtractFlags  getExtractFlags  top  extract  count  isEmpty
+    rewind  current  key  next  valid  recoverFromCorruption  isCorrupted  __serialize  __unserialize  __debugInfo
 }</code></pre>
-          <p>A priority queue storing `[priority, value]` pairs. DIVERGENCE: it is not a heap — `_best()` performs a LINEAR scan for the highest priority on every `top()`/`extract()`, making those operations O(n). Priorities are compared with `&gt;`, so ties resolve to the earliest inserted element.</p>
+          <p>A port of `ext/spl/spl_heap.c`'s priority queue: a binary heap with the reference's sift-up and delete-top walks, so equal priorities come out in the reference's order, the extract flags, and the corruption state a throwing `compare()` leaves. Iterating consumes the queue.</p>
           <pre><code class="lang-php">$q = new SplPriorityQueue; $q-&gt;insert("lo", 1); $q-&gt;insert("hi", 9);
 echo $q-&gt;extract();   // =&gt; hi</code></pre>
         </article>
         <article class="doc-entry" id="doc-prelude-class-38">
           <h3><a class="doc-anchor" href="#doc-prelude-class-38">#</a> <code>SplHeap</code></h3>
-          <pre><code class="lang-php">class SplHeap {
-    public $items = [];
-    insert($v)   extract()   top()
-    count()   isEmpty()   compare($a, $b)   _best()
+          <pre><code class="lang-php">abstract class SplHeap implements Iterator, Countable {
+    abstract protected compare(mixed $value1, mixed $value2): int
+    extract  insert  top  count  isEmpty  rewind  current  key  next  valid
+    recoverFromCorruption  isCorrupted  __serialize  __unserialize  __debugInfo
 }</code></pre>
-          <p>The base heap class. DIVERGENCE: it is concrete rather than abstract and stores an unordered list, so `_best()` linear-scans with `compare()` on every `top()`/`extract()`. Override `compare()` to change the ordering; the base implementation is `$a &lt;=&gt; $b`, i.e. max-first.</p>
-          <pre><code class="lang-php">$h = new SplHeap; $h-&gt;insert(3); $h-&gt;insert(9); echo $h-&gt;extract();   // =&gt; 9</code></pre>
+          <p>A port of `ext/spl/spl_heap.c`: a binary heap ordered by `compare()`, with the reference's sift walks, `Can't extract from an empty heap` / `Can't peek at an empty heap`, and a `compare()` that throws leaving the heap corrupted until `recoverFromCorruption()`. Abstract: extend it and implement `compare()`.</p>
+          <pre><code class="lang-php">class H extends SplHeap { protected function compare($a, $b): int { return $a &lt;=&gt; $b; } }
+$h = new H; $h-&gt;insert(3); $h-&gt;insert(9); echo $h-&gt;extract();   // =&gt; 9</code></pre>
         </article>
         <article class="doc-entry" id="doc-prelude-class-39">
           <h3><a class="doc-anchor" href="#doc-prelude-class-39">#</a> <code>SplMaxHeap</code></h3>
           <pre><code class="lang-php">class SplMaxHeap extends SplHeap {
-    compare($a, $b): int   //  $a &lt;=&gt; $b
+    protected compare(mixed $value1, mixed $value2): int   //  $value1 &lt;=&gt; $value2
 }</code></pre>
           <p>A heap whose `extract()` yields the largest element first.</p>
           <pre><code class="lang-php">$h = new SplMaxHeap; $h-&gt;insert(1); $h-&gt;insert(5); echo $h-&gt;extract();   // =&gt; 5</code></pre>
@@ -2099,9 +2098,9 @@ echo $q-&gt;extract();   // =&gt; hi</code></pre>
         <article class="doc-entry" id="doc-prelude-class-40">
           <h3><a class="doc-anchor" href="#doc-prelude-class-40">#</a> <code>SplMinHeap</code></h3>
           <pre><code class="lang-php">class SplMinHeap extends SplHeap {
-    compare($a, $b): int   //  $b &lt;=&gt; $a
+    protected compare(mixed $value1, mixed $value2): int   //  $value2 &lt;=&gt; $value1
 }</code></pre>
-          <p>A heap whose `extract()` yields the smallest element first, achieved by reversing the base comparison.</p>
+          <p>A heap whose `extract()` yields the smallest element first.</p>
           <pre><code class="lang-php">$h = new SplMinHeap; $h-&gt;insert(5); $h-&gt;insert(1); echo $h-&gt;extract();   // =&gt; 1</code></pre>
         </article>
       </section>
@@ -5426,94 +5425,104 @@ var_dump(is_subclass_of(new B, "A"), is_subclass_of(new A, "A"));   // =&gt; boo
           <p>Internal helper behind the prelude's `Exception::__toString` and `Error::__toString`; a phplang extension with no PHP counterpart. Renders `Class: message in file:line` plus `Stack trace:` and the object's `getTraceAsString()` (`#0 {main}` when empty), omitting `: message` when the message is empty. The `previous` chain is walked and joined with `Next `, so the innermost exception reads first. A user function's argument `TypeError` / `ArgumentCountError` gains ` and defined`. A non-throwable argument yields an empty string.</p>
         </article>
         <article class="doc-entry" id="doc-runtime-and-diagnostics-2">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-2">#</a> <code>assert</code></h3>
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-2">#</a> <code>__phplang_spl_offset</code></h3>
+          <pre><code class="lang-php">__phplang_spl_offset(mixed $offset): int</code></pre>
+          <p>Internal helper behind the prelude's `SplFixedArray` offsets; a phplang extension with no PHP counterpart. A port of `spl_offset_convert_to_ulong`: an int passes, a canonical integer string converts, a bool is 0/1, and a float takes the cast's `not representable` warning and the `loses precision` deprecation at the user's call site. Any other offset raises `TypeError: Cannot access offset of type &lt;type&gt; on SplFixedArray`.</p>
+        </article>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-3">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-3">#</a> <code>__phplang_try_call</code></h3>
+          <pre><code class="lang-php">__phplang_try_call(Closure $fn): array</code></pre>
+          <p>Internal helper for the prelude, which cannot hold a `try` block: runs the closure and answers `[true, $result]`, or `[false, $exception]` with the exception it threw taken off the stack. A phplang extension with no PHP counterpart.</p>
+        </article>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-4">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-4">#</a> <code>assert</code></h3>
           <pre><code class="lang-php">assert(mixed $assertion, mixed $description = null): bool</code></pre>
           <p>Evaluates the assertion for truthiness and RETURNS it. DIVERGENCE: this inverts PHP 8's contract — PHP always returns true and throws `AssertionError` on failure, whereas here `assert(false)` simply returns false and throws nothing. `$description` is never read.</p>
           <pre><code class="lang-php">var_dump(assert(1 === 1), assert(false));   // =&gt; bool(true) bool(false)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-3">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-3">#</a> <code>assert_options</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-5">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-5">#</a> <code>assert_options</code></h3>
           <pre><code class="lang-php">assert_options(int $option, mixed $value = null): int</code></pre>
           <p>DIVERGENCE: a stub that always returns 0 and stores nothing. No argument is read.</p>
           <pre><code class="lang-php">echo assert_options(1);   // =&gt; 0</code></pre>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-4">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-4">#</a> <code>trigger_error</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-6">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-6">#</a> <code>trigger_error</code></h3>
           <pre><code class="lang-php">trigger_error(string $message, int $error_level = E_USER_NOTICE): bool</code></pre>
           <p>Prints `"&lt;label&gt;: &lt;message&gt;"` to STDERR and returns true. The label is `Fatal error` for `E_USER_ERROR`, `Warning` for `E_USER_WARNING`, `Deprecated` for `E_USER_DEPRECATED`, and `Notice` for everything else. DIVERGENCE: `E_USER_ERROR` does NOT halt — execution continues with the next statement.</p>
           <pre><code class="lang-php">trigger_error("careful", E_USER_WARNING); echo "still running";   // =&gt; still running</code></pre>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-5">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-5">#</a> <code>user_error</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-7">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-7">#</a> <code>user_error</code></h3>
           <pre><code class="lang-php">user_error(string $message, int $error_level = E_USER_NOTICE): bool</code></pre>
           <p>The alias of `trigger_error`, sharing its match arm and its non-halting `E_USER_ERROR` behaviour.</p>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-6">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-6">#</a> <code>error_log</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-8">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-8">#</a> <code>error_log</code></h3>
           <pre><code class="lang-php">error_log(string $message, int $message_type = 0, string $destination = ""): bool</code></pre>
           <p>With `$message_type` 3 AND a destination it really appends the raw message bytes to that file — no timestamp and no trailing newline are added. Every other combination writes the message to stderr and returns true. The email and SAPI-logger message types are not implemented.</p>
           <pre><code class="lang-php">error_log("note", 3, "/tmp/php_ref_log.txt"); echo file_get_contents("/tmp/php_ref_log.txt");   // =&gt; note</code></pre>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-7">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-7">#</a> <code>debug_backtrace</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-9">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-9">#</a> <code>debug_backtrace</code></h3>
           <pre><code class="lang-php">debug_backtrace(int $options = 0, int $limit = 0): array</code></pre>
           <p>DIVERGENCE: a stub that always returns an empty array. No call stack is captured, so neither argument has any effect.</p>
           <pre><code class="lang-php">echo count(debug_backtrace());   // =&gt; 0</code></pre>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-8">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-8">#</a> <code>debug_print_backtrace</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-10">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-10">#</a> <code>debug_print_backtrace</code></h3>
           <pre><code class="lang-php">debug_print_backtrace(int $options = 0, int $limit = 0): null</code></pre>
           <p>DIVERGENCE: a stub that prints nothing and returns null.</p>
           <pre><code class="lang-php">var_dump(debug_print_backtrace());   // =&gt; NULL</code></pre>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-9">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-9">#</a> <code>set_error_handler</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-11">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-11">#</a> <code>set_error_handler</code></h3>
           <pre><code class="lang-php">set_error_handler(?callable $callback, int $error_levels = E_ALL): null</code></pre>
           <p>Pushes the handler (null pushes "none") with the levels it takes and returns the handler it replaces. A warning, notice or deprecation of a level it takes is handed to it as `($errno, $errstr, $errfile, $errline)` instead of being displayed — even under `@`, where `error_reporting()` reads 4437 inside it; returning `false` displays it after all. A diagnostic the handler raises itself takes the default path. `trigger_error(…, E_USER_ERROR)` reaches it too, and is fatal only when it returns `false`. DIVERGENCE: the handler runs at the next builtin boundary after the diagnostic, so one raised in the middle of a library call that goes on to print runs after that output.</p>
           <pre><code class="lang-php">set_error_handler(function ($n, $s) { echo "caught: $s\n"; return true; });
 echo $undefined;   // =&gt; caught: Undefined variable $undefined</code></pre>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-10">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-10">#</a> <code>set_exception_handler</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-12">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-12">#</a> <code>set_exception_handler</code></h3>
           <pre><code class="lang-php">set_exception_handler(?callable $callback): null</code></pre>
           <p>Pushes the handler (null pushes "none") and returns the one it replaces. An exception that reaches the top of a FILE or STDIN script is handed to it instead of the fatal, and the run then ends normally (status 0); one the handler throws is the uncaught one. Under `php -r` it is never called, as in the reference, whose `zend_eval_string` reports the exception itself.</p>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-11">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-11">#</a> <code>restore_error_handler</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-13">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-13">#</a> <code>restore_error_handler</code></h3>
           <pre><code class="lang-php">restore_error_handler(): bool</code></pre>
           <p>Pops the handler stack back to the previous `set_error_handler`; always returns true.</p>
           <pre><code class="lang-php">var_dump(restore_error_handler());   // =&gt; bool(true)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-12">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-12">#</a> <code>restore_exception_handler</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-14">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-14">#</a> <code>restore_exception_handler</code></h3>
           <pre><code class="lang-php">restore_exception_handler(): bool</code></pre>
           <p>Pops the handler stack back to the previous `set_exception_handler`; always returns true.</p>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-13">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-13">#</a> <code>register_shutdown_function</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-15">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-15">#</a> <code>register_shutdown_function</code></h3>
           <pre><code class="lang-php">register_shutdown_function(callable $callback, mixed ...$args): null</code></pre>
           <p>Queues the callback with its arguments. At request end the queue runs in order (one registered during the run is run too), after an `exit` and after any displayed fatal error, before the destructors; an exception one lets escape is reported uncaught and ends the sweep.</p>
           <pre><code class="lang-php">register_shutdown_function(fn($w) =&gt; print("bye $w\n"), "now");   // prints at exit: bye now</code></pre>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-14">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-14">#</a> <code>spl_autoload_register</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-16">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-16">#</a> <code>spl_autoload_register</code></h3>
           <pre><code class="lang-php">spl_autoload_register(?callable $callback = null, bool $throw = true, bool $prepend = false): bool</code></pre>
           <p>DIVERGENCE: a no-op returning true. There is no autoload chain and no `include`, so every class must be declared in the source that uses it.</p>
           <pre><code class="lang-php">var_dump(spl_autoload_register(fn($c) =&gt; null));   // =&gt; bool(true)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-15">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-15">#</a> <code>spl_autoload_unregister</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-17">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-17">#</a> <code>spl_autoload_unregister</code></h3>
           <pre><code class="lang-php">spl_autoload_unregister(callable $callback): bool</code></pre>
           <p>DIVERGENCE: a no-op returning true.</p>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-16">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-16">#</a> <code>get_defined_vars</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-18">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-18">#</a> <code>get_defined_vars</code></h3>
           <pre><code class="lang-php">get_defined_vars(): array</code></pre>
           <p>The current frame's bound variables, in the order they were first bound. An unset name is absent; a name bound to `null` is present. `$this` and `$GLOBALS` are not included. PARTIAL DIVERGENCE at GLOBAL scope only: the reference lists the superglobals its `variables_order` actually populated, in ITS fixed order and ahead of the script's own variables, where this lists every superglobal the frame holds in binding order. Inside a function — where the answer is the user's own variables — it matches.</p>
           <pre><code class="lang-php">function f($p) { $a = 1; unset($a); return get_defined_vars(); } print_r(f(7));   // =&gt; [p =&gt; 7]</code></pre>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-17">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-17">#</a> <code>class_alias</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-19">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-19">#</a> <code>class_alias</code></h3>
           <pre><code class="lang-php">class_alias(string $class, string $alias, bool $autoload = true): bool</code></pre>
           <p>DIVERGENCE: it reports whether `$class` exists and REGISTERS NOTHING — `$alias` is never read. A true return is therefore misleading: instantiating the alias afterwards still fails.</p>
           <pre><code class="lang-php">class C {} var_dump(class_alias("C", "D"), class_exists("D"));   // =&gt; bool(true) bool(false)</code></pre>

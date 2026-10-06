@@ -4262,7 +4262,7 @@ pub fn call_library(name: &str, args: &[Value]) -> Result<Value, String> {
             with_host(|h| h.write_out(&s));
             Value::int(s.len() as i64)
         }
-        "print_r" => with_host(|h| {
+        "print_r" => with_debug_info(&args[..args.len().min(1)], |h| {
             let s = php_print_r(h, &arg(args, 0), 0, &mut host::Visiting::default());
             if args.get(1).map(|v| h.is_truthy(v)).unwrap_or(false) {
                 Value::str(s)
@@ -4270,14 +4270,16 @@ pub fn call_library(name: &str, args: &[Value]) -> Result<Value, String> {
                 h.write_out(&s);
                 Value::bool(true)
             }
-        }),
-        "var_dump" => with_host(|h| {
+        })
+        .unwrap_or(Value::Undef),
+        "var_dump" => with_debug_info(args, |h| {
             for a in args {
                 let s = php_var_dump(h, a, 0);
                 h.write_out(&s);
             }
             Value::Undef
-        }),
+        })
+        .unwrap_or(Value::Undef),
 
         // ── strings ──────────────────────────────────────────────────────
         "str_split" => with_host(|h| php_str_split(h, args))?,
@@ -6110,6 +6112,107 @@ fn php_print_r(h: &host::PhpHost, v: &Value, depth: usize, seen: &mut host::Visi
     }
 }
 
+/// Run `render` with every `__debugInfo` reachable from `roots` answered first.
+///
+/// `var_dump` and `print_r` show an object through `get_debug_info`
+/// (`zend_std_get_debug_info`): the array its class's `__debugInfo()` returns,
+/// `null` read as an empty array, and only the declared properties when the
+/// class has none. The method is PHP code, so it cannot run inside the
+/// renderer's host borrow; the reachable values are walked first, depth-first
+/// in render order, and each answer is parked in `PhpHost::debug_info` by
+/// handle for the renderer to read. `None` when a `__debugInfo` threw — the
+/// exception is left pending and nothing is rendered.
+fn with_debug_info<T>(roots: &[Value], render: impl FnOnce(&mut host::PhpHost) -> T) -> Option<T> {
+    let map = host::collect_object_hooks(roots, "__debugInfo", &|class, r| {
+        Some(with_host(|h| {
+            if h.is_array(&r) {
+                return r;
+            }
+            if matches!(r, Value::Undef) {
+                h.deprecated(format!(
+                    "Returning null from {}::__debugInfo() is deprecated, return an empty \
+                     array instead",
+                    host::display_class(class)
+                ));
+            }
+            // DIVERGENCE: an answer that is neither an array nor null is the
+            // reference's fatal `__debuginfo() must return an array`; it
+            // renders empty here.
+            h.new_array()
+        }))
+    })?;
+    // A `var_dump` inside a `__debugInfo` renders with its own map; the outer
+    // one is restored after.
+    Some(with_host(|h| {
+        let outer = std::mem::replace(&mut h.debug_info, map);
+        let out = render(h);
+        h.debug_info = outer;
+        out
+    }))
+}
+
+/// How `var_dump` and `print_r` label one property row of an object.
+enum PropRow {
+    /// A public (or dynamic) property.
+    Named(String),
+    /// An integer key, which only a `__debugInfo` array can produce.
+    Index(i64),
+    Protected(String),
+    /// `(declaring class, name)`.
+    Private(String, String),
+}
+
+/// The row label for a declared or dynamic property `name` of `class`.
+fn prop_row(h: &host::PhpHost, class: &str, name: String) -> PropRow {
+    match h.prop_visibility(class, &name) {
+        Some((_, crate::ast::Visibility::Protected)) => PropRow::Protected(name),
+        Some((declaring, crate::ast::Visibility::Private)) => PropRow::Private(declaring, name),
+        _ => PropRow::Named(name),
+    }
+}
+
+/// The `(label, value, is_reference)` rows `var_dump` / `print_r` show for
+/// object `v`: its `__debugInfo` answer when one was collected, read the way
+/// `php_var_dump`'s `php_object_property_dump` reads a key — `"\0*\0p"` is
+/// protected, `"\0Class\0p"` private to `Class`, an integer key bare — and its
+/// properties otherwise.
+fn debug_rows(h: &host::PhpHost, v: &Value, class: &str) -> Vec<(PropRow, Value, bool)> {
+    let info = match v {
+        Value::Obj(id) => h.debug_info.get(id),
+        _ => None,
+    };
+    let Some(info) = info else {
+        return h
+            .object_props_marked(v)
+            .into_iter()
+            .map(|(name, val, r)| (prop_row(h, class, name), val, r))
+            .collect();
+    };
+    h.array_pairs_marked(info)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(k, val, r)| {
+            let row = match k {
+                Value::Int(n) => PropRow::Index(n),
+                k => {
+                    let key = h.to_str(&k);
+                    match key
+                        .strip_prefix('\0')
+                        .and_then(|rest| rest.split_once('\0'))
+                    {
+                        Some(("*", name)) => PropRow::Protected(name.to_string()),
+                        Some((declaring, name)) => {
+                            PropRow::Private(declaring.to_string(), name.to_string())
+                        }
+                        None => PropRow::Named(key),
+                    }
+                }
+            };
+            (row, val, r)
+        })
+        .collect()
+}
+
 /// `print_r` of an object: the same parenthesised block an array gets, headed by
 /// the class name rather than `Array`, and with each non-public property name
 /// annotated — `[b:protected]`, `[c:Declaring:private]`.
@@ -6137,13 +6240,12 @@ fn php_print_r_object(
         return format!("{head}\n *RECURSION*");
     }
     let mut s = format!("{head}\n{pad}(\n");
-    for (name, val) in h.object_props(v) {
-        let label = match h.prop_visibility(&class, &name) {
-            Some((_, crate::ast::Visibility::Protected)) => format!("{name}:protected"),
-            Some((declaring, crate::ast::Visibility::Private)) => {
-                format!("{name}:{declaring}:private")
-            }
-            _ => name,
+    for (row, val, _) in debug_rows(h, v, &class) {
+        let label = match row {
+            PropRow::Named(name) => name,
+            PropRow::Index(n) => n.to_string(),
+            PropRow::Protected(name) => format!("{name}:protected"),
+            PropRow::Private(declaring, name) => format!("{name}:{declaring}:private"),
         };
         s.push_str(&format!(
             "{inner}[{label}] => {}\n",
@@ -6230,8 +6332,8 @@ fn php_var_dump_body(
             format!("{pad}{amp}enum({class}::{case})\n")
         }
         Value::Obj(_) if h.is_object(v) => {
-            let props = h.object_props_marked(v);
             let class = h.object_class(v).unwrap_or_else(|| "stdClass".to_string());
+            let props = debug_rows(h, v, &class);
             let mut s = format!(
                 "{pad}{amp}object({})#{} ({}) {{\n",
                 host::display_class(&class),
@@ -6240,31 +6342,37 @@ fn php_var_dump_body(
             );
             // A non-public property carries its visibility in the key, and a
             // private one also names the class that declared it.
-            let label = |name: &str| match h.prop_visibility(&class, name) {
-                Some((_, crate::ast::Visibility::Protected)) => format!("\"{name}\":protected"),
-                Some((declaring, crate::ast::Visibility::Private)) => {
+            let label = |row: &PropRow| match row {
+                PropRow::Named(name) => format!("\"{name}\""),
+                PropRow::Index(n) => n.to_string(),
+                PropRow::Protected(name) => format!("\"{name}\":protected"),
+                PropRow::Private(declaring, name) => {
                     format!("\"{name}\":\"{declaring}\":private")
                 }
-                _ => format!("\"{name}\""),
             };
             // An uninitialized typed property is not counted in the header, but
             // its slot still prints, as `php_var_dump` walks the declared slots.
-            let mut uninit = h.uninit_slots(v).into_iter().peekable();
+            // A `__debugInfo` answer replaces the slots altogether.
+            let uninit = match v {
+                Value::Obj(id) if h.debug_info.contains_key(id) => Vec::new(),
+                _ => h.uninit_slots(v),
+            };
+            let mut uninit = uninit.into_iter().peekable();
             let inner = "  ".repeat(depth);
-            for (i, (name, val, pref)) in props.into_iter().enumerate() {
+            for (i, (row, val, pref)) in props.into_iter().enumerate() {
                 while let Some((_, uname, ty)) = uninit.next_if(|(at, _, _)| *at <= i) {
                     s.push_str(&format!(
                         "{inner}  [{}]=>\n{inner}  uninitialized({ty})\n",
-                        label(&uname)
+                        label(&prop_row(h, &class, uname))
                     ));
                 }
-                s.push_str(&format!("{inner}  [{}]=>\n", label(&name)));
+                s.push_str(&format!("{inner}  [{}]=>\n", label(&row)));
                 s.push_str(&php_var_dump_ref(h, &val, depth + 1, pref, seen));
             }
             for (_, uname, ty) in uninit {
                 s.push_str(&format!(
                     "{inner}  [{}]=>\n{inner}  uninitialized({ty})\n",
-                    label(&uname)
+                    label(&prop_row(h, &class, uname))
                 ));
             }
             s.push_str(&format!("{pad}}}\n"));

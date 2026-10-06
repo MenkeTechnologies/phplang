@@ -40,9 +40,12 @@ fn foreach_over_iterator_aggregate() {
 
 #[test]
 fn foreach_over_spl_structures() {
+    // SplStack iterates LIFO. Recorded from the reference:
+    //   $ php -r '$s = new SplStack; $s->push("a"); $s->push("b"); $s->push("c"); foreach ($s as $v) { echo $v; }'
+    //   cba
     let stack = r#"<?php $s = new SplStack; $s->push("a"); $s->push("b"); $s->push("c");
         foreach ($s as $v) { echo $v; }"#;
-    assert_eq!(run(stack), "abc");
+    assert_eq!(run(stack), "cba");
     let ao = r#"<?php $a = new ArrayObject(["x" => 10, "y" => 20]);
         foreach ($a as $k => $v) { echo "$k=$v "; }"#;
     assert_eq!(run(ao), "x=10 y=20 ");

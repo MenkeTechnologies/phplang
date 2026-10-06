@@ -336,6 +336,9 @@ file's directory. The same value is what `get_include_path()` returns.
 | `iconv_strlen("héllo")` | `int(5)` | `Call to undefined function iconv_strlen()` |
 | `strtotime("2024-03-01 10:00 Europe/Paris")`, `new DateTimeZone("Europe/Paris")` — any zone identifier whose offset is not fixed | `int(1709283600)`; a zone | `false`; `DateInvalidTimeZoneException`: there is no tz database, so only `UTC` and its aliases and the `Etc/GMT±N` zones resolve (abbreviations such as `CEST` do) |
 | `new DatePeriod("R2/2024-01-01T00:00:00Z/P1D")` — the deprecated ISO-string form | a period, with a deprecation | `TypeError`: only the date/interval forms are implemented |
+| `$s = new SplStack; $s->push(1); var_dump((array) $s); var_export($s);` — likewise `SplHeap`, `SplPriorityQueue`, `SplFixedArray` | `array(0) {}`; `\SplStack::__set_state(array())` | the private properties the PHP-written prelude keeps the elements in (`flags`/`dllist`, `heap`, `__elements`). `var_dump`, `print_r`, `json_encode` and `serialize` match, through `__debugInfo` / `jsonSerialize` / `__serialize` |
+| `class D { function __debugInfo() { return 5; } } var_dump(new D);` — a `__debugInfo` answer that is neither an array nor null, or one that throws | `Fatal error: __debuginfo() must return an array` | the object dumps with no properties (a throw propagates as a catchable exception); a nested `null` answer's deprecation is printed before the dump rather than inside it |
+| `$f = new SplFixedArray(1); $f[] = 2;` | `Error: [] operator not supported for SplFixedArray` | `TypeError: Cannot access offset of type null on SplFixedArray` — the prelude's `offsetSet` cannot tell `$f[]` from `$f[null]`; an exception from a prelude `ArrayAccess` subscript also shows the `offsetGet`/`offsetSet` frame the reference's object handler does not |
 
 ## `...` unpacking: what is modelled and what is not
 

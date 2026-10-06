@@ -19,6 +19,12 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
     let v = match name {
         // `Exception::__toString` / `Error::__toString`, called by the prelude.
         "__phplang_throwable_string" => return Some(crate::host::throwable_string(&arg(args, 0))),
+        // `SplFixedArray`'s offset conversion, called by the prelude.
+        "__phplang_spl_offset" => return Some(crate::host::spl_offset(&arg(args, 0))),
+        // Call a closure for the prelude and answer `[true, $result]`, or
+        // `[false, $exception]` with the exception it threw taken off the
+        // stack: the prelude cannot hold a `try` (its try-defs are not loaded).
+        "__phplang_try_call" => return Some(crate::host::try_call(arg(args, 0))),
         // assert($assertion, $description = null): bool
         // Assertions are "enabled" but non-fatal here — a falsy assertion yields
         // false rather than throwing AssertionError (phplang has no throw path in

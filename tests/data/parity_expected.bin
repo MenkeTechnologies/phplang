@@ -2094,3 +2094,228 @@ Stack trace:
 #1 {main}
   thrown in Command line code on line 3
 
+#REC 112 exit=0 out=1051 err=130
+object(D)#1 (4) {
+  ["flags":"D":private]=>
+  int(1)
+  ["p":protected]=>
+  int(2)
+  ["z"]=>
+  int(3)
+  [7]=>
+  array(1) {
+    [0]=>
+    object(E)#2 (1) {
+      ["shown"]=>
+      int(10)
+    }
+  }
+}
+D Object
+(
+    [flags:D:private] => 1
+    [p:protected] => 2
+    [z] => 3
+    [7] => Array
+        (
+            [0] => E Object
+                (
+                    [shown] => 10
+                )
+
+        )
+
+)
+
+Array
+(
+    [0] => D Object
+        (
+            [flags:D:private] => 1
+            [p:protected] => 2
+            [z] => 3
+            [7] => Array
+                (
+                    [0] => E Object
+                        (
+                            [shown] => 10
+                        )
+
+                )
+
+        )
+
+    [1] => 1
+)
+E Object
+(
+    [shown] => 10
+)
+
+\D::__set_state(array(
+   'x' => 1,
+   'hid' => 0,
+))
+array(2) {
+  ["x"]=>
+  int(1)
+  [" * hid"]=>
+  int(0)
+}
+array(0) {
+}
+
+Deprecated: Returning null from N::__debugInfo() is deprecated, return an empty array instead in Command line code on line 8
+N Object
+(
+)
+
+PHP Deprecated:  Returning null from N::__debugInfo() is deprecated, return an empty array instead in Command line code on line 8
+
+#REC 113 exit=0 out=1398 err=212
+TypeErrorU::__serialize() must return an array
+#0 Command line code(4): serialize(Object(U))
+#1 {main}
+a:2:{i:0;O:1:"V":3:{s:1:"x";i:1;i:3;a:1:{i:0;i:2;}s:4:" * p";i:1;}i:1;O:1:"V":3:{s:1:"x";i:1;i:3;a:1:{i:0;i:2;}s:4:" * p";i:1;}}
+unser:array(3) {
+  ["x"]=>
+  int(1)
+  [3]=>
+  array(1) {
+    [0]=>
+    int(2)
+  }
+  [" * p"]=>
+  int(1)
+}
+unser:array(3) {
+  ["x"]=>
+  int(1)
+  [3]=>
+  array(1) {
+    [0]=>
+    int(2)
+  }
+  [" * p"]=>
+  int(1)
+}
+11
+11
+
+Deprecated: Creation of dynamic property SplStack::$dyn is deprecated in Command line code on line 7
+O:8:"SplStack":3:{i:0;i:6;i:1;a:2:{i:0;i:1;i:1;a:1:{i:0;i:2;}}i:2;a:1:{s:3:"dyn";s:1:"d";}}
+
+Deprecated: Creation of dynamic property SplStack::$dyn is deprecated in Command line code on line 7
+SplStack Object
+(
+    [dyn] => d
+    [flags:SplDoublyLinkedList:private] => 6
+    [dllist:SplDoublyLinkedList:private] => Array
+        (
+            [0] => 1
+            [1] => Array
+                (
+                    [0] => 2
+                )
+
+        )
+
+)
+[2]1
+O:10:"SplMinHeap":2:{i:0;a:0:{}i:1;a:2:{s:5:"flags";i:0;s:13:"heap_elements";a:2:{i:0;i:1;i:1;i:3;}}}
+11
+O:16:"SplPriorityQueue":2:{i:0;a:0:{}i:1;a:2:{s:5:"flags";i:1;s:13:"heap_elements";a:2:{i:0;a:2:{s:4:"data";s:1:"b";s:8:"priority";i:9;}i:1;a:2:{s:4:"data";s:1:"a";s:8:"priority";i:2;}}}}
+b
+O:13:"SplFixedArray":2:{i:0;i:1;i:1;i:2;}
+array(2) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+}
+PHP Deprecated:  Creation of dynamic property SplStack::$dyn is deprecated in Command line code on line 7
+PHP Deprecated:  Creation of dynamic property SplStack::$dyn is deprecated in Command line code on line 7
+
+#REC 114 exit=0 out=930 err=0
+Array
+(
+    [data] => b
+    [priority] => 3
+)
+6:b 5:e 4:c 3:d 2:g 1:f 0:a 0
+5=a 4=e 3=ff 2=bb 1=ccc 0=dddd 
+caught cmp true3
+Heap is corrupted, heap properties are no longer ensured.
+1
+Can't extract from an empty heap
+Cannot instantiate abstract class SplHeap
+Must specify at least one extract flag
+3=4 2=3 1=2 0=1 0
+SplDoublyLinkedList Object
+(
+    [flags:SplDoublyLinkedList:private] => 0
+    [dllist:SplDoublyLinkedList:private] => Array
+        (
+            [0] => 0
+            [1] => 1
+            [2] => 2
+            [3] => 3
+        )
+
+)
+0
+1100
+12
+bool(false)
+NULL
+Iterators' LIFO/FIFO modes for SplStack/SplQueue objects are frozen
+221
+23
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+3nyn
+Array
+(
+    [0] => a
+)
+SplFixedArray Object
+(
+    [0] => a
+    [1] => 
+)
+["a",null]
+Array
+(
+    [0] => 
+    [1] => y
+    [2] => 
+    [3] => x
+)
+Array
+(
+    [0] => 1
+    [1] => 2
+)
+array must contain only positive integer keys
+0718
+
+#REC 115 exit=255 out=318 err=244
+4 Command line code
+#0 Command line code(4): ArrayIterator->seek(5)
+#1 {main}
+
+Fatal error: Uncaught OutOfBoundsException: Seek position 9 is out of range in Command line code:5
+Stack trace:
+#0 Command line code(5): ArrayIterator->seek(9)
+#1 Command line code(6): f()
+#2 {main}
+  thrown in Command line code on line 5
+PHP Fatal error:  Uncaught OutOfBoundsException: Seek position 9 is out of range in Command line code:5
+Stack trace:
+#0 Command line code(5): ArrayIterator->seek(9)
+#1 Command line code(6): f()
+#2 {main}
+  thrown in Command line code on line 5
+

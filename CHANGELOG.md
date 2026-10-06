@@ -45,6 +45,33 @@ block in `tests/data/parity_corpus.php`.
   that `__toString` is reported in its place, from an `[internal function]`
   frame.
 
+* **`__debugInfo` was ignored.** `var_dump` and `print_r` now show an object
+  through `zend_std_get_debug_info`: the array `__debugInfo()` returns, its
+  `"\0Class\0p"` / `"\0*\0p"` keys labelled private / protected and an integer
+  key printed bare; `null` is the reference's deprecation and an empty dump.
+* **`serialize` ignored `__serialize` and `unserialize` ignored
+  `__unserialize`.** `serialize` writes the array `__serialize()` answers,
+  keys as written, and a non-array answer is the reference's `TypeError`;
+  `unserialize` allocates such an object with its defaults and no
+  constructor, and hands `__unserialize()` its data once the whole payload has
+  parsed, in creation order.
+* **An exception or diagnostic raised inside a PHP-written prelude method
+  named the prelude's own source line** (`ArrayIterator::seek` past the end
+  reported line 340). Both now name the first user frame's line, as an
+  internal function's do.
+* **`SplDoublyLinkedList`, `SplQueue`, `SplStack`, `SplHeap`, `SplMinHeap`,
+  `SplMaxHeap`, `SplPriorityQueue` and `SplFixedArray` are ports of
+  `ext/spl`.** They were loose stand-ins: `SplStack` iterated FIFO, the heaps
+  linear-scanned and broke ties in insertion order, `setIteratorMode`,
+  `add`, `prev`, `setExtractFlags`, `recoverFromCorruption` and the
+  serialization hooks were missing, `SplHeap` was concrete, and no bounds or
+  emptiness check threw. They now carry the reference's iterator modes,
+  sift-up / delete-top walks (so equal priorities come out in the
+  reference's order), corruption after a throwing `compare()`, exception
+  messages, `__serialize` shapes and debug views. `tests/foreach_object.rs`
+  expected `SplStack` to iterate `abc`; the reference prints `cba`, and the
+  expectation now records that.
+
 ## Round 18 — operator precedence, the default random engine, `new $class`
 
 Measured under `PHP 8.5.11 (cli) (built: Sep 22 2026 13:32:06) (NTS)`; ini state

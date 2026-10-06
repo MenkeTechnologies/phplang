@@ -294,54 +294,250 @@ class stdClass {}
 // `unserialize` restores an object of an unknown class into this placeholder,
 // carrying the original name in `__PHP_Incomplete_Class_Name`.
 class __PHP_Incomplete_Class {}
-class SplDoublyLinkedList implements ArrayAccess, Countable, IteratorAggregate {
-    public $dll = [];
-    public function push($v) { $this->dll[] = $v; }
-    public function pop() { return array_pop($this->dll); }
-    public function shift() { return array_shift($this->dll); }
-    public function unshift($v) { array_unshift($this->dll, $v); }
-    public function top() { $n = count($this->dll); return $n > 0 ? $this->dll[$n - 1] : null; }
-    public function bottom() { return count($this->dll) > 0 ? $this->dll[0] : null; }
-    public function count() { return count($this->dll); }
-    public function isEmpty() { return count($this->dll) === 0; }
-    public function toArray() { return $this->dll; }
-    public function offsetGet($i) { return $this->dll[$i]; }
-    public function offsetSet($i, $v) { if ($i === null) { $this->dll[] = $v; } else { $this->dll[$i] = $v; } }
-    public function offsetExists($i) { return isset($this->dll[$i]); }
-    public function offsetUnset($i) { unset($this->dll[$i]); }
-    public function getIterator() { return $this->dll; }
+// SplDoublyLinkedList, SplQueue and SplStack: a port of ext/spl/spl_dllist.c.
+// The list is a PHP list kept head first in `$dllist`, beside the mode bits a
+// program set in `$flags`; `__debugInfo` reports both under the names, and in
+// the order, the reference's debug view gives them. SplStack's LIFO bit and
+// both subclasses' frozen-mode bit belong to the class, as the reference's
+// `create_object` sets them. The traverse cursor — the index of the element it
+// stands on, or null, and its position — lives in a static table keyed by
+// object id, so it shows nowhere.
+class SplDoublyLinkedList implements Iterator, Countable, ArrayAccess, Serializable {
+    const IT_MODE_LIFO = 2;
+    const IT_MODE_FIFO = 0;
+    const IT_MODE_DELETE = 1;
+    const IT_MODE_KEEP = 0;
+    private $flags = 0;
+    private $dllist = [];
+    private static $__cursor = [];
+    private function __flags() {
+        if ($this instanceof SplStack) { return ($this->flags & 1) | 6; }
+        if ($this instanceof SplQueue) { return ($this->flags & 1) | 4; }
+        return $this->flags;
+    }
+    // `spl_ptr_llist_offset`: the list index of the element `$index` steps
+    // from the head, or from the tail in LIFO mode.
+    private function __at($index) {
+        return ($this->__flags() & 2) ? count($this->dllist) - 1 - $index : $index;
+    }
+    private function __cur() { return self::$__cursor[spl_object_id($this)] ?? [null, 0]; }
+    private function __setCur($ptr, $pos) { self::$__cursor[spl_object_id($this)] = [$ptr, $pos]; }
+    // Keep the cursor on its element across an insertion (`$delta` 1) or a
+    // removal (`$delta` -1) at list index `$at`; removing its element clears it.
+    private function __moved($at, $delta) {
+        [$ptr, $pos] = $this->__cur();
+        if ($ptr === null) { return; }
+        if ($delta < 0 && $ptr === $at) { $ptr = null; } elseif ($ptr >= $at) { $ptr += $delta; }
+        $this->__setCur($ptr, $pos);
+    }
+    private function __outOfRange($method) {
+        throw new OutOfRangeException("SplDoublyLinkedList::$method(): Argument #1 (\$index) is out of range");
+    }
+    public function add(int $index, mixed $value): void {
+        $n = count($this->dllist);
+        if ($index < 0 || $index > $n) { $this->__outOfRange("add"); }
+        if ($index === $n) { $this->dllist[] = $value; return; }
+        $at = $this->__at($index);
+        array_splice($this->dllist, $at, 0, [$value]);
+        $this->__moved($at, 1);
+    }
+    public function pop(): mixed {
+        if (count($this->dllist) === 0) { throw new RuntimeException("Can't pop from an empty datastructure"); }
+        $v = array_pop($this->dllist);
+        $this->__moved(count($this->dllist), -1);
+        return $v;
+    }
+    public function shift(): mixed {
+        if (count($this->dllist) === 0) { throw new RuntimeException("Can't shift from an empty datastructure"); }
+        $v = array_shift($this->dllist);
+        $this->__moved(0, -1);
+        return $v;
+    }
+    public function push(mixed $value): void { $this->dllist[] = $value; }
+    public function unshift(mixed $value): void { array_unshift($this->dllist, $value); $this->__moved(0, 1); }
+    public function top(): mixed {
+        if (count($this->dllist) === 0) { throw new RuntimeException("Can't peek at an empty datastructure"); }
+        return $this->dllist[count($this->dllist) - 1];
+    }
+    public function bottom(): mixed {
+        if (count($this->dllist) === 0) { throw new RuntimeException("Can't peek at an empty datastructure"); }
+        return $this->dllist[0];
+    }
+    public function count(): int { return count($this->dllist); }
+    public function isEmpty(): bool { return count($this->dllist) === 0; }
+    public function setIteratorMode(int $mode): int {
+        $f = $this->__flags();
+        if (($f & 4) && ($f & 2) !== ($mode & 2)) {
+            throw new RuntimeException("Iterators' LIFO/FIFO modes for SplStack/SplQueue objects are frozen");
+        }
+        $this->flags = $mode & 3;
+        return $this->__flags();
+    }
+    public function getIteratorMode(): int { return $this->__flags(); }
+    public function offsetExists(int $index): bool { return $index >= 0 && $index < count($this->dllist); }
+    public function offsetGet(int $index): mixed {
+        if ($index < 0 || $index >= count($this->dllist)) { $this->__outOfRange("offsetGet"); }
+        return $this->dllist[$this->__at($index)];
+    }
+    public function offsetSet(?int $index, mixed $value): void {
+        if ($index === null) { $this->dllist[] = $value; return; }
+        if ($index < 0 || $index >= count($this->dllist)) { $this->__outOfRange("offsetSet"); }
+        $this->dllist[$this->__at($index)] = $value;
+    }
+    public function offsetUnset(int $index): void {
+        if ($index < 0 || $index >= count($this->dllist)) { $this->__outOfRange("offsetUnset"); }
+        $at = $this->__at($index);
+        array_splice($this->dllist, $at, 1);
+        $this->__moved($at, -1);
+    }
+    public function rewind(): void {
+        $n = count($this->dllist);
+        if ($this->__flags() & 2) {
+            $this->__setCur($n > 0 ? $n - 1 : null, $n - 1);
+        } else {
+            $this->__setCur($n > 0 ? 0 : null, 0);
+        }
+    }
+    public function valid(): bool { return $this->__cur()[0] !== null; }
+    public function current(): mixed {
+        $ptr = $this->__cur()[0];
+        return $ptr === null ? null : $this->dllist[$ptr];
+    }
+    public function key(): int { return $this->__cur()[1]; }
+    public function prev(): void { $this->__forward($this->__flags() ^ 2); }
+    public function next(): void { $this->__forward($this->__flags()); }
+    // `spl_dllist_it_helper_move_forward`: step toward the tail (FIFO) or the
+    // head (LIFO), removing the element left behind in DELETE mode.
+    private function __forward($flags) {
+        [$ptr, $pos] = $this->__cur();
+        if ($ptr === null) { return; }
+        if ($flags & 2) {
+            $ptr--;
+            $pos--;
+            if ($flags & 1) { array_pop($this->dllist); }
+        } else {
+            $ptr++;
+            if ($flags & 1) { array_shift($this->dllist); $ptr--; } else { $pos++; }
+        }
+        $this->__setCur($ptr >= 0 && $ptr < count($this->dllist) ? $ptr : null, $pos);
+    }
+    // The properties a program gave the object, as `zend_std_get_properties`
+    // holds them — everything but the list's own two slots.
+    private function __members() {
+        $m = (array) $this;
+        unset($m["\0SplDoublyLinkedList\0flags"], $m["\0SplDoublyLinkedList\0dllist"]);
+        return $m;
+    }
+    public function serialize(): string {
+        $s = serialize($this->__flags());
+        foreach ($this->dllist as $v) { $s .= ":" . serialize($v); }
+        return $s;
+    }
+    public function unserialize(string $data): void {}
+    public function __serialize(): array { return [$this->__flags(), $this->dllist, $this->__members()]; }
+    public function __unserialize(array $data): void {
+        if (!isset($data[0], $data[1], $data[2]) || !is_int($data[0]) || !is_array($data[1]) || !is_array($data[2])) {
+            throw new UnexpectedValueException("Incomplete or ill-typed serialization data");
+        }
+        $this->flags = $data[0] & 3;
+        foreach ($data[1] as $v) { $this->dllist[] = $v; }
+        foreach ($data[2] as $k => $v) { $this->$k = $v; }
+    }
+    public function __debugInfo(): array {
+        $m = $this->__members();
+        $m["\0SplDoublyLinkedList\0flags"] = $this->__flags();
+        $m["\0SplDoublyLinkedList\0dllist"] = $this->dllist;
+        return $m;
+    }
+}
+class SplQueue extends SplDoublyLinkedList {
+    public function enqueue(mixed $value): void { $this->push($value); }
+    public function dequeue(): mixed { return $this->shift(); }
 }
 class SplStack extends SplDoublyLinkedList {}
-class SplQueue extends SplDoublyLinkedList {
-    public function enqueue($v) { $this->dll[] = $v; }
-    public function dequeue() { return array_shift($this->dll); }
-}
-class SplFixedArray implements ArrayAccess, Countable, IteratorAggregate {
-    public $data = [];
-    public $sz = 0;
-    public function __construct($size = 0) {
-        $this->sz = $size;
-        for ($i = 0; $i < $size; $i++) { $this->data[$i] = null; }
+// SplFixedArray: a port of ext/spl/spl_fixedarray.c. The elements are a list
+// in `$__elements`; `__debugInfo` shows them as the reference's
+// `get_properties_for` does, as integer-keyed entries ahead of any property.
+class SplFixedArray implements IteratorAggregate, ArrayAccess, Countable, JsonSerializable {
+    private $__elements = [];
+    public function __construct(int $size = 0) {
+        if ($size < 0) {
+            throw new ValueError('SplFixedArray::__construct(): Argument #1 ($size) must be greater than or equal to 0');
+        }
+        // A second __construct() call leaves a non-empty array alone.
+        if (count($this->__elements) > 0) { return; }
+        $this->__elements = $size > 0 ? array_fill(0, $size, null) : [];
     }
-    public function offsetGet($i) { return $this->data[$i]; }
-    public function offsetSet($i, $v) { $this->data[$i] = $v; }
-    public function offsetExists($i) { return $i >= 0 && $i < $this->sz; }
-    public function getSize() { return $this->sz; }
-    // Shrinking DISCARDS the elements past the new end and growing pads with
-    // null, so `toArray()` always has exactly `sz` entries.
-    public function setSize($size) {
-        for ($i = $size; $i < $this->sz; $i++) { unset($this->data[$i]); }
-        for ($i = $this->sz; $i < $size; $i++) { $this->data[$i] = null; }
-        $this->sz = $size;
+    // The element index `$index` names: `Index invalid or out of range` past
+    // either end, and the offset conversion's TypeError for a non-integer.
+    private function __index($index) {
+        $i = __phplang_spl_offset($index);
+        if ($i < 0 || $i >= count($this->__elements)) {
+            throw new OutOfBoundsException("Index invalid or out of range");
+        }
+        return $i;
     }
-    public function count() { return $this->sz; }
-    public function toArray() { return $this->data; }
-    public function getIterator() { return $this->data; }
-    public static function fromArray($array) {
-        $fa = new SplFixedArray(count($array));
-        $i = 0;
-        foreach ($array as $v) { $fa[$i] = $v; $i++; }
+    public function count(): int { return count($this->__elements); }
+    public function toArray(): array { return $this->__elements; }
+    public static function fromArray(array $array, bool $preserveKeys = true): SplFixedArray {
+        $fa = new SplFixedArray();
+        if (count($array) > 0 && $preserveKeys) {
+            $max = 0;
+            foreach ($array as $k => $v) {
+                if (!is_int($k) || $k < 0) {
+                    throw new InvalidArgumentException("array must contain only positive integer keys");
+                }
+                if ($k > $max) { $max = $k; }
+            }
+            $fa->__elements = array_fill(0, $max + 1, null);
+            foreach ($array as $k => $v) { $fa->__elements[$k] = $v; }
+        } elseif (count($array) > 0) {
+            $fa->__elements = array_values($array);
+        }
         return $fa;
+    }
+    public function getSize(): int { return count($this->__elements); }
+    public function setSize(int $size): true {
+        if ($size < 0) {
+            throw new ValueError('SplFixedArray::setSize(): Argument #1 ($size) must be greater than or equal to 0');
+        }
+        $n = count($this->__elements);
+        if ($size < $n) {
+            $this->__elements = array_slice($this->__elements, 0, $size);
+        } else {
+            for ($i = $n; $i < $size; $i++) { $this->__elements[] = null; }
+        }
+        return true;
+    }
+    public function offsetExists($index): bool {
+        $i = __phplang_spl_offset($index);
+        return $i >= 0 && $i < count($this->__elements) && $this->__elements[$i] !== null;
+    }
+    public function offsetGet($index): mixed { return $this->__elements[$this->__index($index)]; }
+    public function offsetSet($index, mixed $value): void { $this->__elements[$this->__index($index)] = $value; }
+    public function offsetUnset($index): void { $this->__elements[$this->__index($index)] = null; }
+    public function getIterator(): Iterator { return new ArrayIterator($this->__elements); }
+    public function jsonSerialize(): array { return $this->__elements; }
+    private function __members() {
+        $m = (array) $this;
+        unset($m["\0SplFixedArray\0__elements"]);
+        return $m;
+    }
+    public function __serialize(): array {
+        $out = $this->__elements;
+        foreach ($this->__members() as $k => $v) { $out[$k] = $v; }
+        return $out;
+    }
+    public function __unserialize(array $data): void {
+        if (count($this->__elements) > 0) { return; }
+        foreach ($data as $k => $v) {
+            if (is_int($k)) { $this->__elements[] = $v; } else { $this->$k = $v; }
+        }
+    }
+    public function __debugInfo(): array {
+        $out = $this->__elements;
+        foreach ($this->__members() as $k => $v) { $out[$k] = $v; }
+        return $out;
     }
 }
 class ArrayObject implements IteratorAggregate, ArrayAccess, Countable {
@@ -455,56 +651,211 @@ class SplObjectStorage implements ArrayAccess, Countable {
     public function offsetExists($obj) { return array_key_exists(spl_object_id($obj), $this->store); }
     public function offsetUnset($obj) { unset($this->store[spl_object_id($obj)]); }
 }
-class SplPriorityQueue implements Countable {
-    public $items = [];
-    public function insert($value, $priority) { $this->items[] = [$priority, $value]; }
-    public function count() { return count($this->items); }
-    public function isEmpty() { return count($this->items) === 0; }
-    public function _best() {
-        $best = -1;
-        $bp = null;
-        foreach ($this->items as $i => $pv) {
-            if ($best < 0 || $pv[0] > $bp) { $best = $i; $bp = $pv[0]; }
-        }
-        return $best;
+// SplHeap, SplMinHeap, SplMaxHeap and SplPriorityQueue: a port of
+// ext/spl/spl_heap.c. `$heap` is the binary heap array the reference sifts,
+// with the reference's sift-up and delete-top walks, so elements that compare
+// equal come out in the reference's order. The two class families share the
+// heap mechanics through this trait; each says how two stored elements
+// compare (`__elemCmp`). A `compare()` that throws leaves the operation to
+// finish with every later comparison reading 0, then marks the heap corrupted
+// and rethrows, as `spl_ptr_heap_insert`/`_delete_top` do.
+// Each class declares the `$flags`, `$isCorrupted` and `$heap` the methods use.
+trait __SplHeapOps {
+    // id => [write-locked, exception a compare() threw during this operation]
+    private static $__op = [];
+    private function __state() { return self::$__op[spl_object_id($this)] ?? [false, null]; }
+    private function __cmp($a, $b) {
+        [$locked, $thrown] = $this->__state();
+        if ($thrown !== null) { return 0; }
+        [$ok, $r] = __phplang_try_call(fn() => $this->__elemCmp($a, $b));
+        if ($ok) { return ((int) $r) <=> 0; }
+        self::$__op[spl_object_id($this)] = [$locked, $r];
+        return 0;
     }
-    public function top() { $b = $this->_best(); return $b < 0 ? null : $this->items[$b][1]; }
-    public function extract() {
-        $b = $this->_best();
-        if ($b < 0) { return null; }
-        $v = $this->items[$b][1];
-        array_splice($this->items, $b, 1);
-        return $v;
+    private function __begin() { self::$__op[spl_object_id($this)] = [true, null]; }
+    private function __end() {
+        $thrown = $this->__state()[1];
+        unset(self::$__op[spl_object_id($this)]);
+        if ($thrown !== null) {
+            $this->isCorrupted = true;
+            throw $thrown;
+        }
+    }
+    // `spl_heap_consistency_validations`.
+    private function __validate($write) {
+        if ($this->isCorrupted) {
+            throw new RuntimeException("Heap is corrupted, heap properties are no longer ensured.");
+        }
+        if ($write && $this->__state()[0]) {
+            throw new RuntimeException("Heap cannot be changed when it is already being modified.");
+        }
+    }
+    // `spl_ptr_heap_insert`: sift the new element up from the end.
+    private function __insert($elem) {
+        $this->__begin();
+        $pos = count($this->heap);
+        while ($pos > 0) {
+            $parent = intdiv($pos - 1, 2);
+            if ($this->__cmp($this->heap[$parent], $elem) >= 0) { break; }
+            $this->heap[$pos] = $this->heap[$parent];
+            $pos = $parent;
+        }
+        $this->heap[$pos] = $elem;
+        $this->__end();
+    }
+    // `spl_ptr_heap_delete_top`: take the root, then sift the last element
+    // down from it. Null for an empty heap.
+    private function __deleteTop() {
+        $n = count($this->heap);
+        if ($n === 0) { return null; }
+        $this->__begin();
+        $top = $this->heap[0];
+        $limit = intdiv($n - 1, 2);
+        $count = $n - 1;
+        $bottom = $this->heap[$count];
+        for ($i = 0; $i < $limit; $i = $j) {
+            $j = $i * 2 + 1;
+            if ($j !== $count && $this->__cmp($this->heap[$j + 1], $this->heap[$j]) > 0) { $j++; }
+            if ($this->__cmp($bottom, $this->heap[$j]) < 0) {
+                $this->heap[$i] = $this->heap[$j];
+            } else {
+                break;
+            }
+        }
+        array_pop($this->heap);
+        if ($i !== $count) { $this->heap[$i] = $bottom; }
+        $this->__end();
+        return [$top];
+    }
+    public function count(): int { return count($this->heap); }
+    public function isEmpty(): bool { return count($this->heap) === 0; }
+    public function rewind(): void {}
+    public function key(): int { return count($this->heap) - 1; }
+    public function next(): void { $this->__validate(true); $this->__deleteTop(); }
+    public function valid(): bool { return count($this->heap) !== 0; }
+    public function recoverFromCorruption(): true { $this->isCorrupted = false; return true; }
+    public function isCorrupted(): bool { return $this->isCorrupted; }
+    private function __members() {
+        $m = (array) $this;
+        $self = self::class;
+        unset($m["\0$self\0flags"], $m["\0$self\0isCorrupted"], $m["\0$self\0heap"]);
+        return $m;
+    }
+    public function __debugInfo(): array {
+        $m = $this->__members();
+        $self = self::class;
+        $m["\0$self\0flags"] = $this->flags;
+        $m["\0$self\0isCorrupted"] = $this->isCorrupted;
+        $m["\0$self\0heap"] = $this->heap;
+        return $m;
+    }
+    public function __serialize(): array {
+        $this->__validate(false);
+        if ($this->__state()[0]) {
+            throw new RuntimeException("Cannot serialize heap while it is being modified.");
+        }
+        return [$this->__members(), ["flags" => $this->flags, "heap_elements" => $this->heap]];
+    }
+    // `spl_heap_unserialize_internal_state`'s checks; `$elem` validates and
+    // shapes one stored element, or answers null to refuse it.
+    private function __restore(array $data, $flagsOk, $elem) {
+        $bad = "Invalid serialization data for " . get_class($this) . " object";
+        if (count($data) !== 2 || !isset($data[0]) || !is_array($data[0])) { throw new Exception($bad); }
+        foreach ($data[0] as $k => $v) { $this->$k = $v; }
+        $state = $data[1] ?? null;
+        if (!is_array($state) || !is_int($state["flags"] ?? null) || !$flagsOk($state["flags"])
+            || !is_array($state["heap_elements"] ?? null)) {
+            throw new Exception($bad);
+        }
+        $this->flags = $state["flags"];
+        foreach ($state["heap_elements"] as $v) {
+            $e = $elem($v);
+            if ($e === null) { throw new Exception($bad); }
+            $this->__insert($e[0]);
+        }
     }
 }
-class SplHeap implements Countable {
-    public $items = [];
-    public function insert($v) { $this->items[] = $v; }
-    public function count() { return count($this->items); }
-    public function isEmpty() { return count($this->items) === 0; }
-    public function compare($a, $b) { return $a <=> $b; }
-    public function _best() {
-        $best = -1;
-        $bv = null;
-        foreach ($this->items as $i => $v) {
-            if ($best < 0 || $this->compare($v, $bv) > 0) { $best = $i; $bv = $v; }
-        }
-        return $best;
+abstract class SplHeap implements Iterator, Countable {
+    use __SplHeapOps;
+    private $flags = 0;
+    private $isCorrupted = false;
+    private $heap = [];
+    abstract protected function compare(mixed $value1, mixed $value2): int;
+    private function __elemCmp($a, $b) { return $this->compare($a, $b); }
+    public function insert(mixed $value): true { $this->__validate(true); $this->__insert($value); return true; }
+    public function extract(): mixed {
+        $this->__validate(true);
+        $top = $this->__deleteTop();
+        if ($top === null) { throw new RuntimeException("Can't extract from an empty heap"); }
+        return $top[0];
     }
-    public function top() { $b = $this->_best(); return $b < 0 ? null : $this->items[$b]; }
-    public function extract() {
-        $b = $this->_best();
-        if ($b < 0) { return null; }
-        $v = $this->items[$b];
-        array_splice($this->items, $b, 1);
-        return $v;
+    public function top(): mixed {
+        $this->__validate(false);
+        if (count($this->heap) === 0) { throw new RuntimeException("Can't peek at an empty heap"); }
+        return $this->heap[0];
     }
-}
-class SplMaxHeap extends SplHeap {
-    public function compare($a, $b) { return $a <=> $b; }
+    public function current(): mixed { return count($this->heap) === 0 ? null : $this->heap[0]; }
+    public function __unserialize(array $data): void {
+        $this->__validate(true);
+        $this->__restore($data, fn($f) => $f === 0, fn($v) => [$v]);
+        $this->__validate(false);
+    }
 }
 class SplMinHeap extends SplHeap {
-    public function compare($a, $b) { return $b <=> $a; }
+    protected function compare(mixed $value1, mixed $value2): int { return $value2 <=> $value1; }
+}
+class SplMaxHeap extends SplHeap {
+    protected function compare(mixed $value1, mixed $value2): int { return $value1 <=> $value2; }
+}
+class SplPriorityQueue implements Iterator, Countable {
+    use __SplHeapOps;
+    private $flags = 1;
+    private $isCorrupted = false;
+    private $heap = [];
+    const EXTR_BOTH = 3;
+    const EXTR_PRIORITY = 2;
+    const EXTR_DATA = 1;
+    public function compare(mixed $priority1, mixed $priority2): int { return $priority1 <=> $priority2; }
+    private function __elemCmp($a, $b) { return $this->compare($a["priority"], $b["priority"]); }
+    // `spl_pqueue_extract_helper`.
+    private function __shape($elem) {
+        if (($this->flags & 3) === 3) { return $elem; }
+        return ($this->flags & 1) ? $elem["data"] : $elem["priority"];
+    }
+    public function insert(mixed $value, mixed $priority): true {
+        $this->__validate(true);
+        $this->__insert(["data" => $value, "priority" => $priority]);
+        return true;
+    }
+    public function setExtractFlags(int $flags): int {
+        $flags &= 3;
+        if (!$flags) { throw new RuntimeException("Must specify at least one extract flag"); }
+        $this->flags = $flags;
+        return $flags;
+    }
+    public function getExtractFlags(): int { return $this->flags; }
+    public function top(): mixed {
+        $this->__validate(false);
+        if (count($this->heap) === 0) { throw new RuntimeException("Can't peek at an empty heap"); }
+        return $this->__shape($this->heap[0]);
+    }
+    public function extract(): mixed {
+        $this->__validate(true);
+        $top = $this->__deleteTop();
+        if ($top === null) { throw new RuntimeException("Can't extract from an empty heap"); }
+        return $this->__shape($top[0]);
+    }
+    public function current(): mixed { return count($this->heap) === 0 ? null : $this->__shape($this->heap[0]); }
+    public function __unserialize(array $data): void {
+        $this->__restore(
+            $data,
+            fn($f) => ($f & 3) !== 0,
+            fn($v) => is_array($v) && count($v) === 2 && array_key_exists("data", $v) && array_key_exists("priority", $v)
+                ? [["data" => $v["data"], "priority" => $v["priority"]]] : null
+        );
+        $this->flags &= 3;
+        $this->__validate(false);
+    }
 }
 "#;
 
