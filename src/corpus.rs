@@ -6344,6 +6344,13 @@ pub const CORPUS: &[Entry] = &[
     // functions accept a callback and discard it. The four that do real work are
     // `assert`, `trigger_error`/`user_error`, `error_log`, and `class_alias`.
     (
+        "__phplang_throwable_string",
+        "Runtime and diagnostics",
+        "__phplang_throwable_string(Throwable $e): string",
+        "Internal helper behind the prelude's `Exception::__toString` and `Error::__toString`; a phplang extension with no PHP counterpart. Renders `Class: message in file:line` plus `Stack trace:` and the object's `getTraceAsString()` (`#0 {main}` when empty), omitting `: message` when the message is empty. The `previous` chain is walked and joined with `Next `, so the innermost exception reads first. A user function's argument `TypeError` / `ArgumentCountError` gains ` and defined`. A non-throwable argument yields an empty string.",
+        "",
+    ),
+    (
         "assert",
         "Runtime and diagnostics",
         "assert(mixed $assertion, mixed $description = null): bool",

@@ -427,7 +427,7 @@ pub mod ops {
     /// trait or enum declared inside a block.
     pub const DECLARE_CLASS: u16 = 139;
     /// `[class]` -> null. The `final` rules a class declared where it stands
-    /// must keep against what it inherits (see [`final_violation`]), checked
+    /// must keep against what it inherits (see [`final_violation`](super::final_violation)), checked
     /// when the declaration RUNS: until then its parent may not be declared.
     /// A broken rule stops the program like [`DECL_FATAL`].
     pub const FINAL_CHECK: u16 = 140;
@@ -11152,7 +11152,7 @@ impl PhpHost {
         }
     }
 
-    /// Record the main chunk's global layout (see [`PhpHost::main_order`]).
+    /// Record the main chunk's global layout (see `PhpHost::main_order`).
     pub fn set_main_layout(&mut self, order: Vec<String>, promoted: Vec<String>) {
         self.main_order = order;
         self.main_promoted = promoted;
@@ -11175,7 +11175,7 @@ impl PhpHost {
 
 /// Request shutdown, in `php_request_shutdown`'s order: the
 /// `register_shutdown_function` queue (one registered while it runs is run
-/// too), then the destructors (see [`call_destructors`]). An exception either
+/// too), then the destructors (see `call_destructors`). An exception either
 /// lets escape is reported uncaught and ends the sweep, as a bailout would.
 ///
 /// An `exit` status already set is parked across the sweep, or every callback

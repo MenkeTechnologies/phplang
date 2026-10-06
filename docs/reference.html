@@ -5421,94 +5421,99 @@ var_dump(is_subclass_of(new B, "A"), is_subclass_of(new A, "A"));   // =&gt; boo
       <section class="tutorial-section" id="ch-runtime-and-diagnostics">
         <h2>Runtime and diagnostics</h2>
         <article class="doc-entry" id="doc-runtime-and-diagnostics-1">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-1">#</a> <code>assert</code></h3>
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-1">#</a> <code>__phplang_throwable_string</code></h3>
+          <pre><code class="lang-php">__phplang_throwable_string(Throwable $e): string</code></pre>
+          <p>Internal helper behind the prelude's `Exception::__toString` and `Error::__toString`; a phplang extension with no PHP counterpart. Renders `Class: message in file:line` plus `Stack trace:` and the object's `getTraceAsString()` (`#0 {main}` when empty), omitting `: message` when the message is empty. The `previous` chain is walked and joined with `Next `, so the innermost exception reads first. A user function's argument `TypeError` / `ArgumentCountError` gains ` and defined`. A non-throwable argument yields an empty string.</p>
+        </article>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-2">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-2">#</a> <code>assert</code></h3>
           <pre><code class="lang-php">assert(mixed $assertion, mixed $description = null): bool</code></pre>
           <p>Evaluates the assertion for truthiness and RETURNS it. DIVERGENCE: this inverts PHP 8's contract — PHP always returns true and throws `AssertionError` on failure, whereas here `assert(false)` simply returns false and throws nothing. `$description` is never read.</p>
           <pre><code class="lang-php">var_dump(assert(1 === 1), assert(false));   // =&gt; bool(true) bool(false)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-2">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-2">#</a> <code>assert_options</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-3">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-3">#</a> <code>assert_options</code></h3>
           <pre><code class="lang-php">assert_options(int $option, mixed $value = null): int</code></pre>
           <p>DIVERGENCE: a stub that always returns 0 and stores nothing. No argument is read.</p>
           <pre><code class="lang-php">echo assert_options(1);   // =&gt; 0</code></pre>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-3">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-3">#</a> <code>trigger_error</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-4">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-4">#</a> <code>trigger_error</code></h3>
           <pre><code class="lang-php">trigger_error(string $message, int $error_level = E_USER_NOTICE): bool</code></pre>
           <p>Prints `"&lt;label&gt;: &lt;message&gt;"` to STDERR and returns true. The label is `Fatal error` for `E_USER_ERROR`, `Warning` for `E_USER_WARNING`, `Deprecated` for `E_USER_DEPRECATED`, and `Notice` for everything else. DIVERGENCE: `E_USER_ERROR` does NOT halt — execution continues with the next statement.</p>
           <pre><code class="lang-php">trigger_error("careful", E_USER_WARNING); echo "still running";   // =&gt; still running</code></pre>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-4">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-4">#</a> <code>user_error</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-5">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-5">#</a> <code>user_error</code></h3>
           <pre><code class="lang-php">user_error(string $message, int $error_level = E_USER_NOTICE): bool</code></pre>
           <p>The alias of `trigger_error`, sharing its match arm and its non-halting `E_USER_ERROR` behaviour.</p>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-5">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-5">#</a> <code>error_log</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-6">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-6">#</a> <code>error_log</code></h3>
           <pre><code class="lang-php">error_log(string $message, int $message_type = 0, string $destination = ""): bool</code></pre>
           <p>With `$message_type` 3 AND a destination it really appends the raw message bytes to that file — no timestamp and no trailing newline are added. Every other combination writes the message to stderr and returns true. The email and SAPI-logger message types are not implemented.</p>
           <pre><code class="lang-php">error_log("note", 3, "/tmp/php_ref_log.txt"); echo file_get_contents("/tmp/php_ref_log.txt");   // =&gt; note</code></pre>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-6">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-6">#</a> <code>debug_backtrace</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-7">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-7">#</a> <code>debug_backtrace</code></h3>
           <pre><code class="lang-php">debug_backtrace(int $options = 0, int $limit = 0): array</code></pre>
           <p>DIVERGENCE: a stub that always returns an empty array. No call stack is captured, so neither argument has any effect.</p>
           <pre><code class="lang-php">echo count(debug_backtrace());   // =&gt; 0</code></pre>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-7">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-7">#</a> <code>debug_print_backtrace</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-8">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-8">#</a> <code>debug_print_backtrace</code></h3>
           <pre><code class="lang-php">debug_print_backtrace(int $options = 0, int $limit = 0): null</code></pre>
           <p>DIVERGENCE: a stub that prints nothing and returns null.</p>
           <pre><code class="lang-php">var_dump(debug_print_backtrace());   // =&gt; NULL</code></pre>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-8">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-8">#</a> <code>set_error_handler</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-9">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-9">#</a> <code>set_error_handler</code></h3>
           <pre><code class="lang-php">set_error_handler(?callable $callback, int $error_levels = E_ALL): null</code></pre>
           <p>Pushes the handler (null pushes "none") with the levels it takes and returns the handler it replaces. A warning, notice or deprecation of a level it takes is handed to it as `($errno, $errstr, $errfile, $errline)` instead of being displayed — even under `@`, where `error_reporting()` reads 4437 inside it; returning `false` displays it after all. A diagnostic the handler raises itself takes the default path. `trigger_error(…, E_USER_ERROR)` reaches it too, and is fatal only when it returns `false`. DIVERGENCE: the handler runs at the next builtin boundary after the diagnostic, so one raised in the middle of a library call that goes on to print runs after that output.</p>
           <pre><code class="lang-php">set_error_handler(function ($n, $s) { echo "caught: $s\n"; return true; });
 echo $undefined;   // =&gt; caught: Undefined variable $undefined</code></pre>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-9">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-9">#</a> <code>set_exception_handler</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-10">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-10">#</a> <code>set_exception_handler</code></h3>
           <pre><code class="lang-php">set_exception_handler(?callable $callback): null</code></pre>
           <p>Pushes the handler (null pushes "none") and returns the one it replaces. An exception that reaches the top of a FILE or STDIN script is handed to it instead of the fatal, and the run then ends normally (status 0); one the handler throws is the uncaught one. Under `php -r` it is never called, as in the reference, whose `zend_eval_string` reports the exception itself.</p>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-10">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-10">#</a> <code>restore_error_handler</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-11">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-11">#</a> <code>restore_error_handler</code></h3>
           <pre><code class="lang-php">restore_error_handler(): bool</code></pre>
           <p>Pops the handler stack back to the previous `set_error_handler`; always returns true.</p>
           <pre><code class="lang-php">var_dump(restore_error_handler());   // =&gt; bool(true)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-11">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-11">#</a> <code>restore_exception_handler</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-12">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-12">#</a> <code>restore_exception_handler</code></h3>
           <pre><code class="lang-php">restore_exception_handler(): bool</code></pre>
           <p>Pops the handler stack back to the previous `set_exception_handler`; always returns true.</p>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-12">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-12">#</a> <code>register_shutdown_function</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-13">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-13">#</a> <code>register_shutdown_function</code></h3>
           <pre><code class="lang-php">register_shutdown_function(callable $callback, mixed ...$args): null</code></pre>
           <p>Queues the callback with its arguments. At request end the queue runs in order (one registered during the run is run too), after an `exit` and after any displayed fatal error, before the destructors; an exception one lets escape is reported uncaught and ends the sweep.</p>
           <pre><code class="lang-php">register_shutdown_function(fn($w) =&gt; print("bye $w\n"), "now");   // prints at exit: bye now</code></pre>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-13">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-13">#</a> <code>spl_autoload_register</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-14">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-14">#</a> <code>spl_autoload_register</code></h3>
           <pre><code class="lang-php">spl_autoload_register(?callable $callback = null, bool $throw = true, bool $prepend = false): bool</code></pre>
           <p>DIVERGENCE: a no-op returning true. There is no autoload chain and no `include`, so every class must be declared in the source that uses it.</p>
           <pre><code class="lang-php">var_dump(spl_autoload_register(fn($c) =&gt; null));   // =&gt; bool(true)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-14">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-14">#</a> <code>spl_autoload_unregister</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-15">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-15">#</a> <code>spl_autoload_unregister</code></h3>
           <pre><code class="lang-php">spl_autoload_unregister(callable $callback): bool</code></pre>
           <p>DIVERGENCE: a no-op returning true.</p>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-15">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-15">#</a> <code>get_defined_vars</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-16">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-16">#</a> <code>get_defined_vars</code></h3>
           <pre><code class="lang-php">get_defined_vars(): array</code></pre>
           <p>The current frame's bound variables, in the order they were first bound. An unset name is absent; a name bound to `null` is present. `$this` and `$GLOBALS` are not included. PARTIAL DIVERGENCE at GLOBAL scope only: the reference lists the superglobals its `variables_order` actually populated, in ITS fixed order and ahead of the script's own variables, where this lists every superglobal the frame holds in binding order. Inside a function — where the answer is the user's own variables — it matches.</p>
           <pre><code class="lang-php">function f($p) { $a = 1; unset($a); return get_defined_vars(); } print_r(f(7));   // =&gt; [p =&gt; 7]</code></pre>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-16">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-16">#</a> <code>class_alias</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-17">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-17">#</a> <code>class_alias</code></h3>
           <pre><code class="lang-php">class_alias(string $class, string $alias, bool $autoload = true): bool</code></pre>
           <p>DIVERGENCE: it reports whether `$class` exists and REGISTERS NOTHING — `$alias` is never read. A true return is therefore misleading: instantiating the alias afterwards still fails.</p>
           <pre><code class="lang-php">class C {} var_dump(class_alias("C", "D"), class_exists("D"));   // =&gt; bool(true) bool(false)</code></pre>

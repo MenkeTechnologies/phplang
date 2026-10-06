@@ -495,7 +495,7 @@ fn substr_replace(args: &[Value]) -> Result<Value, String> {
     for (i, (key, val)) in pairs.into_iter().enumerate() {
         let s = with_host(|h| h.to_str(&val));
         let raw_from = if is_arr_from {
-            froms.get(i).map(&as_int).unwrap_or(0)
+            froms.get(i).map(as_int).unwrap_or(0)
         } else {
             as_int(&from_v)
         };
