@@ -828,7 +828,9 @@ fn shuffle_and_array_rand_follow_the_seeded_generator() {
     // walks (`php_array_data_shuffle`, `php_array_pick_keys` — including its
     // pick-the-complement path when more than half the keys are wanted).
     assert_eq!(
-        run(r#"<?php mt_srand(7); $a = range(1, 10); shuffle($a); echo implode(",", $a), "\n"; $b = ["x" => 1, "y" => 2, "z" => 3]; shuffle($b); echo json_encode($b), "\n"; echo json_encode(array_rand(range(0, 9), 7)), json_encode(array_rand(["p" => 1, "q" => 2, "r" => 3])), json_encode(array_rand(range(0, 99), 3)), "\n";"#),
+        run(
+            r#"<?php mt_srand(7); $a = range(1, 10); shuffle($a); echo implode(",", $a), "\n"; $b = ["x" => 1, "y" => 2, "z" => 3]; shuffle($b); echo json_encode($b), "\n"; echo json_encode(array_rand(range(0, 9), 7)), json_encode(array_rand(["p" => 1, "q" => 2, "r" => 3])), json_encode(array_rand(range(0, 99), 3)), "\n";"#
+        ),
         "10,1,9,4,3,7,8,2,5,6\n[2,1,3]\n[0,2,3,4,5,6,9]\"r\"[30,66,72]\n"
     );
 }

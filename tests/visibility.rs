@@ -421,9 +421,11 @@ fn foreach_over_an_object_visits_only_what_the_scope_may_see() {
     // From outside only public properties; from a method of the class all of
     // them; from a subclass, not the parent's privates.
     assert_eq!(
-        run(r#"<?php class E { private $a = 1; protected $p = 0; public $b = 2; function it() { foreach ($this as $k => $v) echo "in:$k "; } }
+        run(
+            r#"<?php class E { private $a = 1; protected $p = 0; public $b = 2; function it() { foreach ($this as $k => $v) echo "in:$k "; } }
 class F extends E { function it2() { foreach ($this as $k => $v) echo "f:$k "; } }
-$e = new E; foreach ($e as $k => $v) echo "$k=$v "; $e->it(); (new F)->it2();"#),
+$e = new E; foreach ($e as $k => $v) echo "$k=$v "; $e->it(); (new F)->it2();"#
+        ),
         "b=2 in:a in:p in:b f:p f:b "
     );
 }
