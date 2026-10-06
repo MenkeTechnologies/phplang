@@ -557,6 +557,8 @@ pub enum StmtKind {
         /// The namespace the declaration was written in (`""` at global scope)
         /// — see [`ClassDecl::namespace`] for why a flat resolver keeps it.
         namespace: String,
+        /// Its `#[\Deprecated]` attribute, if it has one.
+        deprecated: Option<Deprecation>,
     },
     /// `class Name [extends Parent] { ... }`.
     Class(ClassDecl),
@@ -850,6 +852,15 @@ pub struct EnumCase {
     pub line: u32,
 }
 
+/// A `#[\Deprecated]` attribute on a function or method (PHP 8.4): calling it
+/// raises `Function f() is deprecated[ since S][, M]`. Only literal string
+/// arguments are read; `message` and `since` are the attribute's two parameters.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Deprecation {
+    pub message: Option<String>,
+    pub since: Option<String>,
+}
+
 /// A method of a class. `is_static` is retained but not enforced (a static call
 /// still binds `$this` when made from an object context, as PHP does).
 #[derive(Debug, Clone)]
@@ -872,6 +883,8 @@ pub struct Method {
     pub has_body: bool,
     /// The line the declaration starts on.
     pub line: u32,
+    /// Its `#[\Deprecated]` attribute, if it has one.
+    pub deprecated: Option<Deprecation>,
 }
 
 /// One `case`/`default` label of a `switch` plus its (fall-through) body. `test`

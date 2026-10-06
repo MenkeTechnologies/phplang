@@ -574,6 +574,8 @@ pub struct FuncDef {
     /// argument errors name it however a call spells it: `function Foo()`
     /// called as `FOO()` is `Foo()` in a trace. `None` for methods and closures.
     pub declared: Option<String>,
+    /// Its `#[\Deprecated]` attribute: calling it raises the deprecation first.
+    pub deprecated: Option<crate::ast::Deprecation>,
 }
 
 /// Where a closure literal was WRITTEN, which is what PHP 8.4 names a closure
@@ -7539,6 +7541,7 @@ fn call_function_dispatched(name: &str, args: Vec<Value>, how: Dispatch) -> Resu
             Signature {
                 params: &def.params,
                 ret: def.ret.as_ref(),
+                deprecated: def.deprecated.as_ref(),
             },
             def.chunk,
             Vec::new(),
@@ -7761,6 +7764,7 @@ pub fn call_function_named(
             Signature {
                 params: &def.params,
                 ret: def.ret.as_ref(),
+                deprecated: def.deprecated.as_ref(),
             },
             def.chunk,
             Vec::new(),
@@ -8276,6 +8280,8 @@ fn check_ret_type(
 struct Signature<'a> {
     params: &'a [Param],
     ret: Option<&'a TypeHint>,
+    /// The callee's `#[\Deprecated]` attribute.
+    deprecated: Option<&'a crate::ast::Deprecation>,
 }
 
 fn invoke(
@@ -8305,7 +8311,22 @@ fn invoke_with_locals(
     is_generator: bool,
     locals: &[String],
 ) -> Result<Value, String> {
-    let Signature { params, ret } = sig;
+    let Signature {
+        params,
+        ret,
+        deprecated,
+    } = sig;
+    // `ZEND_ACC_DEPRECATED`: the call raises the deprecation before the callee
+    // binds anything, from the caller's line — and stops if a handler threw.
+    if let Some(d) = deprecated {
+        raise_deprecated_call(frame, d);
+        // A handler runs NOW, before the callee is entered, as the reference's
+        // `zend_deprecated_function` calls it.
+        drain_error_handlers();
+        if with_host(|h| h.pending_throw.is_some()) {
+            return Ok(Value::Undef);
+        }
+    }
     // What a refusal raised for this call puts in its frame: the bound `$this`
     // (`A->m`) and a closure's site (`{closure:f.php:3}`).
     let ctx = CalleeCtx {
@@ -8569,6 +8590,7 @@ fn invoke_closure(
         Signature {
             params: &cc.params,
             ret: cc.ret.as_ref(),
+            deprecated: None,
         },
         cc.chunk,
         pre,
@@ -9224,6 +9246,7 @@ pub fn call_method(
         Signature {
             params: &def.params,
             ret: def.ret.as_ref(),
+            deprecated: def.deprecated.as_ref(),
         },
         def.chunk,
         pre,
@@ -9322,6 +9345,7 @@ fn call_magic_call_packed(
         Signature {
             params: &def.params,
             ret: def.ret.as_ref(),
+            deprecated: def.deprecated.as_ref(),
         },
         def.chunk,
         pre,
@@ -9420,6 +9444,7 @@ pub fn call_method_named(
         Signature {
             params: &def.params,
             ret: def.ret.as_ref(),
+            deprecated: def.deprecated.as_ref(),
         },
         def.chunk,
         pre,
@@ -12126,4 +12151,29 @@ fn is_prelude_helper_name(frame: &str) -> bool {
     };
     class.starts_with("__")
         || (method.starts_with("__") && !MAGIC.contains(&method.to_ascii_lowercase().as_str()))
+}
+
+/// `zend_deprecated_function`: `Method K::m() is deprecated` or `Function f()
+/// is deprecated`, then ` since <since>` and `, <message>` from the attribute.
+/// A user function's is `E_USER_DEPRECATED`; a prelude method stands in for an
+/// internal one, whose is `E_DEPRECATED`.
+fn raise_deprecated_call(frame: &str, d: &crate::ast::Deprecation) {
+    let kind = if frame.contains("::") {
+        "Method"
+    } else {
+        "Function"
+    };
+    let mut msg = format!("{kind} {}() is deprecated", display_frame(frame));
+    if let Some(since) = &d.since {
+        msg.push_str(&format!(" since {since}"));
+    }
+    if let Some(message) = &d.message {
+        msg.push_str(&format!(", {message}"));
+    }
+    let level = if is_prelude_frame(frame) {
+        errlevel::E_DEPRECATED
+    } else {
+        errlevel::E_USER_DEPRECATED
+    };
+    with_host(|h| h.diagnose("Deprecated", level, warn_line(), msg));
 }

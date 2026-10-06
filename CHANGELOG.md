@@ -66,6 +66,19 @@ block in `tests/data/parity_corpus.php`.
   iterators, the SPL lists and heaps) opens no frame in a trace when a
   `foreach` steps it, and `iterator_to_array` / `iterator_count` are frames of
   their own. `ArrayIterator::getFlags()` answers the flags it was given.
+* **`#[\Deprecated]` was parsed and ignored.** A function or method carrying
+  it now raises `zend_deprecated_function`'s `Function f() is deprecated` /
+  `Method K::m() is deprecated`, with ` since <since>` and `, <message>` from
+  the attribute's literal arguments, at the call's line and as
+  `E_USER_DEPRECATED` — before the callee binds its arguments, with an error
+  handler run on the spot, so a handler that throws stops the call.
+* **`SplObjectStorage` was a stub** with no array access, iteration, `getInfo`,
+  `addAll`/`removeAll`/`removeAllExcept`, `seek`, `getHash` or serialization.
+  It is now a port of `ext/spl/spl_observer.c`: objects keyed by handle or by a
+  subclass's `getHash()`, in insertion order, the internal pointer and index
+  `seek` walks, `Object not found`, and the reference's `__debugInfo` and
+  `__serialize` views. Its 8.5 deprecations of `attach`/`detach`/`contains`
+  are withheld (see BUGS.md).
 
 ## Round 19 — `Throwable::__toString`, the SPL data structures
 

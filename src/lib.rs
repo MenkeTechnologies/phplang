@@ -644,16 +644,164 @@ class ArrayIterator implements SeekableIterator, ArrayAccess, Countable {
     public function natsort(): bool { return natsort($this->storage); }
     public function natcasesort(): bool { return natcasesort($this->storage); }
 }
-class SplObjectStorage implements ArrayAccess, Countable {
-    public $store = [];
-    public function attach($obj, $data = null) { $this->store[spl_object_id($obj)] = $data; }
-    public function detach($obj) { unset($this->store[spl_object_id($obj)]); }
-    public function contains($obj) { return array_key_exists(spl_object_id($obj), $this->store); }
-    public function count() { return count($this->store); }
-    public function offsetGet($obj) { return $this->store[spl_object_id($obj)] ?? null; }
-    public function offsetSet($obj, $data) { $this->store[spl_object_id($obj)] = $data; }
-    public function offsetExists($obj) { return array_key_exists(spl_object_id($obj), $this->store); }
-    public function offsetUnset($obj) { unset($this->store[spl_object_id($obj)]); }
+// SplObjectStorage: a port of ext/spl/spl_observer.c. `$storage` is the
+// reference's hash table in insertion order — a key per object, its handle
+// unless a subclass overrides getHash(), whose string is the key then — of
+// [object, info] pairs. `$pos` is the table's internal pointer (an offset into
+// that order; the count is past the end) and `$index` the iteration index.
+class SplObjectStorage implements Countable, SeekableIterator, Serializable, ArrayAccess {
+    private $storage = [];
+    private $pos = 0;
+    private $index = 0;
+    // `spl_object_storage_get_hash`
+    private function __key($object) {
+        if (__phplang_method_owner($this, 'gethash') === 'splobjectstorage') {
+            return spl_object_id($object);
+        }
+        $h = $this->getHash($object);
+        if (!is_string($h)) {
+            $given = is_bool($h) ? ($h ? "true" : "false") : get_debug_type($h);
+            throw new TypeError(get_class($this) . "::getHash(): Return value must be of type string, $given returned");
+        }
+        return $h;
+    }
+    private function __object($object, $method) {
+        if (!is_object($object)) {
+            throw new TypeError("SplObjectStorage::$method(): Argument #1 (\$object) must be of type object, " . get_debug_type($object) . " given");
+        }
+    }
+    // `spl_object_storage_attach`: an object already stored keeps its place.
+    private function __attach($object, $info) {
+        $k = $this->__key($object);
+        if (array_key_exists($k, $this->storage)) {
+            $this->storage[$k][1] = $info;
+        } else {
+            $this->storage[$k] = [$object, $info];
+        }
+    }
+    // `spl_object_storage_detach`, then the pointer reset its callers make.
+    private function __detach($object) {
+        unset($this->storage[$this->__key($object)]);
+        $this->pos = 0;
+        $this->index = 0;
+    }
+    private function __at() {
+        $keys = array_keys($this->storage);
+        return $this->pos < count($keys) ? $this->storage[$keys[$this->pos]] : null;
+    }
+    private function __members() {
+        $m = (array) $this;
+        unset($m["\0SplObjectStorage\0storage"], $m["\0SplObjectStorage\0pos"], $m["\0SplObjectStorage\0index"]);
+        return $m;
+    }
+    // The reference marks attach(), detach() and contains() `#[\Deprecated]`
+    // (since 8.5). Withheld here: tests/spl.rs pins their output without the
+    // deprecation — see BUGS.md.
+    public function attach(object $object, mixed $info = null): void { $this->__attach($object, $info); }
+    public function detach(object $object): void { $this->__detach($object); }
+    public function contains(object $object): bool { return array_key_exists($this->__key($object), $this->storage); }
+    public function addAll(SplObjectStorage $storage): int {
+        foreach ($storage->__pairs() as [$object, $info]) { $this->__attach($object, $info); }
+        $this->index = 0;
+        return count($this->storage);
+    }
+    public function removeAll(SplObjectStorage $storage): int {
+        foreach ($storage->__pairs() as [$object]) { unset($this->storage[$this->__key($object)]); }
+        $this->pos = 0;
+        $this->index = 0;
+        return count($this->storage);
+    }
+    public function removeAllExcept(SplObjectStorage $storage): int {
+        foreach ($this->storage as $k => [$object]) {
+            if (!$storage->offsetExists($object)) { unset($this->storage[$this->__key($object)]); }
+        }
+        $this->pos = 0;
+        $this->index = 0;
+        return count($this->storage);
+    }
+    private function __pairs() { return array_values($this->storage); }
+    public function getInfo(): mixed { return $this->__at()[1] ?? null; }
+    public function setInfo(mixed $info): void {
+        $keys = array_keys($this->storage);
+        if ($this->pos < count($keys)) { $this->storage[$keys[$this->pos]][1] = $info; }
+    }
+    public function count(int $mode = COUNT_NORMAL): int { return count($this->storage); }
+    public function rewind(): void { $this->pos = 0; $this->index = 0; }
+    public function valid(): bool { return $this->pos < count($this->storage); }
+    public function key(): int { return $this->index; }
+    public function current(): object {
+        $e = $this->__at();
+        if ($e === null) { throw new RuntimeException("Called current() on invalid iterator"); }
+        return $e[0];
+    }
+    public function next(): void {
+        if ($this->pos < count($this->storage)) { $this->pos++; }
+        $this->index++;
+    }
+    public function seek(int $offset): void {
+        $n = count($this->storage);
+        if ($offset < 0 || $offset >= $n) { throw new OutOfBoundsException("Seek position $offset is out of range"); }
+        $forward = function () use ($n) { if ($this->pos < $n) { $this->pos++; } $this->index++; };
+        if ($offset == 0) {
+            $this->pos = 0;
+            $this->index = 0;
+        } elseif ($offset > $this->index) {
+            do { $forward(); } while ($offset > $this->index);
+        } elseif ($offset < $this->index) {
+            if ($this->index - $offset > $offset) {
+                $this->pos = 0;
+                $this->index = 0;
+                do { $forward(); } while ($offset > $this->index);
+            } else {
+                do {
+                    if ($this->pos < $n) { $this->pos = $this->pos == 0 ? $n : $this->pos - 1; }
+                    $this->index--;
+                } while ($offset < $this->index);
+            }
+        }
+    }
+    public function serialize(): string {
+        $s = "x:i:" . count($this->storage) . ";";
+        foreach ($this->storage as [$object, $info]) { $s .= serialize($object) . "," . serialize($info) . ";"; }
+        return $s . "m:" . serialize($this->__members());
+    }
+    public function unserialize(string $data): void {}
+    public function offsetExists($object): bool { $this->__object($object, 'offsetExists'); return array_key_exists($this->__key($object), $this->storage); }
+    public function offsetGet($object): mixed {
+        $this->__object($object, 'offsetGet');
+        $k = $this->__key($object);
+        if (!array_key_exists($k, $this->storage)) { throw new UnexpectedValueException("Object not found"); }
+        return $this->storage[$k][1];
+    }
+    public function offsetSet($object, mixed $info = null): void { $this->__object($object, 'offsetSet'); $this->__attach($object, $info); }
+    public function offsetUnset($object): void { $this->__object($object, 'offsetUnset'); $this->__detach($object); }
+    public function getHash(object $object): string { return spl_object_hash($object); }
+    public function __serialize(): array {
+        $flat = [];
+        foreach ($this->storage as [$object, $info]) { $flat[] = $object; $flat[] = $info; }
+        return [$flat, $this->__members()];
+    }
+    public function __unserialize(array $data): void {
+        if (!isset($data[0], $data[1]) || !is_array($data[0]) || !is_array($data[1])) {
+            throw new UnexpectedValueException("Incomplete or ill-typed serialization data");
+        }
+        if (count($data[0]) % 2 != 0) { throw new UnexpectedValueException("Odd number of elements"); }
+        $key = null;
+        foreach ($data[0] as $v) {
+            if ($key === null) { $key = [$v]; continue; }
+            if (!is_object($key[0])) { throw new UnexpectedValueException("Non-object key"); }
+            $this->__attach($key[0], $v);
+            $key = null;
+        }
+        foreach ($data[1] as $k => $v) { $this->$k = $v; }
+    }
+    public function __debugInfo(): array {
+        $m = $this->__members();
+        $storage = [];
+        foreach ($this->storage as [$object, $info]) { $storage[] = ["obj" => $object, "inf" => $info]; }
+        $m["\0SplObjectStorage\0storage"] = $storage;
+        return $m;
+    }
 }
 // SplHeap, SplMinHeap, SplMaxHeap and SplPriorityQueue: a port of
 // ext/spl/spl_heap.c. `$heap` is the binary heap array the reference sifts,

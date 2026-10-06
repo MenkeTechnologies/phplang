@@ -498,7 +498,7 @@ echo (new B)-&gt;f();   // =&gt; 9</code></pre>
         <article class="doc-entry" id="doc-language-construct-13">
           <h3><a class="doc-anchor" href="#doc-language-construct-13">#</a> <code>#[Attr]</code></h3>
           <pre><code class="lang-php">#[Name], #[Name(args)], #[Ns\Name] …   //  before a class, function, method, property, class constant, enum case, or parameter</code></pre>
-          <p>An attribute group: declarative metadata attached to the declaration that follows. It is NOT a comment — `#[` and `#` are different tokens, and lexing `#[Attr] class C {}` as a comment would delete the declaration. Arguments are scanned for bracket balance and discarded. DIVERGENCE: attributes are not reflectable (`ReflectionAttribute` does not exist) and none is evaluated; only `#[AllowDynamicProperties]` changes behaviour.</p>
+          <p>An attribute group: declarative metadata attached to the declaration that follows. It is NOT a comment — `#[` and `#` are different tokens, and lexing `#[Attr] class C {}` as a comment would delete the declaration. Arguments are scanned for bracket balance and discarded, except `#[\Deprecated]`'s literal `message` and `since`: a function or method carrying it raises `Function f() is deprecated[ since S][, M]` (`E_USER_DEPRECATED`) when called, before its arguments are bound. DIVERGENCE: attributes are not reflectable (`ReflectionAttribute` does not exist); only `#[AllowDynamicProperties]` and `#[\Deprecated]` change behaviour.</p>
           <pre><code class="lang-php">#[Attr(1)] class C { #[Attr] public $v = 7; } echo (new C)-&gt;v;   // =&gt; 7</code></pre>
         </article>
         <article class="doc-entry" id="doc-language-construct-14">
@@ -2219,14 +2219,14 @@ echo implode(" / ", iterator_to_array($t, false));   // =&gt; |-Array / | \-1 / 
         </article>
         <article class="doc-entry" id="doc-prelude-class-54">
           <h3><a class="doc-anchor" href="#doc-prelude-class-54">#</a> <code>SplObjectStorage</code></h3>
-          <pre><code class="lang-php">class SplObjectStorage {
-    public $store = [];
-    attach($obj, $data = null)   detach($obj)
-    contains($obj)   count()
+          <pre><code class="lang-php">class SplObjectStorage implements Countable, SeekableIterator, Serializable, ArrayAccess {
+    attach  detach  contains  addAll  removeAll  removeAllExcept  getInfo  setInfo  count
+    rewind  valid  key  current  next  seek  offsetExists  offsetGet  offsetSet  offsetUnset
+    getHash  serialize  unserialize  __serialize  __unserialize  __debugInfo
 }</code></pre>
-          <p>A set of objects with optional attached data, keyed by `spl_object_id()`. DIVERGENCE: it has no `offsetGet`/`offsetSet` accessors, so the attached data cannot be read back, and it is neither countable nor iterable through the language's own syntax.</p>
-          <pre><code class="lang-php">$s = new SplObjectStorage; $o = new stdClass; $s-&gt;attach($o);
-var_dump($s-&gt;contains($o), $s-&gt;count());   // =&gt; bool(true) int(1)</code></pre>
+          <p>A port of `ext/spl/spl_observer.c`: a set of objects with attached data, keyed by object handle — or by the string a subclass's `getHash()` answers — in insertion order, iterated by its own pointer and index. A missing object is `UnexpectedValueException: Object not found`; `var_dump`, `print_r` and `serialize` show the reference's `storage` view. DIVERGENCE: `attach()`/`detach()`/`contains()` raise no 8.5 deprecation; `unserialize()` (the `Serializable` form) does nothing; `(array)` and `var_export` show the private properties the elements are kept in.</p>
+          <pre><code class="lang-php">$s = new SplObjectStorage; $o = new stdClass; $s[$o] = "data";
+var_dump($s[$o], count($s));   // =&gt; string(4) "data" int(1)</code></pre>
         </article>
         <article class="doc-entry" id="doc-prelude-class-55">
           <h3><a class="doc-anchor" href="#doc-prelude-class-55">#</a> <code>SplPriorityQueue</code></h3>

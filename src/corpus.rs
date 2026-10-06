@@ -507,7 +507,7 @@ pub const CORPUS: &[Entry] = &[
         "#[Attr]",
         "Language construct",
         "#[Name], #[Name(args)], #[Ns\\Name] …   //  before a class, function, method, property, class constant, enum case, or parameter",
-        "An attribute group: declarative metadata attached to the declaration that follows. It is NOT a comment — `#[` and `#` are different tokens, and lexing `#[Attr] class C {}` as a comment would delete the declaration. Arguments are scanned for bracket balance and discarded. DIVERGENCE: attributes are not reflectable (`ReflectionAttribute` does not exist) and none is evaluated; only `#[AllowDynamicProperties]` changes behaviour.",
+        "An attribute group: declarative metadata attached to the declaration that follows. It is NOT a comment — `#[` and `#` are different tokens, and lexing `#[Attr] class C {}` as a comment would delete the declaration. Arguments are scanned for bracket balance and discarded, except `#[\\Deprecated]`'s literal `message` and `since`: a function or method carrying it raises `Function f() is deprecated[ since S][, M]` (`E_USER_DEPRECATED`) when called, before its arguments are bound. DIVERGENCE: attributes are not reflectable (`ReflectionAttribute` does not exist); only `#[AllowDynamicProperties]` and `#[\\Deprecated]` change behaviour.",
         "#[Attr(1)] class C { #[Attr] public $v = 7; } echo (new C)->v;   // => 7",
     ),
     (
@@ -2561,9 +2561,9 @@ pub const CORPUS: &[Entry] = &[
     (
         "SplObjectStorage",
         "Prelude class",
-        "class SplObjectStorage {\n    public $store = [];\n    attach($obj, $data = null)   detach($obj)\n    contains($obj)   count()\n}",
-        "A set of objects with optional attached data, keyed by `spl_object_id()`. DIVERGENCE: it has no `offsetGet`/`offsetSet` accessors, so the attached data cannot be read back, and it is neither countable nor iterable through the language's own syntax.",
-        "$s = new SplObjectStorage; $o = new stdClass; $s->attach($o);\nvar_dump($s->contains($o), $s->count());   // => bool(true) int(1)",
+        "class SplObjectStorage implements Countable, SeekableIterator, Serializable, ArrayAccess {\n    attach  detach  contains  addAll  removeAll  removeAllExcept  getInfo  setInfo  count\n    rewind  valid  key  current  next  seek  offsetExists  offsetGet  offsetSet  offsetUnset\n    getHash  serialize  unserialize  __serialize  __unserialize  __debugInfo\n}",
+        "A port of `ext/spl/spl_observer.c`: a set of objects with attached data, keyed by object handle — or by the string a subclass's `getHash()` answers — in insertion order, iterated by its own pointer and index. A missing object is `UnexpectedValueException: Object not found`; `var_dump`, `print_r` and `serialize` show the reference's `storage` view. DIVERGENCE: `attach()`/`detach()`/`contains()` raise no 8.5 deprecation; `unserialize()` (the `Serializable` form) does nothing; `(array)` and `var_export` show the private properties the elements are kept in.",
+        "$s = new SplObjectStorage; $o = new stdClass; $s[$o] = \"data\";\nvar_dump($s[$o], count($s));   // => string(4) \"data\" int(1)",
     ),
     (
         "SplPriorityQueue",

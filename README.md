@@ -306,7 +306,9 @@ end-to-end (see `tests/basic.rs`):
 - **Attributes** (`#[Attr]`, `#[Ns\\Attr(1, [2])]`) parse everywhere a
   declaration can carry them — class, function, method, property, class constant,
   enum case, parameter. `#[AllowDynamicProperties]` is honoured, and inherited by
-  subclasses.
+  subclasses. `#[\Deprecated]` on a function or method (PHP 8.4) raises
+  `Function f() is deprecated since S, M` at each call, before the callee binds
+  its arguments, and a throwing error handler stops the call.
 - **Library argument errors throw.** A standard-library function given arguments
   it rejects raises the catchable exception PHP raises — `ValueError`,
   `DivisionByZeroError` — with the library call itself as frame `#0` of the trace

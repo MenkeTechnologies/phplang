@@ -2474,3 +2474,75 @@ Stack trace:
 #0 {main}
   thrown in Command line code on line 13
 
+#REC 122 exit=0 out=420 err=355
+
+Deprecated: Method A::f() is deprecated since 8.5, use x instead in Command line code on line 5
+
+Deprecated: Function g() is deprecated in Command line code on line 6
+ran
+
+Deprecated: Function h() is deprecated, m in Command line code on line 7
+
+Deprecated: Method A::f() is deprecated since 8.5, use x instead in Command line code on line 8
+[16384] Function g() is deprecated
+ran
+Exception: Function t() is deprecated
+PHP Deprecated:  Method A::f() is deprecated since 8.5, use x instead in Command line code on line 5
+PHP Deprecated:  Function g() is deprecated in Command line code on line 6
+PHP Deprecated:  Function h() is deprecated, m in Command line code on line 7
+PHP Deprecated:  Method A::f() is deprecated since 8.5, use x instead in Command line code on line 8
+
+#REC 123 exit=0 out=923 err=0
+0stdClassA
+1stdClassB
+2
+bool(false)
+int(1)
+object(SplObjectStorage)#1 (1) {
+  ["storage":"SplObjectStorage":private]=>
+  array(1) {
+    [0]=>
+    array(2) {
+      ["obj"]=>
+      object(stdClass)#3 (0) {
+      }
+      ["inf"]=>
+      string(1) "B"
+    }
+  }
+}
+10
+y
+SplObjectStorage Object
+(
+    [storage:SplObjectStorage:private] => Array
+        (
+            [0] => Array
+                (
+                    [obj] => stdClass Object
+                        (
+                        )
+
+                    [inf] => 1
+                )
+
+        )
+
+)
+O:16:"SplObjectStorage":2:{i:0;a:2:{i:0;O:8:"stdClass":0:{}i:1;i:1;}i:1;a:0:{}}
+x:i:1;O:8:"stdClass":0:{},i:1;;m:a:0:{}
+1SplObjectStorage
+220
+110
+Seek position 5 is out of range
+new
+Object not found
+SplObjectStorage::offsetSet(): Argument #1 ($object) must be of type object, string given
+bool(true)
+bool(false)
+bool(false)
+11
+Called current() on invalid iterator
+12
+12
+

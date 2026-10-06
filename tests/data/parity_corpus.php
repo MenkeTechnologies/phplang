@@ -1338,3 +1338,39 @@ class R implements RecursiveIterator { private $i = 0; function current(): mixed
 foreach (new RecursiveIteratorIterator(new R, 0, RecursiveIteratorIterator::CATCH_GET_CHILD) as $v) echo $v; echo "\n";
 try { foreach (new RecursiveIteratorIterator(new R) as $v) echo $v; } catch (LogicException $e) { echo $e->getTraceAsString(), "\n"; }
 $l->nope();
+#==#
+// #[\Deprecated] on a function or method: the deprecation names the declaring
+// class, carries `since` and `message`, is E_USER_DEPRECATED, and is raised
+// before the callee binds its arguments — a throwing handler stops the call.
+class A { #[\Deprecated(since: "8.5", message: "use x instead")] function f() {} }
+(new A)->f();
+#[\Deprecated] function g() { echo "ran\n"; } g();
+#[Deprecated("m")] function h($x) {} h(1);
+class B extends A {} (new B)->f();
+set_error_handler(function ($n, $s) { echo "[$n] $s\n"; return true; }); g();
+set_error_handler(function ($n, $s) { throw new Exception($s); });
+#[\Deprecated] function t(int $x) { echo "body"; }
+try { t("a"); } catch (Throwable $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+#==#
+// SplObjectStorage, a port of ext/spl/spl_observer.c: storage order, the
+// iteration pointer and index, seek, info, the hash a subclass supplies, and
+// the debug and serialization views.
+$s = new SplObjectStorage; $a = new stdClass; $b = new stdClass; $s[$a] = "A"; $s[$b] = "B";
+foreach ($s as $i => $o) { echo $i, get_class($o), $s->getInfo(), "\n"; } echo count($s), "\n";
+unset($s[$a]); var_dump($s->offsetExists($a), count($s)); var_dump($s);
+$s = new SplObjectStorage; $o = new stdClass; $s[$o] = 1; $t = new SplObjectStorage; $t->addAll($s); echo count($t); $t->removeAll($s); echo count($t), "\n";
+echo $s->getHash($o) === spl_object_hash($o) ? "y" : "n", "\n"; print_r($s); echo serialize($s), "\n", $s->serialize(), "\n";
+$u = unserialize(serialize($s)); echo count($u), get_class($u), "\n";
+$s = new SplObjectStorage; $x = [new stdClass, new stdClass, new stdClass]; foreach ($x as $i => $o) $s[$o] = $i * 10;
+$s->seek(2); echo $s->key(), $s->getInfo(), "\n"; $s->seek(1); echo $s->key(), $s->getInfo(), "\n";
+try { $s->seek(5); } catch (OutOfBoundsException $e) { echo $e->getMessage(), "\n"; }
+$s->rewind(); $s->setInfo("new"); echo $s[$x[0]], "\n";
+try { $s[new stdClass]; } catch (UnexpectedValueException $e) { echo $e->getMessage(), "\n"; }
+try { $s["x"] = 1; } catch (TypeError $e) { echo $e->getMessage(), "\n"; }
+var_dump(isset($s[$x[1]]), empty($s[$x[0]]), isset($s[new stdClass]));
+$p = new stdClass; $q = new stdClass; $s = new SplObjectStorage; $s[$p] = 1; $s[$q] = 2; $t = new SplObjectStorage; $t[$q] = 9;
+echo $s->removeAllExcept($t), $s->count(COUNT_RECURSIVE), "\n";
+$s->rewind(); try { $s->next(); $s->current(); } catch (RuntimeException $e) { echo $e->getMessage(), "\n"; }
+$c = clone $s; $c[$p] = 5; echo count($s), count($c), "\n";
+class HS extends SplObjectStorage { public function getHash($o): string { return get_class($o); } }
+$h = new HS; $h[new stdClass] = 1; $h[new stdClass] = 2; echo count($h), $h[new stdClass], "\n";

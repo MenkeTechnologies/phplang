@@ -1658,6 +1658,7 @@ impl Compiler {
                 ret,
                 by_ref_return,
                 namespace,
+                deprecated,
             } => {
                 if top {
                     if let Some(msg) = self.fn_redeclare_msg(name, namespace) {
@@ -1717,6 +1718,7 @@ impl Compiler {
                         } else {
                             format!("{namespace}\\{name}")
                         }),
+                        deprecated: deprecated.clone(),
                     },
                 ));
                 if !top {
@@ -2982,6 +2984,7 @@ impl Compiler {
                     closure_site: None,
                     declared: None,
                     chunk: mb.build(),
+                    deprecated: m.deprecated.clone(),
                     is_generator: body_has_yield(&m.body),
                     ret: m.ret.clone(),
                     // Methods keep the by-name path for now; `$this` and the
@@ -5645,6 +5648,7 @@ impl Compiler {
                 locals: Vec::new(),
                 closure_site: Some(site),
                 declared: None,
+                deprecated: None,
             },
         ));
 

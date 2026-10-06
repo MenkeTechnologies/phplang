@@ -241,6 +241,8 @@ pub fn parse_meta(src: &str) -> Result<(Vec<Stmt>, ParseMeta), ParseFail> {
         pos: 0,
         eof_line,
         pending_attrs: Vec::new(),
+        pending_deprecated: None,
+        last_deprecated: None,
         top_level: true,
         only_declares_so_far: true,
         strict_types: false,
@@ -289,6 +291,8 @@ fn resolve_interp_parts(parts: Vec<StrPart>) -> Result<Vec<InterpPart>, String> 
                     // is spliced onto a single line, so end of input is line 1.
                     eof_line: 1,
                     pending_attrs: Vec::new(),
+                    pending_deprecated: None,
+                    last_deprecated: None,
                     // An interpolation is a bare expression, never a statement,
                     // so no declaration can appear in it and the value is moot.
                     top_level: false,
@@ -324,6 +328,11 @@ struct Parser {
     /// for the declaration that follows to claim them. Cleared by whoever takes
     /// them, so a `#[Attr] class A {} class B {}` cannot leak onto `B`.
     pending_attrs: Vec<String>,
+    /// The `#[\Deprecated]` among `pending_attrs`, for the function declaration
+    /// that follows.
+    pending_deprecated: Option<Deprecation>,
+    /// The `#[\Deprecated]` the latest `attributes()` call read, if any.
+    last_deprecated: Option<Deprecation>,
     /// Whether the statement about to be parsed sits at TOP level — file scope,
     /// or directly inside a `namespace Name { }` body, which upstream's grammar
     /// treats the same way. False anywhere inside a function body, an `if`, a
@@ -797,6 +806,7 @@ impl Parser {
         // read here and handed to the declaration that follows through
         // `pending_attrs`, since only that declaration can interpret them.
         self.pending_attrs = self.attributes()?;
+        self.pending_deprecated = self.last_deprecated.take();
         let line = self.line();
         let kind = match self.peek() {
             Some(Tok::InlineHtml(_)) => {
@@ -1298,6 +1308,7 @@ impl Parser {
 
     fn function_stmt(&mut self) -> Result<StmtKind, String> {
         self.pos += 1; // function
+        let deprecated = self.pending_deprecated.take();
         let by_ref_return = self.eat_punct("&");
         let name = match self.next() {
             Some(Tok::Ident(n)) => n,
@@ -1315,6 +1326,7 @@ impl Parser {
             ret,
             by_ref_return,
             namespace: self.magic.namespace.clone(),
+            deprecated,
         })
     }
 
@@ -1679,6 +1691,10 @@ impl Parser {
     /// an attributed declaration parsing at all.
     fn attributes(&mut self) -> Result<Vec<String>, String> {
         let mut names: Vec<String> = Vec::new();
+        self.last_deprecated = None;
+        // Inside `#[\Deprecated(…)]`'s argument list: the arguments read so
+        // far, the position of the next one, and the name a `name:` gave it.
+        let mut dep: Option<(Deprecation, usize, Option<String>)> = None;
         while self.at_punct("#[") {
             self.pos += 1;
             let mut depth = 1usize;
@@ -1688,10 +1704,65 @@ impl Parser {
             while depth > 0 {
                 match self.next() {
                     None => return Err("unterminated attribute".to_string()),
+                    Some(Tok::Punct("(")) if depth == 1 => {
+                        depth += 1;
+                        if names
+                            .last()
+                            .is_some_and(|n| n.eq_ignore_ascii_case("Deprecated"))
+                            && !expect_name
+                        {
+                            dep = Some((Deprecation::default(), 0, None));
+                        }
+                    }
                     Some(Tok::Punct("#[")) | Some(Tok::Punct("[")) | Some(Tok::Punct("(")) => {
                         depth += 1
                     }
+                    Some(Tok::Punct(")")) if depth == 2 && dep.is_some() => {
+                        depth -= 1;
+                        self.last_deprecated = dep.take().map(|(d, ..)| d);
+                    }
                     Some(Tok::Punct("]")) | Some(Tok::Punct(")")) => depth -= 1,
+                    Some(Tok::Punct(",")) if depth == 2 => {
+                        if let Some((_, pos, name)) = dep.as_mut() {
+                            *pos += 1;
+                            *name = None;
+                        }
+                    }
+                    Some(Tok::Ident(n)) if depth == 2 && dep.is_some() && self.at_punct(":") => {
+                        self.pos += 1;
+                        if let Some((_, _, name)) = dep.as_mut() {
+                            *name = Some(n.to_ascii_lowercase());
+                        }
+                    }
+                    Some(Tok::Interp(parts))
+                        if depth == 2
+                            && dep.is_some()
+                            && parts.iter().all(|p| matches!(p, StrPart::Lit(_))) =>
+                    {
+                        let s: String = parts
+                            .iter()
+                            .map(|p| match p {
+                                StrPart::Lit(l) => l.as_str(),
+                                _ => "",
+                            })
+                            .collect();
+                        if let Some((d, pos, name)) = dep.as_mut() {
+                            match (name.as_deref(), *pos) {
+                                (Some("message"), _) | (None, 0) => d.message = Some(s),
+                                (Some("since"), _) | (None, 1) => d.since = Some(s),
+                                _ => {}
+                            }
+                        }
+                    }
+                    Some(Tok::Str(s)) if depth == 2 && dep.is_some() => {
+                        if let Some((d, pos, name)) = dep.as_mut() {
+                            match (name.as_deref(), *pos) {
+                                (Some("message"), _) | (None, 0) => d.message = Some(s),
+                                (Some("since"), _) | (None, 1) => d.since = Some(s),
+                                _ => {}
+                            }
+                        }
+                    }
                     Some(Tok::Punct(",")) if depth == 1 => expect_name = true,
                     // A namespace separator. The QUALIFICATION is kept, unlike
                     // class names elsewhere in this engine: attribute names are
@@ -1717,6 +1788,12 @@ impl Parser {
                     _ => {}
                 }
             }
+        }
+        // `#[\Deprecated]` with no argument list deprecates with no suffix.
+        if self.last_deprecated.is_none()
+            && names.iter().any(|n| n.eq_ignore_ascii_case("Deprecated"))
+        {
+            self.last_deprecated = Some(Deprecation::default());
         }
         Ok(names)
     }
@@ -2001,6 +2078,7 @@ impl Parser {
         while !self.at_punct("}") && !self.at_end() {
             // Any member — const, property, method, enum case — may be attributed.
             self.attributes()?;
+            let member_deprecated = self.last_deprecated.take();
             // `case Name [= value];` — an enum case (only meaningful inside `enum`).
             if is_enum && self.at_kw("case") {
                 self.pos += 1;
@@ -2167,6 +2245,7 @@ impl Parser {
                     is_final: m_final,
                     has_body,
                     line: fn_line,
+                    deprecated: member_deprecated.clone(),
                 });
             } else {
                 // Property declaration(s): an optional type precedes the $var, and
