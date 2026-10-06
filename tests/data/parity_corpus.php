@@ -1249,3 +1249,92 @@ class H extends SplMinHeap { protected function compare($a, $b): int { throw new
 $h = new H; $h->insert(1);
 try { $h->insert(2); } catch (Exception $e) { echo $e->getTraceAsString(), "\n"; }
 $f = function ($x, $y) {};
+#==#
+// A by-value foreach over an Iterator runs its methods interleaved with the
+// body, current() before key(); an IteratorAggregate hands over its iterator
+// (through nested aggregates), and one answering a non-Traversable is refused.
+class T implements Iterator { private $i = 0; function current(): mixed { echo "cur "; return $this->i; } function key(): mixed { echo "key "; return $this->i; } function next(): void { echo "next "; $this->i++; } function rewind(): void { echo "rew "; $this->i = 0; } function valid(): bool { echo "valid "; return $this->i < 2; } }
+foreach (new T as $k => $v) echo "[$k$v] "; echo "\n";
+foreach (new T as $v) { echo "<$v> "; if ($v) break; } echo "\n";
+class A implements IteratorAggregate { #[\ReturnTypeWillChange] function getIterator() { return [1]; } }
+try { foreach (new A as $v) echo $v; } catch (Exception $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+class B implements IteratorAggregate { function getIterator(): Iterator { return new ArrayIterator(["k" => "v"]); } }
+class C implements IteratorAggregate { function getIterator(): Traversable { return new B; } }
+foreach (new C as $k => $v) echo "$k=$v\n";
+function g() { yield 1 => "a"; yield 1 => "b"; } foreach (g() as $k => $k) echo $k; echo "\n";
+$c = new CachingIterator(new ArrayIterator(['a', 'b', 'c'])); foreach ($c as $v) echo $v, $c->hasNext() ? "," : "\n";
+$n = 0; foreach (new InfiniteIterator(new ArrayIterator([1, 2])) as $v) { echo $v; if (++$n > 4) break; } echo "\n";
+#==#
+// The SPL iterators of ext/spl/spl_iterators.c: the dual iterators.
+$l = new LimitIterator(new ArrayIterator([1, 2, 3, 4, 5]), 1, 2); foreach ($l as $k => $v) echo "$k=$v "; echo $l->getPosition(), "\n";
+echo $l->seek(2), "\n";
+try { $l->seek(0); } catch (OutOfBoundsException $e) { echo $e->getMessage(), "\n"; }
+try { $l->seek(5); } catch (OutOfBoundsException $e) { echo $e->getMessage(), "\n"; }
+try { new LimitIterator(new ArrayIterator([]), -1); } catch (ValueError $e) { echo $e->getMessage(), "\n"; }
+echo $l->count(), "\n";
+function g4() { yield 1; yield 2; yield 3; yield 4; } foreach (new LimitIterator(g4(), 1, 2) as $k => $v) echo "$k=$v "; echo "\n";
+$c = new CachingIterator(new ArrayIterator(['x' => 1, 'y' => [2], 'z' => 3]), CachingIterator::FULL_CACHE);
+foreach ($c as $k => $v) { echo $k, ":", (string) $c, $c->hasNext() ? "+" : ".", " "; } echo "\n";
+print_r($c->getCache()); echo count($c), $c['x'], "\n"; var_dump(isset($c['q'])); var_dump($c['q']);
+$c = new CachingIterator(new ArrayIterator([1]), CachingIterator::TOSTRING_USE_KEY); foreach ($c as $v) echo (string) $c, "\n";
+try { $c->getCache(); } catch (BadMethodCallException $e) { echo $e->getMessage(), "\n"; }
+try { new CachingIterator(new ArrayIterator([]), 3); } catch (ValueError $e) { echo $e->getMessage(), "\n"; }
+$c = new CachingIterator(new ArrayIterator([]), 0); try { echo (string) $c; } catch (BadMethodCallException $e) { echo $e->getMessage(), "\n"; } echo $c->getFlags(), "\n";
+try { (new CachingIterator(new ArrayIterator([])))->setFlags(0); } catch (InvalidArgumentException $e) { echo $e->getMessage(), "\n"; }
+$a = new AppendIterator; $a->append(new ArrayIterator(['a' => 1, 'b' => 2])); $a->append(new ArrayIterator([])); $a->append(new ArrayIterator(['c' => 3]));
+foreach ($a as $k => $v) echo "$k=$v@", $a->getIteratorIndex(), " "; echo "\n";
+var_dump($a->getIteratorIndex(), $a->valid(), $a->current()); echo get_class($a->getArrayIterator()), count($a->getArrayIterator()), "\n";
+$f = new CallbackFilterIterator(new ArrayIterator(['a' => 1, 'b' => 2, 'c' => 3]), function ($v, $k, $it) { echo "[$k]"; return $v != 2; });
+foreach ($f as $k => $v) echo "$k=$v "; echo get_class($f->getInnerIterator()), "\n";
+class OddFilter extends FilterIterator { public function accept(): bool { return $this->current() % 2 == 1; } } print_r(iterator_to_array(new OddFilter(new ArrayIterator(range(1, 7)))));
+$n = new NoRewindIterator(new ArrayIterator([1, 2, 3])); $n->getInnerIterator()->next(); foreach ($n as $v) echo $v; foreach ($n as $v) echo $v; echo "\n";
+$e = new EmptyIterator; foreach ($e as $v) echo "never"; var_dump($e->valid()); try { $e->current(); } catch (BadMethodCallException $x) { echo $x->getMessage(), "\n"; }
+$ii = new IteratorIterator(new ArrayObject([1, 2])); foreach ($ii as $k => $v) echo "$k$v"; echo get_class($ii->getInnerIterator()), "\n";
+try { $ii->__construct(new ArrayIterator([])); } catch (BadMethodCallException $e) { echo $e->getMessage(), "\n"; }
+class Sub extends LimitIterator { function __construct() {} } try { (new Sub)->rewind(); } catch (Error $e) { echo $e->getMessage(), "\n"; }
+print_r(new LimitIterator(new ArrayIterator([1])));
+echo iterator_count(new LimitIterator(new InfiniteIterator(new ArrayIterator([1, 2, 3])), 0, 7)), "\n";
+#==#
+// RegexIterator's five modes and its flags.
+$r = new RegexIterator(new ArrayIterator(['a1', 'b', 'c22', 'd']), '/\d/', RegexIterator::MATCH, RegexIterator::INVERT_MATCH); print_r(iterator_to_array($r));
+$r = new RegexIterator(new ArrayIterator(['a1' => 'x', 'b' => 'y']), '/\d/', RegexIterator::MATCH, RegexIterator::USE_KEY); print_r(iterator_to_array($r));
+$r = new RegexIterator(new ArrayIterator(['ab12', 'cd']), '/(\w)(\d)/', RegexIterator::GET_MATCH); print_r(iterator_to_array($r));
+echo $r->getRegex(), $r->getMode(), $r->getFlags(), $r->getPregFlags(), "\n";
+try { new RegexIterator(new ArrayIterator([]), "abc"); } catch (Exception $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+try { new RegexIterator(new ArrayIterator([]), "/(/"); } catch (Exception $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+try { new RegexIterator(new ArrayIterator([]), "/x/", 9); } catch (ValueError $e) { echo $e->getMessage(), "\n"; }
+print_r(iterator_to_array(new RegexIterator(new ArrayIterator(["a1b2", "cc", "d3"]), "/\d/", RegexIterator::ALL_MATCHES)));
+print_r(iterator_to_array(new RegexIterator(new ArrayIterator(["a1b2", "cc"]), "/\d/", RegexIterator::SPLIT)));
+$r = new RegexIterator(new ArrayIterator(["k1" => "a1", "zz" => "b"]), "/\d/", RegexIterator::REPLACE); $r->replacement = "#"; print_r(iterator_to_array($r)); print_r($r);
+#==#
+// RecursiveIteratorIterator's three orders, its depth limit and hooks, and
+// RecursiveTreeIterator, ParentIterator and the recursive filters over it.
+$it = new RecursiveIteratorIterator(new RecursiveArrayIterator([1, [2, [3, 4]], 5, []])); foreach ($it as $k => $v) echo $it->getDepth(), "$k=$v "; echo "\n";
+foreach (new RecursiveIteratorIterator(new RecursiveArrayIterator(['a' => 1, 'b' => ['c' => 2, 'd' => ['e' => 3]]]), RecursiveIteratorIterator::CHILD_FIRST) as $k => $v) echo $k, is_array($v) ? "[]" : "=$v", " "; echo "\n";
+$it = new RecursiveIteratorIterator(new RecursiveArrayIterator([1, [2, [3, 4]], 5]), RecursiveIteratorIterator::SELF_FIRST); $it->setMaxDepth(1);
+foreach ($it as $k => $v) echo $it->getDepth(), ":", is_array($v) ? "A" : $v, " "; echo "\n";
+var_dump($it->getMaxDepth()); try { $it->setMaxDepth(-2); } catch (ValueError $e) { echo $e->getMessage(), "\n"; } $it->setMaxDepth(); var_dump($it->getMaxDepth());
+print_r(iterator_to_array(new RecursiveIteratorIterator(new RecursiveArrayIterator([[1, 2], [3]])), false));
+class Hooked extends RecursiveIteratorIterator { function beginIteration(): void { echo "<begin>"; } function endIteration(): void { echo "<end>"; } function beginChildren(): void { echo "<down>"; } function endChildren(): void { echo "<up>"; } function nextElement(): void { echo "<el>"; } function callHasChildren(): bool { echo "?"; return parent::callHasChildren(); } }
+foreach (new Hooked(new RecursiveArrayIterator([1, [2, 3], 4]), RecursiveIteratorIterator::SELF_FIRST) as $k => $v) echo is_array($v) ? "A" : $v; echo "\n";
+$t = new RecursiveTreeIterator(new RecursiveArrayIterator(['a' => 1, 'b' => ['c' => 2, 'd' => ['e' => 3]], 'f' => 4])); foreach ($t as $k => $v) echo "[$k] $v\n";
+$t = new RecursiveTreeIterator(new RecursiveArrayIterator(['x' => ['y' => 1]]), 0); foreach ($t as $k => $v) echo "$k => $v\n";
+$t->setPrefixPart(RecursiveTreeIterator::PREFIX_LEFT, ">"); $t->setPostfix("<"); foreach ($t as $v) echo $v, "|", $t->getEntry(), "|", $t->getPrefix(), "|", $t->getPostfix(), "\n";
+$p = new ParentIterator(new RecursiveArrayIterator([1, 'a' => [2, 'b' => [3]], 4])); foreach (new RecursiveIteratorIterator($p, RecursiveIteratorIterator::SELF_FIRST) as $k => $v) echo $k, " "; echo "\n";
+$f = new RecursiveCallbackFilterIterator(new RecursiveArrayIterator([1, [2, 30], 40]), fn($v, $k, $it) => $it->hasChildren() || $v < 10); foreach (new RecursiveIteratorIterator($f) as $v) echo $v, " "; echo "\n";
+$a = new ArrayIterator([3, 4], ArrayIterator::ARRAY_AS_PROPS); echo $a->getFlags(), "\n";
+$r = new RecursiveArrayIterator([[1]], RecursiveArrayIterator::CHILD_ARRAYS_ONLY); var_dump($r->hasChildren(), $r->getChildren()->getFlags(), $r->getChildren() instanceof RecursiveArrayIterator);
+#==#
+// Traces through the SPL iterators: a method the reference calls from C is
+// entered from [internal function], an iterator it walks natively has no
+// frame, and a forwarded call that finds nothing names the outer class.
+$c = new CallbackFilterIterator(new ArrayIterator([1, 2]), function ($v) { throw new Exception("x"); });
+try { foreach ($c as $v) {} } catch (Exception $e) { echo $e->getTraceAsString(), "\n"; }
+class F extends FilterIterator { function accept(): bool { throw new Exception("y"); } }
+try { iterator_to_array(new F(new ArrayIterator([1]))); } catch (Exception $e) { echo $e->getTraceAsString(), "\n"; }
+$l = new LimitIterator(new ArrayIterator([1]));
+try { $l->seek(4); } catch (Exception $e) { echo $e->getLine(), $e->getTraceAsString(), "\n"; }
+class R implements RecursiveIterator { private $i = 0; function current(): mixed { return $this->i; } function key(): mixed { return $this->i; } function next(): void { $this->i++; } function rewind(): void { $this->i = 0; } function valid(): bool { return $this->i < 2; } function hasChildren(): bool { throw new LogicException("hc"); } function getChildren(): ?RecursiveIterator { return null; } }
+foreach (new RecursiveIteratorIterator(new R, 0, RecursiveIteratorIterator::CATCH_GET_CHILD) as $v) echo $v; echo "\n";
+try { foreach (new RecursiveIteratorIterator(new R) as $v) echo $v; } catch (LogicException $e) { echo $e->getTraceAsString(), "\n"; }
+$l->nope();

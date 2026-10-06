@@ -25,6 +25,21 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         // `[false, $exception]` with the exception it threw taken off the
         // stack: the prelude cannot hold a `try` (its try-defs are not loaded).
         "__phplang_try_call" => return Some(crate::host::try_call(arg(args, 0))),
+        // An E_WARNING raised by a prelude method, at the user's call site.
+        "__phplang_warn" => {
+            crate::host::warn_from_prelude(&str_arg(args, 0));
+            Value::Undef
+        }
+        // The lowercased class that declares the method an object would run
+        // for a lowercased name, or null: how the prelude tells a subclass
+        // override from the method it inherits.
+        "__phplang_method_owner" => {
+            let lname = str_arg(args, 1);
+            match with_host(|h| h.method_owner(&arg(args, 0), &lname)) {
+                Some(c) => Value::str(c),
+                None => Value::Undef,
+            }
+        }
         // assert($assertion, $description = null): bool
         // Assertions are "enabled" but non-fatal here — a falsy assertion yields
         // false rather than throwing AssertionError (phplang has no throw path in

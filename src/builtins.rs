@@ -182,6 +182,8 @@ pub fn install(vm: &mut VM) {
     reg!(vm, ops::GEN_KEY, b_gen_key);
     reg!(vm, ops::GEN_CURRENT, b_gen_current);
     reg!(vm, ops::GEN_NEXT, b_gen_next);
+    reg!(vm, ops::FOREACH_ITER, b_foreach_iter);
+    reg!(vm, ops::IS_LAZY_ITER, b_is_lazy_iter);
 }
 
 // ── generators ───────────────────────────────────────────────────────────────
@@ -238,6 +240,29 @@ fn b_is_generator(vm: &mut VM, _: u8) -> Value {
     Value::bool(with_host(|h| h.is_generator_val(&v)))
 }
 
+/// A `foreach` step names the `foreach` line in the frames it opens. Only
+/// the steps a `foreach` emits carry a line; a step that carries none leaves
+/// the frame where it was.
+fn mark_foreach_line(vm: &VM) {
+    if cur_op_line(vm) > 0 {
+        mark_frame_line(vm);
+    }
+}
+
+fn b_is_lazy_iter(vm: &mut VM, _: u8) -> Value {
+    let v = vm.pop();
+    Value::bool(host::is_lazy_iter(&v))
+}
+
+fn b_foreach_iter(vm: &mut VM, _: u8) -> Value {
+    let v = vm.pop();
+    mark_foreach_line(vm);
+    match host::foreach_iter(v) {
+        Ok(it) => bubbled(vm, it),
+        Err(e) => fail_or_throw(vm, e),
+    }
+}
+
 fn b_gen_mark(_: &mut VM, _: u8) -> Value {
     Value::int(host::gen_mark())
 }
@@ -253,15 +278,27 @@ fn b_gen_release(vm: &mut VM, _: u8) -> Value {
 
 fn b_gen_rewind(vm: &mut VM, _: u8) -> Value {
     let g = vm.pop();
-    match host::gen_rewind(&g) {
-        Ok(()) => bubbled(vm, Value::Undef),
+    mark_foreach_line(vm);
+    let r = if with_host(|h| h.is_generator_val(&g)) {
+        host::gen_rewind(&g).map(|()| Value::Undef)
+    } else {
+        host::iter_call(&g, "rewind").map(|_| Value::Undef)
+    };
+    match r {
+        Ok(v) => bubbled(vm, v),
         Err(e) => yield_err(vm, e),
     }
 }
 
 fn b_gen_valid(vm: &mut VM, _: u8) -> Value {
     let g = vm.pop();
-    match host::gen_valid(&g) {
+    mark_foreach_line(vm);
+    let r = if with_host(|h| h.is_generator_val(&g)) {
+        host::gen_valid(&g)
+    } else {
+        host::iter_call(&g, "valid").map(|v| with_host(|h| h.is_truthy(&v)))
+    };
+    match r {
         Ok(b) => bubbled(vm, Value::bool(b)),
         Err(e) => yield_err(vm, e),
     }
@@ -269,7 +306,13 @@ fn b_gen_valid(vm: &mut VM, _: u8) -> Value {
 
 fn b_gen_key(vm: &mut VM, _: u8) -> Value {
     let g = vm.pop();
-    match host::gen_key(&g) {
+    mark_foreach_line(vm);
+    let r = if with_host(|h| h.is_generator_val(&g)) {
+        host::gen_key(&g)
+    } else {
+        host::iter_call(&g, "key")
+    };
+    match r {
         Ok(v) => bubbled(vm, v),
         Err(e) => yield_err(vm, e),
     }
@@ -277,7 +320,13 @@ fn b_gen_key(vm: &mut VM, _: u8) -> Value {
 
 fn b_gen_current(vm: &mut VM, _: u8) -> Value {
     let g = vm.pop();
-    match host::gen_current(&g) {
+    mark_foreach_line(vm);
+    let r = if with_host(|h| h.is_generator_val(&g)) {
+        host::gen_current(&g)
+    } else {
+        host::iter_call(&g, "current")
+    };
+    match r {
         Ok(v) => bubbled(vm, v),
         Err(e) => yield_err(vm, e),
     }
@@ -285,7 +334,13 @@ fn b_gen_current(vm: &mut VM, _: u8) -> Value {
 
 fn b_gen_next(vm: &mut VM, _: u8) -> Value {
     let g = vm.pop();
-    match host::gen_next(&g) {
+    mark_foreach_line(vm);
+    let r = if with_host(|h| h.is_generator_val(&g)) {
+        host::gen_next(&g)
+    } else {
+        host::iter_call(&g, "next")
+    };
+    match r {
         Ok(v) => bubbled(vm, v),
         Err(e) => yield_err(vm, e),
     }

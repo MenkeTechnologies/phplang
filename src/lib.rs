@@ -607,9 +607,13 @@ final class Override { public function __construct() {} }
 // instance (a static table keyed by object id) so the instance shows only
 // its storage, as the reference's does.
 class ArrayIterator implements SeekableIterator, ArrayAccess, Countable {
+    const STD_PROP_LIST = 1;
+    const ARRAY_AS_PROPS = 2;
     private $storage = [];
     private static $__cursor = [];
-    public function __construct(array|object $array = [], int $flags = 0) { $this->storage = is_array($array) ? $array : get_object_vars($array); }
+    // id => the flags a program set, `ar_flags & ~SPL_ARRAY_INT_MASK`.
+    private static $__flags = [];
+    public function __construct(array|object $array = [], int $flags = 0) { $this->storage = is_array($array) ? $array : get_object_vars($array); self::$__flags[spl_object_id($this)] = $flags & ~0xFFFF0000; }
     private function __at() {
         $c = self::$__cursor[spl_object_id($this)] ?? [0, null];
         if ($c[1] === null) { $c[1] = array_keys($this->storage); self::$__cursor[spl_object_id($this)] = $c; }
@@ -631,8 +635,8 @@ class ArrayIterator implements SeekableIterator, ArrayAccess, Countable {
     public function append(mixed $value): void { $this->storage[] = $value; self::$__cursor[spl_object_id($this)][1] = null; }
     public function count(): int { return count($this->storage); }
     public function getArrayCopy(): array { return $this->storage; }
-    public function getFlags(): int { return 0; }
-    public function setFlags(int $flags): void {}
+    public function getFlags(): int { return self::$__flags[spl_object_id($this)] ?? 0; }
+    public function setFlags(int $flags): void { self::$__flags[spl_object_id($this)] = $flags & ~0xFFFF0000; }
     public function asort(int $flags = SORT_REGULAR): bool { return asort($this->storage, $flags); }
     public function ksort(int $flags = SORT_REGULAR): bool { return ksort($this->storage, $flags); }
     public function uasort(callable $callback): bool { return uasort($this->storage, $callback); }
@@ -855,6 +859,916 @@ class SplPriorityQueue implements Iterator, Countable {
         );
         $this->flags &= 3;
         $this->__validate(false);
+    }
+}
+// The iterators of ext/spl/spl_iterators.c. Each instance's internal state —
+// the reference's `spl_dual_it_object` / `spl_recursive_it_object` — lives in
+// `__SplIt`, keyed by object id, so an instance shows no properties, as the
+// reference's do not. `__SplIt`'s methods are the C file's static functions;
+// the classes below are its PHP_METHODs. An inner iterator is driven through
+// its Iterator methods, which is what the reference's `zend_user_iterator`
+// does, including keeping the value `current()` answered until the iterator
+// moves (`zend_user_it_get_current_data`).
+final class __SplIt {
+    private static $d = [];
+    // RecursiveTreeIterator's prefix parts and postfix, set when the object is
+    // created (`spl_RecursiveIteratorIterator_new_ex`), not by its constructor.
+    private static $tree = [];
+    private static $warning = null;
+
+    // SPL_FETCH_AND_CHECK_DUAL_IT
+    public static function id($o) {
+        $id = spl_object_id($o);
+        if (!isset(self::$d[$id])) {
+            throw new Error("The object is in an invalid state as the parent constructor was not called");
+        }
+        return $id;
+    }
+    public static function get($o, $k) { return self::$d[self::id($o)][$k]; }
+    public static function put($o, $k, $v) { self::$d[self::id($o)][$k] = $v; }
+
+    // The `dit_type != DIT_Unknown` check at the top of `spl_dual_it_construct`.
+    public static function once($o, $base) {
+        if (isset(self::$d[spl_object_id($o)])) {
+            throw new BadMethodCallException("$base::getIterator() must be called exactly once per instance");
+        }
+    }
+    // The tail of `spl_dual_it_construct`: the inner object and the state.
+    public static function construct($o, $inner, $extra = []) {
+        self::$d[spl_object_id($o)] = $extra + [
+            'inner' => $inner,
+            'has' => false,
+            'data' => null,
+            'hasKey' => false,
+            'key' => null,
+            'pos' => 0,
+        ];
+    }
+    // `spl_get_iterator_from_aggregate`.
+    public static function fromAggregate($agg, $class) {
+        $r = $agg->getIterator();
+        if (!($r instanceof Traversable)) {
+            throw new LogicException("$class::getIterator() must return an object that implements Traversable");
+        }
+        return $r;
+    }
+    // `zend_user_it_get_new_iterator`: an aggregate is iterated through the
+    // iterator its getIterator() answers.
+    public static function iteratorOf($t) {
+        while (!($t instanceof Iterator)) {
+            $t = self::fromAggregate($t, get_class($t));
+        }
+        return $t;
+    }
+    // IteratorIterator's arm of `spl_dual_it_construct`.
+    public static function constructIteratorIterator($o, $it, $class) {
+        self::once($o, 'IteratorIterator');
+        if (!($it instanceof Iterator)) {
+            $ce = get_class($it);
+            if ($class !== null) {
+                if (!class_exists($class) && !interface_exists($class) || !is_a($it, $class) || !is_subclass_of($class, 'Traversable') && strcasecmp($class, 'Traversable') !== 0) {
+                    throw new LogicException("Class to downcast to not found or not base class or does not implement Traversable");
+                }
+                $ce = $class;
+            }
+            if ($it instanceof IteratorAggregate) {
+                $it = self::fromAggregate($it, $ce);
+            }
+        }
+        self::construct($o, $it, ['it' => self::iteratorOf($it)]);
+    }
+
+    // `spl_dual_it_free`
+    public static function free($id) {
+        self::$d[$id]['has'] = false;
+        self::$d[$id]['data'] = null;
+        self::$d[$id]['hasKey'] = false;
+        self::$d[$id]['key'] = null;
+        if (array_key_exists('zstr', self::$d[$id])) {
+            self::$d[$id]['zstr'] = null;
+            self::$d[$id]['children'] = null;
+        }
+    }
+    // `spl_dual_it_rewind`
+    public static function rewind($id) {
+        self::free($id);
+        self::$d[$id]['pos'] = 0;
+        $it = self::$d[$id]['it'];
+        if ($it !== null) { $it->rewind(); }
+    }
+    // `spl_dual_it_valid`
+    public static function valid($id) {
+        $it = self::$d[$id]['it'];
+        return $it !== null && (bool) $it->valid();
+    }
+    // `spl_dual_it_fetch`
+    public static function fetch($id, $checkMore) {
+        self::free($id);
+        if ($checkMore && !self::valid($id)) { return false; }
+        $it = self::$d[$id]['it'];
+        self::$d[$id]['data'] = $it->current();
+        self::$d[$id]['has'] = true;
+        self::$d[$id]['key'] = $it->key();
+        self::$d[$id]['hasKey'] = true;
+        return true;
+    }
+    // `spl_dual_it_next`
+    public static function next($id, $doFree) {
+        if ($doFree) {
+            self::free($id);
+        } elseif (self::$d[$id]['it'] === null) {
+            throw new Error("The inner constructor wasn't initialized with an iterator instance");
+        }
+        self::$d[$id]['it']->next();
+        self::$d[$id]['pos']++;
+    }
+    // `spl_filter_it_fetch`
+    public static function filterFetch($o, $id) {
+        while (self::fetch($id, true)) {
+            if ($o->accept()) { return; }
+            self::$d[$id]['it']->next();
+        }
+        self::free($id);
+    }
+    // `spl_dual_it_get_method`: a method the iterator does not have is looked
+    // up on the inner iterator.
+    public static function forward($o, $name, $args) {
+        $inner = self::$d[spl_object_id($o)]['inner'] ?? null;
+        if (is_object($inner) && (method_exists($inner, $name) || method_exists($inner, '__call'))) {
+            return $inner->$name(...$args);
+        }
+        throw new Error("Call to undefined method " . get_class($o) . "::$name()");
+    }
+
+    // `spl_limit_it_seek`
+    public static function limitSeek($o, $pos) {
+        $id = self::id($o);
+        $s = self::$d[$id];
+        self::free($id);
+        if ($pos < $s['offset']) {
+            throw new OutOfBoundsException("Cannot seek to $pos which is below the offset {$s['offset']}");
+        }
+        if ($pos - $s['offset'] >= $s['count'] && $s['count'] != -1) {
+            throw new OutOfBoundsException("Cannot seek to $pos which is behind offset {$s['offset']} plus count {$s['count']}");
+        }
+        if ($pos != $s['pos'] && $s['it'] instanceof SeekableIterator) {
+            self::free($id);
+            $s['it']->seek($pos);
+            self::$d[$id]['pos'] = $pos;
+            if (self::limitValid($id)) { self::fetch($id, false); }
+        } else {
+            if ($pos < $s['pos']) { self::rewind($id); }
+            while ($pos > self::$d[$id]['pos'] && self::valid($id)) { self::next($id, true); }
+            if (self::valid($id)) { self::fetch($id, true); }
+        }
+    }
+    // `spl_limit_it_valid`
+    public static function limitValid($id) {
+        $s = self::$d[$id];
+        if ($s['count'] != -1 && $s['pos'] - $s['offset'] >= $s['count']) { return false; }
+        return self::valid($id);
+    }
+
+    // `spl_cit_check_flags`
+    public static function citFlagsOk($flags) {
+        $n = 0;
+        foreach ([1, 2, 4, 8] as $bit) { if ($flags & $bit) { $n++; } }
+        return $n <= 1;
+    }
+    public static function citFlagsError($fn, $arg) {
+        throw new ValueError("$fn(): Argument #$arg (\$flags) must contain only one of CachingIterator::CALL_TOSTRING, CachingIterator::TOSTRING_USE_KEY, CachingIterator::TOSTRING_USE_CURRENT, or CachingIterator::TOSTRING_USE_INNER");
+    }
+    // `spl_caching_it_next`
+    public static function cachingNext($o, $id) {
+        if (!self::fetch($id, true)) {
+            self::$d[$id]['flags'] &= ~0x10000;
+            return;
+        }
+        self::$d[$id]['flags'] |= 0x10000;
+        $flags = self::$d[$id]['flags'];
+        if ($flags & 0x100) {
+            $cache = self::$d[$id]['cache'];
+            $cache[self::$d[$id]['key']] = self::$d[$id]['data'];
+            self::$d[$id]['cache'] = $cache;
+        }
+        if (self::$d[$id]['recursive']) {
+            $inner = self::$d[$id]['inner'];
+            [$ok, $has] = __phplang_try_call(fn() => $inner->hasChildren());
+            if (!$ok) {
+                if (!($flags & 0x10)) { throw $has; }
+            } elseif ($has) {
+                [$ok, $kids] = __phplang_try_call(fn() => $inner->getChildren());
+                if (!$ok) {
+                    if (!($flags & 0x10)) { throw $kids; }
+                } else {
+                    [$ok, $child] = __phplang_try_call(fn() => new RecursiveCachingIterator($kids, $flags & 0xFFFF));
+                    if ($ok) {
+                        self::$d[$id]['children'] = $child;
+                    } elseif (!($flags & 0x10)) {
+                        throw $child;
+                    }
+                }
+            }
+        }
+        if ($flags & (8 | 1)) {
+            self::$d[$id]['zstr'] = ($flags & 8) ? (string) self::$d[$id]['inner'] : (string) self::$d[$id]['data'];
+        }
+        self::next($id, false);
+    }
+    // The `CIT_FULL_CACHE` check every cache accessor starts with.
+    public static function fullCache($o) {
+        $id = self::id($o);
+        if (!(self::$d[$id]['flags'] & 0x100)) {
+            throw new BadMethodCallException(get_class($o) . " does not use a full cache (see CachingIterator::__construct)");
+        }
+        return $id;
+    }
+    public static function cacheGet($o, $key) {
+        $id = self::fullCache($o);
+        $key = (string) $key;
+        if (!array_key_exists($key, self::$d[$id]['cache'])) {
+            __phplang_warn("Undefined array key \"$key\"");
+            return null;
+        }
+        return self::$d[$id]['cache'][$key];
+    }
+    public static function cacheSet($o, $key, $value) {
+        $id = self::fullCache($o);
+        self::$d[$id]['cache'][(string) $key] = $value;
+    }
+    public static function cacheUnset($o, $key) {
+        $id = self::fullCache($o);
+        unset(self::$d[$id]['cache'][(string) $key]);
+    }
+
+    // `spl_append_it_next_iterator`
+    public static function appendNextIterator($id) {
+        self::free($id);
+        self::$d[$id]['inner'] = null;
+        self::$d[$id]['it'] = null;
+        $list = self::$d[$id]['list'];
+        if (!$list->valid()) { return false; }
+        $it = $list->current();
+        self::$d[$id]['inner'] = $it;
+        self::$d[$id]['it'] = $it;
+        self::rewind($id);
+        return true;
+    }
+    // `spl_append_it_fetch`
+    public static function appendFetch($id) {
+        while (!self::valid($id)) {
+            self::$d[$id]['list']->next();
+            if (!self::appendNextIterator($id)) { return; }
+        }
+        self::fetch($id, false);
+    }
+    // AppendIterator::append
+    public static function append($o, $it) {
+        $id = self::id($o);
+        $list = self::$d[$id]['list'];
+        if ($list->valid() && !self::valid($id)) {
+            $list->append($it);
+            $list->next();
+        } else {
+            $list->append($it);
+        }
+        if (self::$d[$id]['it'] === null || !self::valid($id)) {
+            if (!$list->valid()) { $list->rewind(); }
+            do {
+                self::appendNextIterator($id);
+            } while (self::$d[$id]['inner'] !== $it);
+            self::appendFetch($id);
+        }
+    }
+
+    // A REGIT_MODE_* argument outside the five modes.
+    public static function regexModeError($fn, $arg) {
+        throw new ValueError("$fn(): Argument #$arg (\$mode) must be RegexIterator::MATCH, RegexIterator::GET_MATCH, RegexIterator::ALL_MATCHES, RegexIterator::SPLIT, or RegexIterator::REPLACE");
+    }
+    public static function catchWarning($no, $msg, $file = null, $line = null) {
+        self::$warning = $msg;
+        return true;
+    }
+    // `pcre_get_compiled_regex_cache` under EH_THROW: a pattern that does not
+    // compile is an InvalidArgumentException carrying the warning, reworded
+    // as the constructor's.
+    public static function compileRegex($regex, $fn) {
+        self::$warning = null;
+        set_error_handler([self::class, 'catchWarning']);
+        preg_match($regex, '');
+        restore_error_handler();
+        if (self::$warning !== null) {
+            $msg = self::$warning;
+            self::$warning = null;
+            throw new InvalidArgumentException("$fn(): " . substr($msg, strlen('preg_match(): ')));
+        }
+    }
+    // RegexIterator::accept
+    public static function regexAccept($o) {
+        $id = self::id($o);
+        $s = self::$d[$id];
+        if (!$s['has']) { return false; }
+        if ($s['flags'] & 1) {
+            $subject = (string) $s['key'];
+        } else {
+            if (is_array($s['data'])) { return false; }
+            $subject = (string) $s['data'];
+        }
+        switch ($s['mode']) {
+            case 1:
+            case 2:
+                self::$d[$id]['data'] = null;
+                $count = $s['mode'] === 2
+                    ? preg_match_all($s['regex'], $subject, $m, $s['pflags'])
+                    : preg_match($s['regex'], $subject, $m, $s['pflags']);
+                self::$d[$id]['data'] = $m;
+                $r = $count > 0;
+                break;
+            case 3:
+                self::$d[$id]['data'] = null;
+                $parts = preg_split($s['regex'], $subject, -1, $s['pflags']);
+                self::$d[$id]['data'] = $parts;
+                $r = count($parts) > 1;
+                break;
+            case 4:
+                $result = preg_replace($s['regex'], (string) $o->replacement, $subject, -1, $count);
+                if ($result === null) { return false; }
+                if ($s['flags'] & 1) {
+                    self::$d[$id]['key'] = $result;
+                } else {
+                    self::$d[$id]['data'] = $result;
+                }
+                $r = $count > 0;
+                break;
+            default:
+                $r = preg_match($s['regex'], $subject) === 1;
+        }
+        if ($s['flags'] & 2) { return !$r; }
+        return $r;
+    }
+
+    // --- RecursiveIteratorIterator: `spl_recursive_it_object` ---
+    // Each level is [iterator, state, value cached?, cached value].
+    // States: RS_NEXT 0, RS_TEST 1, RS_SELF 2, RS_CHILD 3, RS_START 4.
+
+    // `spl_recursive_it_it_construct`
+    public static function riConstruct($o, $iterator, $mode, $flags) {
+        if ($iterator instanceof IteratorAggregate) {
+            $iterator = self::fromAggregate($iterator, get_class($iterator));
+        }
+        if (!($iterator instanceof RecursiveIterator)) {
+            throw new InvalidArgumentException("An instance of RecursiveIterator or IteratorAggregate creating it is required");
+        }
+        // The hooks a subclass overrides; the base class's are not called.
+        $hooks = [];
+        foreach (['beginiteration', 'enditeration', 'callhaschildren', 'callgetchildren', 'beginchildren', 'endchildren', 'nextelement'] as $h) {
+            $owner = __phplang_method_owner($o, $h);
+            $hooks[$h] = $owner !== 'recursiveiteratoriterator' && $owner !== 'recursivetreeiterator';
+        }
+        self::$d[spl_object_id($o)] = [
+            'its' => [[$iterator, 4, false, null]],
+            'level' => 0,
+            'mode' => $mode,
+            'flags' => $flags,
+            'max' => -1,
+            'inIter' => false,
+            'hooks' => $hooks,
+        ];
+    }
+    // SPL_FETCH_SUB_ITERATOR
+    public static function riId($o) { return self::id($o); }
+    public static function riLevelIt($o) {
+        $id = self::id($o);
+        return self::$d[$id]['its'][self::$d[$id]['level']][0];
+    }
+    public static function riDepth($o) { return self::$d[spl_object_id($o)]['level'] ?? 0; }
+    public static function riSubIterator($o, $level) {
+        $id = spl_object_id($o);
+        $cur = self::$d[$id]['level'] ?? 0;
+        if ($level === null) {
+            $level = $cur;
+        } elseif ($level < 0 || $level > $cur) {
+            return null;
+        }
+        self::id($o);
+        return self::$d[$id]['its'][$level][0];
+    }
+    public static function riHasChildren($o) {
+        $id = spl_object_id($o);
+        if (!isset(self::$d[$id])) { return false; }
+        return self::$d[$id]['its'][self::$d[$id]['level']][0]->hasChildren();
+    }
+    public static function riSetMax($o, $max) {
+        if ($max < -1) {
+            throw new ValueError("RecursiveIteratorIterator::setMaxDepth(): Argument #1 (\$maxDepth) must be greater than or equal to -1");
+        }
+        if ($max > 2147483647) { $max = 2147483647; }
+        self::$d[self::id($o)]['max'] = $max;
+    }
+    public static function riGetMax($o) {
+        $max = self::$d[spl_object_id($o)]['max'] ?? 0;
+        return $max === -1 ? false : $max;
+    }
+    // `get_current_data` of the active sub-iterator, which keeps the value
+    // until that iterator moves.
+    public static function riCurrent($o) {
+        $id = self::id($o);
+        $l = self::$d[$id]['level'];
+        if (!self::$d[$id]['its'][$l][2]) {
+            self::$d[$id]['its'][$l][3] = self::$d[$id]['its'][$l][0]->current();
+            self::$d[$id]['its'][$l][2] = true;
+        }
+        return self::$d[$id]['its'][$l][3];
+    }
+    // `spl_recursive_it_valid_ex`
+    public static function riValid($o) {
+        $id = spl_object_id($o);
+        if (!isset(self::$d[$id])) { return false; }
+        for ($l = self::$d[$id]['level']; $l >= 0; $l--) {
+            if (self::$d[$id]['its'][$l][0]->valid()) { return true; }
+        }
+        if (self::$d[$id]['hooks']['enditeration'] && self::$d[$id]['inIter']) {
+            [$ok, $e] = __phplang_try_call(fn() => $o->endIteration());
+            self::$d[$id]['inIter'] = false;
+            if (!$ok) { throw $e; }
+        }
+        self::$d[$id]['inIter'] = false;
+        return false;
+    }
+    // `spl_recursive_it_rewind_ex`
+    public static function riRewind($o) {
+        $id = self::id($o);
+        $thrown = null;
+        while (self::$d[$id]['level'] > 0) {
+            $l = self::$d[$id]['level'];
+            unset(self::$d[$id]['its'][$l]);
+            self::$d[$id]['level'] = $l - 1;
+            if ($thrown === null) {
+                [$ok, $e] = __phplang_try_call(fn() => $o->endChildren());
+                if (!$ok) { $thrown = $e; }
+            }
+        }
+        self::$d[$id]['its'][0][1] = 4;
+        self::$d[$id]['its'][0][2] = false;
+        $it = self::$d[$id]['its'][0][0];
+        if ($thrown === null) {
+            [$ok, $e] = __phplang_try_call(fn() => $it->rewind());
+            if (!$ok) { $thrown = $e; }
+        }
+        if ($thrown === null && self::$d[$id]['hooks']['beginiteration'] && !self::$d[$id]['inIter']) {
+            [$ok, $e] = __phplang_try_call(fn() => $o->beginIteration());
+            if (!$ok) { $thrown = $e; }
+        }
+        self::$d[$id]['inIter'] = true;
+        if ($thrown !== null) { throw $thrown; }
+        self::riForward($o);
+    }
+    // `spl_recursive_it_move_forward_ex`
+    public static function riForward($o) {
+        $id = self::id($o);
+        $catch = (self::$d[$id]['flags'] & 16) !== 0;
+        $mode = self::$d[$id]['mode'];
+        $hooks = self::$d[$id]['hooks'];
+        while (true) {
+            $l = self::$d[$id]['level'];
+            $it = self::$d[$id]['its'][$l][0];
+            $state = self::$d[$id]['its'][$l][1];
+            if ($state === 0) {
+                self::$d[$id]['its'][$l][2] = false;
+                [$ok, $e] = __phplang_try_call(fn() => $it->next());
+                if (!$ok && !$catch) { throw $e; }
+                $state = 4;
+            }
+            if ($state === 4) {
+                $valid = $it->valid();
+                if (self::$d[$id]['level'] !== $l || (self::$d[$id]['its'][$l][0] ?? null) !== $it) {
+                    return;
+                }
+                if ($valid) {
+                    self::$d[$id]['its'][$l][1] = 1;
+                    $state = 1;
+                }
+            }
+            if ($state === 1) {
+                [$ok, $has] = $hooks['callhaschildren']
+                    ? __phplang_try_call(fn() => $o->callHasChildren())
+                    : __phplang_try_call(fn() => $it->hasChildren());
+                if (!$ok) {
+                    if (!$catch) {
+                        self::$d[$id]['its'][$l][1] = 0;
+                        throw $has;
+                    }
+                    $has = false;
+                }
+                if ($has) {
+                    $max = self::$d[$id]['max'];
+                    if ($max === -1 || $max > $l) {
+                        if ($mode === 0 || $mode === 2) {
+                            self::$d[$id]['its'][$l][1] = 3;
+                            continue;
+                        }
+                        if ($mode === 1) {
+                            self::$d[$id]['its'][$l][1] = 2;
+                            continue;
+                        }
+                    } elseif ($mode === 0) {
+                        self::$d[$id]['its'][$l][1] = 0;
+                        continue;
+                    }
+                }
+                $ok = true;
+                if ($hooks['nextelement']) {
+                    [$ok, $e] = __phplang_try_call(fn() => $o->nextElement());
+                }
+                self::$d[$id]['its'][$l][1] = 0;
+                if (!$ok && !$catch) { throw $e; }
+                return;
+            }
+            if ($state === 2) {
+                $ok = true;
+                if ($hooks['nextelement'] && ($mode === 1 || $mode === 2)) {
+                    [$ok, $e] = __phplang_try_call(fn() => $o->nextElement());
+                }
+                self::$d[$id]['its'][$l][1] = $mode === 1 ? 3 : 0;
+                if (!$ok) { throw $e; }
+                return;
+            }
+            if ($state === 3) {
+                [$ok, $child] = $hooks['callgetchildren']
+                    ? __phplang_try_call(fn() => $o->callGetChildren())
+                    : __phplang_try_call(fn() => $it->getChildren());
+                if (!$ok) {
+                    if (!$catch) { throw $child; }
+                    self::$d[$id]['its'][$l][1] = 0;
+                    continue;
+                }
+                if (!($child instanceof RecursiveIterator)) {
+                    throw new UnexpectedValueException("Objects returned by RecursiveIterator::getChildren() must implement RecursiveIterator");
+                }
+                self::$d[$id]['its'][$l][1] = $mode === 2 ? 2 : 0;
+                self::$d[$id]['level'] = $l + 1;
+                self::$d[$id]['its'][$l + 1] = [$child, 4, false, null];
+                $child->rewind();
+                if ($hooks['beginchildren']) {
+                    [$ok, $e] = __phplang_try_call(fn() => $o->beginChildren());
+                    if (!$ok && !$catch) { throw $e; }
+                }
+                continue;
+            }
+            // no more elements at this level
+            if ($l > 0) {
+                if ($hooks['endchildren']) {
+                    [$ok, $e] = __phplang_try_call(fn() => $o->endChildren());
+                    if (!$ok && !$catch) { throw $e; }
+                }
+                $cur = self::$d[$id]['level'];
+                if ($cur > 0 && self::$d[$id]['its'][$cur][0] === $it) {
+                    unset(self::$d[$id]['its'][$cur]);
+                    self::$d[$id]['level'] = $cur - 1;
+                }
+            } else {
+                return;
+            }
+        }
+    }
+    // `spl_recursive_it_get_method`
+    public static function riForward_method($o, $name, $args) {
+        $id = spl_object_id($o);
+        if (!isset(self::$d[$id])) {
+            throw new Error("The " . get_class($o) . " instance wasn't initialized properly");
+        }
+        $sub = self::$d[$id]['its'][self::$d[$id]['level']][0];
+        if (method_exists($sub, $name) || method_exists($sub, '__call')) {
+            return $sub->$name(...$args);
+        }
+        throw new Error("Call to undefined method " . get_class($o) . "::$name()");
+    }
+
+    // --- RecursiveTreeIterator ---
+    public static function treeParts($o) {
+        return self::$tree[spl_object_id($o)] ?? [["", "| ", "  ", "|-", "\\-", ""], ""];
+    }
+    public static function treeSetPart($o, $part, $value) {
+        if ($part < 0 || $part > 5) {
+            throw new ValueError("RecursiveTreeIterator::setPrefixPart(): Argument #1 (\$part) must be a RecursiveTreeIterator::PREFIX_* constant");
+        }
+        $t = self::treeParts($o);
+        $t[0][$part] = $value;
+        self::$tree[spl_object_id($o)] = $t;
+    }
+    public static function treeSetPostfix($o, $postfix) {
+        $t = self::treeParts($o);
+        $t[1] = $postfix;
+        self::$tree[spl_object_id($o)] = $t;
+    }
+    // `spl_recursive_tree_iterator_get_prefix`
+    public static function treePrefix($o) {
+        $id = self::id($o);
+        [$prefix] = self::treeParts($o);
+        $str = $prefix[0];
+        $level = self::$d[$id]['level'];
+        for ($l = 0; $l < $level; $l++) {
+            $str .= self::$d[$id]['its'][$l][0]->hasNext() === true ? $prefix[1] : $prefix[2];
+        }
+        $str .= self::$d[$id]['its'][$level][0]->hasNext() === true ? $prefix[3] : $prefix[4];
+        return $str . $prefix[5];
+    }
+    // `spl_recursive_tree_iterator_get_entry`
+    public static function treeEntry($o) {
+        $data = self::riCurrent($o);
+        return is_array($data) ? "Array" : (string) $data;
+    }
+}
+class EmptyIterator implements Iterator {
+    public function current(): never { throw new BadMethodCallException("Accessing the value of an EmptyIterator"); }
+    public function next(): void {}
+    public function key(): never { throw new BadMethodCallException("Accessing the key of an EmptyIterator"); }
+    public function valid(): false { return false; }
+    public function rewind(): void {}
+}
+class IteratorIterator implements OuterIterator {
+    public function __construct(Traversable $iterator, ?string $class = null) { __SplIt::constructIteratorIterator($this, $iterator, $class); }
+    public function getInnerIterator(): ?Iterator { return __SplIt::get($this, 'inner'); }
+    public function rewind(): void { $id = __SplIt::id($this); __SplIt::rewind($id); __SplIt::fetch($id, true); }
+    public function valid(): bool { return __SplIt::get($this, 'has'); }
+    public function key(): mixed { return __SplIt::get($this, 'key'); }
+    public function current(): mixed { return __SplIt::get($this, 'data'); }
+    public function next(): void { $id = __SplIt::id($this); __SplIt::next($id, true); __SplIt::fetch($id, true); }
+    public function __call($name, $args) { return __SplIt::forward($this, $name, $args); }
+}
+abstract class FilterIterator extends IteratorIterator {
+    abstract public function accept(): bool;
+    public function __construct(Iterator $iterator) { __SplIt::once($this, 'FilterIterator'); __SplIt::construct($this, $iterator, ['it' => $iterator]); }
+    public function rewind(): void { $id = __SplIt::id($this); __SplIt::rewind($id); __SplIt::filterFetch($this, $id); }
+    public function next(): void { $id = __SplIt::id($this); __SplIt::next($id, true); __SplIt::filterFetch($this, $id); }
+}
+class CallbackFilterIterator extends FilterIterator {
+    public function __construct(Iterator $iterator, callable $callback) { __SplIt::once($this, 'CallbackFilterIterator'); __SplIt::construct($this, $iterator, ['it' => $iterator, 'callback' => $callback]); }
+    public function accept(): bool {
+        $id = __SplIt::id($this);
+        if (!__SplIt::get($this, 'has') || !__SplIt::get($this, 'hasKey')) { return false; }
+        $callback = __SplIt::get($this, 'callback');
+        return $callback(__SplIt::get($this, 'data'), __SplIt::get($this, 'key'), __SplIt::get($this, 'inner'));
+    }
+}
+abstract class RecursiveFilterIterator extends FilterIterator implements RecursiveIterator {
+    public function __construct(RecursiveIterator $iterator) { __SplIt::once($this, 'RecursiveFilterIterator'); __SplIt::construct($this, $iterator, ['it' => $iterator]); }
+    public function hasChildren(): bool { return __SplIt::get($this, 'inner')->hasChildren(); }
+    public function getChildren(): ?RecursiveFilterIterator { return new static(__SplIt::get($this, 'inner')->getChildren()); }
+}
+class RecursiveCallbackFilterIterator extends CallbackFilterIterator implements RecursiveIterator {
+    public function __construct(RecursiveIterator $iterator, callable $callback) { __SplIt::once($this, 'RecursiveCallbackFilterIterator'); __SplIt::construct($this, $iterator, ['it' => $iterator, 'callback' => $callback]); }
+    public function hasChildren(): bool { return __SplIt::get($this, 'inner')->hasChildren(); }
+    public function getChildren(): RecursiveCallbackFilterIterator {
+        $children = __SplIt::get($this, 'inner')->getChildren();
+        return new static($children, __SplIt::get($this, 'callback'));
+    }
+}
+class ParentIterator extends RecursiveFilterIterator {
+    public function __construct(RecursiveIterator $iterator) { __SplIt::once($this, 'ParentIterator'); __SplIt::construct($this, $iterator, ['it' => $iterator]); }
+    public function accept(): bool { return __SplIt::get($this, 'inner')->hasChildren(); }
+}
+class LimitIterator extends IteratorIterator {
+    public function __construct(Iterator $iterator, int $offset = 0, int $limit = -1) {
+        __SplIt::once($this, 'LimitIterator');
+        if ($offset < 0) { throw new ValueError("LimitIterator::__construct(): Argument #2 (\$offset) must be greater than or equal to 0"); }
+        if ($limit < -1) { throw new ValueError("LimitIterator::__construct(): Argument #3 (\$limit) must be greater than or equal to -1"); }
+        __SplIt::construct($this, $iterator, ['it' => $iterator, 'offset' => $offset, 'count' => $limit]);
+    }
+    public function rewind(): void { $id = __SplIt::id($this); __SplIt::rewind($id); __SplIt::limitSeek($this, __SplIt::get($this, 'offset')); }
+    public function valid(): bool {
+        $id = __SplIt::id($this);
+        $count = __SplIt::get($this, 'count');
+        return ($count == -1 || __SplIt::get($this, 'pos') - __SplIt::get($this, 'offset') < $count) && __SplIt::get($this, 'has');
+    }
+    public function next(): void {
+        $id = __SplIt::id($this);
+        __SplIt::next($id, true);
+        $count = __SplIt::get($this, 'count');
+        if ($count == -1 || __SplIt::get($this, 'pos') - __SplIt::get($this, 'offset') < $count) { __SplIt::fetch($id, true); }
+    }
+    public function seek(int $offset): int { __SplIt::id($this); __SplIt::limitSeek($this, $offset); return __SplIt::get($this, 'pos'); }
+    public function getPosition(): int { return __SplIt::get($this, 'pos'); }
+}
+class CachingIterator extends IteratorIterator implements ArrayAccess, Countable, Stringable {
+    const CALL_TOSTRING = 1;
+    const CATCH_GET_CHILD = 16;
+    const TOSTRING_USE_KEY = 2;
+    const TOSTRING_USE_CURRENT = 4;
+    const TOSTRING_USE_INNER = 8;
+    const FULL_CACHE = 256;
+    public function __construct(Iterator $iterator, int $flags = CachingIterator::CALL_TOSTRING) {
+        __SplIt::once($this, 'CachingIterator');
+        if (!__SplIt::citFlagsOk($flags)) { __SplIt::citFlagsError('CachingIterator::__construct', 2); }
+        __SplIt::construct($this, $iterator, ['it' => $iterator, 'flags' => $flags & 0xFFFF, 'cache' => [], 'zstr' => null, 'children' => null, 'recursive' => false]);
+    }
+    public function rewind(): void { $id = __SplIt::id($this); __SplIt::rewind($id); __SplIt::put($this, 'cache', []); __SplIt::cachingNext($this, $id); }
+    public function valid(): bool { return (__SplIt::get($this, 'flags') & 0x10000) !== 0; }
+    public function next(): void { __SplIt::cachingNext($this, __SplIt::id($this)); }
+    public function hasNext(): bool { return __SplIt::valid(__SplIt::id($this)); }
+    public function __toString(): string {
+        $flags = __SplIt::get($this, 'flags');
+        if (!($flags & (1 | 2 | 4 | 8))) {
+            throw new BadMethodCallException(get_class($this) . " does not fetch string value (see CachingIterator::__construct)");
+        }
+        if ($flags & 2) { return (string) __SplIt::get($this, 'key'); }
+        if ($flags & 4) { return (string) __SplIt::get($this, 'data'); }
+        return (string) __SplIt::get($this, 'zstr');
+    }
+    public function getFlags(): int { return __SplIt::get($this, 'flags'); }
+    public function setFlags(int $flags): void {
+        $old = __SplIt::get($this, 'flags');
+        if (!__SplIt::citFlagsOk($flags)) { __SplIt::citFlagsError('CachingIterator::setFlags', 1); }
+        if (($old & 1) && !($flags & 1)) { throw new InvalidArgumentException("Unsetting flag CALL_TO_STRING is not possible"); }
+        if (($old & 8) && !($flags & 8)) { throw new InvalidArgumentException("Unsetting flag TOSTRING_USE_INNER is not possible"); }
+        if (($flags & 0x100) && !($old & 0x100)) { __SplIt::put($this, 'cache', []); }
+        __SplIt::put($this, 'flags', ($old & ~0xFFFF) | ($flags & 0xFFFF));
+    }
+    public function offsetGet($key): mixed { return __SplIt::cacheGet($this, $key); }
+    public function offsetSet($key, mixed $value): void { __SplIt::cacheSet($this, $key, $value); }
+    public function offsetUnset($key): void { __SplIt::cacheUnset($this, $key); }
+    public function offsetExists($key): bool { $id = __SplIt::fullCache($this); return array_key_exists((string) $key, __SplIt::get($this, 'cache')); }
+    public function getCache(): array { __SplIt::fullCache($this); return __SplIt::get($this, 'cache'); }
+    public function count(): int { __SplIt::fullCache($this); return count(__SplIt::get($this, 'cache')); }
+}
+class RecursiveCachingIterator extends CachingIterator implements RecursiveIterator {
+    public function __construct($iterator, int $flags = RecursiveCachingIterator::CALL_TOSTRING) {
+        __SplIt::once($this, 'RecursiveCachingIterator');
+        if (!($iterator instanceof RecursiveIterator)) {
+            throw new TypeError("RecursiveCachingIterator::__construct(): Argument #1 (\$iterator) must be of type RecursiveIterator, " . get_debug_type($iterator) . " given");
+        }
+        if (!__SplIt::citFlagsOk($flags)) { __SplIt::citFlagsError('RecursiveCachingIterator::__construct', 2); }
+        __SplIt::construct($this, $iterator, ['it' => $iterator, 'flags' => $flags & 0xFFFF, 'cache' => [], 'zstr' => null, 'children' => null, 'recursive' => true]);
+    }
+    public function hasChildren(): bool { return __SplIt::get($this, 'children') !== null; }
+    public function getChildren(): ?RecursiveCachingIterator { return __SplIt::get($this, 'children'); }
+}
+class NoRewindIterator extends IteratorIterator {
+    public function __construct(Iterator $iterator) { __SplIt::once($this, 'NoRewindIterator'); __SplIt::construct($this, $iterator, ['it' => $iterator, 'cached' => false]); }
+    public function rewind(): void {}
+    public function valid(): bool { return (bool) __SplIt::get($this, 'inner')->valid(); }
+    public function key(): mixed { return __SplIt::get($this, 'inner')->key(); }
+    public function current(): mixed {
+        if (!__SplIt::get($this, 'cached')) {
+            __SplIt::put($this, 'data', __SplIt::get($this, 'inner')->current());
+            __SplIt::put($this, 'cached', true);
+        }
+        return __SplIt::get($this, 'data');
+    }
+    public function next(): void { __SplIt::put($this, 'cached', false); __SplIt::get($this, 'inner')->next(); }
+}
+class InfiniteIterator extends IteratorIterator {
+    public function __construct(Iterator $iterator) { __SplIt::once($this, 'InfiniteIterator'); __SplIt::construct($this, $iterator, ['it' => $iterator]); }
+    public function next(): void {
+        $id = __SplIt::id($this);
+        __SplIt::next($id, true);
+        if (__SplIt::valid($id)) {
+            __SplIt::fetch($id, false);
+        } else {
+            __SplIt::rewind($id);
+            if (__SplIt::valid($id)) { __SplIt::fetch($id, false); }
+        }
+    }
+}
+class AppendIterator extends IteratorIterator {
+    public function __construct() { __SplIt::once($this, 'AppendIterator'); __SplIt::construct($this, null, ['it' => null, 'list' => new ArrayIterator()]); }
+    public function append(Iterator $iterator): void { __SplIt::append($this, $iterator); }
+    public function rewind(): void {
+        $id = __SplIt::id($this);
+        __SplIt::get($this, 'list')->rewind();
+        if (__SplIt::appendNextIterator($id)) { __SplIt::appendFetch($id); }
+    }
+    public function valid(): bool { return __SplIt::get($this, 'has'); }
+    public function current(): mixed { $id = __SplIt::id($this); __SplIt::fetch($id, true); return __SplIt::get($this, 'data'); }
+    public function next(): void {
+        $id = __SplIt::id($this);
+        if (__SplIt::valid($id)) { __SplIt::next($id, true); }
+        __SplIt::appendFetch($id);
+    }
+    public function getIteratorIndex(): ?int {
+        return __SplIt::get($this, 'list')->key();
+    }
+    public function getArrayIterator(): ArrayIterator { return __SplIt::get($this, 'list'); }
+}
+class RegexIterator extends FilterIterator {
+    const USE_KEY = 1;
+    const INVERT_MATCH = 2;
+    const MATCH = 0;
+    const GET_MATCH = 1;
+    const ALL_MATCHES = 2;
+    const SPLIT = 3;
+    const REPLACE = 4;
+    public ?string $replacement = null;
+    public function __construct(Iterator $iterator, string $pattern, int $mode = RegexIterator::MATCH, int $flags = 0, int $pregFlags = 0) {
+        __SplIt::once($this, 'RegexIterator');
+        if ($mode < 0 || $mode >= 5) { __SplIt::regexModeError('RegexIterator::__construct', 3); }
+        __SplIt::compileRegex($pattern, 'RegexIterator::__construct');
+        __SplIt::construct($this, $iterator, ['it' => $iterator, 'regex' => $pattern, 'mode' => $mode, 'flags' => $flags, 'pflags' => $pregFlags]);
+    }
+    public function accept(): bool { return __SplIt::regexAccept($this); }
+    public function getMode(): int { return __SplIt::get($this, 'mode'); }
+    public function setMode(int $mode): void {
+        if ($mode < 0 || $mode >= 5) { __SplIt::regexModeError('RegexIterator::setMode', 1); }
+        __SplIt::put($this, 'mode', $mode);
+    }
+    public function getFlags(): int { return __SplIt::get($this, 'flags'); }
+    public function setFlags(int $flags): void { __SplIt::put($this, 'flags', $flags); }
+    public function getRegex(): string { return __SplIt::get($this, 'regex'); }
+    public function getPregFlags(): int { return __SplIt::get($this, 'pflags'); }
+    public function setPregFlags(int $pregFlags): void { __SplIt::put($this, 'pflags', $pregFlags); }
+}
+class RecursiveRegexIterator extends RegexIterator implements RecursiveIterator {
+    public function __construct(RecursiveIterator $iterator, string $pattern, int $mode = RecursiveRegexIterator::MATCH, int $flags = 0, int $pregFlags = 0) {
+        __SplIt::once($this, 'RecursiveRegexIterator');
+        if ($mode < 0 || $mode >= 5) { __SplIt::regexModeError('RecursiveRegexIterator::__construct', 3); }
+        __SplIt::compileRegex($pattern, 'RecursiveRegexIterator::__construct');
+        __SplIt::construct($this, $iterator, ['it' => $iterator, 'regex' => $pattern, 'mode' => $mode, 'flags' => $flags, 'pflags' => $pregFlags]);
+    }
+    public function accept(): bool {
+        if (!__SplIt::get($this, 'has')) { return false; }
+        $data = __SplIt::get($this, 'data');
+        if (is_array($data)) { return count($data) > 0; }
+        return __SplIt::regexAccept($this);
+    }
+    public function hasChildren(): bool { return __SplIt::get($this, 'inner')->hasChildren(); }
+    public function getChildren(): RecursiveRegexIterator {
+        $children = __SplIt::get($this, 'inner')->getChildren();
+        return new static($children, __SplIt::get($this, 'regex'), __SplIt::get($this, 'mode'), __SplIt::get($this, 'flags'), __SplIt::get($this, 'pflags'));
+    }
+}
+class RecursiveIteratorIterator implements OuterIterator {
+    const LEAVES_ONLY = 0;
+    const SELF_FIRST = 1;
+    const CHILD_FIRST = 2;
+    const CATCH_GET_CHILD = 16;
+    public function __construct(Traversable $iterator, int $mode = RecursiveIteratorIterator::LEAVES_ONLY, int $flags = 0) { __SplIt::riConstruct($this, $iterator, $mode, $flags); }
+    public function rewind(): void { __SplIt::riRewind($this); }
+    public function valid(): bool { return __SplIt::riValid($this); }
+    public function key(): mixed { return __SplIt::riLevelIt($this)->key(); }
+    public function current(): mixed { return __SplIt::riCurrent($this); }
+    public function next(): void { __SplIt::riForward($this); }
+    public function getDepth(): int { return __SplIt::riDepth($this); }
+    public function getSubIterator(?int $level = null): ?RecursiveIterator { return __SplIt::riSubIterator($this, $level); }
+    public function getInnerIterator(): RecursiveIterator { return __SplIt::riLevelIt($this); }
+    public function beginIteration(): void {}
+    public function endIteration(): void {}
+    public function callHasChildren(): bool { return __SplIt::riHasChildren($this); }
+    public function callGetChildren(): ?RecursiveIterator { return __SplIt::riLevelIt($this)->getChildren(); }
+    public function beginChildren(): void {}
+    public function endChildren(): void {}
+    public function nextElement(): void {}
+    public function setMaxDepth(int $maxDepth = -1): void { __SplIt::riSetMax($this, $maxDepth); }
+    public function getMaxDepth(): int|false { return __SplIt::riGetMax($this); }
+    public function __call($name, $args) { return __SplIt::riForward_method($this, $name, $args); }
+}
+class RecursiveTreeIterator extends RecursiveIteratorIterator {
+    const BYPASS_CURRENT = 4;
+    const BYPASS_KEY = 8;
+    const PREFIX_LEFT = 0;
+    const PREFIX_MID_HAS_NEXT = 1;
+    const PREFIX_MID_LAST = 2;
+    const PREFIX_END_HAS_NEXT = 3;
+    const PREFIX_END_LAST = 4;
+    const PREFIX_RIGHT = 5;
+    public function __construct(RecursiveIterator|IteratorAggregate $iterator, int $flags = RecursiveTreeIterator::BYPASS_KEY, int $cachingIteratorFlags = CachingIterator::CATCH_GET_CHILD, int $mode = RecursiveTreeIterator::SELF_FIRST) {
+        if ($iterator instanceof IteratorAggregate) { $iterator = __SplIt::fromAggregate($iterator, get_class($iterator)); }
+        __SplIt::riConstruct($this, new RecursiveCachingIterator($iterator, $cachingIteratorFlags), $mode, $flags);
+    }
+    public function key(): mixed {
+        $key = __SplIt::riLevelIt($this)->key();
+        if (__SplIt::get($this, 'flags') & 8) { return $key; }
+        $key = (string) $key;
+        return __SplIt::treePrefix($this) . $key . __SplIt::treeParts($this)[1];
+    }
+    public function current(): mixed {
+        __SplIt::id($this);
+        if (__SplIt::get($this, 'flags') & 4) { return __SplIt::riCurrent($this); }
+        $entry = __SplIt::treeEntry($this);
+        return __SplIt::treePrefix($this) . $entry . __SplIt::treeParts($this)[1];
+    }
+    public function getPrefix(): string { return __SplIt::treePrefix($this); }
+    public function setPostfix(string $postfix): void { __SplIt::treeSetPostfix($this, $postfix); }
+    public function setPrefixPart(int $part, string $value): void { __SplIt::treeSetPart($this, $part, $value); }
+    public function getEntry(): string { __SplIt::id($this); return __SplIt::treeEntry($this); }
+    public function getPostfix(): string { __SplIt::id($this); return __SplIt::treeParts($this)[1]; }
+}
+// ext/spl/spl_array.c's RecursiveArrayIterator: an array or object element
+// has children, which are iterated by an iterator of this same class.
+class RecursiveArrayIterator extends ArrayIterator implements RecursiveIterator {
+    const CHILD_ARRAYS_ONLY = 4;
+    public function hasChildren(): bool {
+        if (!parent::valid()) { return false; }
+        $e = parent::current();
+        return is_array($e) || (is_object($e) && (parent::getFlags() & self::CHILD_ARRAYS_ONLY) === 0);
+    }
+    public function getChildren(): ?RecursiveArrayIterator {
+        if (!parent::valid()) { return null; }
+        $e = parent::current();
+        if (is_object($e)) {
+            if (parent::getFlags() & self::CHILD_ARRAYS_ONLY) { return null; }
+            if (is_a($e, get_class($this))) { return $e; }
+        }
+        return new static($e, parent::getFlags());
     }
 }
 "#;

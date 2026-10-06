@@ -184,6 +184,10 @@ end-to-end (see `tests/basic.rs`):
   (delegating to an array, `Traversable`, or another generator). The `Generator`
   object supports `current`/`key`/`next`/`valid`/`send`/`throw`/`getReturn` and
   drives `foreach` lazily (side effects interleave; infinite generators work).
+  A by-value `foreach` over an `Iterator` object (or the iterator an
+  `IteratorAggregate` answers) is lazy the same way: `rewind`, `valid`,
+  `current`, `key` and `next` run interleaved with the body, in the reference's
+  order.
   A generator destroyed while suspended — left by a `foreach` that created it,
   or still parked at request end — runs the `finally` blocks around its `yield`.
   Implemented as host-side stackful coroutines (`corosensei`) — the fusevm VM run
@@ -395,8 +399,13 @@ end-to-end (see `tests/basic.rs`):
 - The `DateTime`/`DateTimeImmutable`/`DateInterval` classes and the SPL data
   structures (`SplStack`, `SplQueue`, `SplDoublyLinkedList`, `SplFixedArray`,
   `ArrayObject`, `SplObjectStorage`, `SplPriorityQueue`, `SplMinHeap`/`SplMaxHeap`)
-  plus `stdClass`, all as PHP preludes — the list, heap and fixed-array classes
-  ports of `ext/spl` (iterator modes, heap sift order, the reference's exceptions); output buffering (`ob_start`/`ob_get_clean`/…),
+  and the SPL iterators (`IteratorIterator`, `FilterIterator`,
+  `CallbackFilterIterator`, `LimitIterator`, `CachingIterator`, `AppendIterator`,
+  `NoRewindIterator`, `InfiniteIterator`, `EmptyIterator`, `RegexIterator`,
+  `RecursiveArrayIterator`, `RecursiveIteratorIterator`, `RecursiveTreeIterator`
+  and the recursive filters) plus `stdClass`, all as PHP preludes — the list,
+  heap, fixed-array and iterator classes ports of `ext/spl` (iterator modes, heap
+  sift order, `spl_iterators.c`'s walks, the reference's exceptions); output buffering (`ob_start`/`ob_get_clean`/…),
   variadic introspection (`func_get_args`/`func_num_args`), the stream functions
   (`fread`/`fwrite`/`fgets`/`fgetc`/`fseek`/`ftruncate`/`fstat`/`fclose`/…), the
   `unset()` construct, `spl_object_id`,

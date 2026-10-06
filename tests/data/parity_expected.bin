@@ -2324,3 +2324,153 @@ Stack trace:
 #1 Command line code(6): SplHeap->insert(2)
 #2 {main}
 
+#REC 117 exit=0 out=216 err=0
+rew valid cur key [00] next valid cur key [11] next valid 
+rew valid cur <0> next valid cur <1> 
+Exception: Objects returned by A::getIterator() must be traversable or implement interface Iterator
+k=v
+11
+a,b,c
+12121
+
+#REC 118 exit=255 out=482 err=274
+1=2 2=3 3
+2
+Cannot seek to 0 which is below the offset 1
+Cannot seek to 5 which is behind offset 1 plus count 2
+LimitIterator::__construct(): Argument #2 ($offset) must be greater than or equal to 0
+5
+1=2 2=3 
+x:
+Fatal error: Uncaught BadMethodCallException: CachingIterator does not fetch string value (see CachingIterator::__construct) in Command line code:10
+Stack trace:
+#0 Command line code(10): CachingIterator->__toString()
+#1 {main}
+  thrown in Command line code on line 10
+PHP Fatal error:  Uncaught BadMethodCallException: CachingIterator does not fetch string value (see CachingIterator::__construct) in Command line code:10
+Stack trace:
+#0 Command line code(10): CachingIterator->__toString()
+#1 {main}
+  thrown in Command line code on line 10
+
+#REC 119 exit=0 out=1079 err=0
+Array
+(
+    [1] => b
+    [3] => d
+)
+Array
+(
+    [a1] => x
+)
+Array
+(
+    [0] => Array
+        (
+            [0] => b1
+            [1] => b
+            [2] => 1
+        )
+
+)
+/(\w)(\d)/100
+InvalidArgumentException: RegexIterator::__construct(): Delimiter must not be alphanumeric, backslash, or NUL byte
+InvalidArgumentException: RegexIterator::__construct(): Compilation failed: missing closing parenthesis at offset 1
+RegexIterator::__construct(): Argument #3 ($mode) must be RegexIterator::MATCH, RegexIterator::GET_MATCH, RegexIterator::ALL_MATCHES, RegexIterator::SPLIT, or RegexIterator::REPLACE
+Array
+(
+    [0] => Array
+        (
+            [0] => Array
+                (
+                    [0] => 1
+                    [1] => 2
+                )
+
+        )
+
+    [2] => Array
+        (
+            [0] => Array
+                (
+                    [0] => 3
+                )
+
+        )
+
+)
+Array
+(
+    [0] => Array
+        (
+            [0] => a
+            [1] => b
+            [2] => 
+        )
+
+)
+Array
+(
+    [k1] => a#
+)
+RegexIterator Object
+(
+    [replacement] => #
+)
+
+#REC 120 exit=0 out=466 err=0
+00=1 10=2 20=3 21=4 02=5 
+a=1 c=2 e=3 d[] b[] 
+0:1 0:A 1:2 1:A 0:5 
+int(1)
+RecursiveIteratorIterator::setMaxDepth(): Argument #1 ($maxDepth) must be greater than or equal to -1
+bool(false)
+Array
+(
+    [0] => 1
+    [1] => 2
+    [2] => 3
+)
+<begin>?<el>1?<el>A<down>?<el>2?<el>3<up>?<el>4<end>
+[a] |-1
+[b] |-Array
+[c] | |-2
+[d] | \-Array
+[e] |   \-3
+[f] \-4
+\-x => \-Array
+  \-y =>   \-1
+>\-Array<|Array|>\-|<
+>  \-1<|1|>  \-|<
+a b 
+1 2 
+2
+bool(true)
+int(4)
+bool(true)
+
+#REC 121 exit=255 out=676 err=169
+#0 [internal function]: {closure:Command line code:4}(1, 0, Object(ArrayIterator))
+#1 [internal function]: CallbackFilterIterator->accept()
+#2 Command line code(5): FilterIterator->rewind()
+#3 {main}
+#0 [internal function]: F->accept()
+#1 [internal function]: FilterIterator->rewind()
+#2 Command line code(7): iterator_to_array(Object(F))
+#3 {main}
+9#0 [internal function]: ArrayIterator->seek(4)
+#1 Command line code(9): LimitIterator->seek(4)
+#2 {main}
+01
+#0 Command line code(12): R->hasChildren()
+#1 {main}
+
+Fatal error: Uncaught Error: Call to undefined method LimitIterator::nope() in Command line code:13
+Stack trace:
+#0 {main}
+  thrown in Command line code on line 13
+PHP Fatal error:  Uncaught Error: Call to undefined method LimitIterator::nope() in Command line code:13
+Stack trace:
+#0 {main}
+  thrown in Command line code on line 13
+

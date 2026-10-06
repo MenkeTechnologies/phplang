@@ -469,6 +469,13 @@ pub mod ops {
     /// (`Class::$p[] = v`, `Class::$p[k]++`): its array, vivified when the
     /// property holds none.
     pub const SPROP_ENSURE_ARRAY: u16 = 148;
+    /// `[v] -> v`'s iterator. A `foreach` over an `IteratorAggregate` walks the
+    /// iterator its `getIterator()` answers; anything else is its own subject.
+    pub const FOREACH_ITER: u16 = 149;
+    /// `[v] -> Bool`: whether a `foreach` walks `v` one step at a time — a
+    /// generator, or an object implementing `Iterator` — rather than as an
+    /// array of its elements.
+    pub const IS_LAZY_ITER: u16 = 150;
 }
 
 /// The capture name a `static` closure carries from its creation site.
@@ -954,6 +961,11 @@ struct Scope {
     /// `None` for the main script's code — and, for an `internal` frame, "the
     /// caller's", which is where its diagnostics point.
     file: Option<std::sync::Arc<str>>,
+    /// A frame the reference has no counterpart for: an iterator method a
+    /// `foreach` runs where the reference walks the object through its
+    /// native iterator. A trace leaves it out, and what it calls is reported
+    /// as called from where IT was called.
+    transparent: bool,
 }
 
 /// One running `include`/`require`/`eval`: the code it loaded executes on the
@@ -1116,6 +1128,9 @@ pub struct PhpHost {
     /// closure body is entered. A one-shot like `pending_lsb`, because the frame
     /// is built inside `invoke_with_locals`, which every kind of call shares.
     pending_closure_site: Option<DeclSite>,
+    /// Set while a `foreach` calls a method of an iterator the reference
+    /// walks natively: the frame that call pushes is `transparent`.
+    pending_transparent: bool,
     /// The reference cell the most recent `function &f()` return published, for
     /// the caller's `$r = &f()` to bind. Taken (not just read) by the binding so a
     /// stale slot can never be picked up by a later plain call.
@@ -1504,6 +1519,7 @@ impl PhpHost {
             suppress: 0,
             pending_lsb: None,
             pending_closure_site: None,
+            pending_transparent: false,
             ret_ref_slot: None,
             generators: Vec::new(),
             fatal_reported: false,
@@ -2666,6 +2682,14 @@ impl PhpHost {
             // A method of a PHP-written prelude class, which stands in for
             // an internal one.
             prelude: bool,
+            // A prelude frame that is no method of the class it stands in for: a
+            // `__`-named private helper, a helper class, or a closure the
+            // prelude wrote. The reference has no frame for any of them.
+            helper: bool,
+            // A frame the reference has none for at all — see
+            // `Scope::transparent` — or a prelude `__call`, which forwards to an
+            // inner iterator the way `spl_dual_it_get_method` does.
+            transparent: bool,
         }
         let mut frames: Vec<Frame<'_>> = Vec::new();
         for (i, scope) in self.scopes.iter().enumerate() {
@@ -2694,6 +2718,14 @@ impl PhpHost {
                 line: incs.first().map_or(scope.line, |f| f.call_line),
                 internal: scope.internal,
                 prelude: scope.name.as_deref().is_some_and(is_prelude_frame),
+                helper: scope.name.as_deref().is_some_and(is_prelude_frame)
+                    && (scope.closure_site.is_some()
+                        || scope.name.as_deref().is_some_and(is_prelude_helper_name)),
+                transparent: scope.transparent
+                    || scope
+                        .name
+                        .as_deref()
+                        .is_some_and(|n| is_prelude_frame(n) && n.ends_with("::__call")),
             });
             for (k, inc) in incs.iter().enumerate() {
                 frames.push(Frame {
@@ -2702,20 +2734,34 @@ impl PhpHost {
                     line: incs.get(k + 1).map_or(scope.line, |f| f.call_line),
                     internal: false,
                     prelude: false,
+                    helper: false,
+                    transparent: false,
                 });
             }
         }
+        // A prelude method is internal code: what it calls on its own behalf
+        // (its helpers, the library functions it uses) is invisible, and a
+        // method it calls the way the reference's C calls one — a user
+        // `compare()`, an `accept()` — was entered from `[internal function]`.
+        // A frame is reported as called from the nearest VISIBLE frame above it.
+        let visible: Vec<bool> = (0..frames.len())
+            .map(|j| {
+                j == 0
+                    || !(frames[j].transparent
+                        || frames[j - 1].prelude && (frames[j].helper || frames[j].internal))
+            })
+            .collect();
         let mut out = String::new();
         let mut n = 0;
         for j in (1..frames.len()).rev() {
-            let caller = &frames[j - 1];
-            // A prelude method is internal code: whatever IT calls on its own
-            // behalf (its private helpers, the library functions it uses) is
-            // invisible, and a user method it calls back into — a `compare()`,
-            // an `accept()` — was entered from `[internal function]`.
-            if caller.prelude && (frames[j].prelude || frames[j].internal) {
+            if !visible[j] {
                 continue;
             }
+            let mut k = j - 1;
+            while !visible[k] {
+                k -= 1;
+            }
+            let caller = &frames[k];
             let site = if caller.internal || caller.prelude {
                 "[internal function]".to_string()
             } else {
@@ -4456,6 +4502,13 @@ impl PhpHost {
                 p.name.clone(),
             )
         })
+    }
+
+    /// The lowercased class declaring the method `obj` runs for `lname`.
+    pub(crate) fn method_owner(&self, obj: &Value, lname: &str) -> Option<String> {
+        let class = self.instance_class(obj)?;
+        self.resolve_method(&class, &lname.to_ascii_lowercase())
+            .map(|(c, _)| c)
     }
 
     /// Resolve a method by walking the class up its parent chain; returns the
@@ -7592,6 +7645,8 @@ pub(crate) const CALLS_BACK: &[&str] = &[
     "preg_replace_callback",
     "preg_replace_callback_array",
     "iterator_apply",
+    "iterator_to_array",
+    "iterator_count",
 ];
 
 fn calls_back(name: &str) -> bool {
@@ -8289,6 +8344,7 @@ fn invoke_with_locals(
             name: Some(frame.to_string()),
             static_class: h.lsb_take(),
             closure_site: h.closure_site_take(),
+            transparent: std::mem::take(&mut h.pending_transparent),
             ..Scope::default()
         };
         let scope = Scope { file, ..scope };
@@ -9799,6 +9855,94 @@ pub fn is_unpackable(v: &Value) -> bool {
 /// produce (`yield from` restarts its inner generator's keys at 0). A caller
 /// that must see every element — `iterator_to_array($it, false)`,
 /// `iterator_count` — takes [`traversable_pairs`] instead.
+/// Whether a `foreach` walks `v` one step at a time rather than as the array of
+/// its elements: a generator, or an object implementing `Iterator` — whose
+/// `rewind`/`valid`/`current`/`key`/`next` run interleaved with the body, as
+/// `zend_fe_fetch_object_helper` drives them.
+pub fn is_lazy_iter(v: &Value) -> bool {
+    with_host(|h| {
+        h.is_generator_val(v)
+            || h.object_class(v)
+                .is_some_and(|c| h.class_is_a_pub(&c, "Iterator"))
+    })
+}
+
+/// [`ops::FOREACH_ITER`]: what a `foreach` over `v` walks. An
+/// `IteratorAggregate` is replaced by the iterator its `getIterator()`
+/// answers, through any number of aggregates, as `zend_user_it_get_new_iterator`
+/// does — and an answer that is not `Traversable` is that function's
+/// exception. Anything else is walked as it is.
+pub fn foreach_iter(v: Value) -> Result<Value, String> {
+    let mut v = v;
+    loop {
+        let Some(class) = with_host(|h| h.object_class(&v)) else {
+            return Ok(v);
+        };
+        if !with_host(|h| h.class_is_a_pub(&class, "IteratorAggregate")) {
+            return Ok(v);
+        }
+        let it = call_method(&class, "getIterator", Some(v.clone()), Vec::new())?;
+        if with_host(|h| h.pending_throw.is_some()) {
+            return Ok(Value::Undef);
+        }
+        let traversable = with_host(|h| {
+            h.is_generator_val(&it)
+                || h.object_class(&it)
+                    .is_some_and(|c| h.class_is_a_pub(&c, "Traversable"))
+        });
+        if !traversable {
+            let shown = with_host(|h| h.instance_class(&v)).unwrap_or(class);
+            let exc = new_object(
+                "Exception",
+                vec![Value::str(format!(
+                    "Objects returned by {shown}::getIterator() must be traversable or implement interface Iterator"
+                ))],
+            )?;
+            set_pending_throw(exc);
+            return Ok(Value::Undef);
+        }
+        v = it;
+    }
+}
+
+/// One `Iterator` method of a `foreach` subject that is not a generator.
+///
+/// The reference walks most SPL iterators through a native `get_iterator`
+/// rather than their methods, so a trace shows no frame for those steps —
+/// until a subclass overrides one of the five methods, which switches the
+/// class to `zend_user_it_get_iterator` (`zend_implement_iterator`). The
+/// prelude methods standing in for such a native walk run in a transparent
+/// frame.
+pub fn iter_call(v: &Value, method: &str) -> Result<Value, String> {
+    /// The classes `ext/spl` gives a `get_iterator` of their own.
+    const NATIVE: &[&str] = &[
+        "arrayiterator",
+        "recursivearrayiterator",
+        "recursiveiteratoriterator",
+        "recursivetreeiterator",
+        "spldoublylinkedlist",
+        "splqueue",
+        "splstack",
+        "splheap",
+        "splminheap",
+        "splmaxheap",
+        "splpriorityqueue",
+    ];
+    let class = with_host(|h| h.object_class(v)).ok_or("not an iterator")?;
+    let native = with_host(|h| {
+        ["rewind", "valid", "current", "key", "next"]
+            .iter()
+            .all(|m| {
+                h.resolve_method(&class, m)
+                    .is_some_and(|(owner, _)| NATIVE.contains(&owner.as_str()))
+            })
+    });
+    with_host(|h| h.pending_transparent = native);
+    let r = call_method(&class, method, Some(v.clone()), Vec::new());
+    with_host(|h| h.pending_transparent = false);
+    r
+}
+
 pub fn foreach_prep(v: Value) -> Result<Value, String> {
     if with_host(|h| h.is_array(&v)) {
         return Ok(v);
@@ -9859,23 +10003,23 @@ fn traverse(v: &Value, sink: &mut dyn FnMut(Value, Value)) -> Result<Option<Valu
     // Iterator protocol.
     if with_host(|h| h.class_has_method(&class, "valid") && h.class_has_method(&class, "current")) {
         if with_host(|h| h.class_has_method(&class, "rewind")) {
-            call_method(&class, "rewind", Some(v.clone()), Vec::new())?;
+            iter_call(v, "rewind")?;
         }
         let has_key = with_host(|h| h.class_has_method(&class, "key"));
         // Bound the walk so a broken `valid()` cannot hang the interpreter.
         for _ in 0..100_000_000u64 {
-            let valid = call_method(&class, "valid", Some(v.clone()), Vec::new())?;
+            let valid = iter_call(v, "valid")?;
             if !with_host(|h| h.is_truthy(&valid)) {
                 break;
             }
-            let cur = call_method(&class, "current", Some(v.clone()), Vec::new())?;
+            let cur = iter_call(v, "current")?;
             let key = if has_key {
-                call_method(&class, "key", Some(v.clone()), Vec::new())?
+                iter_call(v, "key")?
             } else {
                 Value::Undef
             };
             sink(key, cur);
-            call_method(&class, "next", Some(v.clone()), Vec::new())?;
+            iter_call(v, "next")?;
         }
         return Ok(None);
     }
@@ -11633,6 +11777,18 @@ pub fn throw_as_internal_method(class: &str, message: &str) -> Result<Value, Str
     Ok(Value::Undef)
 }
 
+/// `__phplang_warn`: an E_WARNING raised by prelude code, at the line of the
+/// innermost frame running user code — where the reference, whose method is
+/// internal, reports it.
+pub fn warn_from_prelude(message: &str) {
+    let saved = warn_line();
+    if let Some(line) = with_host(|h| prelude_call_site_line(h)) {
+        set_warn_line(line);
+    }
+    with_host(|h| h.warn(message));
+    set_warn_line(saved);
+}
+
 /// Raise a warning from a PHP-written prelude method at its CALL SITE — see
 /// [`throw_as_internal_method`].
 pub fn warn_as_internal_method(message: &str) {
@@ -11939,4 +12095,35 @@ fn throw_from_callee(
     });
     set_pending_throw(exc?);
     Ok(Value::Undef)
+}
+
+/// Whether a prelude frame named `frame` is one of the prelude's own helpers
+/// rather than a method of the class it stands in for: a class whose name
+/// starts with `__`, or a `__`-named method that is no PHP magic method. A
+/// prelude `__call` is a helper too: it forwards to an inner iterator the way
+/// `spl_dual_it_get_method` does, which the reference does with no frame.
+fn is_prelude_helper_name(frame: &str) -> bool {
+    const MAGIC: &[&str] = &[
+        "__construct",
+        "__destruct",
+        "__callstatic",
+        "__get",
+        "__set",
+        "__isset",
+        "__unset",
+        "__tostring",
+        "__invoke",
+        "__set_state",
+        "__clone",
+        "__debuginfo",
+        "__serialize",
+        "__unserialize",
+        "__sleep",
+        "__wakeup",
+    ];
+    let Some((class, method)) = frame.split_once("::") else {
+        return false;
+    };
+    class.starts_with("__")
+        || (method.starts_with("__") && !MAGIC.contains(&method.to_ascii_lowercase().as_str()))
 }

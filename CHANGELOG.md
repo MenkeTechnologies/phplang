@@ -42,6 +42,30 @@ block in `tests/data/parity_corpus.php`.
   closures, library calls) are left out, and a user method it calls back into
   (`compare()`, `accept()`) is entered from `[internal function]`, as
   `zend_fetch_debug_backtrace` reports a call made by internal code.
+* **`foreach` over an `Iterator` object ran the whole iteration before the
+  body.** The subject was materialized into an array first, so a body never saw
+  the iterator mid-walk (`CachingIterator::hasNext()` was always false) and an
+  infinite iterator hung. A by-value `foreach` now drives `rewind`, `valid`,
+  `current`, `key` and `next` interleaved with the body, as
+  `zend_fe_fetch_object_helper` does, binding the value before the key; an
+  `IteratorAggregate` hands over the iterator its `getIterator()` answers
+  (through nested aggregates), and one answering a non-`Traversable` is the
+  reference's `Exception`. Each step's frame names the `foreach` line.
+* **The SPL iterators were missing.** `IteratorIterator`, `FilterIterator`,
+  `CallbackFilterIterator`, `RecursiveFilterIterator`,
+  `RecursiveCallbackFilterIterator`, `ParentIterator`, `LimitIterator`,
+  `CachingIterator`, `RecursiveCachingIterator`, `NoRewindIterator`,
+  `InfiniteIterator`, `AppendIterator`, `EmptyIterator`, `RegexIterator`,
+  `RecursiveRegexIterator`, `RecursiveIteratorIterator`, `RecursiveTreeIterator`
+  and `RecursiveArrayIterator` are ports of `ext/spl/spl_iterators.c` (and
+  `spl_array.c`'s recursive array iterator): the dual iterator's fetch/free
+  cycle, the limit seek, the caching look-ahead and its flags, the regex modes,
+  `spl_recursive_it_move_forward_ex`'s state machine with its hooks and
+  `CATCH_GET_CHILD`, and the tree prefixes, with the reference's messages. An
+  iterator the reference walks natively (`ArrayIterator`, the recursive iterator
+  iterators, the SPL lists and heaps) opens no frame in a trace when a
+  `foreach` steps it, and `iterator_to_array` / `iterator_count` are frames of
+  their own. `ArrayIterator::getFlags()` answers the flags it was given.
 
 ## Round 19 — `Throwable::__toString`, the SPL data structures
 

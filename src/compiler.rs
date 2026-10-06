@@ -2067,8 +2067,24 @@ impl Compiler {
         let subj_t = self.tmp_name("subj");
         self.emit_set_var(b, &subj_t, |c, b| c.compile_expr(b, arr))?;
 
+        // A by-value `foreach` walks a generator or an `Iterator` one step at
+        // a time, interleaved with the body; an `IteratorAggregate` hands over
+        // its iterator first. A by-reference one keeps the array walk.
+        if !by_ref {
+            let line = self.cur_line;
+            self.emit_set_var(b, &subj_t, |c, b| {
+                c.emit_get_var(b, &subj_t);
+                b.emit(Op::CallBuiltin(ops::FOREACH_ITER, 1), line);
+                Ok(())
+            })?;
+        }
         self.emit_get_var(b, &subj_t);
-        b.emit(Op::CallBuiltin(ops::IS_GENERATOR, 1), 0);
+        let lazy = if by_ref {
+            ops::IS_GENERATOR
+        } else {
+            ops::IS_LAZY_ITER
+        };
+        b.emit(Op::CallBuiltin(lazy, 1), 0);
         b.emit(Op::CallBuiltin(ops::TRUTHY, 1), 0);
         let to_array = b.emit(Op::JumpIfFalse(0), 0);
         // The body is lowered twice; its compile-time warnings are kept from the
@@ -2268,31 +2284,36 @@ impl Compiler {
         pattern: Option<&Expr>,
         body: &[Stmt],
     ) -> Result<(), String> {
+        // Every step is the `foreach` line's, as the reference's `FE_RESET` /
+        // `FE_FETCH` are: a frame the iterator's methods open names it.
+        let line = self.cur_line;
         // @subj->rewind();  (prime to the first yield)
         self.emit_get_var(b, subj_t);
-        b.emit(Op::CallBuiltin(ops::GEN_REWIND, 1), 0);
+        b.emit(Op::CallBuiltin(ops::GEN_REWIND, 1), line);
         b.emit(Op::Pop, 0);
 
         let top = b.current_pos();
         // while (@subj->valid())
         self.emit_get_var(b, subj_t);
-        b.emit(Op::CallBuiltin(ops::GEN_VALID, 1), 0);
+        b.emit(Op::CallBuiltin(ops::GEN_VALID, 1), line);
         b.emit(Op::CallBuiltin(ops::TRUTHY, 1), 0);
         let exit = b.emit(Op::JumpIfFalse(0), 0);
 
-        // bind key var (if any) and the value var from the current yield.
+        // Bind the value, then the key: `zend_fe_fetch_object_helper` asks the
+        // iterator for its current value before its key, and assigns them in
+        // that order.
+        self.emit_set_var(b, val_var, |c, b| {
+            c.emit_get_var(b, subj_t);
+            b.emit(Op::CallBuiltin(ops::GEN_CURRENT, 1), line);
+            Ok(())
+        })?;
         if let Some(kv) = key_var {
             self.emit_set_var(b, kv, |c, b| {
                 c.emit_get_var(b, subj_t);
-                b.emit(Op::CallBuiltin(ops::GEN_KEY, 1), 0);
+                b.emit(Op::CallBuiltin(ops::GEN_KEY, 1), line);
                 Ok(())
             })?;
         }
-        self.emit_set_var(b, val_var, |c, b| {
-            c.emit_get_var(b, subj_t);
-            b.emit(Op::CallBuiltin(ops::GEN_CURRENT, 1), 0);
-            Ok(())
-        })?;
         // A yielded value is a temporary with no element behind it, so a `&`
         // target in the pattern has nothing to alias.
         self.emit_foreach_destructure(b, pattern, val_var, None)?;
@@ -2311,7 +2332,7 @@ impl Compiler {
         // `continue` lands here → advance to the next yield.
         let cont_target = b.current_pos();
         self.emit_get_var(b, subj_t);
-        b.emit(Op::CallBuiltin(ops::GEN_NEXT, 1), 0);
+        b.emit(Op::CallBuiltin(ops::GEN_NEXT, 1), line);
         b.emit(Op::Pop, 0);
         b.emit(Op::Jump(top), 0);
 
