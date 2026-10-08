@@ -373,7 +373,7 @@ fn an_undefined_engine_method_is_catchable() {
     );
     // The methods each of them DOES answer still dispatch.
     assert_eq!(
-        run("<?php $c = function () { return 3; }; echo $c->call(new stdClass);"),
+        run("<?php class O {} $c = function () { return 3; }; echo $c->call(new O);"),
         "3"
     );
     assert_eq!(
