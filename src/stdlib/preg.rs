@@ -1587,7 +1587,13 @@ fn preg_replace_common(args: &[Value], func: &str, is_filter: bool) -> Result<Va
             } else {
                 repls.first().cloned().unwrap_or_default()
             };
-            cur = replace_one(&re, translate_replacement(&repl).as_bytes(), &cur, limit, count);
+            cur = replace_one(
+                &re,
+                translate_replacement(&repl).as_bytes(),
+                &cur,
+                limit,
+                count,
+            );
         }
         Some(bstr(&cur))
     };

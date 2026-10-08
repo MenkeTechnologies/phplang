@@ -937,7 +937,11 @@ fn b_parent_class(vm: &mut VM, argc: u8) -> Value {
     }
     let parent = with_host(|h| h.magic_parent_class());
     if parent.is_empty() {
-        let verb = if from_trait || name_fetch { "use" } else { "access" };
+        let verb = if from_trait || name_fetch {
+            "use"
+        } else {
+            "access"
+        };
         return throw_php(
             vm,
             "Error",

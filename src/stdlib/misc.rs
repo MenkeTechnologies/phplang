@@ -1605,7 +1605,9 @@ fn compare_special_version_forms(a: &[u8], b: &[u8]) -> i64 {
 fn ver_strtol(p: &[u8]) -> i64 {
     p.iter()
         .take_while(|c| c.is_ascii_digit())
-        .fold(0i64, |n, &c| n.saturating_mul(10).saturating_add(i64::from(c - b'0')))
+        .fold(0i64, |n, &c| {
+            n.saturating_mul(10).saturating_add(i64::from(c - b'0'))
+        })
 }
 
 /// Port of `php_version_compare`: walk both canonical versions one
@@ -1686,19 +1688,18 @@ fn version_compare(args: &[Value]) -> Result<Value, String> {
     if matches!(op, Value::Undef) {
         return Ok(Value::int(compare));
     }
-    let holds = match str_arg(args, 2).as_str() {
-        "<" | "lt" => compare == -1,
-        "<=" | "le" => compare != 1,
-        ">" | "gt" => compare == 1,
-        ">=" | "ge" => compare != -1,
-        "==" | "eq" => compare == 0,
-        "!=" | "<>" | "ne" => compare != 0,
-        _ => {
-            return Err(throws(
+    let holds =
+        match str_arg(args, 2).as_str() {
+            "<" | "lt" => compare == -1,
+            "<=" | "le" => compare != 1,
+            ">" | "gt" => compare == 1,
+            ">=" | "ge" => compare != -1,
+            "==" | "eq" => compare == 0,
+            "!=" | "<>" | "ne" => compare != 0,
+            _ => return Err(throws(
                 "ValueError",
                 "version_compare(): Argument #3 ($operator) must be a valid comparison operator",
-            ))
-        }
-    };
+            )),
+        };
     Ok(Value::Bool(holds))
 }

@@ -3414,7 +3414,8 @@ impl Compiler {
         // one it was created or bound under, so `Closure::bind($f, null, B::class)`
         // makes its `self` name `B`.
         let unbound_closure = matches!(self.decl_site, host::DeclSite::Closure(..))
-            || (self.current_class.is_none() && !matches!(self.decl_site, host::DeclSite::Named(_)));
+            || (self.current_class.is_none()
+                && !matches!(self.decl_site, host::DeclSite::Named(_)));
         if unbound_closure {
             let lower = class.to_ascii_lowercase();
             if matches!(lower.as_str(), "self" | "parent" | "static") {
@@ -4109,7 +4110,15 @@ impl Compiler {
                 // refuses; a `never` one is exempt (`fn(): never => throw $e`).
                 let rule = ret_rule(ret_ty.as_ref(), &ret).filter(|r| *r == "void");
                 let saved_rule = std::mem::replace(&mut self.ret_rule, rule);
-                self.compile_closure(b, params, &captures, &ret, ret_ty.as_ref(), *is_static, *line)?;
+                self.compile_closure(
+                    b,
+                    params,
+                    &captures,
+                    &ret,
+                    ret_ty.as_ref(),
+                    *is_static,
+                    *line,
+                )?;
                 self.ret_rule = saved_rule;
             }
             // The declaration is compiled here, once, and the expression becomes

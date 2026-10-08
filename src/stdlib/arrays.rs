@@ -266,7 +266,11 @@ fn php_array_key_last(h: &mut host::PhpHost, args: &[Value]) -> Value {
 /// slot and copy the value out.
 fn php_array_first_last(h: &mut host::PhpHost, args: &[Value], last: bool) -> Value {
     let pairs = h.array_pairs(&arg(args, 0)).unwrap_or_default();
-    let slot = if last { pairs.into_iter().next_back() } else { pairs.into_iter().next() };
+    let slot = if last {
+        pairs.into_iter().next_back()
+    } else {
+        pairs.into_iter().next()
+    };
     slot.map(|(_, v)| v).unwrap_or(Value::Undef)
 }
 
