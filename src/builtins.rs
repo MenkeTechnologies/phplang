@@ -7292,13 +7292,15 @@ fn php_sort(h: &mut host::PhpHost, arr: &Value, reverse: bool, flags: i64) -> Va
     // Reverse by inverting the comparator, not by reversing after the fact:
     // PHP sorts are stable, so equal elements must keep their original order in
     // `rsort` too (`rsort([1, "1"])` leaves `1` before `"1"`).
-    vals.sort_by(|a, b| {
+    crate::stdlib::zsort::zend_sort_stable(&mut vals, |a, b| {
+        let r = sort_flag_compare(h, a, b, flags);
+        // `php_array_reverse_*`: the forward answer negated, not the
+        // operands swapped — the two differ for a mixed-type pair.
         if reverse {
-            sort_flag_compare(h, b, a, flags)
+            -r
         } else {
-            sort_flag_compare(h, a, b, flags)
+            r
         }
-        .cmp(&0)
     });
     h.arr_set_reindexed(arr, vals);
     Value::bool(true)
@@ -7308,13 +7310,15 @@ fn php_sort(h: &mut host::PhpHost, arr: &Value, reverse: bool, flags: i64) -> Va
 fn php_asort(h: &mut host::PhpHost, arr: &Value, reverse: bool, flags: i64) -> Value {
     let mut pairs = h.array_pairs(arr).unwrap_or_default();
     // Stable reverse: invert the comparator rather than reversing the result.
-    pairs.sort_by(|(_, a), (_, b)| {
+    crate::stdlib::zsort::zend_sort_stable(&mut pairs, |(_, a), (_, b)| {
+        let r = sort_flag_compare(h, a, b, flags);
+        // `php_array_reverse_*`: the forward answer negated, not the
+        // operands swapped — the two differ for a mixed-type pair.
         if reverse {
-            sort_flag_compare(h, b, a, flags)
+            -r
         } else {
-            sort_flag_compare(h, a, b, flags)
+            r
         }
-        .cmp(&0)
     });
     h.arr_set_pairs(arr, pairs);
     Value::bool(true)
@@ -7324,13 +7328,15 @@ fn php_asort(h: &mut host::PhpHost, arr: &Value, reverse: bool, flags: i64) -> V
 fn php_ksort(h: &mut host::PhpHost, arr: &Value, reverse: bool, flags: i64) -> Value {
     let mut pairs = h.array_pairs(arr).unwrap_or_default();
     // Stable reverse: invert the comparator rather than reversing the result.
-    pairs.sort_by(|(a, _), (b, _)| {
+    crate::stdlib::zsort::zend_sort_stable(&mut pairs, |(a, _), (b, _)| {
+        let r = sort_flag_compare(h, a, b, flags);
+        // `php_array_reverse_*`: the forward answer negated, not the
+        // operands swapped — the two differ for a mixed-type pair.
         if reverse {
-            sort_flag_compare(h, b, a, flags)
+            -r
         } else {
-            sort_flag_compare(h, a, b, flags)
+            r
         }
-        .cmp(&0)
     });
     h.arr_set_pairs(arr, pairs);
     Value::bool(true)

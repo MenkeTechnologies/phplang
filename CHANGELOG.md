@@ -26,6 +26,26 @@ comment above it.
 
 ---
 
+## Round 21 — sort algorithm, user-comparator array family
+
+Measured under `PHP 8.5.11 (cli) (built: Sep 22 2026 13:32:06) (NTS)`; ini state
+and environment otherwise as recorded in the oracle table above. Each fix has a
+block in `tests/data/parity_corpus.php`.
+
+* **Every sort ran a different algorithm from the reference.** `sort`,
+  `rsort`, `asort`, `arsort`, `ksort`, `krsort` used Rust's `sort_by`, which
+  PANICS on a comparator that is not a total order — any mixed-type
+  `SORT_REGULAR` sort such as `sort(["10", 9, "9a", "abc", true, null])` killed
+  the process — and `usort`/`uasort`/`uksort`/`array_multisort` used a merge
+  sort, so an echoing comparator saw different pairs in a different order. All
+  of them now run `zend_sort` (`Zend/zend_sort.c`, ported in
+  `src/stdlib/zsort.rs`) with the original-position tie break of
+  `RETURN_STABLE_SORT`; the reverse sorts negate the forward answer instead of
+  swapping operands, as `php_array_reverse_*` does. A comparator returning a
+  bool raises `Returning bool from comparison function is deprecated` once per
+  call and a `false` is retried with the operands swapped
+  (`php_array_user_compare_unstable`).
+
 ## Round 20 — prelude closures and frames, SPL iterators
 
 Measured under `PHP 8.5.11 (cli) (built: Sep 22 2026 13:32:06) (NTS)`; ini state

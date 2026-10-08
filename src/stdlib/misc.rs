@@ -623,19 +623,18 @@ fn array_multisort(args: &[Value]) -> Result<Value, String> {
     let mut order: Vec<usize> = (0..rows).collect();
     // `SORT_REGULAR` compares numerically when both sides look numeric and
     // lexically otherwise, which is not transitive across a mix of numeric and
-    // non-numeric strings. Rust's sort panics when it notices; the reference
-    // just returns some permutation.
-    stable_sort_by(&mut order, |&x, &y| {
+    // non-numeric strings; `zend_sort` returns the permutation the reference does.
+    crate::stdlib::zsort::zend_sort_stable(&mut order, |&x, &y| {
         for (ci, col) in cols.iter().enumerate() {
             let mut ord = multisort_cmp(&data[ci][x], &data[ci][y], col.sort_type);
             if col.order == -1 {
                 ord = ord.reverse();
             }
             if ord != Ordering::Equal {
-                return ord;
+                return ord as i32;
             }
         }
-        Ordering::Equal
+        0
     });
     host::with_host(|h| {
         for (ci, col) in cols.iter().enumerate() {

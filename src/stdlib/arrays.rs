@@ -519,33 +519,98 @@ enum SortKind {
     Key,
 }
 
-/// The user-comparator sorts. The comparator runs the VM (via `call_value`), so
-/// it must be invoked *outside* any `with_host` borrow; the first error/throw it
-/// raises stops the sort. PHP's sort is stable, as is Rust's `sort_by`.
+/// One call's worth of user-comparator state: the function name its
+/// diagnostics carry, PHP's `ARRAYG(compare_deprecation_thrown)` (the bool
+/// deprecation is raised once per call, `PHP_ARRAY_CMP_FUNC_BACKUP` resets it),
+/// and the first engine error a callback raised.
+pub(crate) struct UserCmp<'a> {
+    func: &'a str,
+    deprecation_thrown: bool,
+    pub(crate) err: Option<String>,
+}
+
+impl<'a> UserCmp<'a> {
+    pub(crate) fn new(func: &'a str) -> Self {
+        UserCmp {
+            func,
+            deprecation_thrown: false,
+            err: None,
+        }
+    }
+
+    /// Run the callback once. With an exception pending `zend_call_function`
+    /// returns at once and leaves the result UNDEF, so no further callback runs
+    /// and the comparison reads as `0`.
+    fn invoke(&mut self, cb: &Value, a: &Value, b: &Value) -> Option<Value> {
+        if self.err.is_some() || host::unwinding() {
+            return None;
+        }
+        match host::call_value(cb.clone(), vec![a.clone(), b.clone()]) {
+            Ok(r) if !host::unwinding() => Some(r),
+            Ok(_) => None,
+            Err(e) => {
+                self.err = Some(e);
+                None
+            }
+        }
+    }
+
+    /// `php_get_long` + `ZEND_NORMALIZE_BOOL`.
+    fn normalized(r: Option<Value>) -> i32 {
+        let n = r.map_or(0, |r| host::with_host(|h| h.to_number(&r).to_int()));
+        n.signum() as i32
+    }
+
+    /// `zval_user_compare`: the plain form the key-matched `array_udiff_assoc`
+    /// / `array_uintersect_assoc` use — no bool handling.
+    pub(crate) fn plain(&mut self, cb: &Value, a: &Value, b: &Value) -> i32 {
+        Self::normalized(self.invoke(cb, a, b))
+    }
+
+    /// `php_array_user_compare_unstable` (and its key twin): a bool result is
+    /// deprecated, and `false` is retried with the operands swapped, its answer
+    /// negated — so `fn($a, $b) => $a > $b` still sorts.
+    pub(crate) fn sorting(&mut self, cb: &Value, a: &Value, b: &Value) -> i32 {
+        let r = self.invoke(cb, a, b);
+        if let Some(Value::Bool(truth)) = r {
+            if !self.deprecation_thrown {
+                let func = self.func;
+                host::with_host(|h| {
+                    h.deprecated(format!(
+                        "{func}(): Returning bool from comparison function is deprecated, \
+                         return an integer less than, equal to, or greater than zero"
+                    ))
+                });
+                self.deprecation_thrown = true;
+            }
+            if !truth {
+                return -Self::normalized(self.invoke(cb, b, a));
+            }
+        }
+        Self::normalized(r)
+    }
+}
+
+/// The user-comparator sorts, ported from `php_usort`: `zend_hash_sort` over a
+/// copy of the array with `php_array_user_compare` (`uksort`: the key form),
+/// whose ties fall back to original position. The comparator runs the VM, so
+/// it is invoked outside any `with_host` borrow; the first error it raises
+/// stops further callbacks.
 fn php_usort(args: &[Value], kind: SortKind) -> Result<Value, String> {
     let arr = arg(args, 0);
     let cb = arg(args, 1);
+    let func = match kind {
+        SortKind::List => "usort",
+        SortKind::Assoc => "uasort",
+        SortKind::Key => "uksort",
+    };
     let mut pairs = host::with_host(|h| h.array_pairs(&arr)).unwrap_or_default();
-    let mut err: Option<String> = None;
-    // `stable_sort_by`, not `Vec::sort_by`: the comparator is arbitrary user
-    // code, and Rust's sort PANICS when it catches one contradicting itself.
-    stable_sort_by(&mut pairs, |(ka, va), (kb, vb)| {
-        if err.is_some() {
-            return Ordering::Equal;
-        }
-        let (a, b) = match kind {
-            SortKind::Key => (ka.clone(), kb.clone()),
-            _ => (va.clone(), vb.clone()),
-        };
-        match host::call_value(cb.clone(), vec![a, b]) {
-            Ok(r) => host::with_host(|h| h.to_number(&r).to_int()).cmp(&0),
-            Err(e) => {
-                err = Some(e);
-                Ordering::Equal
-            }
-        }
+    let mut ucmp = UserCmp::new(func);
+    crate::stdlib::zsort::zend_sort_stable(&mut pairs, |(ka, va), (kb, vb)| match kind {
+        SortKind::Key => ucmp.sorting(&cb, ka, kb),
+        _ => ucmp.sorting(&cb, va, vb),
     });
-    if let Some(e) = err {
+    if let Some(e) = ucmp.err {
         return Err(e);
     }
     if host::unwinding() {

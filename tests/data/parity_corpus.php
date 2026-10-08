@@ -1542,3 +1542,23 @@ class B extends A { const K = "bk"; static function who() { return "B"; } }
 var_dump(A::l()(), Closure::bind(A::l(), null, B::class)(), (new B)->arrow()());
 try { Closure::bind(A::l(), null, null)(); } catch (Error $e) { echo $e->getMessage(), "\n"; }
 $q = new class { function f() { return function () { return self::class; }; } }; var_dump(str_starts_with($q->f()(), "class@anonymous"));
+#==#
+// Every sort runs zend_sort (hybrid insertion sort / quicksort): the order a
+// comparator is called in is observable, a non-transitive mixed-type
+// SORT_REGULAR sort yields that algorithm's permutation, and a bool-returning
+// comparator is deprecated once per call and retried with swapped operands.
+$a = [5, 3, 8, 1, 9, 2, 7, 4, 6, 0, 15, 12, 11, 14, 13, 10, 20, 18, 19, 17, 16];
+usort($a, function ($x, $y) { echo "$x,$y "; return $x <=> $y; }); echo "\n", implode(",", $a), "\n";
+$b = [3, 1, 2]; uasort($b, function ($x, $y) { echo "$x,$y "; return $x <=> $y; }); echo json_encode($b), "\n";
+$c = [3, 1, 2]; usort($c, fn($x, $y) => $x > $y); echo implode(",", $c), "\n";
+uksort($b, fn($x, $y) => $x < $y); echo json_encode($b), "\n";
+$v = ["10", 9, "9a", "abc", 1.5, true, null, "", "1e1", "x", 0, "0", -1, "a", "B", 100, "100", 7, "07", "7.0"];
+$s = $v; sort($s); var_export($s); echo "\n";
+$s = $v; rsort($s); var_export($s); echo "\n";
+$s = $v; asort($s); echo json_encode(array_keys($s)), "\n";
+$s = $v; arsort($s); echo json_encode(array_keys($s)), "\n";
+$big = []; for ($i = 0; $i < 1500; $i++) { $big[] = ($i * 7919) % 1009; }
+$n = 0; usort($big, function ($x, $y) use (&$n) { $n++; return $x <=> $y; }); echo $n, " ", md5(implode(",", $big)), "\n";
+$z = [3, 1, 2, 5, 4];
+try { usort($z, function ($p, $q) { echo "$p-$q "; if ($p == 1 || $q == 1) throw new Exception("boom"); return $p <=> $q; }); }
+catch (Exception $e) { echo $e->getMessage(), "\n"; }
