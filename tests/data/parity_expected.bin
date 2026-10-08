@@ -2677,3 +2677,20 @@ Error: get_called_class() must be called from within a class
 get_called_class() must be called from within a class
 get_called_class() expects exactly 0 arguments, 1 given
 
+#REC 132 exit=0 out=783 err=0
+static::class: Cannot use "static" in the global scope
+self::class: Cannot use "self" in the global scope
+parent::class: Cannot use "parent" in the global scope
+static::f(): Cannot access "static" when no class scope is active
+new static: Cannot access "static" when no class scope is active
+self::K: Cannot access "self" when no class scope is active
+parent::f(): Cannot access "parent" when no class scope is active
+static::$p: Cannot access "static" when no class scope is active
+Cannot use "static" in the global scope
+Cannot use "self" in the global scope
+Cannot use "parent" in the global scope
+Cannot use "parent" when current class scope has no parent
+P
+Cannot access "parent" when current class scope has no parent
+Cannot use "parent" when current class scope has no parent
+

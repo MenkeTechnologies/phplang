@@ -1480,3 +1480,21 @@ function free() { return get_called_class(); }
 try { free(); } catch (Error $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
 try { get_called_class(); } catch (Error $e) { echo $e->getMessage(), "\n"; }
 try { get_called_class(1); } catch (ArgumentCountError $e) { echo $e->getMessage(), "\n"; }
+#==#
+// X::class with no class scope is ZEND_FETCH_CLASS_NAME's "Cannot use ... in
+// the global scope"; every other self/parent/static fetch says "Cannot access".
+foreach (['static::class', 'self::class', 'parent::class', 'static::f()', 'new static', 'self::K', 'parent::f()', 'static::$p'] as $src) {
+  $f = eval("return function () { return $src; };");
+  try { $f(); } catch (Error $e) { echo $src, ": ", $e->getMessage(), "\n"; }
+}
+foreach (['static::class', 'self::class', 'parent::class'] as $src) {
+  try { eval("return $src;"); } catch (Error $e) { echo $e->getMessage(), "\n"; }
+}
+class P {} class K extends P { static function f() { return 1; } }
+$f = function () { return parent::class; };
+try { Closure::bind($f, null, P::class)(); } catch (Error $e) { echo $e->getMessage(), "\n"; }
+echo Closure::bind($f, null, K::class)(), "\n";
+$g = function () { return parent::f(); };
+try { Closure::bind($g, null, P::class)(); } catch (Error $e) { echo $e->getMessage(), "\n"; }
+trait T { function t() { return parent::class; } } class U { use T; }
+try { (new U)->t(); } catch (Error $e) { echo $e->getMessage(), "\n"; }

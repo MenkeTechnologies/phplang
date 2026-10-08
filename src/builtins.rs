@@ -879,23 +879,26 @@ fn b_magic_dir(vm: &mut VM, _: u8) -> Value {
 /// `SELF_CLASS`: the composing class of a trait method. See
 /// [`ops::SELF_CLASS`].
 fn b_self_class(vm: &mut VM, argc: u8) -> Value {
-    let kw = scope_keyword(vm, argc);
+    let (kw, name_fetch) = scope_operands(vm, argc);
     let class = with_host(|h| h.magic_class());
     if class.is_empty() {
-        return no_class_scope(vm, &kw);
+        return no_class_scope(vm, &kw, name_fetch);
     }
     Value::str(class)
 }
 
-/// The keyword operand both class-scope ops carry, so a failure names the one
-/// the program wrote. A trait body emits the op without it (a trait method
-/// always has a composing class), and `self` is the only spelling that can
-/// reach that arm.
-fn scope_keyword(vm: &mut VM, argc: u8) -> String {
+/// The operands both class-scope ops carry: the keyword, so a failure names
+/// the one the program wrote, and — as a second operand — whether the
+/// reference is `X::class` (`ZEND_FETCH_CLASS_NAME`), which words its refusals
+/// differently from every other fetch. A trait body emits the op without
+/// either (a trait method always has a composing class), and `self` is the
+/// only spelling that can reach that arm.
+fn scope_operands(vm: &mut VM, argc: u8) -> (String, bool) {
     if argc == 0 {
-        return "self".to_string();
+        return ("self".to_string(), false);
     }
-    with_host(|h| h.to_str(&vm.pop()))
+    let name_fetch = argc == 2 && vm.pop().is_truthy();
+    (with_host(|h| h.to_str(&vm.pop())), name_fetch)
 }
 
 /// `self`/`parent`/`static` reached with no class scope at all.
@@ -904,12 +907,16 @@ fn scope_keyword(vm: &mut VM, argc: u8) -> String {
 /// catchable `Error` because a closure may still be bound to a scope. Inside a
 /// named function it knows at compile time that no scope can ever be active and
 /// refuses the program before it runs; the compiler keeps that path.
-fn no_class_scope(vm: &mut VM, kw: &str) -> Value {
-    throw_php(
-        vm,
-        "Error",
-        &format!("Cannot access \"{kw}\" when no class scope is active"),
-    )
+///
+/// `X::class` is refused by `ZEND_FETCH_CLASS_NAME` as `Cannot use "X" in the
+/// global scope`; every other fetch by `zend_fetch_class` as `Cannot access`.
+fn no_class_scope(vm: &mut VM, kw: &str, name_fetch: bool) -> Value {
+    let msg = if name_fetch {
+        format!("Cannot use \"{kw}\" in the global scope")
+    } else {
+        format!("Cannot access \"{kw}\" when no class scope is active")
+    };
+    throw_php(vm, "Error", &msg)
 }
 
 /// `PARENT_CLASS`: the composing class's parent inside a trait method. A trait
@@ -921,16 +928,16 @@ fn b_parent_class(vm: &mut VM, argc: u8) -> Value {
     // emits the keyword. The two say the parentless case differently — `Cannot
     // use` where the scope is known to be a class and `Cannot access` where it
     // is whatever the closure was bound to — so the shape of the emission is
-    // what picks the verb.
+    // what picks the verb. `parent::class` says `Cannot use` either way.
     let from_trait = argc == 0;
-    let kw = scope_keyword(vm, argc);
+    let (kw, name_fetch) = scope_operands(vm, argc);
     let class = with_host(|h| h.magic_class());
     if class.is_empty() {
-        return no_class_scope(vm, &kw);
+        return no_class_scope(vm, &kw, name_fetch);
     }
     let parent = with_host(|h| h.magic_parent_class());
     if parent.is_empty() {
-        let verb = if from_trait { "use" } else { "access" };
+        let verb = if from_trait || name_fetch { "use" } else { "access" };
         return throw_php(
             vm,
             "Error",

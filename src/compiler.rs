@@ -3365,6 +3365,22 @@ impl Compiler {
     /// class travels along as the fallback for a `static::` reached outside any
     /// method call.
     fn emit_class_name(&mut self, b: &mut ChunkBuilder, class: &str) -> Result<(), String> {
+        self.emit_class_name_as(b, class, false)
+    }
+
+    /// [`Compiler::emit_class_name`], told whether the reference is `X::class`.
+    ///
+    /// That form is its own opcode in the reference (`ZEND_FETCH_CLASS_NAME`)
+    /// and words its refusals differently: `Cannot use "self" in the global
+    /// scope` where every other fetch says `Cannot access "self" when no class
+    /// scope is active`. The two differ only where the scope is decided at run
+    /// time, so only the unbound-closure path below carries the flag.
+    fn emit_class_name_as(
+        &mut self,
+        b: &mut ChunkBuilder,
+        class: &str,
+        name_fetch: bool,
+    ) -> Result<(), String> {
         // Inside a TRAIT, `self` and `parent` are not knowable here: the body is
         // compiled once and copied into every class that uses it, so the class
         // they name is whichever one ends up running the method. Resolved at run
@@ -3404,7 +3420,14 @@ impl Compiler {
                 } else {
                     ops::SELF_CLASS
                 };
-                b.emit(Op::CallBuiltin(op, 1), self.cur_line);
+                let argc = if name_fetch {
+                    let flag = b.add_constant(Value::Bool(true));
+                    b.emit(Op::LoadConst(flag), self.cur_line);
+                    2
+                } else {
+                    1
+                };
+                b.emit(Op::CallBuiltin(op, argc), self.cur_line);
                 // `static` is the late-static-binding class when one is set and
                 // the bound scope otherwise, which is what `LSB_CLASS` decides.
                 if lower == "static" {
@@ -4238,7 +4261,7 @@ impl Compiler {
                             self.compile_expr(b, e)?;
                             b.emit(Op::CallBuiltin(ops::DYN_CLASS_CONST, 1), self.cur_line);
                         }
-                        ClassRef::Name(_) => self.emit_class_ref(b, class)?,
+                        ClassRef::Name(n) => self.emit_class_name_as(b, n, true)?,
                     }
                 } else {
                     self.emit_class_ref(b, class)?;
