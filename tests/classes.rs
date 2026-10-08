@@ -790,9 +790,9 @@ fn readonly_reaches_promoted_parameters_readonly_classes_and_traits() {
         function why(callable $f) {
             try { $f(); return "ok"; } catch (Throwable $e) { return $e->getMessage(); }
         }
-        echo why(function() { (new P(1))->a = 2; }), "\n";
-        echo why(function() { (new R(1))->b = 2; }), "\n";
-        echo why(function() { (new U())->t = "q"; }), "\n";"#;
+        echo why(function() { $o = new P(1); $o->a = 2; }), "\n";
+        echo why(function() { $o = new R(1); $o->b = 2; }), "\n";
+        echo why(function() { $o = new U(); $o->t = "q"; }), "\n";"#;
     assert_eq!(
         run(src),
         "Cannot modify readonly property P::$a\n\

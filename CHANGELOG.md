@@ -58,6 +58,19 @@ block in `tests/data/parity_corpus.php`.
   `php_array_intersect_key`; the `"+f"`/`"+ff"` parameter errors
   (`expects at least N arguments`, `Argument #N must be a valid callback`,
   `Argument #N must be of type array`) are raised in the reference's order.
+* **A temporary was writable.** `(new A)->x = 1`, `[1, 2][0] = 3`,
+  `A::C[0] = 1`, `unset((new A)->x)`, `(new A)->x++` and `$r = &(new A)->x` ran
+  (or died with an internal `unsupported assignment target`); the reference
+  refuses each at compile time with `Cannot use temporary expression in write
+  context` (`zend_compile_var_inner`), because the container of a written
+  element or property is compiled for write down the whole chain. The same
+  check reports `(clone $o)->x = 1` (`Cannot use result of built-in function in
+  write context`), `f() = 1` / `$o->m() = 1` (`Can't use function|method
+  return value in write context`), a `?->` anywhere in a written chain (`Can't
+  use nullsafe operator in write context`) and `$r = &$a?->b` (`Cannot take
+  reference of a nullsafe chain`). `tests/classes.rs` wrote a readonly property
+  through `(new P(1))->a = 2`, which the reference rejects before running; it
+  now writes through a variable, with the reference's output unchanged.
 
 ## Round 20 — prelude closures and frames, SPL iterators
 

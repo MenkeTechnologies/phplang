@@ -1608,3 +1608,36 @@ foreach (["array_udiff", "array_uintersect_assoc", "array_diff_ukey", "array_udi
 "; }
   }
 }
+#==#
+// The container of a written property or element is compiled for WRITE
+// (zend_delayed_compile_prop/dim), and zend_compile_var_inner refuses a
+// temporary there at compile time — nothing of the file runs first.
+class A { public $x; }
+echo "never printed";
+(new A)->x = 1;
+#==#
+echo "never printed";
+[1, 2][0] = 3;
+#==#
+class A { public $x; }
+(new A)->x[] = 1;
+#==#
+class A { const X = [1]; }
+A::X[0] = 1;
+#==#
+$o = new stdClass;
+(clone $o)->x = 1;
+#==#
+$a = null;
+$a?->b[0] = 1;
+#==#
+$a = null;
+$r = &$a?->b;
+#==#
+unset((new stdClass)->a);
+#==#
+// A call, a variable or a static property can be written through.
+function f() { static $o; return $o ??= new stdClass; }
+class S { static $p = []; }
+f()->x = 1; f()->y[] = 2; (new S)::$p[] = 3; $o = new stdClass; ($o)->z = 4; $o->q->r ??= 5;
+echo json_encode([f(), S::$p, $o]), "\n";

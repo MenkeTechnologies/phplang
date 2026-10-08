@@ -1005,8 +1005,10 @@ impl Compiler {
                         b.emit(Op::CallBuiltin(ops::BYREF_OUT, 1), 0);
                         Ok(())
                     })?;
-                    let back = Expr::Assign(Box::new(arg.clone()), None, Box::new(Expr::Var(tmp)));
-                    self.compile_expr(b, &back)?;
+                    // Straight to `compile_assign`: whether a by-reference argument
+                    // may be a temporary is decided where the reference knows the
+                    // callee, not by the write-context check of a written `=`.
+                    self.compile_assign(b, &arg, None, &Expr::Var(tmp))?;
                     b.emit(Op::Pop, 0);
                 }
             }
@@ -3790,12 +3792,18 @@ impl Compiler {
                 }
             }
             Expr::Binary(op, l, r) => self.compile_binary(b, *op, l, r)?,
-            Expr::Assign(lhs, op, rhs) => self.compile_assign(b, lhs, *op, rhs)?,
+            Expr::Assign(lhs, op, rhs) => {
+                self.check_write_target(lhs)?;
+                self.compile_assign(b, lhs, *op, rhs)?
+            }
             Expr::IncDec {
                 target,
                 inc,
                 prefix,
-            } => self.compile_incdec(b, target, *inc, *prefix)?,
+            } => {
+                self.check_write_target(target)?;
+                self.compile_incdec(b, target, *inc, *prefix)?
+            }
             Expr::Call(name, args) if has_named(args) => {
                 // A call with any `name: value` argument. Push the function name
                 // then a `(name, value)` pair per argument for the host to rebind.
@@ -4622,6 +4630,13 @@ impl Compiler {
         if matches!(lhs, Expr::Var(n) if n == "this") {
             return Err(self.compile_fatal(self.cur_line, "Cannot re-assign $this"));
         }
+        self.check_write_target(lhs)?;
+        if chain_has_nullsafe(rhs) {
+            return Err(
+                self.compile_fatal(self.cur_line, "Cannot take reference of a nullsafe chain")
+            );
+        }
+        self.check_write_base(rhs)?;
         // `$a = &$b` between two plain variables keeps its compact lowering.
         if let (Expr::Var(t), Expr::Var(s)) = (lhs, rhs) {
             let ti = b.add_constant(Value::str(t.clone()));
@@ -4760,6 +4775,7 @@ impl Compiler {
     /// an object property `$o->p` (remove the property, or call `__unset`), or an
     /// array element `$a[k1]..[kN]` (remove the deepest key).
     fn compile_unset_target(&mut self, b: &mut ChunkBuilder, t: &Expr) -> Result<(), String> {
+        self.check_write_target(t)?;
         match t {
             Expr::Var(name) if name == "this" => {
                 return Err(self.compile_fatal(self.cur_line, "Cannot unset $this"));
@@ -5101,6 +5117,57 @@ impl Compiler {
             b.emit(Op::CallBuiltin(ops::COPY, 1), 0);
         }
         Ok(())
+    }
+
+    /// The compile-time refusals of a written assignment, `++`/`--` or `unset`
+    /// target: `zend_ensure_writable_variable`, then the base of its `[…]` /
+    /// `->` chain compiled for WRITE ([`Self::check_write_base`]). Each is an
+    /// `E_COMPILE_ERROR`, so nothing of the file runs.
+    fn check_write_target(&self, target: &Expr) -> Result<(), String> {
+        let fatal = |msg: &str| Err(self.compile_fatal(self.cur_line, msg));
+        match target {
+            Expr::Call(..) | Expr::CallValue(..) => {
+                return fatal("Can't use function return value in write context");
+            }
+            Expr::MethodCall(..) | Expr::NullsafeMethodCall(..) | Expr::StaticCall(..) => {
+                return fatal("Can't use method return value in write context");
+            }
+            _ => {}
+        }
+        if chain_has_nullsafe(target) {
+            return fatal("Can't use nullsafe operator in write context");
+        }
+        self.check_write_base(target)
+    }
+
+    /// `zend_delayed_compile_dim` / `zend_delayed_compile_prop` under
+    /// `BP_VAR_W`: the container of a written element or property is itself
+    /// compiled for write, down the whole chain. A variable, a static property
+    /// or a call can be written through; `zend_compile_var_inner` refuses
+    /// anything else — `(new A)->x = 1`, `[1, 2][0] = 3`, `A::C[0] = 1` — as a
+    /// temporary, and `clone`'s TMP result as a built-in function's.
+    fn check_write_base(&self, e: &Expr) -> Result<(), String> {
+        let (Expr::Index(base, _) | Expr::Append(base) | Expr::PropGet(base, _)) = e else {
+            return Ok(());
+        };
+        match &**base {
+            Expr::Index(..) | Expr::Append(..) | Expr::PropGet(..) => self.check_write_base(base),
+            Expr::Var(_)
+            | Expr::VarVar(_)
+            | Expr::StaticProp(..)
+            | Expr::Call(..)
+            | Expr::CallValue(..)
+            | Expr::MethodCall(..)
+            | Expr::StaticCall(..) => Ok(()),
+            Expr::Clone(_) => Err(self.compile_fatal(
+                self.cur_line,
+                "Cannot use result of built-in function in write context",
+            )),
+            _ => Err(self.compile_fatal(
+                self.cur_line,
+                "Cannot use temporary expression in write context",
+            )),
+        }
     }
 
     fn compile_assign(

@@ -2959,3 +2959,86 @@ PHP Deprecated:  array_udiff(): Returning bool from comparison function is depre
 PHP Warning:  Array to string conversion in Command line code on line 20
 PHP Warning:  Array to string conversion in Command line code on line 20
 
+#REC 139 exit=255 out=117 err=121
+
+Fatal error: Cannot use temporary expression in write context in Command line code on line 6
+Stack trace:
+#0 {main}
+PHP Fatal error:  Cannot use temporary expression in write context in Command line code on line 6
+Stack trace:
+#0 {main}
+
+#REC 140 exit=255 out=117 err=121
+
+Fatal error: Cannot use temporary expression in write context in Command line code on line 2
+Stack trace:
+#0 {main}
+PHP Fatal error:  Cannot use temporary expression in write context in Command line code on line 2
+Stack trace:
+#0 {main}
+
+#REC 141 exit=255 out=117 err=121
+
+Fatal error: Cannot use temporary expression in write context in Command line code on line 2
+Stack trace:
+#0 {main}
+PHP Fatal error:  Cannot use temporary expression in write context in Command line code on line 2
+Stack trace:
+#0 {main}
+
+#REC 142 exit=255 out=117 err=121
+
+Fatal error: Cannot use temporary expression in write context in Command line code on line 2
+Stack trace:
+#0 {main}
+PHP Fatal error:  Cannot use temporary expression in write context in Command line code on line 2
+Stack trace:
+#0 {main}
+
+#REC 143 exit=255 out=124 err=128
+
+Fatal error: Cannot use result of built-in function in write context in Command line code on line 2
+Stack trace:
+#0 {main}
+PHP Fatal error:  Cannot use result of built-in function in write context in Command line code on line 2
+Stack trace:
+#0 {main}
+
+#REC 144 exit=255 out=113 err=117
+
+Fatal error: Can't use nullsafe operator in write context in Command line code on line 2
+Stack trace:
+#0 {main}
+PHP Fatal error:  Can't use nullsafe operator in write context in Command line code on line 2
+Stack trace:
+#0 {main}
+
+#REC 145 exit=255 out=110 err=114
+
+Fatal error: Cannot take reference of a nullsafe chain in Command line code on line 2
+Stack trace:
+#0 {main}
+PHP Fatal error:  Cannot take reference of a nullsafe chain in Command line code on line 2
+Stack trace:
+#0 {main}
+
+#REC 146 exit=255 out=117 err=121
+
+Fatal error: Cannot use temporary expression in write context in Command line code on line 1
+Stack trace:
+#0 {main}
+PHP Fatal error:  Cannot use temporary expression in write context in Command line code on line 1
+Stack trace:
+#0 {main}
+
+#REC 147 exit=255 out=155 err=159
+
+Fatal error: Uncaught Error: Attempt to assign property "r" on null in Command line code:4
+Stack trace:
+#0 {main}
+  thrown in Command line code on line 4
+PHP Fatal error:  Uncaught Error: Attempt to assign property "r" on null in Command line code:4
+Stack trace:
+#0 {main}
+  thrown in Command line code on line 4
+
