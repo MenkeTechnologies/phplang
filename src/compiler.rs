@@ -3410,8 +3410,11 @@ impl Compiler {
         // rejected a program the reference runs. A NAMED function is the case
         // the reference itself settles at compile time, and keeps the
         // compile-time path below.
-        let unbound_closure =
-            self.current_class.is_none() && !matches!(self.decl_site, host::DeclSite::Named(_));
+        // A closure written INSIDE a class is no different: its scope is the
+        // one it was created or bound under, so `Closure::bind($f, null, B::class)`
+        // makes its `self` name `B`.
+        let unbound_closure = matches!(self.decl_site, host::DeclSite::Closure(..))
+            || (self.current_class.is_none() && !matches!(self.decl_site, host::DeclSite::Named(_)));
         if unbound_closure {
             let lower = class.to_ascii_lowercase();
             if matches!(lower.as_str(), "self" | "parent" | "static") {

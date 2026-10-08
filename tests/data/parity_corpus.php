@@ -1528,3 +1528,17 @@ var_dump(preg_filter("/\d/", "#", ["k" => "a1", "b", 7 => "c22"], -1, $n), $n);
 var_dump(preg_filter(["/a/", "/b/"], ["A"], "xbx"), preg_filter("/z/", "Z", "abc", -1, $n), $n, preg_filter("/b/", "B", "abc", 0));
 var_dump(preg_filter(["/a/", "/(/"], "x", ["a", "b"]));
 foreach (["preg_replace", "preg_filter"] as $f) { try { $f("/a/", ["x"], "a"); } catch (TypeError $e) { echo $e->getMessage(), "\n"; } }
+#==#
+// self/parent inside a closure written in a class name the closure's CURRENT
+// scope, so rebinding the scope moves them; with no scope they are refused.
+class P { const K = "pk"; static function who() { return "P"; } }
+class A extends P {
+  const K = "ak"; private $x = "ax";
+  static function l() { return function () { return [self::class, self::K, parent::class, parent::K, static::class, get_class(new self), self::who()]; }; }
+  static function who() { return "A"; }
+  function arrow() { return fn() => [self::class, $this->x, self::K]; }
+}
+class B extends A { const K = "bk"; static function who() { return "B"; } }
+var_dump(A::l()(), Closure::bind(A::l(), null, B::class)(), (new B)->arrow()());
+try { Closure::bind(A::l(), null, null)(); } catch (Error $e) { echo $e->getMessage(), "\n"; }
+$q = new class { function f() { return function () { return self::class; }; } }; var_dump(str_starts_with($q->f()(), "class@anonymous"));
