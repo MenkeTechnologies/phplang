@@ -36,6 +36,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         "array_diff_ukey" => return Some(array_ucompare(args, false, true)),
         "array_intersect_ukey" => return Some(array_ucompare(args, true, true)),
         "array_multisort" => return Some(array_multisort(args)),
+        "version_compare" => return Some(version_compare(args)),
         _ => return None,
     };
     Some(Ok(v))
@@ -1522,4 +1523,182 @@ fn php_unpack(args: &[Value]) -> Result<Value, String> {
         }
     }
     Ok(make_map(out))
+}
+
+// ── version_compare (ext/standard/versioning.c) ─────────────────────────────
+
+/// `isdigit` in the C locale.
+fn ver_isdig(c: u8) -> bool {
+    c.is_ascii_digit()
+}
+
+/// `isndig`: neither a digit nor the `.` separator.
+fn ver_isndig(c: u8) -> bool {
+    !c.is_ascii_digit() && c != b'.'
+}
+
+/// Port of `php_canonicalize_version`: `-`, `_`, `+` and any other
+/// non-alphanumeric byte become a `.` (never two in a row), and a `.` is
+/// inserted wherever a digit run meets a non-digit run; a trailing `.` is
+/// dropped.
+fn canonicalize_version(v: &[u8]) -> Vec<u8> {
+    let mut q = Vec::with_capacity(v.len() * 2);
+    let Some((&first, rest)) = v.split_first() else {
+        return q;
+    };
+    q.push(first);
+    let mut lp = first;
+    for &p in rest {
+        let last = *q.last().unwrap_or(&0);
+        if matches!(p, b'-' | b'_' | b'+') {
+            if last != b'.' {
+                q.push(b'.');
+            }
+        } else if (ver_isndig(lp) && ver_isdig(p)) || (ver_isdig(lp) && ver_isndig(p)) {
+            if last != b'.' {
+                q.push(b'.');
+            }
+            q.push(p);
+        } else if !p.is_ascii_alphanumeric() {
+            if last != b'.' {
+                q.push(b'.');
+            }
+        } else {
+            q.push(p);
+        }
+        lp = p;
+    }
+    // A trailing `.` would leave an empty last component; upstream drops it.
+    if q.last() == Some(&b'.') {
+        q.pop();
+    }
+    q
+}
+
+/// Port of `compare_special_version_forms`: each form is ranked by the first
+/// entry of the table it STARTS with (`strncmp` over the entry's length), and
+/// an unranked form sorts below `dev`.
+fn compare_special_version_forms(a: &[u8], b: &[u8]) -> i64 {
+    const FORMS: &[(&[u8], i64)] = &[
+        (b"dev", 0),
+        (b"alpha", 1),
+        (b"a", 1),
+        (b"beta", 2),
+        (b"b", 2),
+        (b"RC", 3),
+        (b"rc", 3),
+        (b"#", 4),
+        (b"pl", 5),
+        (b"p", 5),
+    ];
+    let rank = |f: &[u8]| {
+        FORMS
+            .iter()
+            .find(|(name, _)| f.starts_with(name))
+            .map_or(-1, |&(_, order)| order)
+    };
+    (rank(a) - rank(b)).signum()
+}
+
+/// C `strtol(p, NULL, 10)` over a component that starts with a digit:
+/// the leading digit run, saturating at `LONG_MAX` as `strtol` does.
+fn ver_strtol(p: &[u8]) -> i64 {
+    p.iter()
+        .take_while(|c| c.is_ascii_digit())
+        .fold(0i64, |n, &c| n.saturating_mul(10).saturating_add(i64::from(c - b'0')))
+}
+
+/// Port of `php_version_compare`: walk both canonical versions one
+/// `.`-separated component at a time; numbers compare numerically, special
+/// forms by rank, and a number outranks every special form except `pl`/`p`.
+/// When one side runs out, its missing component counts as `#N#`.
+fn php_version_compare(v1: &[u8], v2: &[u8]) -> i64 {
+    if v1.is_empty() || v2.is_empty() {
+        return match (v1.is_empty(), v2.is_empty()) {
+            (true, true) => 0,
+            (false, _) => 1,
+            _ => -1,
+        };
+    }
+    let canon = |v: &[u8]| {
+        if v[0] == b'#' {
+            v.to_vec()
+        } else {
+            canonicalize_version(v)
+        }
+    };
+    let (ver1, ver2) = (canon(v1), canon(v2));
+    // `p1`/`p2` are the start of the current component; `n1`/`n2` the index of
+    // the `.` that ends it, `None` once a side has no further separator.
+    let (mut p1, mut p2) = (0usize, 0usize);
+    let (mut n1, mut n2): (Option<usize>, Option<usize>) = (Some(0), Some(0));
+    let mut compare = 0;
+    let end = |v: &[u8], from: usize| v[from..].iter().position(|&c| c == b'.').map(|i| from + i);
+    let comp = |v: &[u8], from: usize, to: Option<usize>| v[from..to.unwrap_or(v.len())].to_vec();
+    while p1 < ver1.len() && p2 < ver2.len() && n1.is_some() && n2.is_some() {
+        n1 = end(&ver1, p1);
+        n2 = end(&ver2, p2);
+        let (c1, c2) = (comp(&ver1, p1, n1), comp(&ver2, p2, n2));
+        let d1 = c1.first().is_some_and(|&c| ver_isdig(c));
+        let d2 = c2.first().is_some_and(|&c| ver_isdig(c));
+        compare = match (d1, d2) {
+            (true, true) => (ver_strtol(&c1) - ver_strtol(&c2)).signum(),
+            (false, false) => compare_special_version_forms(&c1, &c2),
+            (true, false) => compare_special_version_forms(b"#N#", &c2),
+            (false, true) => compare_special_version_forms(&c1, b"#N#"),
+        };
+        if compare != 0 {
+            break;
+        }
+        if let Some(n) = n1 {
+            p1 = n + 1;
+        }
+        if let Some(n) = n2 {
+            p2 = n + 1;
+        }
+    }
+    if compare == 0 {
+        if n1.is_some() {
+            compare = if ver1.get(p1).is_some_and(|&c| ver_isdig(c)) {
+                1
+            } else {
+                php_version_compare(&ver1[p1.min(ver1.len())..], b"#N#")
+            };
+        } else if n2.is_some() {
+            compare = if ver2.get(p2).is_some_and(|&c| ver_isdig(c)) {
+                -1
+            } else {
+                php_version_compare(b"#N#", &ver2[p2.min(ver2.len())..])
+            };
+        }
+    }
+    compare
+}
+
+/// `version_compare($version1, $version2, $operator = null)` — the sign of
+/// [`php_version_compare`], or, with an operator, whether it holds.
+fn version_compare(args: &[Value]) -> Result<Value, String> {
+    // Upstream reads both as C strings, so each ends at its first NUL.
+    let cstr = |s: &str| s.split('\0').next().unwrap_or_default().to_string();
+    let (v1, v2) = (str_arg(args, 0), str_arg(args, 1));
+    let compare = php_version_compare(cstr(&v1).as_bytes(), cstr(&v2).as_bytes());
+    let op = arg(args, 2);
+    if matches!(op, Value::Undef) {
+        return Ok(Value::int(compare));
+    }
+    let holds = match str_arg(args, 2).as_str() {
+        "<" | "lt" => compare == -1,
+        "<=" | "le" => compare != 1,
+        ">" | "gt" => compare == 1,
+        ">=" | "ge" => compare != -1,
+        "==" | "eq" => compare == 0,
+        "!=" | "<>" | "ne" => compare != 0,
+        _ => {
+            return Err(throws(
+                "ValueError",
+                "version_compare(): Argument #3 ($operator) must be a valid comparison operator",
+            ))
+        }
+    };
+    Ok(Value::Bool(holds))
 }

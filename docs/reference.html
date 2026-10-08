@@ -5155,19 +5155,25 @@ echo implode(",", $a), "|", implode(",", $b);   // =&gt; 1,2,3|a,b,c</code></pre
           <pre><code class="lang-php">print_r(str_getcsv("a,b"));   // =&gt; Array\n(\n    [0] =&gt; a\n    [1] =&gt; b\n)</code></pre>
         </article>
         <article class="doc-entry" id="doc-misc-17">
-          <h3><a class="doc-anchor" href="#doc-misc-17">#</a> <code>uniqid</code></h3>
+          <h3><a class="doc-anchor" href="#doc-misc-17">#</a> <code>version_compare</code></h3>
+          <pre><code class="lang-php">version_compare(string $version1, string $version2, ?string $operator = null): int|bool</code></pre>
+          <p>Compares two PHP-standardized version strings: `-`, `_` and `+` become `.`, a `.` is inserted between digit and non-digit runs, and components compare numerically or by special-form rank (`dev` &lt; `alpha`/`a` &lt; `beta`/`b` &lt; `RC`/`rc` &lt; number &lt; `pl`/`p`). Without `$operator` returns -1, 0 or 1; with one (`&lt;`/`lt`, `&lt;=`/`le`, `&gt;`/`gt`, `&gt;=`/`ge`, `==`/`eq`, `!=`/`&lt;&gt;`/`ne`) returns whether it holds.</p>
+          <pre><code class="lang-php">var_dump(version_compare("8.5.0RC1", "8.5.0", "&lt;"));   // =&gt; bool(true)</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-misc-18">
+          <h3><a class="doc-anchor" href="#doc-misc-18">#</a> <code>uniqid</code></h3>
           <pre><code class="lang-php">uniqid(string $prefix = "", bool $more_entropy = false): string</code></pre>
           <p>A hex timestamp of the form `%08x%05x` from the wall clock's seconds and microseconds, prefixed by `$prefix`. `$more_entropy` is honoured and appends a fractional suffix of PHP's shape, but with only 1000 distinct values. DIVERGENCE: the clock is the ONLY entropy source — there is no RNG, no counter, and no collision avoidance, so two calls in the same microsecond return IDENTICAL strings. It is not suitable as a unique identifier under load.</p>
           <pre><code class="lang-php">var_dump(strlen(uniqid()) === 13);   // =&gt; bool(true)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-misc-18">
-          <h3><a class="doc-anchor" href="#doc-misc-18">#</a> <code>pack</code></h3>
+        <article class="doc-entry" id="doc-misc-19">
+          <h3><a class="doc-anchor" href="#doc-misc-19">#</a> <code>pack</code></h3>
           <pre><code class="lang-php">pack(string $format, mixed ...$values): string</code></pre>
           <p>A port of ext/standard/pack.c: every format code (`a A Z h H c C s S n v i I l L N V q Q J P f g G d e E x X @`), repeat counts and `*`, and its warnings and `ValueError`s. Bytes come out one per character, as `chr` makes them, so a byte of 0x80 or more is two bytes in this UTF-8 runtime (see BUGS.md).</p>
           <pre><code class="lang-php">echo bin2hex(pack("nv", 0x1234, 0x1234));   // =&gt; 12343412</code></pre>
         </article>
-        <article class="doc-entry" id="doc-misc-19">
-          <h3><a class="doc-anchor" href="#doc-misc-19">#</a> <code>unpack</code></h3>
+        <article class="doc-entry" id="doc-misc-20">
+          <h3><a class="doc-anchor" href="#doc-misc-20">#</a> <code>unpack</code></h3>
           <pre><code class="lang-php">unpack(string $format, string $string, int $offset = 0): array|false</code></pre>
           <p>A port of ext/standard/pack.c's `unpack`: `code[repeat]name` items separated by `/`, numbered keys for a repeat, and its warnings for short input. It reads the string's bytes, as `ord` does.</p>
           <pre><code class="lang-php">print_r(unpack("nbig/C2c", "\x12\x34AB"));   // =&gt; Array ( [big] =&gt; 4660 [c1] =&gt; 65 [c2] =&gt; 66 )</code></pre>

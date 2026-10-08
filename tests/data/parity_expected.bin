@@ -2601,3 +2601,28 @@ array_last(): Argument #1 ($array) must be of type array, null given
 array_first() expects exactly 1 argument, 2 given
 int(7)
 
+#REC 128 exit=0 out=623 err=0
+100000000000000000
+210100000000010020
+221212222210221120
+210100000000010020
+221212222210221120
+220201000000220020
+220202100000220020
+220202210000220020
+220202221100220020
+220202221100220020
+221212222210221120
+222222222221222220
+220200000000120020
+210100000000010021
+221212222210221120
+221212222210221120
+200000000000000010
+222222222222212221
+<=true lt=true <==true le=true >=false gt=false >==false ge=false ===false eq=false !==true <>=true ne=true 
+int(0)
+int(0)
+version_compare(): Argument #3 ($operator) must be a valid comparison operator
+version_compare(): Argument #3 ($operator) must be a valid comparison operator
+

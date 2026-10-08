@@ -1517,6 +1517,14 @@ static PARAMS: &[(&str, Params)] = &[
     ("utf8_encode", &[(1, "string", "string")]),
     ("var_export", &[(2, "return", "bool")]),
     (
+        "version_compare",
+        &[
+            (1, "version1", "string"),
+            (2, "version2", "string"),
+            (3, "operator", "?string"),
+        ],
+    ),
+    (
         "vfprintf",
         &[
             (1, "stream", "stream"),

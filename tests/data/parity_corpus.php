@@ -1420,3 +1420,11 @@ $o = new stdClass; var_dump(array_last([1, $o]) === $o, array_first(["z" => fals
 foreach ([1, "s", null] as $bad) { try { array_last($bad); } catch (TypeError $e) { echo $e->getMessage(), "\n"; } }
 try { array_first([1], [2]); } catch (ArgumentCountError $e) { echo $e->getMessage(), "\n"; }
 var_dump(array_first(array: [7, 8]));
+#==#
+// version_compare: canonicalisation (-_+ and punctuation to ".", digit/letter
+// boundaries split, a trailing "." dropped), special-form ranks, operators.
+$vs = ["", "1", "1.0", "1.", "1..0", "1.0-dev", "1.0a1", "1.0beta2", "1.0RC1", "1.0rc1", "1.0", "1.0pl1", "1.0.x", "#1", "1_0", "1.0-", "x", "99999999999999999999"];
+foreach ($vs as $a) { foreach ($vs as $b) echo version_compare($a, $b) + 1; echo "\n"; }
+foreach (["<", "lt", "<=", "le", ">", "gt", ">=", "ge", "==", "eq", "!=", "<>", "ne"] as $op) echo $op, "=", var_export(version_compare("8.5.0RC1", "8.5.0", $op), true), " ";
+echo "\n"; var_dump(version_compare("1", "1", null), version_compare("1\0.5", "1"));
+foreach (["~", "LT"] as $op) { try { version_compare("1", "2", $op); } catch (ValueError $e) { echo $e->getMessage(), "\n"; } }

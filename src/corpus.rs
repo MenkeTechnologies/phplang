@@ -5971,6 +5971,13 @@ pub const CORPUS: &[Entry] = &[
         "print_r(str_getcsv(\"a,b\"));   // => Array\\n(\\n    [0] => a\\n    [1] => b\\n)",
     ),
     (
+        "version_compare",
+        "Misc",
+        "version_compare(string $version1, string $version2, ?string $operator = null): int|bool",
+        "Compares two PHP-standardized version strings: `-`, `_` and `+` become `.`, a `.` is inserted between digit and non-digit runs, and components compare numerically or by special-form rank (`dev` < `alpha`/`a` < `beta`/`b` < `RC`/`rc` < number < `pl`/`p`). Without `$operator` returns -1, 0 or 1; with one (`<`/`lt`, `<=`/`le`, `>`/`gt`, `>=`/`ge`, `==`/`eq`, `!=`/`<>`/`ne`) returns whether it holds.",
+        "var_dump(version_compare(\"8.5.0RC1\", \"8.5.0\", \"<\"));   // => bool(true)",
+    ),
+    (
         "uniqid",
         "Misc",
         "uniqid(string $prefix = \"\", bool $more_entropy = false): string",
