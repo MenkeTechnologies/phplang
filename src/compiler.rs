@@ -284,6 +284,7 @@ const BYREF_ARG_DIAG: &[(&str, u32, &str)] = &[
     ("str_replace", 4, "count"),
     ("str_ireplace", 4, "count"),
     ("preg_replace", 5, "count"),
+    ("preg_filter", 5, "count"),
     ("preg_replace_callback", 5, "count"),
     ("preg_replace_callback_array", 4, "count"),
 ];
@@ -1022,6 +1023,7 @@ impl Compiler {
             ("preg_match", &[2]),
             ("preg_match_all", &[2]),
             ("preg_replace", &[4]),
+            ("preg_filter", &[4]),
             ("preg_replace_callback", &[4]),
             ("preg_replace_callback_array", &[3]),
             ("parse_str", &[1]),

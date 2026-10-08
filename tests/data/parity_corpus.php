@@ -1519,3 +1519,12 @@ $s = static fn() => 1; var_dump(Closure::bind($s, new A, A::class));
 class A2 { public $v = 1; function m() { return [(static fn() => isset($this))(), (fn() => isset($this))(), (static fn() => static::class)()]; } } class B2 extends A2 {} var_dump((new B2)->m());
 class C2 { public $v = 1; function m() { return (static fn() => $this->v)(); } } try { (new C2)->m(); } catch (Error $e) { echo $e->getMessage(), "\n"; }
 var_dump(Closure::bind(static fn() => 1, new C2), (static fn() => 1)->bindTo(null)());
+#==#
+// preg_replace / preg_filter per _preg_replace_common: a pattern that fails to
+// compile warns once per subject and drops that subject; preg_filter keeps only
+// subjects something was replaced in; an array replacement needs array patterns.
+var_dump(preg_replace("/(/", "x", ["a", "b"]), preg_replace("/(/", "x", "a"), preg_replace(["/a/", "/(/"], "x", ["a", "b"]), preg_replace("/(/", "x", []));
+var_dump(preg_filter("/\d/", "#", ["k" => "a1", "b", 7 => "c22"], -1, $n), $n);
+var_dump(preg_filter(["/a/", "/b/"], ["A"], "xbx"), preg_filter("/z/", "Z", "abc", -1, $n), $n, preg_filter("/b/", "B", "abc", 0));
+var_dump(preg_filter(["/a/", "/(/"], "x", ["a", "b"]));
+foreach (["preg_replace", "preg_filter"] as $f) { try { $f("/a/", ["x"], "a"); } catch (TypeError $e) { echo $e->getMessage(), "\n"; } }

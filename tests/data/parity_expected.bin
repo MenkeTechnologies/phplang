@@ -2752,3 +2752,48 @@ NULL
 int(1)
 PHP Warning:  Cannot bind an instance to a static closure, this will be an error in PHP 9 in Command line code on line 5
 
+#REC 135 exit=0 out=1216 err=845
+
+Warning: preg_replace(): Compilation failed: missing closing parenthesis at offset 1 in Command line code on line 4
+
+Warning: preg_replace(): Compilation failed: missing closing parenthesis at offset 1 in Command line code on line 4
+
+Warning: preg_replace(): Compilation failed: missing closing parenthesis at offset 1 in Command line code on line 4
+
+Warning: preg_replace(): Compilation failed: missing closing parenthesis at offset 1 in Command line code on line 4
+
+Warning: preg_replace(): Compilation failed: missing closing parenthesis at offset 1 in Command line code on line 4
+array(0) {
+}
+NULL
+array(0) {
+}
+array(0) {
+}
+array(2) {
+  ["k"]=>
+  string(2) "a#"
+  [7]=>
+  string(3) "c##"
+}
+int(3)
+string(2) "xx"
+NULL
+int(0)
+NULL
+
+Warning: preg_filter(): Compilation failed: missing closing parenthesis at offset 1 in Command line code on line 7
+
+Warning: preg_filter(): Compilation failed: missing closing parenthesis at offset 1 in Command line code on line 7
+array(0) {
+}
+preg_replace(): Argument #1 ($pattern) must be of type array when argument #2 ($replacement) is an array, string given
+preg_filter(): Argument #1 ($pattern) must be of type array when argument #2 ($replacement) is an array, string given
+PHP Warning:  preg_replace(): Compilation failed: missing closing parenthesis at offset 1 in Command line code on line 4
+PHP Warning:  preg_replace(): Compilation failed: missing closing parenthesis at offset 1 in Command line code on line 4
+PHP Warning:  preg_replace(): Compilation failed: missing closing parenthesis at offset 1 in Command line code on line 4
+PHP Warning:  preg_replace(): Compilation failed: missing closing parenthesis at offset 1 in Command line code on line 4
+PHP Warning:  preg_replace(): Compilation failed: missing closing parenthesis at offset 1 in Command line code on line 4
+PHP Warning:  preg_filter(): Compilation failed: missing closing parenthesis at offset 1 in Command line code on line 7
+PHP Warning:  preg_filter(): Compilation failed: missing closing parenthesis at offset 1 in Command line code on line 7
+

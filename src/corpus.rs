@@ -4736,8 +4736,15 @@ pub const CORPUS: &[Entry] = &[
         "preg_replace",
         "Regular expressions",
         "preg_replace(string|array $pattern, string|array $replacement, string|array $subject, int $limit = -1, int &$count = null): string|array|null",
-        "Applies each pattern in turn. `$replacement` may be one string for every pattern or an array index-matched to the patterns (surplus patterns replace with `\"\"`). The `$1`, `${1}`, and `\\1` back-reference forms all work in the REPLACEMENT even though back-references in the pattern do not. The first pattern that will not compile ends the whole call at null, raising `Warning: preg_replace(): <reason>`; `&$count` receives the total number of replacements across every pattern, and is written even when that total is zero.",
+        "Applies each pattern in turn. `$replacement` may be one string for every pattern or an array index-matched to the patterns (surplus patterns replace with `\"\"`). The `$1`, `${1}`, and `\\1` back-reference forms all work in the REPLACEMENT even though back-references in the pattern do not. A pattern that will not compile raises `Warning: preg_replace(): <reason>` once per subject and leaves that subject without a result — null for a string subject, a dropped element for an array one; a string `$pattern` with an array `$replacement` is a `TypeError`. `&$count` receives the total number of replacements across every pattern, and is written even when that total is zero.",
         "echo preg_replace(\"/\\d+/\", \"#\", \"a1b22\");   // => a#b#",
+    ),
+    (
+        "preg_filter",
+        "Regular expressions",
+        "preg_filter(string|array $pattern, string|array $replacement, string|array $subject, int $limit = -1, int &$count = null): string|array|null",
+        "`preg_replace` that keeps only the subjects a pattern actually replaced something in: a string subject with no replacement is null, and an array subject loses those elements (keys preserved).",
+        "var_dump(preg_filter(\"/\\d/\", \"#\", [\"a1\", \"b\"]));   // => array(1) { [0]=> string(2) \"a#\" }",
     ),
     (
         "preg_replace_callback",

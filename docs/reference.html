@@ -4089,47 +4089,53 @@ echo implode(",", array_keys($a));   // =&gt; a,b</code></pre>
         <article class="doc-entry" id="doc-regular-expressions-3">
           <h3><a class="doc-anchor" href="#doc-regular-expressions-3">#</a> <code>preg_replace</code></h3>
           <pre><code class="lang-php">preg_replace(string|array $pattern, string|array $replacement, string|array $subject, int $limit = -1, int &amp;$count = null): string|array|null</code></pre>
-          <p>Applies each pattern in turn. `$replacement` may be one string for every pattern or an array index-matched to the patterns (surplus patterns replace with `""`). The `$1`, `${1}`, and `\1` back-reference forms all work in the REPLACEMENT even though back-references in the pattern do not. The first pattern that will not compile ends the whole call at null, raising `Warning: preg_replace(): &lt;reason&gt;`; `&amp;$count` receives the total number of replacements across every pattern, and is written even when that total is zero.</p>
+          <p>Applies each pattern in turn. `$replacement` may be one string for every pattern or an array index-matched to the patterns (surplus patterns replace with `""`). The `$1`, `${1}`, and `\1` back-reference forms all work in the REPLACEMENT even though back-references in the pattern do not. A pattern that will not compile raises `Warning: preg_replace(): &lt;reason&gt;` once per subject and leaves that subject without a result — null for a string subject, a dropped element for an array one; a string `$pattern` with an array `$replacement` is a `TypeError`. `&amp;$count` receives the total number of replacements across every pattern, and is written even when that total is zero.</p>
           <pre><code class="lang-php">echo preg_replace("/\d+/", "#", "a1b22");   // =&gt; a#b#</code></pre>
         </article>
         <article class="doc-entry" id="doc-regular-expressions-4">
-          <h3><a class="doc-anchor" href="#doc-regular-expressions-4">#</a> <code>preg_replace_callback</code></h3>
+          <h3><a class="doc-anchor" href="#doc-regular-expressions-4">#</a> <code>preg_filter</code></h3>
+          <pre><code class="lang-php">preg_filter(string|array $pattern, string|array $replacement, string|array $subject, int $limit = -1, int &amp;$count = null): string|array|null</code></pre>
+          <p>`preg_replace` that keeps only the subjects a pattern actually replaced something in: a string subject with no replacement is null, and an array subject loses those elements (keys preserved).</p>
+          <pre><code class="lang-php">var_dump(preg_filter("/\d/", "#", ["a1", "b"]));   // =&gt; array(1) { [0]=&gt; string(2) "a#" }</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-regular-expressions-5">
+          <h3><a class="doc-anchor" href="#doc-regular-expressions-5">#</a> <code>preg_replace_callback</code></h3>
           <pre><code class="lang-php">preg_replace_callback(string|array $pattern, callable $callback, string|array $subject, int $limit = -1, int &amp;$count = null, int $flags = 0): string|array|null</code></pre>
           <p>Calls the callback for each match with a fully POPULATED `$matches` array. `$limit` is honoured, and a pattern that will not compile returns null after raising `Warning: preg_replace_callback(): &lt;reason&gt;`. `&amp;$count` receives the number of replacements, and `$flags` takes `PREG_OFFSET_CAPTURE`/`PREG_UNMATCHED_AS_NULL`, which reshape the `$matches` the callback receives.</p>
           <pre><code class="lang-php">echo preg_replace_callback("/\d/", fn($m) =&gt; $m[0] * 2, "a1b2");   // =&gt; a2b4</code></pre>
         </article>
-        <article class="doc-entry" id="doc-regular-expressions-5">
-          <h3><a class="doc-anchor" href="#doc-regular-expressions-5">#</a> <code>preg_replace_callback_array</code></h3>
+        <article class="doc-entry" id="doc-regular-expressions-6">
+          <h3><a class="doc-anchor" href="#doc-regular-expressions-6">#</a> <code>preg_replace_callback_array</code></h3>
           <pre><code class="lang-php">preg_replace_callback_array(array $pattern, string|array $subject, int $limit = -1, int &amp;$count = null, int $flags = 0): string|array|null</code></pre>
           <p>Applies each `pattern =&gt; callback` entry in turn to the WHOLE subject — every element of an array subject — before the next entry runs, so later patterns see earlier replacements. `$limit` bounds each pattern on each string, `&amp;$count` totals every replacement, and `$flags` reshapes `$matches` as for `preg_replace_callback`. A value in the map that is not callable raises `TypeError: preg_replace_callback_array(): Argument #1 ($pattern) must contain only valid callbacks` before anything runs; a pattern that will not compile warns and the result is null.</p>
           <pre><code class="lang-php">echo preg_replace_callback_array(["/\d+/" =&gt; fn($m) =&gt; "N", "/[a-z]+/" =&gt; fn($m) =&gt; "W"], "abc 123");   // =&gt; W N</code></pre>
         </article>
-        <article class="doc-entry" id="doc-regular-expressions-6">
-          <h3><a class="doc-anchor" href="#doc-regular-expressions-6">#</a> <code>preg_split</code></h3>
+        <article class="doc-entry" id="doc-regular-expressions-7">
+          <h3><a class="doc-anchor" href="#doc-regular-expressions-7">#</a> <code>preg_split</code></h3>
           <pre><code class="lang-php">preg_split(string $pattern, string $subject, int $limit = -1, int $flags = 0): array|false</code></pre>
           <p>Splits on each match. All three flag bits are honoured: `PREG_SPLIT_NO_EMPTY`, `PREG_SPLIT_DELIM_CAPTURE`, and `PREG_SPLIT_OFFSET_CAPTURE`. A zero-width match sitting right after a non-empty one is emitted, as PCRE does, so `/x*/` and `/\d*/` split the way the reference splits them. The captured delimiters `PREG_SPLIT_DELIM_CAPTURE` interleaves are positional — unlike `$matches`, they are not keyed by group name.</p>
           <pre><code class="lang-php">echo implode("-", preg_split("/[\s,]+/", "a, b  c"));   // =&gt; a-b-c</code></pre>
         </article>
-        <article class="doc-entry" id="doc-regular-expressions-7">
-          <h3><a class="doc-anchor" href="#doc-regular-expressions-7">#</a> <code>preg_quote</code></h3>
+        <article class="doc-entry" id="doc-regular-expressions-8">
+          <h3><a class="doc-anchor" href="#doc-regular-expressions-8">#</a> <code>preg_quote</code></h3>
           <pre><code class="lang-php">preg_quote(string $str, ?string $delimiter = null): string</code></pre>
           <p>Backslash-escapes the PCRE special set `.\+*?[^]$(){}=!&lt;&gt;|:-#`, plus the first character of `$delimiter` when supplied. A NUL byte becomes the four-character sequence `\000`. It compiles nothing, so it never touches `preg_last_error()`.</p>
           <pre><code class="lang-php">echo preg_quote("1+1");   // =&gt; 1\+1</code></pre>
         </article>
-        <article class="doc-entry" id="doc-regular-expressions-8">
-          <h3><a class="doc-anchor" href="#doc-regular-expressions-8">#</a> <code>preg_grep</code></h3>
+        <article class="doc-entry" id="doc-regular-expressions-9">
+          <h3><a class="doc-anchor" href="#doc-regular-expressions-9">#</a> <code>preg_grep</code></h3>
           <pre><code class="lang-php">preg_grep(string $pattern, array $array, int $flags = 0): array|false</code></pre>
           <p>The entries whose string value matches the pattern, PRESERVING keys. The `PREG_GREP_INVERT` bit inverts the test. A non-array subject yields an empty array rather than raising.</p>
           <pre><code class="lang-php">echo implode(",", preg_grep("/^a/", ["apple", "pear"]));   // =&gt; apple</code></pre>
         </article>
-        <article class="doc-entry" id="doc-regular-expressions-9">
-          <h3><a class="doc-anchor" href="#doc-regular-expressions-9">#</a> <code>preg_last_error</code></h3>
+        <article class="doc-entry" id="doc-regular-expressions-10">
+          <h3><a class="doc-anchor" href="#doc-regular-expressions-10">#</a> <code>preg_last_error</code></h3>
           <pre><code class="lang-php">preg_last_error(): int</code></pre>
           <p>The outcome of the last `preg_*` call that reached the regex compiler: `PREG_INTERNAL_ERROR` (1) after a pattern the engine rejected, `PREG_NO_ERROR` (0) after one it accepted. The state is STICKY and cleared only by another compile — reading it does not clear it, and `preg_quote()` does not touch it — so a pattern that compiles resets it even when the match then finds nothing. DIVERGENCE: only these two codes are produced; the reference also reports backtrack- and recursion-limit exhaustion, which this engine has no equivalent of.</p>
           <pre><code class="lang-php">@preg_match("/[a", "x"); echo preg_last_error();   // =&gt; 1</code></pre>
         </article>
-        <article class="doc-entry" id="doc-regular-expressions-10">
-          <h3><a class="doc-anchor" href="#doc-regular-expressions-10">#</a> <code>preg_last_error_msg</code></h3>
+        <article class="doc-entry" id="doc-regular-expressions-11">
+          <h3><a class="doc-anchor" href="#doc-regular-expressions-11">#</a> <code>preg_last_error_msg</code></h3>
           <pre><code class="lang-php">preg_last_error_msg(): string</code></pre>
           <p>The message for the `preg_last_error()` code, and like it a pure reader that clears nothing. `"No error"` or `"Internal error"` in practice, the two codes this engine produces.</p>
           <pre><code class="lang-php">@preg_match("/[a", "x"); echo preg_last_error_msg();   // =&gt; Internal error</code></pre>

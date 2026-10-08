@@ -515,7 +515,7 @@ use Def::{Bool, EmptyArray, Float, Int, Null, Required, Str, Unknown};
 /// default in this generated table is a literal too.
 #[allow(clippy::approx_constant)]
 static SIGS: &[(&str, Sig)] = &[
-    // generated: 550 functions
+    // generated: 551 functions
     (
         "abs",
         Sig {
@@ -4342,6 +4342,20 @@ static SIGS: &[(&str, Sig)] = &[
             params: &[
                 p("num", Required, "mixed"),
                 p("exponent", Required, "mixed"),
+            ],
+            variadic: false,
+        },
+    ),
+    (
+        "preg_filter",
+        Sig {
+            req: 3,
+            params: &[
+                p("pattern", Required, "array|string"),
+                p("replacement", Required, "array|string"),
+                p("subject", Required, "array|string"),
+                p("limit", Int(-1), "int"),
+                p("count", Null, ""),
             ],
             variadic: false,
         },

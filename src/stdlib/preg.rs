@@ -139,7 +139,8 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
     Some(match name {
         "preg_match" => preg_match(args),
         "preg_match_all" => preg_match_all(args),
-        "preg_replace" => preg_replace(args),
+        "preg_replace" => preg_replace_common(args, "preg_replace", false),
+        "preg_filter" => preg_replace_common(args, "preg_filter", true),
         "preg_replace_callback" => preg_replace_callback(args),
         "preg_replace_callback_array" => preg_replace_callback_array(args),
         "preg_split" => preg_split(args),
@@ -1550,48 +1551,67 @@ fn pattern_list(v: &Value) -> Vec<String> {
     })
 }
 
-fn preg_replace(args: &[Value]) -> Result<Value, String> {
-    let pats = pattern_list(&arg(args, 0));
+/// `preg_replace` / `preg_filter`. Port of `_preg_replace_common` and
+/// `php_replace_in_subject` (`ext/pcre/php_pcre.c`).
+///
+/// Each subject runs through the patterns in order, each compiled as it is
+/// reached, so a pattern that fails to compile warns once PER SUBJECT and
+/// leaves that subject without a result: `null` for a string subject, and a
+/// dropped element for an array one. `preg_filter` (`is_filter`) also drops a
+/// subject no pattern replaced anything in.
+fn preg_replace_common(args: &[Value], func: &str, is_filter: bool) -> Result<Value, String> {
+    let pat_arg = arg(args, 0);
     let repl_arg = arg(args, 1);
+    let pats = pattern_list(&pat_arg);
     let repls: Vec<String> = pattern_list(&repl_arg); // reuse: string or array
     let repl_is_array = with_host(|h| h.is_array(&repl_arg));
-    let limit = args.get(3).map(|v| v.to_int()).unwrap_or(-1);
-
-    // Pre-compile the patterns; a bad pattern makes the whole call return null.
-    let mut compiled: Vec<(Rc<Pattern>, String)> = Vec::with_capacity(pats.len());
-    for (idx, p) in pats.iter().enumerate() {
-        let Some(re) = compile_for("preg_replace", p) else {
-            return Ok(Value::Undef);
-        };
-        let repl = if repl_is_array {
-            // Fewer replacements than patterns → the surplus patterns delete.
-            repls.get(idx).cloned().unwrap_or_default()
-        } else {
-            repls.first().cloned().unwrap_or_default()
-        };
-        compiled.push((re, translate_replacement(&repl)));
+    if repl_is_array && !with_host(|h| h.is_array(&pat_arg)) {
+        return Err(crate::builtins::throws(
+            "TypeError",
+            format!(
+                "{func}(): Argument #1 ($pattern) must be of type array when argument #2 \
+                 ($replacement) is an array, string given"
+            ),
+        ));
     }
-
-    let subj = arg(args, 2);
+    let limit = args.get(3).map(|v| v.to_int()).unwrap_or(-1);
     let mut count: i64 = 0;
-    let mut apply = |s: &str| -> String {
+    // `php_pcre_replace_array`: an array of replacements pairs up with the
+    // patterns, and a pattern past its end replaces with "".
+    let apply = |s: &str, count: &mut i64| -> Option<String> {
         let mut cur: Vec<u8> = s.as_bytes().to_vec();
-        for (re, repl) in &compiled {
-            cur = replace_one(re, repl.as_bytes(), &cur, limit, &mut count);
+        for (idx, p) in pats.iter().enumerate() {
+            let re = compile_for(func, p)?;
+            let repl = if repl_is_array {
+                repls.get(idx).cloned().unwrap_or_default()
+            } else {
+                repls.first().cloned().unwrap_or_default()
+            };
+            cur = replace_one(&re, translate_replacement(&repl).as_bytes(), &cur, limit, count);
         }
-        bstr(&cur)
+        Some(bstr(&cur))
     };
 
+    let subj = arg(args, 2);
     let out = if with_host(|h| h.is_array(&subj)) {
         let pairs = with_host(|h| h.array_pairs(&subj)).unwrap_or_default();
-        make_map(
-            pairs
-                .into_iter()
-                .map(|(k, v)| (k, Value::str(apply(&with_host(|h| h.to_str(&v))))))
-                .collect(),
-        )
+        let mut kept = Vec::with_capacity(pairs.len());
+        for (k, v) in pairs {
+            let before = count;
+            let s = with_host(|h| h.to_str(&v));
+            if let Some(r) = apply(&s, &mut count) {
+                if !is_filter || count > before {
+                    kept.push((k, Value::str(r)));
+                }
+            }
+        }
+        make_map(kept)
     } else {
-        Value::str(apply(&with_host(|h| h.to_str(&subj))))
+        let s = with_host(|h| h.to_str(&subj));
+        match apply(&s, &mut count) {
+            Some(r) if !is_filter || count > 0 => Value::str(r),
+            _ => Value::Undef,
+        }
     };
     // `$count` is written unconditionally when the caller supplied it, including
     // the zero-replacement case — PHP defines it there too.

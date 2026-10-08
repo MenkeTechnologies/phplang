@@ -1074,6 +1074,15 @@ static PARAMS: &[(&str, Params)] = &[
     ("php_uname", &[(1, "mode", "string")]),
     ("phpversion", &[(1, "extension", "?string")]),
     (
+        "preg_filter",
+        &[
+            (1, "pattern", "array|string"),
+            (2, "replacement", "array|string"),
+            (3, "subject", "array|string"),
+            (4, "limit", "int"),
+        ],
+    ),
+    (
         "preg_grep",
         &[
             (1, "pattern", "string"),
