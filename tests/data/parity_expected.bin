@@ -2582,3 +2582,22 @@ get_class_methods(): Argument #1 ($object_or_class) must be an object or a valid
 get_class_methods(): Argument #1 ($object_or_class) must be an object or a valid class name, int given
 get_class_methods(): Argument #1 ($object_or_class) must be an object or a valid class name, null given
 
+#REC 127 exit=0 out=352 err=0
+array(2) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+}
+NULL
+NULL
+NULL
+1
+bool(true)
+bool(false)
+array_last(): Argument #1 ($array) must be of type array, int given
+array_last(): Argument #1 ($array) must be of type array, string given
+array_last(): Argument #1 ($array) must be of type array, null given
+array_first() expects exactly 1 argument, 2 given
+int(7)
+

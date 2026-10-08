@@ -3362,155 +3362,167 @@ strtr(string $string, string $from, string $to): string</code></pre>
           <pre><code class="lang-php">var_dump(array_key_last(["a" =&gt; 1, "b" =&gt; 2]));   // =&gt; string(1) "b"</code></pre>
         </article>
         <article class="doc-entry" id="doc-arrays-7">
-          <h3><a class="doc-anchor" href="#doc-arrays-7">#</a> <code>array_is_list</code></h3>
+          <h3><a class="doc-anchor" href="#doc-arrays-7">#</a> <code>array_first</code></h3>
+          <pre><code class="lang-php">array_first(array $array): mixed</code></pre>
+          <p>The first value in insertion order, or null for an empty array (PHP 8.5).</p>
+          <pre><code class="lang-php">var_dump(array_first(["a" =&gt; 1, "b" =&gt; 2]));   // =&gt; int(1)</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-arrays-8">
+          <h3><a class="doc-anchor" href="#doc-arrays-8">#</a> <code>array_last</code></h3>
+          <pre><code class="lang-php">array_last(array $array): mixed</code></pre>
+          <p>The last value in insertion order, or null for an empty array (PHP 8.5).</p>
+          <pre><code class="lang-php">var_dump(array_last(["a" =&gt; 1, "b" =&gt; 2]));   // =&gt; int(2)</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-arrays-9">
+          <h3><a class="doc-anchor" href="#doc-arrays-9">#</a> <code>array_is_list</code></h3>
           <pre><code class="lang-php">array_is_list(array $array): bool</code></pre>
           <p>True when the keys are exactly `0, 1, …, n-1` in order. A non-array argument returns false rather than raising a `TypeError`.</p>
           <pre><code class="lang-php">var_dump(array_is_list([1, 2]), array_is_list([1 =&gt; 1]));   // =&gt; bool(true) bool(false)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-arrays-8">
-          <h3><a class="doc-anchor" href="#doc-arrays-8">#</a> <code>array_diff_key</code></h3>
+        <article class="doc-entry" id="doc-arrays-10">
+          <h3><a class="doc-anchor" href="#doc-arrays-10">#</a> <code>array_diff_key</code></h3>
           <pre><code class="lang-php">array_diff_key(array $array, array ...$excludes): array</code></pre>
           <p>The entries of the first array whose KEY is absent from every other array. Keys are compared by their string form.</p>
           <pre><code class="lang-php">print_r(array_diff_key(["a" =&gt; 1, "b" =&gt; 2], ["a" =&gt; 9]));   // =&gt; Array\n(\n    [b] =&gt; 2\n)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-arrays-9">
-          <h3><a class="doc-anchor" href="#doc-arrays-9">#</a> <code>array_intersect_key</code></h3>
+        <article class="doc-entry" id="doc-arrays-11">
+          <h3><a class="doc-anchor" href="#doc-arrays-11">#</a> <code>array_intersect_key</code></h3>
           <pre><code class="lang-php">array_intersect_key(array $array, array ...$others): array</code></pre>
           <p>The entries of the first array whose key is present in every other array. It shares the `array_diff_key` arm with the test inverted.</p>
           <pre><code class="lang-php">print_r(array_intersect_key(["a" =&gt; 1, "b" =&gt; 2], ["a" =&gt; 9]));   // =&gt; Array\n(\n    [a] =&gt; 1\n)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-arrays-10">
-          <h3><a class="doc-anchor" href="#doc-arrays-10">#</a> <code>array_diff_assoc</code></h3>
+        <article class="doc-entry" id="doc-arrays-12">
+          <h3><a class="doc-anchor" href="#doc-arrays-12">#</a> <code>array_diff_assoc</code></h3>
           <pre><code class="lang-php">array_diff_assoc(array $array, array ...$excludes): array</code></pre>
           <p>Like `array_diff_key` but matching on key AND value, both compared by string form.</p>
         </article>
-        <article class="doc-entry" id="doc-arrays-11">
-          <h3><a class="doc-anchor" href="#doc-arrays-11">#</a> <code>array_intersect_assoc</code></h3>
+        <article class="doc-entry" id="doc-arrays-13">
+          <h3><a class="doc-anchor" href="#doc-arrays-13">#</a> <code>array_intersect_assoc</code></h3>
           <pre><code class="lang-php">array_intersect_assoc(array $array, array ...$others): array</code></pre>
           <p>Keeps the entries whose key-and-value pair appears in every other array, comparing both by string form.</p>
         </article>
-        <article class="doc-entry" id="doc-arrays-12">
-          <h3><a class="doc-anchor" href="#doc-arrays-12">#</a> <code>array_merge_recursive</code></h3>
+        <article class="doc-entry" id="doc-arrays-14">
+          <h3><a class="doc-anchor" href="#doc-arrays-14">#</a> <code>array_merge_recursive</code></h3>
           <pre><code class="lang-php">array_merge_recursive(array ...$arrays): array</code></pre>
           <p>Merges arrays, recursing into shared STRING keys: two arrays under one key merge, and anything else under a duplicate string key is gathered into a flat list. Integer keys always append. Nested arrays are deep-copied, so the inputs are never mutated.</p>
           <pre><code class="lang-php">print_r(array_merge_recursive(["k" =&gt; "a"], ["k" =&gt; "b"]));
 // =&gt; Array\n(\n    [k] =&gt; Array\n        (\n            [0] =&gt; a\n            [1] =&gt; b\n        )\n\n)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-arrays-13">
-          <h3><a class="doc-anchor" href="#doc-arrays-13">#</a> <code>array_replace</code></h3>
+        <article class="doc-entry" id="doc-arrays-15">
+          <h3><a class="doc-anchor" href="#doc-arrays-15">#</a> <code>array_replace</code></h3>
           <pre><code class="lang-php">array_replace(array $base, array ...$rest): array</code></pre>
           <p>Starts from `$base`, then overwrites or inserts every entry of each later array by key. There is no recursion into nested arrays.</p>
           <pre><code class="lang-php">print_r(array_replace(["a" =&gt; 1], ["a" =&gt; 2]));   // =&gt; Array\n(\n    [a] =&gt; 2\n)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-arrays-14">
-          <h3><a class="doc-anchor" href="#doc-arrays-14">#</a> <code>array_replace_recursive</code></h3>
+        <article class="doc-entry" id="doc-arrays-16">
+          <h3><a class="doc-anchor" href="#doc-arrays-16">#</a> <code>array_replace_recursive</code></h3>
           <pre><code class="lang-php">array_replace_recursive(array $base, array ...$rest): array</code></pre>
           <p>As `array_replace`, except that when both sides hold an array under the same key the two are merged recursively instead of the later one replacing the earlier wholesale. Any other type pairing, or a key present on only one side, replaces.</p>
           <pre><code class="lang-php">print_r(array_replace_recursive(["a" =&gt; ["b" =&gt; 1, "c" =&gt; 2]], ["a" =&gt; ["b" =&gt; 9]]));   // =&gt; Array\n(\n    [a] =&gt; Array\n        (\n            [b] =&gt; 9\n            [c] =&gt; 2\n        )\n\n)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-arrays-15">
-          <h3><a class="doc-anchor" href="#doc-arrays-15">#</a> <code>array_count_values</code></h3>
+        <article class="doc-entry" id="doc-arrays-17">
+          <h3><a class="doc-anchor" href="#doc-arrays-17">#</a> <code>array_count_values</code></h3>
           <pre><code class="lang-php">array_count_values(array $array): array</code></pre>
           <p>Tallies how often each value occurs. Only integer and string values are counted; every other value type is skipped, matching PHP.</p>
           <pre><code class="lang-php">print_r(array_count_values(["a", "a", "b"]));   // =&gt; Array\n(\n    [a] =&gt; 2\n    [b] =&gt; 1\n)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-arrays-16">
-          <h3><a class="doc-anchor" href="#doc-arrays-16">#</a> <code>usort</code></h3>
+        <article class="doc-entry" id="doc-arrays-18">
+          <h3><a class="doc-anchor" href="#doc-arrays-18">#</a> <code>usort</code></h3>
           <pre><code class="lang-php">usort(array $array, callable $callback): bool</code></pre>
           <p>Sorts by value with a user comparator, then reindexes from 0. The sort is stable, as PHP's is, and tolerates a comparator that contradicts itself (`fn() =&gt; random_int(-1, 1)`) by answering with some permutation rather than failing. The comparator runs the VM, so an exception it throws stops the sort.</p>
           <pre><code class="lang-php">$a = [3, 1, 2]; usort($a, fn($x, $y) =&gt; $x &lt;=&gt; $y); echo implode(",", $a);   // =&gt; 1,2,3</code></pre>
         </article>
-        <article class="doc-entry" id="doc-arrays-17">
-          <h3><a class="doc-anchor" href="#doc-arrays-17">#</a> <code>uasort</code></h3>
+        <article class="doc-entry" id="doc-arrays-19">
+          <h3><a class="doc-anchor" href="#doc-arrays-19">#</a> <code>uasort</code></h3>
           <pre><code class="lang-php">uasort(array $array, callable $callback): bool</code></pre>
           <p>Sorts by value with a user comparator while preserving the key association.</p>
           <pre><code class="lang-php">$a = ["b" =&gt; 2, "a" =&gt; 1]; uasort($a, fn($x, $y) =&gt; $x &lt;=&gt; $y);
 echo implode(",", array_keys($a));   // =&gt; a,b</code></pre>
         </article>
-        <article class="doc-entry" id="doc-arrays-18">
-          <h3><a class="doc-anchor" href="#doc-arrays-18">#</a> <code>uksort</code></h3>
+        <article class="doc-entry" id="doc-arrays-20">
+          <h3><a class="doc-anchor" href="#doc-arrays-20">#</a> <code>uksort</code></h3>
           <pre><code class="lang-php">uksort(array $array, callable $callback): bool</code></pre>
           <p>Sorts by KEY with a user comparator while preserving the key association.</p>
           <pre><code class="lang-php">$a = ["b" =&gt; 1, "a" =&gt; 2]; uksort($a, fn($x, $y) =&gt; strcmp($x, $y));
 echo implode(",", array_keys($a));   // =&gt; a,b</code></pre>
         </article>
-        <article class="doc-entry" id="doc-arrays-19">
-          <h3><a class="doc-anchor" href="#doc-arrays-19">#</a> <code>natsort</code></h3>
+        <article class="doc-entry" id="doc-arrays-21">
+          <h3><a class="doc-anchor" href="#doc-arrays-21">#</a> <code>natsort</code></h3>
           <pre><code class="lang-php">natsort(array $array): bool</code></pre>
           <p>Natural-order sort by value, preserving keys. Digit runs compare numerically, so `img12` sorts after `img2`. A run with a leading zero compares left-aligned, matching PHP's `strnatcmp`.</p>
           <pre><code class="lang-php">$a = ["img12", "img2"]; natsort($a); echo implode(",", $a);   // =&gt; img2,img12</code></pre>
         </article>
-        <article class="doc-entry" id="doc-arrays-20">
-          <h3><a class="doc-anchor" href="#doc-arrays-20">#</a> <code>natcasesort</code></h3>
+        <article class="doc-entry" id="doc-arrays-22">
+          <h3><a class="doc-anchor" href="#doc-arrays-22">#</a> <code>natcasesort</code></h3>
           <pre><code class="lang-php">natcasesort(array $array): bool</code></pre>
           <p>`natsort` with case folded before comparison.</p>
         </article>
-        <article class="doc-entry" id="doc-arrays-21">
-          <h3><a class="doc-anchor" href="#doc-arrays-21">#</a> <code>shuffle</code></h3>
+        <article class="doc-entry" id="doc-arrays-23">
+          <h3><a class="doc-anchor" href="#doc-arrays-23">#</a> <code>shuffle</code></h3>
           <pre><code class="lang-php">shuffle(array $array): bool</code></pre>
           <p>Randomizes the order in place and reindexes from 0, with the reference's own walk (`php_array_data_shuffle`) over the shared Mt19937 engine — so after `mt_srand($seed)` the order is the reference's.</p>
           <pre><code class="lang-php">mt_srand(3); $a = [1, 2, 3, 4, 5]; shuffle($a); echo implode(",", $a);   // =&gt; 4,3,5,1,2</code></pre>
         </article>
-        <article class="doc-entry" id="doc-arrays-22">
-          <h3><a class="doc-anchor" href="#doc-arrays-22">#</a> <code>array_rand</code></h3>
+        <article class="doc-entry" id="doc-arrays-24">
+          <h3><a class="doc-anchor" href="#doc-arrays-24">#</a> <code>array_rand</code></h3>
           <pre><code class="lang-php">array_rand(array $array, int $num = 1): mixed</code></pre>
           <p>One random key, or an array of `$num` distinct keys in their original order. An EMPTY array raises `ValueError: array_rand(): Argument #1 ($array) must not be empty` — there is no `$num` that would work — while a `$num` outside `1..count($array)` on a non-empty array names argument #2 instead. Picks with the reference's `php_array_pick_keys` over the shared Mt19937 engine, so a seeded program picks the reference's keys.</p>
         </article>
-        <article class="doc-entry" id="doc-arrays-23">
-          <h3><a class="doc-anchor" href="#doc-arrays-23">#</a> <code>array_walk</code></h3>
+        <article class="doc-entry" id="doc-arrays-25">
+          <h3><a class="doc-anchor" href="#doc-arrays-25">#</a> <code>array_walk</code></h3>
           <pre><code class="lang-php">array_walk(array $array, callable $callback, mixed $extra = null): bool</code></pre>
           <p>Calls `$callback($value, $key[, $extra])` for every element and returns true. The value is passed through a reference cell, so a `function (&amp;$v)` callback writes back into the array, scalars included.</p>
           <pre><code class="lang-php">$a = [1, 2]; array_walk($a, function ($v, $k) { echo $k . $v; });   // =&gt; 0112</code></pre>
         </article>
-        <article class="doc-entry" id="doc-arrays-24">
-          <h3><a class="doc-anchor" href="#doc-arrays-24">#</a> <code>compact</code></h3>
+        <article class="doc-entry" id="doc-arrays-26">
+          <h3><a class="doc-anchor" href="#doc-arrays-26">#</a> <code>compact</code></h3>
           <pre><code class="lang-php">compact(string|array ...$names): array</code></pre>
           <p>Builds an array from the named variables, pulling each bound value out of the current scope. A name may itself be an array of names, recursively. A name that is not BOUND is skipped with `Warning: compact(): Undefined variable $x` — a variable holding null is bound, so it is captured with no warning — and an argument that is neither a string nor an array is skipped with `Warning: compact(): Argument #N must be string or array of strings, &lt;type&gt; given`, numbered by the top-level argument even when it is nested inside an array of names.</p>
           <pre><code class="lang-php">$x = 1; $y = 2; print_r(compact("x", "y"));   // =&gt; Array\n(\n    [x] =&gt; 1\n    [y] =&gt; 2\n)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-arrays-25">
-          <h3><a class="doc-anchor" href="#doc-arrays-25">#</a> <code>extract</code></h3>
+        <article class="doc-entry" id="doc-arrays-27">
+          <h3><a class="doc-anchor" href="#doc-arrays-27">#</a> <code>extract</code></h3>
           <pre><code class="lang-php">extract(array $array): int</code></pre>
           <p>Imports each string-keyed entry as a variable in the current scope and returns how many were set. Integer keys are skipped because they are not valid variable names. DIVERGENCE: the `$flags` and `$prefix` arguments do not exist.</p>
           <pre><code class="lang-php">extract(["n" =&gt; 7]); echo $n;   // =&gt; 7</code></pre>
         </article>
-        <article class="doc-entry" id="doc-arrays-26">
-          <h3><a class="doc-anchor" href="#doc-arrays-26">#</a> <code>end</code></h3>
+        <article class="doc-entry" id="doc-arrays-28">
+          <h3><a class="doc-anchor" href="#doc-arrays-28">#</a> <code>end</code></h3>
           <pre><code class="lang-php">end(array $array): mixed</code></pre>
           <p>Moves the array's internal pointer to the last element and returns its value; `false` for an empty array. The cursor lives in a side table keyed by the array handle with an append-invariant fingerprint, so appending does not rewind it — matching PHP.</p>
           <pre><code class="lang-php">$a = [1, 2, 3]; echo end($a);   // =&gt; 3</code></pre>
         </article>
-        <article class="doc-entry" id="doc-arrays-27">
-          <h3><a class="doc-anchor" href="#doc-arrays-27">#</a> <code>reset</code></h3>
+        <article class="doc-entry" id="doc-arrays-29">
+          <h3><a class="doc-anchor" href="#doc-arrays-29">#</a> <code>reset</code></h3>
           <pre><code class="lang-php">reset(array $array): mixed</code></pre>
           <p>Moves the internal pointer to the first element and returns its value; `false` for an empty array.</p>
           <pre><code class="lang-php">$a = [1, 2, 3]; end($a); echo reset($a);   // =&gt; 1</code></pre>
         </article>
-        <article class="doc-entry" id="doc-arrays-28">
-          <h3><a class="doc-anchor" href="#doc-arrays-28">#</a> <code>current</code></h3>
+        <article class="doc-entry" id="doc-arrays-30">
+          <h3><a class="doc-anchor" href="#doc-arrays-30">#</a> <code>current</code></h3>
           <pre><code class="lang-php">current(array $array): mixed</code></pre>
           <p>The value at the internal pointer without moving it, or `false` once the pointer has fallen off either end.</p>
           <pre><code class="lang-php">$a = [1, 2]; echo current($a);   // =&gt; 1</code></pre>
         </article>
-        <article class="doc-entry" id="doc-arrays-29">
-          <h3><a class="doc-anchor" href="#doc-arrays-29">#</a> <code>pos</code></h3>
+        <article class="doc-entry" id="doc-arrays-31">
+          <h3><a class="doc-anchor" href="#doc-arrays-31">#</a> <code>pos</code></h3>
           <pre><code class="lang-php">pos(array $array): mixed</code></pre>
           <p>The alias of `current`, sharing its match arm.</p>
         </article>
-        <article class="doc-entry" id="doc-arrays-30">
-          <h3><a class="doc-anchor" href="#doc-arrays-30">#</a> <code>key</code></h3>
+        <article class="doc-entry" id="doc-arrays-32">
+          <h3><a class="doc-anchor" href="#doc-arrays-32">#</a> <code>key</code></h3>
           <pre><code class="lang-php">key(array $array): mixed</code></pre>
           <p>The key at the internal pointer, or null once the pointer is off the end.</p>
           <pre><code class="lang-php">$a = ["a" =&gt; 1]; echo key($a);   // =&gt; a</code></pre>
         </article>
-        <article class="doc-entry" id="doc-arrays-31">
-          <h3><a class="doc-anchor" href="#doc-arrays-31">#</a> <code>next</code></h3>
+        <article class="doc-entry" id="doc-arrays-33">
+          <h3><a class="doc-anchor" href="#doc-arrays-33">#</a> <code>next</code></h3>
           <pre><code class="lang-php">next(array $array): mixed</code></pre>
           <p>Advances the internal pointer and returns the new element's value, or `false` once it runs past the end. The off-the-end state is sticky, as in PHP: further `next`/`prev` calls stay invalid until `reset` or `end`.</p>
           <pre><code class="lang-php">$a = [1, 2]; echo next($a);   // =&gt; 2</code></pre>
         </article>
-        <article class="doc-entry" id="doc-arrays-32">
-          <h3><a class="doc-anchor" href="#doc-arrays-32">#</a> <code>prev</code></h3>
+        <article class="doc-entry" id="doc-arrays-34">
+          <h3><a class="doc-anchor" href="#doc-arrays-34">#</a> <code>prev</code></h3>
           <pre><code class="lang-php">prev(array $array): mixed</code></pre>
           <p>Steps the internal pointer back one element and returns its value, or `false` once it runs past the start, entering the same sticky invalid state.</p>
           <pre><code class="lang-php">$a = [1, 2]; end($a); echo prev($a);   // =&gt; 1</code></pre>

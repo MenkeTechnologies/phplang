@@ -1410,3 +1410,13 @@ echo implode(",", get_class_methods("C")), "\n", implode(",", C::list()), "\n", 
 enum E { case A; function f() {} } echo implode(",", get_class_methods("E")), "\n";
 echo implode(",", get_class_methods("Generator")), "\n";
 foreach (["Nope", 5, null] as $x) { try { get_class_methods($x); } catch (TypeError $e) { echo $e->getMessage(), "\n"; } }
+#==#
+// array_first / array_last (PHP 8.5): the first and last VALUE in insertion
+// order, null when empty; a reference slot is copied out, not shared.
+$a = [3 => "x", "k" => [1, 2], 0 => null]; unset($a[3]);
+var_dump(array_first($a), array_last($a), array_first([]), array_last([]));
+$x = 1; $r = [&$x, 2]; $f = array_first($r); $f = 9; echo $x, "\n";
+$o = new stdClass; var_dump(array_last([1, $o]) === $o, array_first(["z" => false]));
+foreach ([1, "s", null] as $bad) { try { array_last($bad); } catch (TypeError $e) { echo $e->getMessage(), "\n"; } }
+try { array_first([1], [2]); } catch (ArgumentCountError $e) { echo $e->getMessage(), "\n"; }
+var_dump(array_first(array: [7, 8]));

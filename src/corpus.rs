@@ -3859,6 +3859,20 @@ pub const CORPUS: &[Entry] = &[
         "var_dump(array_key_last([\"a\" => 1, \"b\" => 2]));   // => string(1) \"b\"",
     ),
     (
+        "array_first",
+        "Arrays",
+        "array_first(array $array): mixed",
+        "The first value in insertion order, or null for an empty array (PHP 8.5).",
+        "var_dump(array_first([\"a\" => 1, \"b\" => 2]));   // => int(1)",
+    ),
+    (
+        "array_last",
+        "Arrays",
+        "array_last(array $array): mixed",
+        "The last value in insertion order, or null for an empty array (PHP 8.5).",
+        "var_dump(array_last([\"a\" => 1, \"b\" => 2]));   // => int(2)",
+    ),
+    (
         "array_is_list",
         "Arrays",
         "array_is_list(array $array): bool",

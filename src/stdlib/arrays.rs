@@ -30,6 +30,8 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         "array_pad" => host::with_host(|h| php_array_pad(h, args)),
         "array_key_first" => host::with_host(|h| php_array_key_first(h, args)),
         "array_key_last" => host::with_host(|h| php_array_key_last(h, args)),
+        "array_first" => host::with_host(|h| php_array_first_last(h, args, false)),
+        "array_last" => host::with_host(|h| php_array_first_last(h, args, true)),
         "array_is_list" => host::with_host(|h| php_array_is_list(h, args)),
         "array_diff_key" => host::with_host(|h| php_diff_intersect_key(h, args, false)),
         "array_intersect_key" => host::with_host(|h| php_diff_intersect_key(h, args, true)),
@@ -256,6 +258,16 @@ fn php_array_key_last(h: &mut host::PhpHost, args: &[Value]) -> Value {
         .and_then(|p| p.into_iter().next_back())
         .map(|(k, _)| k)
         .unwrap_or(Value::Undef)
+}
+
+/// `array_first` / `array_last` (PHP 8.5) — the first or last VALUE in insertion
+/// order, or null for an empty array. Port of `PHP_FUNCTION(array_first)` /
+/// `PHP_FUNCTION(array_last)` in `ext/standard/array.c`, which dereference the
+/// slot and copy the value out.
+fn php_array_first_last(h: &mut host::PhpHost, args: &[Value], last: bool) -> Value {
+    let pairs = h.array_pairs(&arg(args, 0)).unwrap_or_default();
+    let slot = if last { pairs.into_iter().next_back() } else { pairs.into_iter().next() };
+    slot.map(|(_, v)| v).unwrap_or(Value::Undef)
 }
 
 /// `array_is_list` — true when the keys are exactly `0,1,…,n-1` in order.

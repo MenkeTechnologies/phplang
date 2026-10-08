@@ -716,6 +716,14 @@ static SIGS: &[(&str, Sig)] = &[
         },
     ),
     (
+        "array_first",
+        Sig {
+            req: 1,
+            params: &[p("array", Required, "array")],
+            variadic: false,
+        },
+    ),
+    (
         "array_flip",
         Sig {
             req: 1,
@@ -796,6 +804,14 @@ static SIGS: &[(&str, Sig)] = &[
                 p("filter_value", Unknown, "mixed"),
                 p("strict", Bool(false), "bool"),
             ],
+            variadic: false,
+        },
+    ),
+    (
+        "array_last",
+        Sig {
+            req: 1,
+            params: &[p("array", Required, "array")],
             variadic: false,
         },
     ),
