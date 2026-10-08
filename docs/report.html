@@ -118,7 +118,7 @@
 
       <section class="tutorial-section">
         <h2>Standard library</h2>
-        <p>Around 90 functions are registered as fusevm builtins (<code>src/builtins.rs</code>), reachable by name through the compiler's <code>CallBuiltin</code> lowering:</p>
+        <p>Library functions are registered as fusevm builtins (<code>src/builtins.rs</code>), reachable by name through the compiler's <code>CallBuiltin</code> lowering:</p>
         <div class="feature-grid">
           <div class="feature-card"><h4>Strings</h4><p><code>str_*</code> family, <code>substr</code>, <code>trim</code>, <code>sprintf</code>, <code>number_format</code>, <code>htmlspecialchars</code>, <code>chr</code>/<code>ord</code>, and more.</p></div>
           <div class="feature-card"><h4>Arrays</h4><p><code>array_map</code>/<code>filter</code>/<code>reduce</code>/<code>merge</code>/<code>slice</code>/<code>keys</code>/<code>values</code>, the <code>sort</code> family, <code>in_array</code>, <code>array_sum</code>, <code>range</code>.</p></div>
@@ -152,11 +152,12 @@
             <tr><td>arrays (indexed / assoc / append)</td><td>Implemented</td><td>Ordered <code>PhpHost</code> heap; index read/write, <code>$a[] =</code> (<code>src/host.rs</code>).</td></tr>
             <tr><td>control flow</td><td>Implemented</td><td><code>if</code>/<code>elseif</code>/<code>else</code>, <code>while</code>, <code>do…while</code>, <code>for</code>, <code>foreach</code>, <code>switch</code>, <code>break</code>/<code>continue</code>/<code>return</code>, <code>match</code>.</td></tr>
             <tr><td>user functions</td><td>Implemented</td><td>Positional parameters, recursion.</td></tr>
-            <tr><td>standard library (~90 fns)</td><td>Implemented</td><td>String / array / math / type-util families (<code>src/builtins.rs</code>).</td></tr>
+            <tr><td>standard library</td><td>Implemented</td><td>String / array / math / type-util families (<code>src/builtins.rs</code>).</td></tr>
             <tr><td>REPL (<code>php -a</code>) &amp; bytecode dump</td><td>Implemented</td><td>Persistent-state REPL (<code>src/repl.rs</code>); <code>--dump-bytecode</code> prints lowered chunks.</td></tr>
             <tr><td>parity fuzzer</td><td>Implemented</td><td>Differential vs reference <code>php</code>, delta-debugged (<code>src/bin/parity_fuzz.rs</code>). Dev tool, never in CI.</td></tr>
-            <tr><td>classes / traits / closures / exceptions</td><td>Planned</td><td>OO, closures/arrows, references, <code>try</code>/<code>catch</code>, generators, superglobals, default/variadic/typed params, deep lvalues.</td></tr>
-            <tr><td>bytecode cache / AOT / LSP / DAP</td><td>Planned</td><td>Present in sibling frontends; not wired in phplang yet.</td></tr>
+            <tr><td>classes / traits / closures / exceptions</td><td>Implemented</td><td>OO, closures/arrows, references, <code>try</code>/<code>catch</code>, generators, superglobals, default/variadic/typed params, deep lvalues.</td></tr>
+            <tr><td>LSP / DAP</td><td>Implemented</td><td>Language server (<code>src/lsp.rs</code>) and debug adapter (<code>src/dap.rs</code>).</td></tr>
+            <tr><td>bytecode cache / AOT</td><td>Planned</td><td>Present in sibling frontends; not wired in phplang yet.</td></tr>
           </tbody>
         </table>
       </section>
