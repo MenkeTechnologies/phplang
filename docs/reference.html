@@ -5536,73 +5536,79 @@ echo implode(",", $a), "|", implode(",", $b);   // =&gt; 1,2,3|a,b,c</code></pre
           <pre><code class="lang-php">class Foo {} echo get_class(new Foo);   // =&gt; Foo</code></pre>
         </article>
         <article class="doc-entry" id="doc-reflection-6">
-          <h3><a class="doc-anchor" href="#doc-reflection-6">#</a> <code>get_parent_class</code></h3>
+          <h3><a class="doc-anchor" href="#doc-reflection-6">#</a> <code>get_called_class</code></h3>
+          <pre><code class="lang-php">get_called_class(): string</code></pre>
+          <p>The late-static-binding class of the running frame — the same answer as `static::class`, including inside a closure, where it is the class the closure was created or bound under. Called with no class in scope it throws `Error: get_called_class() must be called from within a class`.</p>
+          <pre><code class="lang-php">class A { static function f() { return get_called_class(); } } class B extends A {} echo B::f();   // =&gt; B</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-reflection-7">
+          <h3><a class="doc-anchor" href="#doc-reflection-7">#</a> <code>get_parent_class</code></h3>
           <pre><code class="lang-php">get_parent_class(object|string|null $object_or_class = null): string|false</code></pre>
           <p>The parent's name in declared casing, or `false` when there is none. It accepts an object, a class-name string, or nothing.</p>
           <pre><code class="lang-php">class A {} class B extends A {} echo get_parent_class(new B);   // =&gt; A</code></pre>
         </article>
-        <article class="doc-entry" id="doc-reflection-7">
-          <h3><a class="doc-anchor" href="#doc-reflection-7">#</a> <code>get_object_vars</code></h3>
+        <article class="doc-entry" id="doc-reflection-8">
+          <h3><a class="doc-anchor" href="#doc-reflection-8">#</a> <code>get_object_vars</code></h3>
           <pre><code class="lang-php">get_object_vars(object $object): array</code></pre>
           <p>The properties of the instance the CALLING SCOPE may see, in insertion order — public ones from outside the class, everything from inside a method of it. A non-object is a `TypeError`, including an array.</p>
           <pre><code class="lang-php">class C { public $a = 1; } print_r(get_object_vars(new C));   // =&gt; Array\n(\n    [a] =&gt; 1\n)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-reflection-8">
-          <h3><a class="doc-anchor" href="#doc-reflection-8">#</a> <code>get_class_methods</code></h3>
+        <article class="doc-entry" id="doc-reflection-9">
+          <h3><a class="doc-anchor" href="#doc-reflection-9">#</a> <code>get_class_methods</code></h3>
           <pre><code class="lang-php">get_class_methods(object|string $object_or_class): array</code></pre>
           <p>The methods the class has, in the reference's function-table order — its own, then its traits', then each ancestor's it does not override (an enum adds `cases`/`from`/`tryFrom`) — keeping the private and protected ones only where the calling scope may call them. Anything but an object or a declared class name is the reference's `TypeError`. DIVERGENCE: names come back LOWERCASED.</p>
           <pre><code class="lang-php">class C { function Hello() {} } echo get_class_methods("C")[0];   // =&gt; hello</code></pre>
         </article>
-        <article class="doc-entry" id="doc-reflection-9">
-          <h3><a class="doc-anchor" href="#doc-reflection-9">#</a> <code>get_class_vars</code></h3>
+        <article class="doc-entry" id="doc-reflection-10">
+          <h3><a class="doc-anchor" href="#doc-reflection-10">#</a> <code>get_class_vars</code></h3>
           <pre><code class="lang-php">get_class_vars(string $class): array</code></pre>
           <p>DIVERGENCE: a stub — an EMPTY array for any declared class, and `false` for an undeclared one where the reference raises `TypeError: get_class_vars(): Argument #1 ($class) must be a valid class name, &lt;name&gt; given`. Property defaults are stored as compiled chunks with no evaluator reachable from this module, so no names or values are reported.</p>
           <pre><code class="lang-php">class C { public $a = 1; } print_r(get_class_vars("C"));   // =&gt; Array\n(\n)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-reflection-10">
-          <h3><a class="doc-anchor" href="#doc-reflection-10">#</a> <code>get_declared_classes</code></h3>
+        <article class="doc-entry" id="doc-reflection-11">
+          <h3><a class="doc-anchor" href="#doc-reflection-11">#</a> <code>get_declared_classes</code></h3>
           <pre><code class="lang-php">get_declared_classes(): array</code></pre>
           <p>Every name in the class table — which always includes the 25 prelude classes, plus any user interfaces, traits, and enums. DIVERGENCE: names are LOWERCASED and the order is the hash map's, not declaration order.</p>
           <pre><code class="lang-php">var_dump(in_array("exception", get_declared_classes()));   // =&gt; bool(true)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-reflection-11">
-          <h3><a class="doc-anchor" href="#doc-reflection-11">#</a> <code>class_parents</code></h3>
+        <article class="doc-entry" id="doc-reflection-12">
+          <h3><a class="doc-anchor" href="#doc-reflection-12">#</a> <code>class_parents</code></h3>
           <pre><code class="lang-php">class_parents(object|string $object_or_class, bool $autoload = true): array|false</code></pre>
           <p>A nearest-first `name =&gt; name` map of the ancestor chain in declared casing, or `false` when the subject is neither an object nor a declared class.</p>
           <pre><code class="lang-php">class A {} class B extends A {} echo implode(",", class_parents(new B));   // =&gt; A</code></pre>
         </article>
-        <article class="doc-entry" id="doc-reflection-12">
-          <h3><a class="doc-anchor" href="#doc-reflection-12">#</a> <code>class_implements</code></h3>
+        <article class="doc-entry" id="doc-reflection-13">
+          <h3><a class="doc-anchor" href="#doc-reflection-13">#</a> <code>class_implements</code></h3>
           <pre><code class="lang-php">class_implements(object|string $object_or_class, bool $autoload = true): array|false</code></pre>
           <p>The interfaces the subject satisfies, transitively and through its parents, keyed by name. Engine ancestry answers too, so `class_implements("Generator")` reports `Iterator` and `Traversable`. An unknown name warns and returns `false`, as in PHP.</p>
           <pre><code class="lang-php">interface I {} class C implements I {} print_r(array_keys(class_implements(new C)));   // =&gt; Array\n(\n    [0] =&gt; I\n)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-reflection-13">
-          <h3><a class="doc-anchor" href="#doc-reflection-13">#</a> <code>class_uses</code></h3>
+        <article class="doc-entry" id="doc-reflection-14">
+          <h3><a class="doc-anchor" href="#doc-reflection-14">#</a> <code>class_uses</code></h3>
           <pre><code class="lang-php">class_uses(object|string $object_or_class, bool $autoload = true): array|false</code></pre>
           <p>The traits THIS class composes with `use`, keyed by name — PHP does not walk the parent chain for it. An unknown name warns and returns `false`.</p>
           <pre><code class="lang-php">trait T {} class C { use T; } print_r(array_keys(class_uses("C")));   // =&gt; Array\n(\n    [0] =&gt; T\n)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-reflection-14">
-          <h3><a class="doc-anchor" href="#doc-reflection-14">#</a> <code>method_exists</code></h3>
+        <article class="doc-entry" id="doc-reflection-15">
+          <h3><a class="doc-anchor" href="#doc-reflection-15">#</a> <code>method_exists</code></h3>
           <pre><code class="lang-php">method_exists(object|string $object_or_class, string $method): bool</code></pre>
           <p>Resolves the method through the class and its parents, comparing the name case-insensitively as PHP does. The engine classes answer too (`method_exists($gen, "current")`). A subject that is neither an object nor a string is the `TypeError` PHP declares on the parameter.</p>
           <pre><code class="lang-php">class C { function m() {} } var_dump(method_exists("C", "M"));   // =&gt; bool(true)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-reflection-15">
-          <h3><a class="doc-anchor" href="#doc-reflection-15">#</a> <code>property_exists</code></h3>
+        <article class="doc-entry" id="doc-reflection-16">
+          <h3><a class="doc-anchor" href="#doc-reflection-16">#</a> <code>property_exists</code></h3>
           <pre><code class="lang-php">property_exists(object|string $object_or_class, string $property): bool</code></pre>
           <p>Checks the declared instance properties, walking parents, and — for an OBJECT subject — the live property list too. The name is compared case-SENSITIVELY. DIVERGENCE: static properties are never found, and a promoted constructor property is found on an instance but NOT on the class name, because promotion compiles to an assignment rather than a declaration.</p>
           <pre><code class="lang-php">class C { public $a; } var_dump(property_exists("C", "a"));   // =&gt; bool(true)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-reflection-16">
-          <h3><a class="doc-anchor" href="#doc-reflection-16">#</a> <code>is_a</code></h3>
+        <article class="doc-entry" id="doc-reflection-17">
+          <h3><a class="doc-anchor" href="#doc-reflection-17">#</a> <code>is_a</code></h3>
           <pre><code class="lang-php">is_a(mixed $object_or_class, string $class, bool $allow_string = false): bool</code></pre>
           <p>True when the subject is, extends, or implements the named class, walking parents and interfaces transitively. `Throwable` is special-cased to match the `Exception` and `Error` roots even though no such class is declared. A string subject requires `$allow_string`.</p>
           <pre><code class="lang-php">class A {} class B extends A {} var_dump(is_a(new B, "A"));   // =&gt; bool(true)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-reflection-17">
-          <h3><a class="doc-anchor" href="#doc-reflection-17">#</a> <code>is_subclass_of</code></h3>
+        <article class="doc-entry" id="doc-reflection-18">
+          <h3><a class="doc-anchor" href="#doc-reflection-18">#</a> <code>is_subclass_of</code></h3>
           <pre><code class="lang-php">is_subclass_of(mixed $object_or_class, string $class, bool $allow_string = true): bool</code></pre>
           <p>The same ancestry walk as `is_a`, but the subject's own class is excluded first, so only strict ancestors and interfaces count.</p>
           <pre><code class="lang-php">class A {} class B extends A {}

@@ -515,7 +515,7 @@ use Def::{Bool, EmptyArray, Float, Int, Null, Required, Str, Unknown};
 /// default in this generated table is a literal too.
 #[allow(clippy::approx_constant)]
 static SIGS: &[(&str, Sig)] = &[
-    // generated: 549 functions
+    // generated: 550 functions
     (
         "abs",
         Sig {
@@ -2491,6 +2491,14 @@ static SIGS: &[(&str, Sig)] = &[
     ),
     (
         "gc_mem_caches",
+        Sig {
+            req: 0,
+            params: &[],
+            variadic: false,
+        },
+    ),
+    (
+        "get_called_class",
         Sig {
             req: 0,
             params: &[],

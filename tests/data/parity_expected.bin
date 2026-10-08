@@ -2667,3 +2667,13 @@ BA
 BBB
 AAA
 
+#REC 131 exit=0 out=196 err=0
+ABABBBABBB
+BBBBB
+CD
+E
+BB
+Error: get_called_class() must be called from within a class
+get_called_class() must be called from within a class
+get_called_class() expects exactly 0 arguments, 1 given
+

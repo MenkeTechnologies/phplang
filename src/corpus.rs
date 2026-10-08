@@ -6416,6 +6416,13 @@ pub const CORPUS: &[Entry] = &[
         "class Foo {} echo get_class(new Foo);   // => Foo",
     ),
     (
+        "get_called_class",
+        "Reflection",
+        "get_called_class(): string",
+        "The late-static-binding class of the running frame — the same answer as `static::class`, including inside a closure, where it is the class the closure was created or bound under. Called with no class in scope it throws `Error: get_called_class() must be called from within a class`.",
+        "class A { static function f() { return get_called_class(); } } class B extends A {} echo B::f();   // => B",
+    ),
+    (
         "get_parent_class",
         "Reflection",
         "get_parent_class(object|string|null $object_or_class = null): string|false",

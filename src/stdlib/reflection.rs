@@ -123,6 +123,18 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             with_host(|h| h.deprecated("Calling get_class() without arguments is deprecated"));
             Value::str(cls)
         }
+        // `get_called_class()`: the late-static-binding class of the running
+        // frame (`zend_get_called_scope`), the same answer as `static::class`.
+        "get_called_class" => {
+            let cls = with_host(|h| h.lsb_class(&h.magic_class()));
+            if cls.is_empty() {
+                return Some(Err(crate::builtins::throws_bare(
+                    "Error",
+                    "get_called_class() must be called from within a class",
+                )));
+            }
+            Value::str(cls)
+        }
         "get_class" => {
             let a = arg(args, 0);
             match with_host(|h| h.instance_class(&a)) {

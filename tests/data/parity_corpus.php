@@ -1458,3 +1458,25 @@ $l = B::later(); echo $l(), A::later()(), "\n";
 $f = function () { return static::class; };
 echo Closure::bind($f, new B, A::class)(), Closure::bind($f, null, B::class)(), $f->call(new B), "\n";
 echo Closure::bind($l, null, A::class)(), Closure::bind($l, null, "static")(), $l->bindTo(new A, "static")(), "\n";
+#==#
+// get_called_class(): the LSB class of the running frame, through forwarding
+// calls, traits, enums, closures and Closure::bind; an Error with no class.
+class A {
+  static function s() { return get_called_class(); }
+  function i() { return get_called_class(); }
+  static function viaSelf() { return self::s(); }
+  static function viaStatic() { return static::s(); }
+  static function viaParentless() { return A::s(); }
+  function cl() { return (fn() => get_called_class())(); }
+  static function scl() { return (function () { return get_called_class(); })(); }
+}
+class B extends A { static function p() { return parent::s(); } }
+echo A::s(), B::s(), (new A)->i(), (new B)->i(), B::viaSelf(), B::viaStatic(), B::viaParentless(), B::p(), (new B)->cl(), B::scl(), "\n";
+$b = new B; echo $b::s(), $b->s(), call_user_func([B::class, "s"]), call_user_func("B::s"), call_user_func([$b, "i"]), "\n";
+trait T { static function t() { return get_called_class(); } } class C { use T; } class D extends C {} echo C::t(), D::t(), "\n";
+enum E { case X; function n() { return get_called_class(); } } echo E::X->n(), "\n";
+$f = function () { return get_called_class(); }; echo Closure::bind($f, null, B::class)(), \Closure::bind($f, new B, A::class)(), "\n";
+function free() { return get_called_class(); }
+try { free(); } catch (Error $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+try { get_called_class(); } catch (Error $e) { echo $e->getMessage(), "\n"; }
+try { get_called_class(1); } catch (ArgumentCountError $e) { echo $e->getMessage(), "\n"; }
