@@ -2661,3 +2661,9 @@ str_decrement(): Argument #1 ($string) must be composed only of alphanumeric ASC
 str_increment(): Argument #1 ($string) must be of type string, array given
 string(2) "13"
 
+#REC 130 exit=0 out=18 err=0
+BBBBBB
+BA
+BBB
+AAA
+

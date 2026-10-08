@@ -1438,3 +1438,23 @@ foreach (["a","z","Z","9","Az","zz","ZZ","99","a9","Zz9","zZ9","0","00","09","a0
 foreach (["", "a b", "é", "a\0"] as $s) foreach (["str_increment","str_decrement"] as $f) { try { $f($s); } catch (ValueError $e) { echo $e->getMessage(), "\n"; } }
 try { str_increment([]); } catch (TypeError $e) { echo $e->getMessage(), "\n"; }
 var_dump(str_increment(12));
+#==#
+// static:: inside a closure is the called scope captured where the closure was
+// created (the class of $this, else the frame's LSB class), and the one
+// Closure::bind/bindTo/call give it — not the class the closure was written in.
+class A {
+  static function make() { return new static; }
+  function cl() { return (fn() => static::class)(); }
+  static function scl() { return (function () { return static::class; })(); }
+  function stat() { return (static fn() => static::class)(); }
+  function nested() { return (fn() => (fn() => static::class)())(); }
+  function inst() { return (fn() => static::make())(); }
+  static function later() { return function () { return static::class; }; }
+  function gen() { $g = (function () { yield static::class; })(); return $g->current(); }
+}
+class B extends A {}
+echo (new B)->cl(), B::scl(), (new B)->stat(), (new B)->nested(), get_class((new B)->inst()), (new B)->gen(), "\n";
+$l = B::later(); echo $l(), A::later()(), "\n";
+$f = function () { return static::class; };
+echo Closure::bind($f, new B, A::class)(), Closure::bind($f, null, B::class)(), $f->call(new B), "\n";
+echo Closure::bind($l, null, A::class)(), Closure::bind($l, null, "static")(), $l->bindTo(new A, "static")(), "\n";

@@ -622,6 +622,8 @@ pub struct ClosureCall {
     pub captured: Vec<(String, Value)>,
     pub bound_this: Option<Value>,
     pub scope: Option<String>,
+    /// The late-static-binding class (`zend_closure.called_scope`).
+    pub called_scope: Option<String>,
     pub is_generator: bool,
     /// The declared return type, checked on the way out of the call.
     pub ret: Option<TypeHint>,
@@ -782,6 +784,10 @@ pub enum PhpObj {
         captured: Vec<(String, Value)>,
         bound_this: Option<Value>,
         scope: Option<String>,
+        /// The late-static-binding class its frames run with — what `static::`
+        /// and `get_called_class()` answer inside it (`zend_closure.called_scope`).
+        /// Set where the closure is created or rebound, never at the call.
+        called_scope: Option<String>,
         is_generator: bool,
         /// The declared return type, checked on the way out of a call.
         ret: Option<TypeHint>,
@@ -3722,12 +3728,20 @@ impl PhpHost {
             _ => None,
         };
         let scope = self.current_class_ctx();
+        // `ZEND_DECLARE_LAMBDA_FUNCTION`: the class of the enclosing `$this`
+        // when there is one — even for a `static` closure, which drops only the
+        // instance — otherwise the enclosing frame's own called scope.
+        let called_scope = match self.get_var("this") {
+            t @ Value::Obj(_) => self.object_class(&t),
+            _ => self.scopes.last().and_then(|s| s.static_class.clone()),
+        };
         self.objs.push(PhpObj::Closure {
             params: def.params,
             chunk: Box::new(def.chunk),
             captured,
             bound_this,
             scope,
+            called_scope,
             is_generator: def.is_generator,
             ret: def.ret,
             is_static,
@@ -3747,6 +3761,7 @@ impl PhpHost {
                 captured,
                 bound_this,
                 scope,
+                called_scope,
                 is_generator,
                 ret,
                 site,
@@ -3757,6 +3772,7 @@ impl PhpHost {
                 captured: captured.clone(),
                 bound_this: bound_this.clone(),
                 scope: scope.clone(),
+                called_scope: called_scope.clone(),
                 is_generator: *is_generator,
                 ret: ret.clone(),
                 site: site.clone(),
@@ -3805,12 +3821,23 @@ impl PhpHost {
             // closure", which is what `None` means to the caller.
             return Some(Value::Undef);
         }
+        // `do_closure_bind`: the new object's class, or the new scope without
+        // one — in its declared spelling, since a scope may arrive lowercased.
+        let called_scope = match &this {
+            Some(t) => self.object_class(t),
+            None => scope.as_ref().map(|s| {
+                self.classes
+                    .get(&s.to_ascii_lowercase())
+                    .map_or_else(|| s.clone(), |d| d.name.clone())
+            }),
+        };
         self.objs.push(PhpObj::Closure {
             params,
             chunk,
             captured,
             bound_this: this,
             scope,
+            called_scope,
             is_generator,
             ret,
             is_static,
@@ -8687,6 +8714,9 @@ fn invoke_closure(
     // The frame is built inside `invoke`, so the site is handed over the same
     // way the late-static-binding class is.
     with_host(|h| h.closure_site_for_next_call(cc.site));
+    // `zend_closure_get_closure`: the frame runs with the closure's own called
+    // scope, whatever forwarding the call site would otherwise have done.
+    with_host(|h| h.pending_lsb = cc.called_scope);
     invoke(
         &frame,
         Signature {
