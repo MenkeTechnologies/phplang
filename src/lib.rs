@@ -2056,7 +2056,19 @@ pub fn load_merged(prog: compiler::Program) -> fusevm::Chunk {
 /// the reference engine finishes reading the whole source before it executes a
 /// line of it, so `echo "a"; $v = 1; echo "${v}";` prints the deprecation notice
 /// BEFORE the `a`, not between the two statements.
-pub fn run_compiled(mut prog: compiler::Program) -> Result<Value, String> {
+///
+/// The output buffers still open at the end are finalized (their handlers run
+/// with `PHP_OUTPUT_HANDLER_FINAL`), as the end of a request does. A whole
+/// program defers that to [`run_program`]'s shutdown sequence, after the
+/// shutdown functions and destructors, whose output the buffers still take.
+pub fn run_compiled(prog: compiler::Program) -> Result<Value, String> {
+    let r = run_compiled_open(prog);
+    crate::stdlib::output::end_all();
+    r
+}
+
+/// [`run_compiled`] leaving the output buffers open.
+fn run_compiled_open(mut prog: compiler::Program) -> Result<Value, String> {
     let diags = std::mem::take(&mut prog.diags);
     let main = load_merged(prog);
     if !diags.is_empty() {
@@ -2069,9 +2081,10 @@ pub fn run_compiled(mut prog: compiler::Program) -> Result<Value, String> {
     host::run_main(main)
 }
 
-/// Run a WHOLE program: [`run_compiled`], then the request shutdown that frees
-/// what the program left behind — shutdown functions, destructors and
-/// suspended generators (see [`host::request_shutdown`] and
+/// Run a WHOLE program: [`run_compiled`] with the output buffers left open,
+/// then the request shutdown that frees what the program left behind —
+/// shutdown functions, destructors, suspended generators, and last the
+/// output buffers (see [`host::request_shutdown`] and
 /// [`host::shutdown_generators`]). The REPL runs each line through
 /// [`run_compiled`] alone, since its variables outlive the line.
 ///
@@ -2079,7 +2092,7 @@ pub fn run_compiled(mut prog: compiler::Program) -> Result<Value, String> {
 /// only after a clean end, an `exit`, or an uncaught exception — a fatal
 /// error proper marks every object destructed in the reference.
 fn run_program(prog: compiler::Program) -> Result<Value, String> {
-    let r = run_compiled(prog);
+    let r = run_compiled_open(prog);
     let destructors = match &r {
         Ok(_) => true,
         Err(e) => e.starts_with("Fatal error:  Uncaught "),

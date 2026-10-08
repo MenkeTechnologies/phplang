@@ -1017,9 +1017,10 @@ pub struct PhpHost {
     /// When `Some`, `echo` appends here instead of writing to stdout (used by
     /// `eval_capture` and the test harness).
     capture: Option<String>,
-    /// Output-buffering stack (`ob_start`/`ob_get_clean`/…). When non-empty,
-    /// `echo` appends to the top buffer instead of the capture buffer / stdout.
-    ob_stack: Vec<String>,
+    /// The output-buffering state of `main/output.c` — see
+    /// [`crate::stdlib::output`]. When a handler is on the stack, `echo` appends
+    /// to the top one instead of the capture buffer / stdout.
+    pub(crate) ob: crate::stdlib::output::OutputState,
     error: Option<String>,
     signal: Option<Signal>,
     /// The in-flight exception object, if a `throw` has fired and not yet been
@@ -1038,7 +1039,7 @@ pub struct PhpHost {
     /// NOT catchable and does NOT run a `finally` — PHP ends the request where
     /// the `exit` stands. Kept in its own field precisely so `catch (Throwable)`
     /// cannot see it.
-    pending_exit: Option<i32>,
+    pub(crate) pending_exit: Option<i32>,
     /// `set_exception_handler`'s stack: the last entry is the live handler,
     /// `Value::Undef` one that `set_exception_handler(null)` pushed.
     exception_handlers: Vec<Value>,
@@ -1057,6 +1058,9 @@ pub struct PhpHost {
     /// `register_shutdown_function`'s queue: each callable with its arguments,
     /// run in order at request end (see [`request_shutdown`]).
     shutdown_fns: Vec<(Value, Vec<Value>)>,
+    /// Set while a diagnostic of the request shutdown is written: the
+    /// reference has no script position then and names the file `Unknown`.
+    unknown_site: bool,
     /// Objects whose `__destruct` the request-end sweep has already run, so
     /// neither pass runs it twice.
     destructed: FxHashSet<u32>,
@@ -1504,6 +1508,7 @@ impl PhpHost {
             queued_errors: Vec::new(),
             exception_handler_enabled: true,
             shutdown_fns: Vec::new(),
+            unknown_site: false,
             destructed: Default::default(),
             destructors_off: false,
             main_order: Vec::new(),
@@ -1516,7 +1521,7 @@ impl PhpHost {
             includes: Vec::new(),
             included_files: Vec::new(),
             compile_counters: crate::compiler::Counters::default(),
-            ob_stack: Vec::new(),
+            ob: Default::default(),
             ref_cells: Vec::new(),
             byref_out: Vec::new(),
             byref_live: Vec::new(),
@@ -2003,9 +2008,6 @@ impl PhpHost {
         self.capture.take().unwrap_or_default()
     }
 
-    /// Emit a rendered string via `echo`: to the top output-buffering level if
-    /// any, else the capture buffer if active, else stdout (no trailing newline —
-    /// PHP `echo` writes exactly its argument).
     /// Write to the process's stderr, first flushing what stdout holds. The
     /// reference's CLI writes each stdout chunk as it is produced, so a line
     /// still sitting in Rust's line buffer would otherwise land AFTER a later
@@ -2016,71 +2018,53 @@ impl PhpHost {
         let _ = std::io::stderr().write_all(bytes);
     }
 
+    /// A buffered write — `php_output_write`: into the output-buffering stack
+    /// when a handler is active (see [`crate::stdlib::output`]), else the
+    /// capture buffer if active, else stdout.
     pub fn write_out(&mut self, s: &str) {
-        if let Some(top) = self.ob_stack.last_mut() {
-            top.push_str(s);
-        } else if let Some(buf) = &mut self.capture {
+        let top = self.ob.handlers.len();
+        self.ob_write_below(top, s);
+    }
+
+    /// `php_output_op(PHP_OUTPUT_HANDLER_WRITE)` entered at the handler BELOW
+    /// stack index `n` — `n` is the stack length for an ordinary write, and a
+    /// handler's own index when its output is passed down. A disabled handler
+    /// passes the data on; the first enabled one stores it, and one whose
+    /// `chunk_size` it fills is due to run its handler, which happens at the
+    /// next builtin boundary (`output::drain_chunks`) because a user handler
+    /// is PHP code and this runs inside the host borrow.
+    pub(crate) fn ob_write_below(&mut self, n: usize, s: &str) {
+        if s.is_empty() {
+            return;
+        }
+        let running = self.ob.running.is_some();
+        for i in (0..n).rev() {
+            let h = &mut self.ob.handlers[i];
+            if h.is_disabled() {
+                continue;
+            }
+            if running {
+                h.flags |= crate::stdlib::output::PRODUCED_OUTPUT;
+            }
+            h.append(s);
+            if h.chunk_full() && !running {
+                self.ob.chunk_due = Some(h.id);
+                crate::stdlib::output::mark_chunk_due();
+            }
+            return;
+        }
+        self.write_unbuffered(s);
+    }
+
+    /// Past every output handler: the capture buffer, or stdout.
+    fn write_unbuffered(&mut self, s: &str) {
+        if let Some(buf) = &mut self.capture {
             buf.push_str(s);
         } else {
             use std::io::Write;
             let mut out = std::io::stdout();
             let _ = out.write_all(s.as_bytes());
         }
-    }
-
-    // ── output buffering (ob_*) ──────────────────────────────────────────────
-
-    /// `ob_start()` — push a new output-buffering level.
-    pub fn ob_start(&mut self) {
-        self.ob_stack.push(String::new());
-    }
-
-    /// The current buffering nesting level (`ob_get_level`).
-    pub fn ob_level(&self) -> i64 {
-        self.ob_stack.len() as i64
-    }
-
-    /// `ob_get_contents()` — the top buffer's contents, or `None` if inactive.
-    pub fn ob_contents(&self) -> Option<String> {
-        self.ob_stack.last().cloned()
-    }
-
-    /// `ob_get_clean()` — pop the top buffer and return its contents (`None` if
-    /// none active).
-    pub fn ob_get_clean(&mut self) -> Option<String> {
-        self.ob_stack.pop()
-    }
-
-    /// `ob_end_clean()` — discard and pop the top buffer; `false` if none active.
-    pub fn ob_end_clean(&mut self) -> bool {
-        self.ob_stack.pop().is_some()
-    }
-
-    /// `ob_end_flush()` — pop the top buffer and write its contents down one level
-    /// (the next buffer, the capture buffer, or stdout); `false` if none active.
-    pub fn ob_end_flush(&mut self) -> bool {
-        match self.ob_stack.pop() {
-            Some(s) => {
-                self.write_out(&s);
-                true
-            }
-            None => false,
-        }
-    }
-
-    /// `ob_flush()` — send the top buffer's contents down one level but keep the
-    /// buffer active (cleared); `false` if none active.
-    pub fn ob_flush(&mut self) -> bool {
-        if self.ob_stack.is_empty() {
-            return false;
-        }
-        let s = std::mem::take(self.ob_stack.last_mut().unwrap());
-        // Write down a level: temporarily drop this (now empty) buffer so the
-        // content lands one level below, then restore the empty buffer on top.
-        let empty = self.ob_stack.pop().unwrap();
-        self.write_out(&s);
-        self.ob_stack.push(empty);
-        true
     }
 
     // ── errors ─────────────────────────────────────────────────────────────
@@ -2121,6 +2105,9 @@ impl PhpHost {
     /// exception's `getFile()`, `__FILE__` and `__DIR__` name. The innermost
     /// `include`/`eval` on the current frame wins over the frame's own file.
     pub fn current_file(&self) -> &str {
+        if self.unknown_site {
+            return "Unknown";
+        }
         let top = self.scopes.len() - 1;
         match self.includes.last() {
             Some(f) if f.depth == top => &f.file,
@@ -2357,6 +2344,31 @@ impl PhpHost {
             Some(PhpObj::Array { entries, .. }) => Some(entries.contains_key(&k)),
             _ => None,
         }
+    }
+
+    /// The `<function>(): ` a `php_error_docref` diagnostic raised for the code
+    /// running now carries: `f()` for its function, `Unknown` at the top level.
+    pub(crate) fn active_function_name(&self) -> String {
+        match self.scopes.iter().rev().find(|s| !s.internal) {
+            Some(scope) if scope.name.is_some() => {
+                format!("{}()", self.trace_frame_name(scope).replace("->", "::"))
+            }
+            // `php_verror` with no function: the bare word, no parentheses.
+            _ => "Unknown".to_string(),
+        }
+    }
+
+    /// A deprecation raised while the request shuts down: `PHP Request
+    /// Shutdown: …` in `Unknown` on line 0.
+    pub(crate) fn deprecated_at_shutdown(&mut self, msg: impl std::fmt::Display) {
+        self.unknown_site = true;
+        self.diagnose(
+            "Deprecated",
+            errlevel::E_DEPRECATED,
+            0,
+            format!("PHP Request Shutdown: {msg}"),
+        );
+        self.unknown_site = false;
     }
 
     /// Emit a PHP `Notice`.
@@ -2909,14 +2921,6 @@ impl PhpHost {
     /// wrapper must not print it again.
     pub fn fatal_reported(&self) -> bool {
         self.fatal_reported
-    }
-
-    /// Flush every still-open output buffer, innermost first — what PHP's
-    /// shutdown does, so `ob_start()` without a matching end still prints.
-    pub fn ob_flush_all(&mut self) {
-        while !self.ob_stack.is_empty() {
-            self.ob_end_flush();
-        }
     }
 
     /// The type name PHP uses inside a diagnostic — the short spelling (`int`,
@@ -3839,6 +3843,16 @@ impl PhpHost {
     }
 
     /// Whether `v` is a closure handle.
+    /// `zend_get_callable_name_ex` for a closure: the `{closure:<where>:<line>}`
+    /// name PHP 8.4 gives the literal, as `ob_list_handlers()` reports it.
+    pub fn closure_callable_name(&self, v: &Value) -> Option<String> {
+        let cc = self.closure_of(v)?;
+        Some(
+            cc.site
+                .map_or_else(|| "{closure}".to_string(), |s| s.render(&self.script_name)),
+        )
+    }
+
     pub fn is_closure(&self, v: &Value) -> bool {
         matches!(self.as_array(v), Some(PhpObj::Closure { .. }))
     }
@@ -6421,6 +6435,21 @@ fn predefined_constants() -> FxHashMap<String, Value> {
     si("SORT_LOCALE_STRING", 5);
     si("SORT_NATURAL", 6);
     si("SORT_FLAG_CASE", 8);
+    // output control (main/php_output.h)
+    si("PHP_OUTPUT_HANDLER_START", 1);
+    si("PHP_OUTPUT_HANDLER_WRITE", 0);
+    si("PHP_OUTPUT_HANDLER_FLUSH", 4);
+    si("PHP_OUTPUT_HANDLER_CLEAN", 2);
+    si("PHP_OUTPUT_HANDLER_FINAL", 8);
+    si("PHP_OUTPUT_HANDLER_CONT", 0);
+    si("PHP_OUTPUT_HANDLER_END", 8);
+    si("PHP_OUTPUT_HANDLER_CLEANABLE", 16);
+    si("PHP_OUTPUT_HANDLER_FLUSHABLE", 32);
+    si("PHP_OUTPUT_HANDLER_REMOVABLE", 64);
+    si("PHP_OUTPUT_HANDLER_STDFLAGS", 112);
+    si("PHP_OUTPUT_HANDLER_STARTED", 4096);
+    si("PHP_OUTPUT_HANDLER_DISABLED", 8192);
+    si("PHP_OUTPUT_HANDLER_PROCESSED", 16384);
     si("COUNT_NORMAL", 0);
     si("COUNT_RECURSIVE", 1);
     si("STR_PAD_RIGHT", 1);
@@ -7197,8 +7226,8 @@ pub fn shutdown_generators() {
         if h.pending_exit.is_none() {
             h.pending_exit = exit;
         }
-        h.ob_flush_all();
     });
+    crate::stdlib::output::end_all();
 }
 
 /// [`ops::GEN_MARK`]: the id the next generator created will get.
@@ -7479,14 +7508,12 @@ pub fn run_main(chunk: Chunk) -> Result<Value, String> {
             match with_host(|h| h.pending_throw.take()) {
                 Some(next) => exc = next,
                 None => {
-                    with_host(|h| h.ob_flush_all());
                     return Ok(Value::Undef);
                 }
             }
         }
         return Err(report_uncaught(exc));
     }
-    with_host(|h| h.ob_flush_all());
     r
 }
 
@@ -7562,10 +7589,7 @@ fn report_uncaught(exc: Value) -> String {
                 })
         });
         if let Some(body) = parse {
-            with_host(|h| {
-                h.fatal("Parse error", &body);
-                h.ob_flush_all();
-            });
+            with_host(|h| h.fatal("Parse error", &body));
             return format!("Parse error:  {body}");
         }
         // `zend_exception_error`: the text is the exception's own `__toString()`
@@ -7589,10 +7613,7 @@ fn report_uncaught(exc: Value) -> String {
             let line = h.prop_get(&exc, "line").to_int();
             format!("Uncaught {str}\n  thrown in {file} on line {line}")
         });
-        with_host(|h| {
-            h.fatal("Fatal error", &body);
-            h.ob_flush_all();
-        });
+        with_host(|h| h.fatal("Fatal error", &body));
         format!("Fatal error:  {body}")
     }
 }
@@ -7787,6 +7808,12 @@ pub(crate) const CALLS_BACK: &[&str] = &[
     "array_uintersect_assoc",
     "array_udiff_uassoc",
     "array_uintersect_uassoc",
+    "ob_flush",
+    "ob_clean",
+    "ob_end_flush",
+    "ob_end_clean",
+    "ob_get_flush",
+    "ob_get_clean",
     "usort",
     "uasort",
     "uksort",
@@ -9239,7 +9266,7 @@ pub fn throw_from_internal(
 /// the VM stops on; nothing is thrown, so no `catch` can see it — contrast
 /// `throw_from_internal`, which builds a real Throwable.
 pub fn fatal_from_internal(func: &str, args: &[Value], message: &str) -> String {
-    with_host(|h| {
+    let body = with_host(|h| {
         let line = h.cur_frame_line();
         h.scopes.push(Scope {
             name: Some(func.to_string()),
@@ -9259,9 +9286,9 @@ pub fn fatal_from_internal(func: &str, args: &[Value], message: &str) -> String 
             h.current_file()
         );
         h.fatal("Fatal error", &body);
-        h.ob_flush_all();
-        format!("Fatal error:  {body}")
-    })
+        body
+    });
+    format!("Fatal error:  {body}")
 }
 
 /// [`throw_from_internal`] with the exception's full constructor argument list,
@@ -11271,10 +11298,7 @@ fn run_loaded(src: &str, file: String, label: String, eval: bool) -> Result<Valu
         Ok(p) => p,
         Err(("Parse error", msg)) => return throw_parse_error(&msg, &file),
         Err((severity, msg)) => {
-            with_host(|h| {
-                h.fatal(severity, &msg);
-                h.ob_flush_all();
-            });
+            with_host(|h| h.fatal(severity, &msg));
             return Err(format!("{severity}:  {msg}"));
         }
     };

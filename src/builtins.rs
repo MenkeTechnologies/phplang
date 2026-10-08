@@ -23,6 +23,10 @@ macro_rules! reg {
                 return Value::Undef;
             }
             let v = $f(vm, argc);
+            // A write that filled a `chunk_size` runs its output handler here.
+            if crate::stdlib::output::drain_chunks() {
+                vm.ip = vm.chunk.ops.len();
+            }
             if host::drain_error_handlers() {
                 vm.ip = vm.chunk.ops.len();
             }
@@ -1487,6 +1491,12 @@ fn b_echo(vm: &mut VM, argc: u8) -> Value {
             return Value::Undef;
         }
         with_host(|h| h.write_out(&s));
+        // Each part is its own write: a handler whose chunk it fills runs
+        // before the next part is written.
+        if crate::stdlib::output::drain_chunks() {
+            vm.ip = vm.chunk.ops.len();
+            return Value::Undef;
+        }
     }
     Value::Undef
 }
@@ -2199,10 +2209,7 @@ fn runtime_decl_fatal_at(vm: &mut VM, msg: &str, line: u32) -> Value {
             h.current_file()
         )
     });
-    with_host(|h| {
-        h.fatal("Fatal error", &body);
-        h.ob_flush_all();
-    });
+    with_host(|h| h.fatal("Fatal error", &body));
     fail(vm, format!("Fatal error:  {body}"))
 }
 

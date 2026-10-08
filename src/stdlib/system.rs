@@ -211,39 +211,21 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             })
         }
 
-        // ── output buffering ──────────────────────────────────────────────
-        "ob_start" => {
-            with_host(|h| h.ob_start());
-            Value::bool(true)
-        }
-        "ob_get_contents" => with_host(|h| match h.ob_contents() {
-            Some(s) => Value::str(s),
-            None => Value::bool(false),
-        }),
-        "ob_get_clean" => with_host(|h| match h.ob_get_clean() {
-            Some(s) => Value::str(s),
-            None => Value::bool(false),
-        }),
-        "ob_end_clean" => Value::bool(with_host(|h| h.ob_end_clean())),
-        "ob_end_flush" => Value::bool(with_host(|h| h.ob_end_flush())),
-        "ob_get_flush" => with_host(|h| {
-            let c = h.ob_contents();
-            h.ob_end_flush();
-            match c {
-                Some(s) => Value::str(s),
-                None => Value::bool(false),
-            }
-        }),
-        "ob_flush" => {
-            with_host(|h| h.ob_flush());
-            Value::Undef
-        }
-        "flush" => Value::Undef,
-        "ob_get_level" => Value::int(with_host(|h| h.ob_level())),
-        "ob_get_length" => with_host(|h| match h.ob_contents() {
-            Some(s) => Value::int(s.len() as i64),
-            None => Value::bool(false),
-        }),
+        // ── output buffering (ported in `stdlib::output`) ─────────────────
+        "ob_start" => return crate::stdlib::output::call(name, args),
+        "ob_flush" => return crate::stdlib::output::call(name, args),
+        "ob_clean" => return crate::stdlib::output::call(name, args),
+        "ob_end_flush" => return crate::stdlib::output::call(name, args),
+        "ob_end_clean" => return crate::stdlib::output::call(name, args),
+        "ob_get_flush" => return crate::stdlib::output::call(name, args),
+        "ob_get_clean" => return crate::stdlib::output::call(name, args),
+        "ob_get_contents" => return crate::stdlib::output::call(name, args),
+        "ob_get_length" => return crate::stdlib::output::call(name, args),
+        "ob_get_level" => return crate::stdlib::output::call(name, args),
+        "ob_list_handlers" => return crate::stdlib::output::call(name, args),
+        "ob_get_status" => return crate::stdlib::output::call(name, args),
+        "ob_implicit_flush" => return crate::stdlib::output::call(name, args),
+        "flush" => return crate::stdlib::output::call(name, args),
 
         // ── variadic call introspection ───────────────────────────────────
         // These read the enclosing frame's hidden `@args`/`@argnames` pair, set

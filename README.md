@@ -407,7 +407,7 @@ end-to-end (see `tests/basic.rs`):
   `RecursiveArrayIterator`, `RecursiveIteratorIterator`, `RecursiveTreeIterator`
   and the recursive filters) plus `stdClass`, all as PHP preludes — the list,
   heap, fixed-array and iterator classes ports of `ext/spl` (iterator modes, heap
-  sift order, `spl_iterators.c`'s walks, the reference's exceptions); output buffering (`ob_start`/`ob_get_clean`/…),
+  sift order, `spl_iterators.c`'s walks, the reference's exceptions); output buffering (a port of `main/output.c`: `ob_start` handlers with `$phase` bits, chunk sizes and ability flags, `ob_get_status`, `ob_list_handlers`),
   variadic introspection (`func_get_args`/`func_num_args`), the stream functions
   (`fread`/`fwrite`/`fgets`/`fgetc`/`fseek`/`ftruncate`/`fstat`/`fclose`/…), the
   `unset()` construct, `spl_object_id`,
@@ -417,7 +417,7 @@ end-to-end (see `tests/basic.rs`):
   256, so `exit(300)` leaves 44 and `exit(-1)` leaves 255), a string is printed
   and the status is 0, a bool or float narrows, an explicit null is deprecated,
   and anything else is a `TypeError`. The unwind is not catchable and does not
-  run a `finally`, but open output buffers still flush. PHP 8.4 also registered
+  run a `finally`, but open output buffers are still finalized through their handlers, after the shutdown functions and destructors. PHP 8.4 also registered
   them as callable functions, so `function_exists("exit")` is true and
   `$f = "exit"; $f(3);` works.
 - A large standard library (see the

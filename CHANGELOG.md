@@ -71,6 +71,21 @@ block in `tests/data/parity_corpus.php`.
   reference of a nullsafe chain`). `tests/classes.rs` wrote a readonly property
   through `(new P(1))->a = 2`, which the reference rejects before running; it
   now writes through a variable, with the reference's output unchanged.
+* **Output buffering ignored its handlers.** `ob_start($callback, $chunk_size,
+  $flags)` read none of its arguments, so no handler ever ran; failures were
+  silent; `ob_clean`, `ob_get_status`, `ob_list_handlers`, `ob_implicit_flush`
+  and the `PHP_OUTPUT_HANDLER_*` constants were missing; and buffers left open
+  were flushed before the shutdown functions and destructors rather than after.
+  The stack is now a port of `main/output.c` (`src/stdlib/output.rs`): handlers
+  get the `$phase` bits, `false` disables a handler and passes its buffer
+  through, `true`/`""` swallow it, `ob_get_clean`/`ob_end_clean` still run it,
+  a filled chunk runs it, the ability flags gate each operation with the
+  reference's notices, output written inside a handler is the 8.4
+  deprecation, an output operation inside one is the fatal
+  `Cannot use output buffering in output buffering display handlers`, and the
+  end of the request finalizes every buffer after the shutdown functions and
+  destructors. A closure handler is named `{closure:<file>:<line>}`, as
+  `zend_get_callable_name_ex` names it.
 
 ## Round 20 — prelude closures and frames, SPL iterators
 

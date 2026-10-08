@@ -515,7 +515,7 @@ use Def::{Bool, EmptyArray, Float, Int, Null, Required, Str, Unknown};
 /// default in this generated table is a literal too.
 #[allow(clippy::approx_constant)]
 static SIGS: &[(&str, Sig)] = &[
-    // generated: 557 functions
+    // generated: 561 functions
     (
         "abs",
         Sig {
@@ -4212,6 +4212,14 @@ static SIGS: &[(&str, Sig)] = &[
         },
     ),
     (
+        "ob_clean",
+        Sig {
+            req: 0,
+            params: &[],
+            variadic: false,
+        },
+    ),
+    (
         "ob_end_clean",
         Sig {
             req: 0,
@@ -4269,6 +4277,30 @@ static SIGS: &[(&str, Sig)] = &[
     ),
     (
         "ob_get_level",
+        Sig {
+            req: 0,
+            params: &[],
+            variadic: false,
+        },
+    ),
+    (
+        "ob_get_status",
+        Sig {
+            req: 0,
+            params: &[p("full_status", Bool(false), "bool")],
+            variadic: false,
+        },
+    ),
+    (
+        "ob_implicit_flush",
+        Sig {
+            req: 0,
+            params: &[p("enable", Bool(true), "bool")],
+            variadic: false,
+        },
+    ),
+    (
+        "ob_list_handlers",
         Sig {
             req: 0,
             params: &[],

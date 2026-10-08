@@ -182,6 +182,16 @@ CORRECTED: this entry used to read "Two coercion warnings are not raised" and
 listed `echo NAN` alongside. `echo NAN` agrees with the reference and did so
 before this round's work; the claim was stale, not fixed here.
 
+## A chunked output handler runs at the next builtin boundary
+
+A write that fills an `ob_start` handler's `$chunk_size` runs the handler in
+the reference DURING the write. Here the handler is PHP code and the write
+happens inside the host borrow, so it runs when the builtin that wrote returns
+(`echo` checks after each of its operands). The two differ only for one library
+call that writes several times — a diagnostic followed by the function's own
+output — where the reference calls the handler between the writes and this
+runs it once on both.
+
 ## A diagnostic inside a multi-line expression names the statement's line
 
 ```text

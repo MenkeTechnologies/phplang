@@ -3042,3 +3042,140 @@ Stack trace:
 #0 {main}
   thrown in Command line code on line 4
 
+#REC 148 exit=255 out=2832 err=1740
+[1:5:a][2:4:][4:8:c]c
+string(4) "gone"
+array(1) {
+  [0]=>
+  string(7) "11:gone"
+}
+zwint(12401)
+
+
+
+Notice: ob_end_clean(): Failed to delete buffer. No buffer to delete in Command line code on line 14
+
+Notice: ob_end_flush(): Failed to delete and flush buffer. No buffer to delete or flush in Command line code on line 14
+
+Notice: ob_get_flush(): Failed to delete and flush buffer. No buffer to delete or flush in Command line code on line 14
+
+Notice: ob_flush(): Failed to flush buffer. No buffer to flush in Command line code on line 14
+
+Notice: ob_clean(): Failed to delete buffer. No buffer to delete in Command line code on line 14
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+xbool(false)
+bool(false)
+string(215) "
+Notice: ob_end_flush(): Failed to send buffer of default output handler (1) in Command line code on line 16
+
+Notice: ob_flush(): Failed to flush buffer of default output handler (1) in Command line code on line 16
+"
+string(438) "
+Notice: ob_end_flush(): Failed to send buffer of default output handler (1) in Command line code on line 16
+
+Notice: ob_flush(): Failed to flush buffer of default output handler (1) in Command line code on line 16
+
+Notice: ob_get_clean(): Failed to discard buffer of default output handler (1) in Command line code on line 16
+
+Notice: ob_get_clean(): Failed to delete buffer of default output handler (1) in Command line code on line 16
+"
+bool(true)
+int(2)
+
+Notice: ob_end_clean(): Failed to discard buffer of default output handler (1) in Command line code on line 17
+
+Notice: ob_end_clean(): Failed to discard buffer of default output handler (1) in Command line code on line 17
+array(2) {
+  [0]=>
+  array(7) {
+    ["name"]=>
+    string(22) "default output handler"
+    ["type"]=>
+    int(0)
+    ["flags"]=>
+    int(112)
+    ["level"]=>
+    int(0)
+    ["chunk_size"]=>
+    int(0)
+    ["buffer_size"]=>
+    int(16384)
+    ["buffer_used"]=>
+    int(1)
+  }
+  [1]=>
+  array(7) {
+    ["name"]=>
+    string(22) "default output handler"
+    ["type"]=>
+    int(0)
+    ["flags"]=>
+    int(20496)
+    ["level"]=>
+    int(1)
+    ["chunk_size"]=>
+    int(0)
+    ["buffer_size"]=>
+    int(16384)
+    ["buffer_used"]=>
+    int(725)
+  }
+}
+array(2) {
+  [0]=>
+  string(22) "default output handler"
+  [1]=>
+  string(22) "default output handler"
+}
+array(7) {
+  ["name"]=>
+  string(22) "default output handler"
+  ["type"]=>
+  int(0)
+  ["flags"]=>
+  int(20496)
+  ["level"]=>
+  int(1)
+  ["chunk_size"]=>
+  int(0)
+  ["buffer_size"]=>
+  int(16384)
+  ["buffer_used"]=>
+  int(949)
+}
+<{({x
+Fatal error: Uncaught ArgumentCountError: strtoupper() expects exactly 1 argument, 2 given in Command line code:21
+Stack trace:
+#0 [internal function]: strtoupper('x', 9)
+#1 Command line code(21): ob_end_flush()
+#2 {main}
+  thrown in Command line code on line 21
+})}>PHP Notice:  ob_end_clean(): Failed to delete buffer. No buffer to delete in Command line code on line 14
+PHP Notice:  ob_end_flush(): Failed to delete and flush buffer. No buffer to delete or flush in Command line code on line 14
+PHP Notice:  ob_get_flush(): Failed to delete and flush buffer. No buffer to delete or flush in Command line code on line 14
+PHP Notice:  ob_flush(): Failed to flush buffer. No buffer to flush in Command line code on line 14
+PHP Notice:  ob_clean(): Failed to delete buffer. No buffer to delete in Command line code on line 14
+PHP Notice:  ob_end_flush(): Failed to send buffer of default output handler (1) in Command line code on line 16
+PHP Notice:  ob_flush(): Failed to flush buffer of default output handler (1) in Command line code on line 16
+PHP Notice:  ob_get_clean(): Failed to discard buffer of default output handler (1) in Command line code on line 16
+PHP Notice:  ob_get_clean(): Failed to delete buffer of default output handler (1) in Command line code on line 16
+PHP Notice:  ob_get_flush(): Failed to send buffer of default output handler (1) in Command line code on line 16
+PHP Notice:  ob_get_flush(): Failed to delete buffer of default output handler (1) in Command line code on line 16
+PHP Notice:  ob_end_clean(): Failed to discard buffer of default output handler (1) in Command line code on line 17
+PHP Notice:  ob_end_clean(): Failed to discard buffer of default output handler (1) in Command line code on line 17
+PHP Fatal error:  Uncaught ArgumentCountError: strtoupper() expects exactly 1 argument, 2 given in Command line code:21
+Stack trace:
+#0 [internal function]: strtoupper('x', 9)
+#1 Command line code(21): ob_end_flush()
+#2 {main}
+  thrown in Command line code on line 21
+
+#REC 149 exit=3 out=12 err=0
+<xcbadsrotd>

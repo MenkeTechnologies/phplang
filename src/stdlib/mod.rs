@@ -38,7 +38,11 @@ pub mod system;
 pub mod textx;
 pub mod types;
 pub mod url;
-pub mod zsort;
+
+// Not categories of the dispatch chain below: the sort algorithm every sort
+// shares, and the output-buffering stack, whose functions `system` routes to.
+pub(crate) mod output;
+pub(crate) mod zsort;
 
 /// Try each category in turn; the first that recognizes `name` wins.
 pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {

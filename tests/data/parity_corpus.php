@@ -1641,3 +1641,40 @@ function f() { static $o; return $o ??= new stdClass; }
 class S { static $p = []; }
 f()->x = 1; f()->y[] = 2; (new S)::$p[] = 3; $o = new stdClass; ($o)->z = 4; $o->q->r ??= 5;
 echo json_encode([f(), S::$p, $o]), "\n";
+#==#
+// Output buffering is main/output.c: a handler sees the $phase bits (START on
+// its first run, FLUSH/CLEAN/FINAL from the operation), its false disables it
+// and passes the buffer through, true or "" swallows it; ob_get_clean and
+// ob_end_clean still run it; ability flags gate the operations with the
+// reference's notices; ob_get_status/ob_list_handlers report the stack.
+ob_start(function ($b, $p) { static $n = 0; return "[" . ++$n . ":$p:" . $b . "]"; });
+echo "a"; ob_flush(); ob_flush(); echo "b"; ob_clean(); echo "c"; echo ob_get_flush(), "\n";
+$log = [];
+ob_start(function ($b, $p) use (&$log) { $log[] = "$p:$b"; return strtoupper($b); });
+echo "gone"; $c = ob_get_clean(); var_dump($c, $log);
+ob_start(fn($b) => false); echo "z"; ob_flush(); echo "w"; var_dump(ob_get_status()["flags"]); ob_end_flush(); echo "\n";
+ob_start(fn($b) => true); echo "eaten"; ob_end_flush();
+ob_start(fn($b) => null); echo "eaten"; ob_end_flush(); echo "\n";
+var_dump(ob_end_clean(), ob_get_clean(), ob_end_flush(), ob_get_flush(), ob_flush(), ob_clean(), ob_get_contents(), ob_get_length());
+ob_start(); echo "x"; ob_start(null, 0, PHP_OUTPUT_HANDLER_CLEANABLE);
+var_dump(ob_end_flush(), ob_flush(), ob_get_clean(), ob_get_flush(), ob_clean(), ob_get_level());
+$st = ob_get_status(true); $l = ob_list_handlers(); ob_end_clean(); ob_end_clean();
+var_dump($st, $l, ob_get_status());
+class H { function h($b) { return "<$b>"; } static function s($b) { return "{" . $b . "}"; } function __invoke($b) { return "($b)"; } }
+ob_start([new H, "h"]); ob_start("H::s"); ob_start(new H); ob_start(["H", "s"]); ob_start("strtoupper");
+$l = ob_list_handlers(); echo "x"; while (ob_get_level()) ob_end_flush(); echo "\n"; var_dump($l);
+var_dump(ob_start("nope"), ob_start(5), ob_get_level());
+ob_start(function ($b) { echo "inside"; return "+" . $b; }); echo "y"; ob_end_flush(); echo "\n";
+ob_start(fn($b) => "<" . $b . ">", 3); echo "abcdefg"; printf("%s", "hijk"); echo "\n"; ob_end_flush(); echo "\n";
+ob_start(function ($b) { throw new Exception("in handler"); }); echo "q";
+try { ob_end_flush(); } catch (Exception $e) { echo " caught ", $e->getMessage(), "\n"; }
+ob_start(function ($b) { ob_start(); return $b; }); echo "a"; ob_end_flush(); echo "never";
+#==#
+// Buffers still open at the end are finalized after the shutdown functions and
+// destructors, so their output is inside; an exit status survives it.
+ob_start(fn($b) => "<" . $b . ">"); echo "x";
+register_shutdown_function(function () { echo "sd"; });
+class D { function __destruct() { echo "dtor"; } }
+$d = new D;
+ob_start(fn($b) => strrev($b), 2); echo "abc";
+exit(3);
