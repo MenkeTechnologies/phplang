@@ -1712,3 +1712,24 @@ foreach (["2abc", "abc", " 2", "2 ", "0x1A", "1e3", "-2.5", "", "922337203685477
 var_dump(str_repeat("ab", "2.5"), str_repeat("ab", " 2"), strncmp("abcd", "abef", " 2"), substr("abcdef", "1.9", " 3"));
 var_dump(str_pad("x", "3.7", "-"), array_slice([1, 2, 3, 4], "1.5"), array_fill("1", "2.5", 0), wordwrap("aaa bbb", " 3", "\n", true));
 var_dump(preg_split("/,/", "a,b,c", " 2"), str_split("abcdef", " 4"), chr(65.5), round(2.555, 1.5));
+#==#
+// str_getcsv / fgetcsv are php_fgetcsv (an open enclosure at the end of a line
+// reads the next one from the stream), fputcsv is php_fputcsv; the separator,
+// enclosure and escape arguments are checked in the reference's order.
+foreach (["a,\"b\nc\",d", " a , \"b\" ,c", "\"a\"\"b\",c", "\"a\\\"b\",c", "", "a,", ",", "\"unterminated", "x\"y\"z,w", "\"a\"x,b", "a\r\nb",
+          "\"a\" ,b", "\"", "\"\n", "a\r\n", " ", "\t\"x\"", "a, \"b\"\r\n", "\"a\\\"", "\"ab\"\"", "\"a\"\"\"", "a,b,"] as $s) {
+  echo json_encode(str_getcsv($s, ",", "\"", "\\")), json_encode(str_getcsv($s, ",", "\"", "")), json_encode(str_getcsv($s, ";", "'", "\\")), "\n";
+}
+var_dump(str_getcsv("a,b"));
+$f = fopen("php://memory", "w+");
+var_dump(fputcsv($f, ["a b", "c\"d", "e,f", 12, null, true, 1.5, "x\\\"y", "t\tz", [1]]));
+var_dump(fputcsv($f, ["q", "w;e"], ";", "'", "", "\r\n"), fputcsv($f, [], ",", "\"", ""));
+fwrite($f, "\"multi\nline\",x\n\nlast,\"open\nrest");
+rewind($f); echo stream_get_contents($f), "|\n";
+rewind($f); while (($r = fgetcsv($f, null, ",", "\"", "\\")) !== false) echo json_encode($r), "\n";
+rewind($f); var_dump(fgetcsv($f, 5, ",", "\"", ""), fgetcsv($f));
+$calls = [];
+$calls[] = fn() => str_getcsv("a", ",", "\"", "ab"); $calls[] = fn() => str_getcsv("a", ",,"); $calls[] = fn() => str_getcsv("a", ",", "");
+$calls[] = fn() => fputcsv($f, [1], ",,"); $calls[] = fn() => fputcsv($f, [1], ",", ""); $calls[] = fn() => fputcsv($f, [1], ",", "\"", "ab");
+$calls[] = fn() => fgetcsv($f, -1); $calls[] = fn() => fgetcsv($f, 0, "", "\"", "");
+foreach ($calls as $c) { try { $c(); } catch (Throwable $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; } }

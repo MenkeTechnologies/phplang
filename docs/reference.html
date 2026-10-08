@@ -5173,106 +5173,118 @@ echo count(file("/tmp/php_ref.txt", FILE_IGNORE_NEW_LINES));   // =&gt; 2</code>
 $f = fopen("/tmp/php_ref_s.txt", "r"); echo fread($f, 3); fclose($f);   // =&gt; abc</code></pre>
         </article>
         <article class="doc-entry" id="doc-file-streams-4">
-          <h3><a class="doc-anchor" href="#doc-file-streams-4">#</a> <code>fgets</code></h3>
+          <h3><a class="doc-anchor" href="#doc-file-streams-4">#</a> <code>fgetcsv</code></h3>
+          <pre><code class="lang-php">fgetcsv(resource $stream, ?int $length = null, string $separator = ",", string $enclosure = "\"", string $escape = "\\"): array|false</code></pre>
+          <p>Reads a line (at most `$length` bytes) and parses it as `str_getcsv` does, reading further lines while an enclosed field is still open. A blank line is `[null]`; nothing left is `false`. Omitting `$escape` is deprecated.</p>
+          <pre><code class="lang-php">$f = fopen("php://memory", "w+"); fwrite($f, "a,\"b\nc\"\n"); rewind($f); echo json_encode(fgetcsv($f, null, ",", "\"", ""));   // =&gt; ["a","b\nc"]</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-file-streams-5">
+          <h3><a class="doc-anchor" href="#doc-file-streams-5">#</a> <code>fputcsv</code></h3>
+          <pre><code class="lang-php">fputcsv(resource $stream, array $fields, string $separator = ",", string $enclosure = "\"", string $escape = "\\", string $eol = "\n"): int|false</code></pre>
+          <p>Writes the fields as one CSV line ended by `$eol`, enclosing a field that holds the separator, the enclosure, the escape, a space, a tab or a line break, and doubling an enclosure inside it unless the escape precedes it. Returns the bytes written. Omitting `$escape` is deprecated.</p>
+          <pre><code class="lang-php">$f = fopen("php://memory", "w+"); fputcsv($f, ["a b", 1], ",", "\"", ""); rewind($f); echo stream_get_contents($f);   // =&gt; "a b",1</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-file-streams-6">
+          <h3><a class="doc-anchor" href="#doc-file-streams-6">#</a> <code>fgets</code></h3>
           <pre><code class="lang-php">fgets(resource $stream, ?int $length = null): string|false</code></pre>
           <p>Reads from the cursor through the next `\n` inclusive. A `$length` caps the read at one byte fewer, and one below 1 is a `ValueError`. Nothing left returns `false`; running out before a newline sets end-of-file.</p>
           <pre><code class="lang-php">file_put_contents("/tmp/php_ref_s.txt", "a\nb");
 $f = fopen("/tmp/php_ref_s.txt", "r"); echo trim(fgets($f)); fclose($f);   // =&gt; a</code></pre>
         </article>
-        <article class="doc-entry" id="doc-file-streams-5">
-          <h3><a class="doc-anchor" href="#doc-file-streams-5">#</a> <code>fgetc</code></h3>
+        <article class="doc-entry" id="doc-file-streams-7">
+          <h3><a class="doc-anchor" href="#doc-file-streams-7">#</a> <code>fgetc</code></h3>
           <pre><code class="lang-php">fgetc(resource $stream): string|false</code></pre>
           <p>One byte from the cursor, or `false` (and end-of-file) when none is left.</p>
           <pre><code class="lang-php">$f = fopen("php://memory", "w+"); fwrite($f, "xy"); rewind($f); echo fgetc($f);   // =&gt; x</code></pre>
         </article>
-        <article class="doc-entry" id="doc-file-streams-6">
-          <h3><a class="doc-anchor" href="#doc-file-streams-6">#</a> <code>fwrite</code></h3>
+        <article class="doc-entry" id="doc-file-streams-8">
+          <h3><a class="doc-anchor" href="#doc-file-streams-8">#</a> <code>fwrite</code></h3>
           <pre><code class="lang-php">fwrite(resource $stream, string $data, ?int $length = null): int|false</code></pre>
           <p>Writes at the cursor, zero-filling a gap left by seeking past the end. A plain file is then rewritten whole on disk at once. `STDOUT` and `php://stdout` go straight to standard output past any output buffering, `php://output` goes through it like `echo`, and `STDERR`/`php://stderr` to standard error. `$length` truncates the data. A read-only stream returns `false`.</p>
           <pre><code class="lang-php">$f = fopen("php://memory", "w+"); echo fwrite($f, "abc");   // =&gt; 3</code></pre>
         </article>
-        <article class="doc-entry" id="doc-file-streams-7">
-          <h3><a class="doc-anchor" href="#doc-file-streams-7">#</a> <code>fputs</code></h3>
+        <article class="doc-entry" id="doc-file-streams-9">
+          <h3><a class="doc-anchor" href="#doc-file-streams-9">#</a> <code>fputs</code></h3>
           <pre><code class="lang-php">fputs(resource $stream, string $data, ?int $length = null): int|false</code></pre>
           <p>The alias of `fwrite`, sharing its match arm.</p>
         </article>
-        <article class="doc-entry" id="doc-file-streams-8">
-          <h3><a class="doc-anchor" href="#doc-file-streams-8">#</a> <code>fclose</code></h3>
+        <article class="doc-entry" id="doc-file-streams-10">
+          <h3><a class="doc-anchor" href="#doc-file-streams-10">#</a> <code>fclose</code></h3>
           <pre><code class="lang-php">fclose(resource $stream): bool</code></pre>
           <p>Flushes a dirty file and closes the stream. The value stays a resource of type `Unknown`: `var_dump` shows `resource(N) of type (Unknown)` and `gettype` says `resource (closed)`.</p>
           <pre><code class="lang-php">$f = fopen("php://memory", "r"); fclose($f); var_dump($f);   // =&gt; resource(5) of type (Unknown)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-file-streams-9">
-          <h3><a class="doc-anchor" href="#doc-file-streams-9">#</a> <code>fflush</code></h3>
+        <article class="doc-entry" id="doc-file-streams-11">
+          <h3><a class="doc-anchor" href="#doc-file-streams-11">#</a> <code>fflush</code></h3>
           <pre><code class="lang-php">fflush(resource $stream): bool</code></pre>
           <p>Rewrites a dirty file's buffer to disk. Returns true for any open stream.</p>
         </article>
-        <article class="doc-entry" id="doc-file-streams-10">
-          <h3><a class="doc-anchor" href="#doc-file-streams-10">#</a> <code>feof</code></h3>
+        <article class="doc-entry" id="doc-file-streams-12">
+          <h3><a class="doc-anchor" href="#doc-file-streams-12">#</a> <code>feof</code></h3>
           <pre><code class="lang-php">feof(resource $stream): bool</code></pre>
           <p>True once a read has wanted more than the stream had — NOT merely when the cursor sits at the end, so reading exactly the remaining bytes leaves it false. A seek clears it.</p>
           <pre><code class="lang-php">file_put_contents("/tmp/php_ref_s.txt", "a");
 $f = fopen("/tmp/php_ref_s.txt", "r"); fread($f, 1); var_dump(feof($f)); fgetc($f); var_dump(feof($f)); fclose($f);   // =&gt; bool(false) bool(true)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-file-streams-11">
-          <h3><a class="doc-anchor" href="#doc-file-streams-11">#</a> <code>ftell</code></h3>
+        <article class="doc-entry" id="doc-file-streams-13">
+          <h3><a class="doc-anchor" href="#doc-file-streams-13">#</a> <code>ftell</code></h3>
           <pre><code class="lang-php">ftell(resource $stream): int|false</code></pre>
           <p>The current cursor position.</p>
           <pre><code class="lang-php">file_put_contents("/tmp/php_ref_s.txt", "abc");
 $f = fopen("/tmp/php_ref_s.txt", "r"); fread($f, 2); echo ftell($f); fclose($f);   // =&gt; 2</code></pre>
         </article>
-        <article class="doc-entry" id="doc-file-streams-12">
-          <h3><a class="doc-anchor" href="#doc-file-streams-12">#</a> <code>fseek</code></h3>
+        <article class="doc-entry" id="doc-file-streams-14">
+          <h3><a class="doc-anchor" href="#doc-file-streams-14">#</a> <code>fseek</code></h3>
           <pre><code class="lang-php">fseek(resource $stream, int $offset, int $whence = SEEK_SET): int</code></pre>
           <p>Repositions the cursor from the start, the current position (`SEEK_CUR`) or the end (`SEEK_END`). A target before the start returns -1 and leaves the cursor alone; past the end is allowed, and a write there zero-fills the gap. Returns 0 on success.</p>
           <pre><code class="lang-php">file_put_contents("/tmp/php_ref_s.txt", "abcdef");
 $f = fopen("/tmp/php_ref_s.txt", "r"); fseek($f, 3); echo fread($f, 2); fclose($f);   // =&gt; de</code></pre>
         </article>
-        <article class="doc-entry" id="doc-file-streams-13">
-          <h3><a class="doc-anchor" href="#doc-file-streams-13">#</a> <code>rewind</code></h3>
+        <article class="doc-entry" id="doc-file-streams-15">
+          <h3><a class="doc-anchor" href="#doc-file-streams-15">#</a> <code>rewind</code></h3>
           <pre><code class="lang-php">rewind(resource $stream): bool</code></pre>
           <p>Seeks the cursor to 0 and clears end-of-file.</p>
           <pre><code class="lang-php">file_put_contents("/tmp/php_ref_s.txt", "abc");
 $f = fopen("/tmp/php_ref_s.txt", "r"); fread($f, 2); rewind($f); echo fread($f, 1); fclose($f);   // =&gt; a</code></pre>
         </article>
-        <article class="doc-entry" id="doc-file-streams-14">
-          <h3><a class="doc-anchor" href="#doc-file-streams-14">#</a> <code>ftruncate</code></h3>
+        <article class="doc-entry" id="doc-file-streams-16">
+          <h3><a class="doc-anchor" href="#doc-file-streams-16">#</a> <code>ftruncate</code></h3>
           <pre><code class="lang-php">ftruncate(resource $stream, int $size): bool</code></pre>
           <p>Cuts the stream to `$size` bytes or extends it with NULs, without moving the cursor. A read-only stream returns `false`; a negative size is a `ValueError`.</p>
           <pre><code class="lang-php">$f = fopen("php://memory", "w+"); fwrite($f, "hello"); ftruncate($f, 2); rewind($f); echo fread($f, 10);   // =&gt; he</code></pre>
         </article>
-        <article class="doc-entry" id="doc-file-streams-15">
-          <h3><a class="doc-anchor" href="#doc-file-streams-15">#</a> <code>fstat</code></h3>
+        <article class="doc-entry" id="doc-file-streams-17">
+          <h3><a class="doc-anchor" href="#doc-file-streams-17">#</a> <code>fstat</code></h3>
           <pre><code class="lang-php">fstat(resource $stream): array|false</code></pre>
           <p>The 26-entry `stat` array. A plain file and a standard stream report the real `stat(2)` of what they are attached to; a memory or temp stream reports the reference's fabricated one — device `12`, mode `33206` (`33060` when read-only), its size, and `-1` for `rdev`/`blksize`/`blocks`. `php://output` returns `false`.</p>
           <pre><code class="lang-php">$f = fopen("php://memory", "w+"); fwrite($f, "abc"); echo fstat($f)["size"];   // =&gt; 3</code></pre>
         </article>
-        <article class="doc-entry" id="doc-file-streams-16">
-          <h3><a class="doc-anchor" href="#doc-file-streams-16">#</a> <code>stream_get_contents</code></h3>
+        <article class="doc-entry" id="doc-file-streams-18">
+          <h3><a class="doc-anchor" href="#doc-file-streams-18">#</a> <code>stream_get_contents</code></h3>
           <pre><code class="lang-php">stream_get_contents(resource $stream, ?int $length = null, int $offset = -1): string|false</code></pre>
           <p>Everything from the cursor, or at most `$length` bytes, after first seeking to `$offset` when it is 0 or more.</p>
           <pre><code class="lang-php">$f = fopen("php://memory", "w+"); fwrite($f, "hello world"); echo stream_get_contents($f, 5, 6);   // =&gt; world</code></pre>
         </article>
-        <article class="doc-entry" id="doc-file-streams-17">
-          <h3><a class="doc-anchor" href="#doc-file-streams-17">#</a> <code>fpassthru</code></h3>
+        <article class="doc-entry" id="doc-file-streams-19">
+          <h3><a class="doc-anchor" href="#doc-file-streams-19">#</a> <code>fpassthru</code></h3>
           <pre><code class="lang-php">fpassthru(resource $stream): int</code></pre>
           <p>Writes everything from the cursor to the output (through output buffering) and returns the byte count.</p>
           <pre><code class="lang-php">$f = fopen("php://memory", "w+"); fwrite($f, "hi"); rewind($f); fpassthru($f);   // =&gt; hi</code></pre>
         </article>
-        <article class="doc-entry" id="doc-file-streams-18">
-          <h3><a class="doc-anchor" href="#doc-file-streams-18">#</a> <code>is_resource</code></h3>
+        <article class="doc-entry" id="doc-file-streams-20">
+          <h3><a class="doc-anchor" href="#doc-file-streams-20">#</a> <code>is_resource</code></h3>
           <pre><code class="lang-php">is_resource(mixed $value): bool</code></pre>
           <p>True only for an OPEN stream resource — a closed handle reports false, as in PHP.</p>
           <pre><code class="lang-php">$f = fopen("/tmp/php_ref_s.txt", "w"); fclose($f); var_dump(is_resource($f));   // =&gt; bool(false)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-file-streams-19">
-          <h3><a class="doc-anchor" href="#doc-file-streams-19">#</a> <code>get_resource_type</code></h3>
+        <article class="doc-entry" id="doc-file-streams-21">
+          <h3><a class="doc-anchor" href="#doc-file-streams-21">#</a> <code>get_resource_type</code></h3>
           <pre><code class="lang-php">get_resource_type(resource $resource): string</code></pre>
           <p>`stream` for an open stream and `Unknown` for a closed one — streams are the only resource kind this runtime has.</p>
           <pre><code class="lang-php">$f = fopen("php://memory", "r"); echo get_resource_type($f);   // =&gt; stream</code></pre>
         </article>
-        <article class="doc-entry" id="doc-file-streams-20">
-          <h3><a class="doc-anchor" href="#doc-file-streams-20">#</a> <code>get_resource_id</code></h3>
+        <article class="doc-entry" id="doc-file-streams-22">
+          <h3><a class="doc-anchor" href="#doc-file-streams-22">#</a> <code>get_resource_id</code></h3>
           <pre><code class="lang-php">get_resource_id(resource $resource): int</code></pre>
           <p>The resource number — the `N` of `resource(N)` and of `Resource id #N` — open or closed.</p>
           <pre><code class="lang-php">echo get_resource_id(STDERR);   // =&gt; 3</code></pre>
@@ -5411,7 +5423,7 @@ echo implode(",", $a), "|", implode(",", $b);   // =&gt; 1,2,3|a,b,c</code></pre
         <article class="doc-entry" id="doc-misc-22">
           <h3><a class="doc-anchor" href="#doc-misc-22">#</a> <code>str_getcsv</code></h3>
           <pre><code class="lang-php">str_getcsv(string $string, string $separator = ",", string $enclosure = "\"", string $escape = "\\"): array</code></pre>
-          <p>Parses ONE line. Doubled enclosures inside a quoted field are literals, and unenclosed fields keep their blanks. DIVERGENCE: the escape character keeps BOTH itself and the following character — it is not stripped; an embedded newline is an ordinary field character, so multi-line records are never reassembled; an empty input returns a one-element array holding null; and an empty `$separator` or `$enclosure` falls back to the DEFAULT rather than disabling it. Omitting `$escape` raises PHP 8.4's deprecation notice.</p>
+          <p>A port of `php_fgetcsv`: doubled enclosures inside an enclosed field are literals, the escape character keeps itself and the byte after it, whatever follows a closing enclosure up to the separator joins the field, unenclosed fields keep their blanks but lose a trailing line end, and an embedded newline stays in an enclosed field. An empty input is `[null]`. A separator or enclosure that is not one byte, or an escape longer than one, is a `ValueError`; omitting `$escape` raises PHP 8.4's deprecation.</p>
           <pre><code class="lang-php">print_r(str_getcsv("a,b"));   // =&gt; Array\n(\n    [0] =&gt; a\n    [1] =&gt; b\n)</code></pre>
         </article>
         <article class="doc-entry" id="doc-misc-23">

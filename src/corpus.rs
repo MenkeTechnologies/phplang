@@ -6047,6 +6047,20 @@ pub const CORPUS: &[Entry] = &[
         "file_put_contents(\"/tmp/php_ref_s.txt\", \"abcdef\");\n$f = fopen(\"/tmp/php_ref_s.txt\", \"r\"); echo fread($f, 3); fclose($f);   // => abc",
     ),
     (
+        "fgetcsv",
+        "File streams",
+        "fgetcsv(resource $stream, ?int $length = null, string $separator = \",\", string $enclosure = \"\\\"\", string $escape = \"\\\\\"): array|false",
+        "Reads a line (at most `$length` bytes) and parses it as `str_getcsv` does, reading further lines while an enclosed field is still open. A blank line is `[null]`; nothing left is `false`. Omitting `$escape` is deprecated.",
+        "$f = fopen(\"php://memory\", \"w+\"); fwrite($f, \"a,\\\"b\\nc\\\"\\n\"); rewind($f); echo json_encode(fgetcsv($f, null, \",\", \"\\\"\", \"\"));   // => [\"a\",\"b\\nc\"]",
+    ),
+    (
+        "fputcsv",
+        "File streams",
+        "fputcsv(resource $stream, array $fields, string $separator = \",\", string $enclosure = \"\\\"\", string $escape = \"\\\\\", string $eol = \"\\n\"): int|false",
+        "Writes the fields as one CSV line ended by `$eol`, enclosing a field that holds the separator, the enclosure, the escape, a space, a tab or a line break, and doubling an enclosure inside it unless the escape precedes it. Returns the bytes written. Omitting `$escape` is deprecated.",
+        "$f = fopen(\"php://memory\", \"w+\"); fputcsv($f, [\"a b\", 1], \",\", \"\\\"\", \"\"); rewind($f); echo stream_get_contents($f);   // => \"a b\",1",
+    ),
+    (
         "fgets",
         "File streams",
         "fgets(resource $stream, ?int $length = null): string|false",
@@ -6317,7 +6331,7 @@ pub const CORPUS: &[Entry] = &[
         "str_getcsv",
         "Misc",
         "str_getcsv(string $string, string $separator = \",\", string $enclosure = \"\\\"\", string $escape = \"\\\\\"): array",
-        "Parses ONE line. Doubled enclosures inside a quoted field are literals, and unenclosed fields keep their blanks. DIVERGENCE: the escape character keeps BOTH itself and the following character — it is not stripped; an embedded newline is an ordinary field character, so multi-line records are never reassembled; an empty input returns a one-element array holding null; and an empty `$separator` or `$enclosure` falls back to the DEFAULT rather than disabling it. Omitting `$escape` raises PHP 8.4's deprecation notice.",
+        "A port of `php_fgetcsv`: doubled enclosures inside an enclosed field are literals, the escape character keeps itself and the byte after it, whatever follows a closing enclosure up to the separator joins the field, unenclosed fields keep their blanks but lose a trailing line end, and an embedded newline stays in an enclosed field. An empty input is `[null]`. A separator or enclosure that is not one byte, or an escape longer than one, is a `ValueError`; omitting `$escape` raises PHP 8.4's deprecation.",
         "print_r(str_getcsv(\"a,b\"));   // => Array\\n(\\n    [0] => a\\n    [1] => b\\n)",
     ),
     (

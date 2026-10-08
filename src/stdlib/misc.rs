@@ -22,7 +22,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         "strnatcmp" => str_natcmp(args, false),
         "strnatcasecmp" => str_natcmp(args, true),
         "soundex" => Value::str(soundex(&str_arg(args, 0))),
-        "str_getcsv" => str_getcsv(args),
+        "str_getcsv" => return Some(str_getcsv(args)),
         "str_word_count" => return Some(str_word_count(args)),
         "metaphone" => Value::str(php_metaphone(&str_arg(args, 0), int_arg(args, 1))),
         "uniqid" => uniqid(args),
@@ -341,108 +341,257 @@ fn soundex(s: &str) -> String {
 
 // ── str_getcsv ───────────────────────────────────────────────────────────────
 
-/// `str_getcsv($string, $separator = ",", $enclosure = "\"", $escape = "\\")` —
-/// parse a single CSV line into an array of fields. Follows PHP's parser: fields
-/// may be wrapped in the enclosure (a doubled enclosure inside is a literal), the
-/// escape character keeps itself AND the following character verbatim (PHP's
-/// documented quirk — the escape byte is not stripped), and an empty input string
-/// yields a single `null` field.
-fn str_getcsv(args: &[Value]) -> Value {
-    // PHP 8.4 deprecated relying on the default `$escape`, ahead of changing it
-    // to "" in a later release. The notice fires on the ARGUMENT COUNT, before
-    // any parsing, so even `str_getcsv("")` raises it.
-    if args.len() < 4 {
-        host::with_host(|h| {
-            h.deprecated(
-                "str_getcsv(): the $escape parameter must be provided as its default value will change",
-            )
-        });
-    }
-    let s = str_arg(args, 0);
-    if s.is_empty() {
-        // PHP returns a one-element array holding null for a wholly empty line.
-        return make_list(vec![Value::Undef]);
-    }
-    let sep = nth_char_or(args, 1, ',');
-    let enc = nth_char_or(args, 2, '"');
-    // An empty escape string disables escaping (PHP 7.4+ semantics).
-    let esc = if args.len() > 3 {
-        str_arg(args, 3).chars().next()
-    } else {
-        Some('\\')
-    };
+/// `PHP_CSV_NO_ESCAPE`: an empty `$escape`.
+pub(crate) const CSV_NO_ESCAPE: i32 = -1;
 
-    let chars: Vec<char> = s.chars().collect();
-    let n = chars.len();
-    let mut fields: Vec<Value> = Vec::new();
-    let mut i = 0usize;
+/// The `$separator`/`$enclosure` argument at `idx`: one byte, or the
+/// `must be a single character` `ValueError`.
+pub(crate) fn csv_char_arg(
+    func: &str,
+    args: &[Value],
+    idx: usize,
+    pname: &str,
+    default: u8,
+) -> Result<u8, String> {
+    if args.len() <= idx || matches!(args[idx], Value::Undef) {
+        return Ok(default);
+    }
+    let s = str_arg(args, idx);
+    match s.as_bytes() {
+        [c] => Ok(*c),
+        _ => Err(throws(
+            "ValueError",
+            format!(
+                "{func}(): Argument #{} (${pname}) must be a single character",
+                idx + 1
+            ),
+        )),
+    }
+}
+
+/// `php_csv_handle_escape_argument`: an omitted `$escape` is the 8.4
+/// deprecation and means `\`; an empty one disables escaping; anything longer
+/// than a byte is a `ValueError`.
+pub(crate) fn csv_escape_arg(func: &str, args: &[Value], idx: usize) -> Result<i32, String> {
+    if args.len() <= idx || matches!(args[idx], Value::Undef) {
+        host::with_host(|h| {
+            h.deprecated(format!(
+                "{func}(): the $escape parameter must be provided as its default value will change"
+            ))
+        });
+        return Ok(b'\\' as i32);
+    }
+    let s = str_arg(args, idx);
+    match s.as_bytes() {
+        [] => Ok(CSV_NO_ESCAPE),
+        [c] => Ok(*c as i32),
+        _ => Err(throws(
+            "ValueError",
+            format!(
+                "{func}(): Argument #{} ($escape) must be empty or a single character",
+                idx + 1
+            ),
+        )),
+    }
+}
+
+/// `php_fgetcsv_lookup_trailing_spaces`: where `buf` ends once a trailing
+/// `\n`, `\r` or `\r\n` is set aside (despite the name, nothing else is).
+fn csv_trailing(buf: &[u8]) -> usize {
+    let n = buf.len();
+    match (n.checked_sub(2).map(|i| buf[i]), buf.last()) {
+        (Some(b'\r'), Some(b'\n')) => n - 2,
+        (_, Some(b'\n' | b'\r')) => n - 1,
+        _ => n,
+    }
+}
+
+/// C `isspace`: space, `\t`, `\n`, `\v`, `\f`, `\r`.
+fn c_space(c: u8) -> bool {
+    matches!(c, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r')
+}
+
+/// `php_fgetcsv` (`ext/standard/file.c`), followed pointer for pointer.
+///
+/// `first` is the line read; `next_line` supplies the next one when an
+/// enclosure is still open at the end of it (`fgetcsv`), or `None` when there
+/// is nothing more (`str_getcsv`, or the stream at its end). `None` back means
+/// a blank line, which both callers turn into `[null]`.
+///
+/// The reference steps through the line with `php_mblen`; every byte the
+/// separator, enclosure or escape can be is a single byte in every locale
+/// PHP accepts them in, so stepping byte by byte reaches the same fields.
+pub(crate) fn php_fgetcsv(
+    delimiter: u8,
+    enclosure: u8,
+    escape: i32,
+    first: Vec<u8>,
+    mut next_line: impl FnMut() -> Option<Vec<u8>>,
+) -> Option<Vec<Vec<u8>>> {
+    let mut buf = first;
+    // Past the end reads as the C string's terminating NUL.
+    let at = |buf: &[u8], i: usize| buf.get(i).copied().unwrap_or(0);
+    let is_escape = |c: u8| escape != CSV_NO_ESCAPE && c as i32 == escape;
+    let span = |buf: &[u8], a: usize, b: usize| buf[a.min(buf.len())..b.min(buf.len())].to_vec();
+    let mut bptr = 0usize;
+    let mut limit = csv_trailing(&buf);
+    let mut line_end = limit;
+    let mut line_end_len = buf.len() - limit;
+    let mut values = Vec::new();
+    let mut first_field = true;
     loop {
-        let mut field = String::new();
-        // Peek past leading blanks to decide if this field is enclosure-wrapped.
-        let mut j = i;
-        while j < n && (chars[j] == ' ' || chars[j] == '\t') {
-            j += 1;
+        let mut temp: Vec<u8> = Vec::new();
+        let mut inc_len = usize::from(bptr < limit);
+        if inc_len == 1 {
+            let mut tmp = bptr;
+            while at(&buf, tmp) != delimiter && c_space(at(&buf, tmp)) {
+                tmp += 1;
+            }
+            if at(&buf, tmp) == enclosure && tmp < limit {
+                bptr = tmp;
+            }
         }
-        if j < n && chars[j] == enc {
-            // Enclosed field: leading blanks are dropped, the enclosure opens.
-            i = j + 1;
-            while i < n {
-                let c = chars[i];
-                if esc == Some(c) && i + 1 < n {
-                    field.push(c);
-                    field.push(chars[i + 1]);
-                    i += 2;
-                    continue;
-                }
-                if c == enc {
-                    if i + 1 < n && chars[i + 1] == enc {
-                        field.push(enc);
-                        i += 2;
-                        continue;
+        if first_field && bptr == line_end {
+            return None;
+        }
+        first_field = false;
+        if inc_len != 0 && at(&buf, bptr) == enclosure {
+            // 2A. An enclosed field.
+            let mut state = 0;
+            bptr += 1;
+            let mut hunk = bptr;
+            'enclosed: loop {
+                if inc_len == 0 {
+                    match state {
+                        2 => {
+                            temp.extend(span(&buf, hunk, bptr - 1));
+                            hunk = bptr;
+                            break 'enclosed;
+                        }
+                        _ => {
+                            if state == 1 {
+                                temp.extend(span(&buf, hunk, bptr));
+                                hunk = bptr;
+                            }
+                            if hunk != line_end {
+                                temp.extend(span(&buf, hunk, bptr));
+                                hunk = bptr;
+                            }
+                            // The line end belongs to the field.
+                            temp.extend(span(&buf, line_end, line_end + line_end_len));
+                            match next_line() {
+                                Some(nb) => {
+                                    buf = nb;
+                                    bptr = 0;
+                                    hunk = 0;
+                                    limit = csv_trailing(&buf);
+                                    line_end = limit;
+                                    line_end_len = buf.len() - limit;
+                                    state = 0;
+                                }
+                                None => {
+                                    // An unterminated enclosure takes the rest.
+                                    if bptr > limit {
+                                        if hunk == bptr {
+                                            hunk -= 1;
+                                        }
+                                        bptr -= 1;
+                                    }
+                                    break 'enclosed;
+                                }
+                            }
+                        }
                     }
-                    i += 1;
-                    break;
+                } else {
+                    match state {
+                        1 => {
+                            // The byte after an escape is taken as it is.
+                            bptr += 1;
+                            state = 0;
+                        }
+                        2 => {
+                            if at(&buf, bptr) != enclosure {
+                                // A real closing enclosure.
+                                temp.extend(span(&buf, hunk, bptr - 1));
+                                hunk = bptr;
+                                break 'enclosed;
+                            }
+                            // A doubled enclosure is one literal.
+                            temp.extend(span(&buf, hunk, bptr));
+                            bptr += 1;
+                            hunk = bptr;
+                            state = 0;
+                        }
+                        _ => {
+                            let c = at(&buf, bptr);
+                            if c == enclosure {
+                                state = 2;
+                            } else if is_escape(c) {
+                                state = 1;
+                            }
+                            bptr += 1;
+                        }
+                    }
                 }
-                field.push(c);
-                i += 1;
+                inc_len = usize::from(bptr < limit);
             }
-            // Anything between the closing enclosure and the separator is appended.
-            while i < n && chars[i] != sep {
-                field.push(chars[i]);
-                i += 1;
+            // Whatever follows the closing enclosure, up to the separator, is
+            // part of the field.
+            while inc_len != 0 && at(&buf, bptr) != delimiter {
+                bptr += inc_len;
+                inc_len = usize::from(bptr < limit);
             }
+            temp.extend(span(&buf, hunk, bptr));
+            bptr += inc_len;
         } else {
-            // Unenclosed field: blanks are part of the value; read up to separator.
-            while i < n && chars[i] != sep {
-                let c = chars[i];
-                if esc == Some(c) && i + 1 < n {
-                    field.push(c);
-                    field.push(chars[i + 1]);
-                    i += 2;
-                    continue;
-                }
-                field.push(c);
-                i += 1;
+            // 2B. A bare field: up to the separator, trailing line end dropped.
+            let hunk = bptr;
+            while inc_len != 0 && at(&buf, bptr) != delimiter {
+                bptr += inc_len;
+                inc_len = usize::from(bptr < limit);
+            }
+            temp.extend(span(&buf, hunk, bptr));
+            let keep = csv_trailing(&temp);
+            temp.truncate(keep);
+            if at(&buf, bptr) == delimiter {
+                bptr += 1;
             }
         }
-        fields.push(Value::str(field));
-        if i < n && chars[i] == sep {
-            i += 1; // consume the separator, then parse the next field
-        } else {
+        values.push(temp);
+        if inc_len == 0 {
             break;
         }
     }
-    make_list(fields)
+    Some(values)
 }
 
-/// The first character of the `i`-th argument, or `default` when the argument is
-/// missing or empty.
-fn nth_char_or(args: &[Value], i: usize, default: char) -> char {
-    if args.len() > i {
-        str_arg(args, i).chars().next().unwrap_or(default)
-    } else {
-        default
+/// `[null]` for a blank line (`php_bc_fgetcsv_empty_line`), else the fields.
+pub(crate) fn csv_fields_value(fields: Option<Vec<Vec<u8>>>) -> Value {
+    match fields {
+        None => make_list(vec![Value::Undef]),
+        Some(fs) => make_list(
+            fs.into_iter()
+                .map(|f| Value::str(String::from_utf8_lossy(&f).into_owned()))
+                .collect(),
+        ),
     }
+}
+
+/// `str_getcsv($string, $separator = ",", $enclosure = "\"", $escape = "\\")`:
+/// the arguments checked in the reference's order, then [`php_fgetcsv`] with
+/// no stream to read further lines from.
+fn str_getcsv(args: &[Value]) -> Result<Value, String> {
+    let delimiter = csv_char_arg("str_getcsv", args, 1, "separator", b',')?;
+    let enclosure = csv_char_arg("str_getcsv", args, 2, "enclosure", b'"')?;
+    let escape = csv_escape_arg("str_getcsv", args, 3)?;
+    let s = str_arg(args, 0).into_bytes();
+    Ok(csv_fields_value(php_fgetcsv(
+        delimiter,
+        enclosure,
+        escape,
+        s,
+        || None,
+    )))
 }
 
 // ── array_walk_recursive ─────────────────────────────────────────────────────

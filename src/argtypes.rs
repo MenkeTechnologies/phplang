@@ -610,6 +610,16 @@ static PARAMS: &[(&str, Params)] = &[
     ("feof", &[(1, "stream", "stream")]),
     ("fflush", &[(1, "stream", "stream")]),
     ("fgetc", &[(1, "stream", "stream")]),
+    (
+        "fgetcsv",
+        &[
+            (1, "stream", "stream"),
+            (2, "length", "?int"),
+            (3, "separator", "string"),
+            (4, "enclosure", "string"),
+            (5, "escape", "string"),
+        ],
+    ),
     ("fgets", &[(1, "stream", "stream"), (2, "length", "?int")]),
     ("file", &[(1, "filename", "string"), (2, "flags", "int")]),
     ("file_exists", &[(1, "filename", "string")]),
@@ -662,6 +672,17 @@ static PARAMS: &[(&str, Params)] = &[
     (
         "fprintf",
         &[(1, "stream", "stream"), (2, "format", "string")],
+    ),
+    (
+        "fputcsv",
+        &[
+            (1, "stream", "stream"),
+            (2, "fields", "array"),
+            (3, "separator", "string"),
+            (4, "enclosure", "string"),
+            (5, "escape", "string"),
+            (6, "eol", "?string"),
+        ],
     ),
     (
         "fputs",

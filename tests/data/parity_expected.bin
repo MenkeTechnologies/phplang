@@ -3349,3 +3349,99 @@ PHP Deprecated:  Implicit conversion from float-string "2.5" to int loses precis
 PHP Deprecated:  Implicit conversion from float 65.5 to int loses precision in Command line code on line 12
 PHP Deprecated:  Implicit conversion from float 1.5 to int loses precision in Command line code on line 12
 
+#REC 153 exit=0 out=2504 err=603
+["a","b\nc","d"]["a","b\nc","d"]["a,\"b\nc\",d"]
+[" a ","b ","c"][" a ","b ","c"][" a , \"b\" ,c"]
+["a\"b","c"]["a\"b","c"]["\"a\"\"b\",c"]
+["a\\\"b","c"]["a\\b\"","c"]["\"a\\\"b\",c"]
+[null][null][null]
+["a",""]["a",""]["a,"]
+["",""]["",""][","]
+["unterminated"]["unterminated"]["\"unterminated"]
+["x\"y\"z","w"]["x\"y\"z","w"]["x\"y\"z,w"]
+["ax","b"]["ax","b"]["\"a\"x,b"]
+["a\r\nb"]["a\r\nb"]["a\r\nb"]
+["a ","b"]["a ","b"]["\"a\" ,b"]
+[""][""]["\""]
+["\n"]["\n"]["\""]
+["a"]["a"]["a"]
+[" "][" "][" "]
+["x"]["x"]["\t\"x\""]
+["a","b"]["a","b"]["a, \"b\""]
+["a\\\""]["a\\"]["\"a\\\""]
+["ab\""]["ab\""]["\"ab\"\""]
+["a\""]["a\""]["\"a\"\"\""]
+["a","b",""]["a","b",""]["a,b,"]
+
+Deprecated: str_getcsv(): the $escape parameter must be provided as its default value will change in Command line code on line 8
+array(2) {
+  [0]=>
+  string(1) "a"
+  [1]=>
+  string(1) "b"
+}
+
+Deprecated: fputcsv(): the $escape parameter must be provided as its default value will change in Command line code on line 10
+
+Warning: Array to string conversion in Command line code on line 10
+int(48)
+int(9)
+int(1)
+"a b","c""d","e,f",12,,1,1.5,"x\"y","t	z",Array
+q;'w;e'
+
+"multi
+line",x
+
+last,"open
+rest|
+["a b","c\"d","e,f","12","","1","1.5","x\\\"y","t\tz","Array"]
+["q;'w;e'"]
+[null]
+["multi\nline","x"]
+[null]
+["last","open\nrest"]
+
+Deprecated: fgetcsv(): the $escape parameter must be provided as its default value will change in Command line code on line 15
+array(1) {
+  [0]=>
+  string(3) "a b"
+}
+array(10) {
+  [0]=>
+  string(0) ""
+  [1]=>
+  string(3) "c"d"
+  [2]=>
+  string(3) "e,f"
+  [3]=>
+  string(2) "12"
+  [4]=>
+  string(0) ""
+  [5]=>
+  string(1) "1"
+  [6]=>
+  string(3) "1.5"
+  [7]=>
+  string(4) "x\"y"
+  [8]=>
+  string(3) "t	z"
+  [9]=>
+  string(5) "Array"
+}
+ValueError: str_getcsv(): Argument #4 ($escape) must be empty or a single character
+ValueError: str_getcsv(): Argument #2 ($separator) must be a single character
+ValueError: str_getcsv(): Argument #3 ($enclosure) must be a single character
+ValueError: fputcsv(): Argument #3 ($separator) must be a single character
+ValueError: fputcsv(): Argument #4 ($enclosure) must be a single character
+ValueError: fputcsv(): Argument #5 ($escape) must be empty or a single character
+
+Deprecated: fgetcsv(): the $escape parameter must be provided as its default value will change in Command line code on line 19
+ValueError: fgetcsv(): Argument #2 ($length) must be between 0 and 9223372036854775806
+ValueError: fgetcsv(): Argument #3 ($separator) must be a single character
+PHP Deprecated:  str_getcsv(): the $escape parameter must be provided as its default value will change in Command line code on line 8
+PHP Deprecated:  fputcsv(): the $escape parameter must be provided as its default value will change in Command line code on line 10
+PHP Warning:  Array to string conversion in Command line code on line 10
+PHP Deprecated:  fgetcsv(): the $escape parameter must be provided as its default value will change in Command line code on line 15
+PHP Deprecated:  fgetcsv(): the $escape parameter must be provided as its default value will change in Command line code on line 19
+

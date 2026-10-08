@@ -219,6 +219,8 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
                 None => Value::bool(false),
             }
         }
+        "fgetcsv" => return Some(fgetcsv(args)),
+        "fputcsv" => return Some(fputcsv(args)),
         "fgetc" => {
             let res = arg(args, 0);
             match read(name, &res, |s| Some(s.read(1)).filter(|b| !b.is_empty())) {
@@ -680,4 +682,92 @@ pub fn warn_open_failed(fname: &str, path: &str, e: &std::io::Error) {
             strerror(e)
         ))
     });
+}
+
+/// `fgetcsv($stream, $length = null, $separator = ",", $enclosure = "\"",
+/// $escape = "\\")`: one line (at most `$length` bytes), and as many more as an
+/// enclosure left open needs, parsed by `php_fgetcsv`. False at the end.
+fn fgetcsv(args: &[Value]) -> Result<Value, String> {
+    use crate::stdlib::misc::{csv_char_arg, csv_escape_arg, csv_fields_value, php_fgetcsv};
+    let res = arg(args, 0);
+    let delimiter = csv_char_arg("fgetcsv", args, 2, "separator", b',')?;
+    let enclosure = csv_char_arg("fgetcsv", args, 3, "enclosure", b'"')?;
+    let escape = csv_escape_arg("fgetcsv", args, 4)?;
+    let len = match args.get(1) {
+        None | Some(Value::Undef) => 0,
+        Some(_) => int_arg(args, 1),
+    };
+    if !(0..i64::MAX).contains(&len) {
+        return Err(throws(
+            "ValueError",
+            format!(
+                "fgetcsv(): Argument #2 ($length) must be between 0 and {}",
+                i64::MAX - 1
+            ),
+        ));
+    }
+    let max = (len > 0).then_some(len as usize);
+    let Some(first) = read("fgetcsv", &res, |s| s.gets(max)) else {
+        return Ok(Value::bool(false));
+    };
+    let next = || read("fgetcsv", &res, |s| s.gets(None));
+    Ok(csv_fields_value(php_fgetcsv(
+        delimiter, enclosure, escape, first, next,
+    )))
+}
+
+/// `fputcsv($stream, $fields, $separator = ",", $enclosure = "\"",
+/// $escape = "\\", $eol = "\n")`, ported from `php_fputcsv`: a field holding the
+/// separator, the enclosure, the escape, `\n`, `\r`, `\t` or a space is
+/// enclosed, with each enclosure doubled unless an escape precedes it. Answers
+/// the bytes written.
+fn fputcsv(args: &[Value]) -> Result<Value, String> {
+    use crate::stdlib::misc::{csv_char_arg, csv_escape_arg, CSV_NO_ESCAPE};
+    let res = arg(args, 0);
+    let delimiter = csv_char_arg("fputcsv", args, 2, "separator", b',')?;
+    let enclosure = csv_char_arg("fputcsv", args, 3, "enclosure", b'"')?;
+    let escape = csv_escape_arg("fputcsv", args, 4)?;
+    let eol = match args.get(5) {
+        None | Some(Value::Undef) => b"\n".to_vec(),
+        Some(_) => str_arg(args, 5).into_bytes(),
+    };
+    let fields = with_host(|h| h.array_pairs(&arg(args, 1))).unwrap_or_default();
+    let count = fields.len();
+    let mut line: Vec<u8> = Vec::new();
+    for (i, (_, v)) in fields.into_iter().enumerate() {
+        let field = with_host(|h| h.to_str_diag(&v)).into_bytes();
+        let needs = |c: u8| field.contains(&c);
+        if needs(delimiter)
+            || needs(enclosure)
+            || (escape != CSV_NO_ESCAPE && needs(escape as u8))
+            || needs(b'\n')
+            || needs(b'\r')
+            || needs(b'\t')
+            || needs(b' ')
+        {
+            line.push(enclosure);
+            let mut escaped = false;
+            for &c in &field {
+                if escape != CSV_NO_ESCAPE && c as i32 == escape {
+                    escaped = true;
+                } else if !escaped && c == enclosure {
+                    line.push(enclosure);
+                } else {
+                    escaped = false;
+                }
+                line.push(c);
+            }
+            line.push(enclosure);
+        } else {
+            line.extend(field);
+        }
+        if i + 1 != count {
+            line.push(delimiter);
+        }
+    }
+    line.extend(eol);
+    Ok(match write_bytes("fputcsv", &res, &line) {
+        Some(n) => Value::int(n as i64),
+        None => Value::bool(false),
+    })
 }

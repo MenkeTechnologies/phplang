@@ -113,6 +113,12 @@ block in `tests/data/parity_corpus.php`.
   answer under the current `LC_COLLATE`, as the reference does — so a leading
   zero in an address (`"01.2.3.4"`) is accepted on macOS and refused on glibc,
   and `strcoll`'s magnitude differs between the two.
+* **`fgetcsv` and `fputcsv` were missing, and `str_getcsv` was an
+  approximation.** All three are now `php_fgetcsv` / `php_fputcsv` from
+  `ext/standard/file.c` (`fgetcsv` reads further lines while an enclosure is
+  open), with the reference's argument checks in its order: a separator or
+  enclosure that is not one byte is a `ValueError`, as is an escape longer than
+  one, and the omitted-escape deprecation comes after them.
 
 ## Round 20 — prelude closures and frames, SPL iterators
 

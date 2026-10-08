@@ -515,7 +515,7 @@ use Def::{Bool, EmptyArray, Float, Int, Null, Required, Str, Unknown};
 /// default in this generated table is a literal too.
 #[allow(clippy::approx_constant)]
 static SIGS: &[(&str, Sig)] = &[
-    // generated: 565 functions
+    // generated: 567 functions
     (
         "abs",
         Sig {
@@ -2203,6 +2203,20 @@ static SIGS: &[(&str, Sig)] = &[
         },
     ),
     (
+        "fgetcsv",
+        Sig {
+            req: 1,
+            params: &[
+                p("stream", Required, ""),
+                p("length", Null, "?int"),
+                p("separator", Str(","), "string"),
+                p("enclosure", Str("\""), "string"),
+                p("escape", Str("\\"), "string"),
+            ],
+            variadic: false,
+        },
+    ),
+    (
         "fgets",
         Sig {
             req: 1,
@@ -2406,6 +2420,21 @@ static SIGS: &[(&str, Sig)] = &[
             req: 2,
             params: &[p("stream", Required, ""), p("format", Required, "string")],
             variadic: true,
+        },
+    ),
+    (
+        "fputcsv",
+        Sig {
+            req: 2,
+            params: &[
+                p("stream", Required, ""),
+                p("fields", Required, "array"),
+                p("separator", Str(","), "string"),
+                p("enclosure", Str("\""), "string"),
+                p("escape", Str("\\"), "string"),
+                p("eol", Str("\n"), "string"),
+            ],
+            variadic: false,
         },
     ),
     (
