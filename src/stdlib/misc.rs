@@ -31,10 +31,88 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         "array_find_key" => return Some(array_find(args, true)),
         "array_any" => return Some(array_predicate(args, Predicate::Any)),
         "array_all" => return Some(array_predicate(args, Predicate::All)),
-        "array_udiff" => return Some(array_ucompare(args, false, false)),
-        "array_uintersect" => return Some(array_ucompare(args, true, false)),
-        "array_diff_ukey" => return Some(array_ucompare(args, false, true)),
-        "array_intersect_ukey" => return Some(array_ucompare(args, true, true)),
+        "array_udiff" => {
+            return Some(php_array_set_op(
+                name,
+                args,
+                false,
+                SetBehavior::Normal,
+                true,
+                false,
+            ))
+        }
+        "array_uintersect" => {
+            return Some(php_array_set_op(
+                name,
+                args,
+                true,
+                SetBehavior::Normal,
+                true,
+                false,
+            ))
+        }
+        "array_diff_ukey" => {
+            return Some(php_array_set_op(
+                name,
+                args,
+                false,
+                SetBehavior::Key,
+                false,
+                true,
+            ))
+        }
+        "array_intersect_ukey" => {
+            return Some(php_array_set_op(
+                name,
+                args,
+                true,
+                SetBehavior::Key,
+                false,
+                true,
+            ))
+        }
+        "array_diff_uassoc" => {
+            return Some(php_array_set_op(
+                name,
+                args,
+                false,
+                SetBehavior::Assoc,
+                false,
+                true,
+            ))
+        }
+        "array_intersect_uassoc" => {
+            return Some(php_array_set_op(
+                name,
+                args,
+                true,
+                SetBehavior::Assoc,
+                false,
+                true,
+            ))
+        }
+        "array_udiff_uassoc" => {
+            return Some(php_array_set_op(
+                name,
+                args,
+                false,
+                SetBehavior::Assoc,
+                true,
+                true,
+            ))
+        }
+        "array_uintersect_uassoc" => {
+            return Some(php_array_set_op(
+                name,
+                args,
+                true,
+                SetBehavior::Assoc,
+                true,
+                true,
+            ))
+        }
+        "array_udiff_assoc" => return Some(php_array_set_op_key(name, args, false)),
+        "array_uintersect_assoc" => return Some(php_array_set_op_key(name, args, true)),
         "array_multisort" => return Some(array_multisort(args)),
         "version_compare" => return Some(version_compare(args)),
         _ => return None,
@@ -471,89 +549,436 @@ fn array_predicate(args: &[Value], kind: Predicate) -> Result<Value, String> {
     Ok(Value::bool(matches!(kind, Predicate::All)))
 }
 
-// ── array_udiff / array_uintersect / array_diff_ukey / array_intersect_ukey ──
+// ── the user-comparator diff / intersect family ─────────────────────────────
 
-/// The user-comparator diff/intersect family. `by_key` picks whether the callback
-/// compares keys (`array_diff_ukey`/`array_intersect_ukey`) or values
-/// (`array_udiff`/`array_uintersect`); `intersect` picks keep-if-present-in-all
-/// vs keep-if-absent-from-all. The comparator is the LAST argument and every array
-/// before it is one of the operands. Keys of the first array are preserved.
-///
-/// The callback runs the VM, so it is invoked outside any `with_host` borrow. This
-/// is the O(n·m) direct form (compare each first-array element against every other
-/// element); PHP sorts first to compare fewer pairs, but the observable result —
-/// membership decided by the comparator returning `0` — is identical.
-fn array_ucompare(args: &[Value], intersect: bool, by_key: bool) -> Result<Value, String> {
-    let n = args.len();
-    // Need at least: one operand, one other array, and the comparator.
-    if n < 3 {
-        return Ok(make_list(vec![]));
+/// `DIFF_NORMAL`/`DIFF_KEY`/`DIFF_ASSOC` (and the `INTERSECT_*` twins, which
+/// share the values): what an entry is matched on.
+#[derive(Clone, Copy, PartialEq)]
+enum SetBehavior {
+    /// By value alone (`array_udiff`, `array_uintersect`).
+    Normal,
+    /// By key alone (`array_diff_ukey`, `array_intersect_ukey`).
+    Key,
+    /// By key, then value (`array_diff_uassoc`, `array_udiff_uassoc`, …).
+    Assoc,
+}
+
+/// One entry of a pre-sorted operand: a `Bucket` of the C. `pos` is its place
+/// in its own array, which is how a deletion finds it in the result.
+#[derive(Clone)]
+struct SetBucket {
+    pos: usize,
+    key: Value,
+    val: Value,
+}
+
+/// The parameter parsing shared by the whole family: `"+f"` / `"+ff"` in
+/// `zend_parse_parameters` (at least one array, then the callbacks, each
+/// checked in turn), followed by the body's own is-it-an-array loop.
+fn set_op_args(func: &str, args: &[Value], ncb: usize) -> Result<(Vec<Value>, Vec<Value>), String> {
+    let min = 1 + ncb;
+    if args.len() < min {
+        return Err(throws(
+            "ArgumentCountError",
+            format!(
+                "{func}() expects at least {min} arguments, {} given",
+                args.len()
+            ),
+        ));
     }
-    let cb = arg(args, n - 1);
-    let first = host::with_host(|h| h.array_pairs(&arg(args, 0))).unwrap_or_default();
-    // For each other array, collect the side (keys or values) we compare against.
-    let others: Vec<Vec<Value>> = (1..n - 1)
-        .map(|idx| {
-            host::with_host(|h| h.array_pairs(&arg(args, idx)))
-                .unwrap_or_default()
-                .into_iter()
-                .map(|(k, v)| if by_key { k } else { v })
-                .collect()
-        })
-        .collect();
-
-    let mut out: Vec<(Value, Value)> = Vec::new();
-    for (k, v) in first {
-        let probe = if by_key { k.clone() } else { v.clone() };
-        let keep = if intersect {
-            // Present (comparator == 0) in EVERY other array.
-            let mut all = true;
-            for o in &others {
-                if !ucompare_member(&cb, &probe, o)? {
-                    all = false;
-                    break;
-                }
-                if host::unwinding() {
-                    return Ok(Value::Undef);
-                }
-            }
-            all
-        } else {
-            // Absent from every other array.
-            let mut absent = true;
-            for o in &others {
-                if ucompare_member(&cb, &probe, o)? {
-                    absent = false;
-                    break;
-                }
-                if host::unwinding() {
-                    return Ok(Value::Undef);
-                }
-            }
-            absent
-        };
-        if host::unwinding() {
-            return Ok(Value::Undef);
+    let split = args.len() - ncb;
+    for (i, cb) in args[split..].iter().enumerate() {
+        if let Some(reason) = crate::stdlib::callable::callable_reason(cb) {
+            return Err(throws(
+                "TypeError",
+                format!(
+                    "{func}(): Argument #{} must be a valid callback, {reason}",
+                    split + i + 1
+                ),
+            ));
         }
-        if keep {
+    }
+    for (i, a) in args[..split].iter().enumerate() {
+        if !host::with_host(|h| h.is_array(a)) {
+            // `zend_argument_type_error` names the parameter when it has one:
+            // only the first, `$array`, is declared before the variadic.
+            let name = if i == 0 { " ($array)" } else { "" };
+            let given = host::with_host(|h| h.type_name_for_error(a));
+            return Err(throws(
+                "TypeError",
+                format!(
+                    "{func}(): Argument #{}{name} must be of type array, {given} given",
+                    i + 1
+                ),
+            ));
+        }
+    }
+    Ok((args[..split].to_vec(), args[split..].to_vec()))
+}
+
+/// The first array with the entries at `removed` positions dropped — the
+/// `zend_array_dup` of the C, minus its `zend_hash_del`s.
+fn set_op_result(first: Vec<(Value, Value)>, removed: &[bool]) -> Value {
+    make_map(
+        first
+            .into_iter()
+            .zip(removed)
+            .filter(|(_, gone)| !**gone)
+            .map(|(kv, _)| kv)
+            .collect(),
+    )
+}
+
+/// The value/key comparators of `php_array_diff` / `php_array_intersect`.
+///
+/// `current` is `BG(user_compare_fci)`: the C keeps ONE active callback and
+/// swaps the key and value callbacks in and out of it as it walks, and a user
+/// comparator always calls whichever is active. The swaps are reproduced
+/// exactly, because where the C leaves the wrong one active (a matched value
+/// in `array_uintersect_uassoc` against a third array), the reference calls the
+/// value callback with keys.
+struct SetCmp<'a> {
+    ucmp: crate::stdlib::arrays::UserCmp<'a>,
+    current: Value,
+    data_user: bool,
+}
+
+impl SetCmp<'_> {
+    /// `php_array_user_compare_unstable`, or `php_array_data_compare_string_unstable`.
+    fn data(&mut self, a: &SetBucket, b: &SetBucket) -> i32 {
+        if self.data_user {
+            let cb = self.current.clone();
+            self.ucmp.sorting(&cb, &a.val, &b.val)
+        } else {
+            host::with_host(|h| {
+                let (x, y) = (h.to_str_diag(&a.val), h.to_str_diag(&b.val));
+                x.cmp(&y) as i32
+            })
+        }
+    }
+
+    /// `php_array_user_key_compare_unstable` — the only key comparison the
+    /// family reaches, since every key-matching member takes a key callback.
+    fn key(&mut self, a: &SetBucket, b: &SetBucket) -> i32 {
+        let cb = self.current.clone();
+        self.ucmp.sorting(&cb, &a.key, &b.key)
+    }
+}
+
+/// `php_array_diff` / `php_array_intersect` (`ext/standard/array.c`): every
+/// operand is copied into a bucket list and `zend_sort`ed with the UNSTABLE
+/// comparator (by value for `Normal`, by key otherwise), then the lists are
+/// walked in step and entries of the first are deleted from a copy of it. The
+/// walk is followed line for line: which pairs the user callbacks see, and in
+/// which order, is the observable part.
+fn php_array_set_op(
+    func: &str,
+    args: &[Value],
+    intersect: bool,
+    behavior: SetBehavior,
+    data_user: bool,
+    key_user: bool,
+) -> Result<Value, String> {
+    let ncb = data_user as usize + key_user as usize;
+    let (arrays, cbs) = set_op_args(func, args, ncb)?;
+    // `fci1` is the value callback when there is one, `fci2` the key callback.
+    let cb_data = if data_user {
+        cbs[0].clone()
+    } else {
+        Value::Undef
+    };
+    let cb_key = if key_user {
+        cbs[ncb - 1].clone()
+    } else {
+        Value::Undef
+    };
+    let assoc_key_user = behavior != SetBehavior::Normal && key_user;
+    let mut cmp = SetCmp {
+        ucmp: crate::stdlib::arrays::UserCmp::new(func),
+        current: if behavior == SetBehavior::Normal {
+            cb_data.clone()
+        } else {
+            cb_key.clone()
+        },
+        data_user,
+    };
+
+    let first = host::with_host(|h| h.array_pairs(&arrays[0])).unwrap_or_default();
+    let mut lists: Vec<Vec<SetBucket>> = Vec::with_capacity(arrays.len());
+    for a in &arrays {
+        let pairs = host::with_host(|h| h.array_pairs(a)).unwrap_or_default();
+        let mut list: Vec<SetBucket> = pairs
+            .into_iter()
+            .enumerate()
+            .map(|(pos, (key, val))| SetBucket { pos, key, val })
+            .collect();
+        if behavior == SetBehavior::Normal {
+            crate::stdlib::zsort::zend_sort(&mut list, &mut |a, b| cmp.data(a, b));
+        } else {
+            crate::stdlib::zsort::zend_sort(&mut list, &mut |a, b| cmp.key(a, b));
+        }
+        lists.push(list);
+    }
+
+    let mut removed = vec![false; first.len()];
+    if intersect {
+        intersect_walk(
+            &lists,
+            &mut removed,
+            &mut cmp,
+            behavior,
+            assoc_key_user,
+            &cb_data,
+            &cb_key,
+        );
+    } else {
+        diff_walk(
+            &lists,
+            &mut removed,
+            &mut cmp,
+            behavior,
+            assoc_key_user,
+            &cb_data,
+            &cb_key,
+        );
+    }
+    if let Some(e) = cmp.ucmp.err {
+        return Err(e);
+    }
+    if host::unwinding() {
+        return Ok(Value::Undef);
+    }
+    Ok(set_op_result(first, &removed))
+}
+
+/// The `while (Z_TYPE(ptrs[0]->val) != IS_UNDEF)` loop of `php_array_diff`.
+/// `c` keeps its value across a comparison loop that does not run, as the C's
+/// does, and that is load-bearing.
+fn diff_walk(
+    lists: &[Vec<SetBucket>],
+    removed: &mut [bool],
+    cmp: &mut SetCmp,
+    behavior: SetBehavior,
+    assoc_key_user: bool,
+    cb_data: &Value,
+    cb_key: &Value,
+) {
+    let mut ptrs = vec![0usize; lists.len()];
+    let l0 = &lists[0];
+    while ptrs[0] < l0.len() {
+        if assoc_key_user {
+            cmp.current = cb_key.clone();
+        }
+        let mut c = 1;
+        for i in 1..lists.len() {
+            let li = &lists[i];
+            let mut ptr = ptrs[i];
+            if behavior == SetBehavior::Normal {
+                while ptrs[i] < li.len() {
+                    c = cmp.data(&l0[ptrs[0]], &li[ptrs[i]]);
+                    if c <= 0 {
+                        break;
+                    }
+                    ptrs[i] += 1;
+                }
+            } else {
+                while ptr < li.len() {
+                    c = cmp.key(&l0[ptrs[0]], &li[ptr]);
+                    if c == 0 {
+                        break;
+                    }
+                    ptr += 1;
+                }
+            }
+            if c == 0 {
+                match behavior {
+                    SetBehavior::Normal => {
+                        if ptrs[i] < li.len() {
+                            ptrs[i] += 1;
+                        }
+                        break;
+                    }
+                    SetBehavior::Assoc => {
+                        if ptr < li.len() {
+                            if cmp.data_user {
+                                cmp.current = cb_data.clone();
+                            }
+                            if cmp.data(&l0[ptrs[0]], &li[ptr]) != 0 {
+                                c = -1;
+                                if assoc_key_user {
+                                    cmp.current = cb_key.clone();
+                                }
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                    SetBehavior::Key => break,
+                }
+            }
+        }
+        if c == 0 {
+            // In one of the others: delete it and every following equal value.
+            loop {
+                removed[l0[ptrs[0]].pos] = true;
+                ptrs[0] += 1;
+                if ptrs[0] == l0.len() {
+                    return;
+                }
+                if behavior != SetBehavior::Normal || cmp.data(&l0[ptrs[0] - 1], &l0[ptrs[0]]) != 0
+                {
+                    break;
+                }
+            }
+        } else {
+            // In none of the others: skip it and every following equal value.
+            loop {
+                ptrs[0] += 1;
+                if ptrs[0] == l0.len() {
+                    return;
+                }
+                if behavior != SetBehavior::Normal || cmp.data(&l0[ptrs[0] - 1], &l0[ptrs[0]]) != 0
+                {
+                    break;
+                }
+            }
+        }
+    }
+}
+
+/// The `while (Z_TYPE(ptrs[0]->val) != IS_UNDEF)` loop of `php_array_intersect`.
+fn intersect_walk(
+    lists: &[Vec<SetBucket>],
+    removed: &mut [bool],
+    cmp: &mut SetCmp,
+    behavior: SetBehavior,
+    assoc_key_user: bool,
+    cb_data: &Value,
+    cb_key: &Value,
+) {
+    let mut ptrs = vec![0usize; lists.len()];
+    let l0 = &lists[0];
+    let mut c = 0;
+    while ptrs[0] < l0.len() {
+        if assoc_key_user {
+            cmp.current = cb_key.clone();
+        }
+        let mut i = 1;
+        while i < lists.len() {
+            let li = &lists[i];
+            if behavior == SetBehavior::Normal {
+                while ptrs[i] < li.len() {
+                    c = cmp.data(&l0[ptrs[0]], &li[ptrs[i]]);
+                    if c <= 0 {
+                        break;
+                    }
+                    ptrs[i] += 1;
+                }
+            } else {
+                while ptrs[i] < li.len() {
+                    c = cmp.key(&l0[ptrs[0]], &li[ptrs[i]]);
+                    if c <= 0 {
+                        break;
+                    }
+                    ptrs[i] += 1;
+                }
+                if c == 0 && ptrs[i] < li.len() && behavior == SetBehavior::Assoc {
+                    if cmp.data_user {
+                        cmp.current = cb_data.clone();
+                    }
+                    if cmp.data(&l0[ptrs[0]], &li[ptrs[i]]) != 0 {
+                        c = 1;
+                        if assoc_key_user {
+                            cmp.current = cb_key.clone();
+                        }
+                    }
+                }
+            }
+            if ptrs[i] == li.len() {
+                // This operand is exhausted: nothing left in the first can be
+                // in all of them.
+                for b in &l0[ptrs[0]..] {
+                    removed[b.pos] = true;
+                }
+                return;
+            }
+            if c != 0 {
+                break;
+            }
+            ptrs[i] += 1;
+            i += 1;
+        }
+        if c != 0 {
+            // Not in every operand: delete it and every following value that
+            // still sorts below the operand that refused it.
+            loop {
+                removed[l0[ptrs[0]].pos] = true;
+                ptrs[0] += 1;
+                if ptrs[0] == l0.len() {
+                    return;
+                }
+                if behavior != SetBehavior::Normal
+                    || cmp.data(&l0[ptrs[0]], &lists[i][ptrs[i]]) >= 0
+                {
+                    break;
+                }
+            }
+        } else {
+            // In every operand: keep it and every following equal value.
+            loop {
+                ptrs[0] += 1;
+                if ptrs[0] == l0.len() {
+                    return;
+                }
+                if behavior != SetBehavior::Normal || cmp.data(&l0[ptrs[0] - 1], &l0[ptrs[0]]) != 0
+                {
+                    break;
+                }
+            }
+        }
+    }
+}
+
+/// `php_array_diff_key` / `php_array_intersect_key` with a user value
+/// comparator — `array_udiff_assoc` / `array_uintersect_assoc`. No sorting:
+/// each entry of the first array is looked up BY KEY in every other one, and
+/// only a key hit runs `zval_user_compare` (which, unlike the sorting
+/// comparators, takes a bool result silently).
+fn php_array_set_op_key(func: &str, args: &[Value], intersect: bool) -> Result<Value, String> {
+    let (arrays, cbs) = set_op_args(func, args, 1)?;
+    let cb = &cbs[0];
+    let mut ucmp = crate::stdlib::arrays::UserCmp::new(func);
+    let first = host::with_host(|h| h.array_pairs(&arrays[0])).unwrap_or_default();
+    let mut out = Vec::new();
+    for (k, v) in first {
+        let mut ok = true;
+        for other in &arrays[1..] {
+            let hit = host::with_host(|h| {
+                h.array_has_key(other, &k)
+                    .unwrap_or(false)
+                    .then(|| h.index_get(other, &k))
+            });
+            let matched = match hit {
+                Some(data) => ucmp.plain(cb, &v, &data) == 0,
+                None => false,
+            };
+            // diff: drop on the first match; intersect: drop on the first miss.
+            if matched != intersect {
+                ok = false;
+                break;
+            }
+        }
+        if ok {
             out.push((k, v));
         }
     }
-    Ok(make_map(out))
-}
-
-/// Does `probe` compare equal (callback returns `0`) to any element of `pool`?
-fn ucompare_member(cb: &Value, probe: &Value, pool: &[Value]) -> Result<bool, String> {
-    for item in pool {
-        let r = host::call_value(cb.clone(), vec![probe.clone(), item.clone()])?;
-        if host::unwinding() {
-            return Ok(false);
-        }
-        if host::with_host(|h| h.to_number(&r).to_int()) == 0 {
-            return Ok(true);
-        }
+    if let Some(e) = ucmp.err {
+        return Err(e);
     }
-    Ok(false)
+    if host::unwinding() {
+        return Ok(Value::Undef);
+    }
+    Ok(make_map(out))
 }
 
 // ── array_multisort ──────────────────────────────────────────────────────────

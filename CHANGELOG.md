@@ -45,6 +45,19 @@ block in `tests/data/parity_corpus.php`.
   bool raises `Returning bool from comparison function is deprecated` once per
   call and a `false` is retried with the operands swapped
   (`php_array_user_compare_unstable`).
+* **The user-comparator diff/intersect family was half missing and walked
+  differently.** `array_udiff_assoc`, `array_uintersect_assoc`,
+  `array_diff_uassoc`, `array_intersect_uassoc`, `array_udiff_uassoc` and
+  `array_uintersect_uassoc` did not exist, and `array_udiff`,
+  `array_uintersect`, `array_diff_ukey` and `array_intersect_ukey` scanned each
+  operand linearly per probe — a different set of comparator calls in a
+  different order — and returned `[]` for fewer than three arguments. All ten
+  are now ports of `php_array_diff` / `php_array_intersect` (`zend_sort` every
+  operand, walk the sorted lists in step, with the C's swapping of the active
+  callback) or, for the two `_assoc` forms, `php_array_diff_key` /
+  `php_array_intersect_key`; the `"+f"`/`"+ff"` parameter errors
+  (`expects at least N arguments`, `Argument #N must be a valid callback`,
+  `Argument #N must be of type array`) are raised in the reference's order.
 
 ## Round 20 — prelude closures and frames, SPL iterators
 

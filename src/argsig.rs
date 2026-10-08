@@ -515,7 +515,7 @@ use Def::{Bool, EmptyArray, Float, Int, Null, Required, Str, Unknown};
 /// default in this generated table is a literal too.
 #[allow(clippy::approx_constant)]
 static SIGS: &[(&str, Sig)] = &[
-    // generated: 551 functions
+    // generated: 557 functions
     (
         "abs",
         Sig {
@@ -654,6 +654,14 @@ static SIGS: &[(&str, Sig)] = &[
         },
     ),
     (
+        "array_diff_uassoc",
+        Sig {
+            req: 1,
+            params: &[p("array", Required, "array")],
+            variadic: true,
+        },
+    ),
+    (
         "array_diff_ukey",
         Sig {
             req: 1,
@@ -749,6 +757,14 @@ static SIGS: &[(&str, Sig)] = &[
     ),
     (
         "array_intersect_key",
+        Sig {
+            req: 1,
+            params: &[p("array", Required, "array")],
+            variadic: true,
+        },
+    ),
+    (
+        "array_intersect_uassoc",
         Sig {
             req: 1,
             params: &[p("array", Required, "array")],
@@ -996,7 +1012,39 @@ static SIGS: &[(&str, Sig)] = &[
         },
     ),
     (
+        "array_udiff_assoc",
+        Sig {
+            req: 1,
+            params: &[p("array", Required, "array")],
+            variadic: true,
+        },
+    ),
+    (
+        "array_udiff_uassoc",
+        Sig {
+            req: 1,
+            params: &[p("array", Required, "array")],
+            variadic: true,
+        },
+    ),
+    (
         "array_uintersect",
+        Sig {
+            req: 1,
+            params: &[p("array", Required, "array")],
+            variadic: true,
+        },
+    ),
+    (
+        "array_uintersect_assoc",
+        Sig {
+            req: 1,
+            params: &[p("array", Required, "array")],
+            variadic: true,
+        },
+    ),
+    (
+        "array_uintersect_uassoc",
         Sig {
             req: 1,
             params: &[p("array", Required, "array")],

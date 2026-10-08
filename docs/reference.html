@@ -5102,13 +5102,13 @@ $f = fopen("/tmp/php_ref_s.txt", "r"); fread($f, 2); rewind($f); echo fread($f, 
         <article class="doc-entry" id="doc-misc-5">
           <h3><a class="doc-anchor" href="#doc-misc-5">#</a> <code>array_udiff</code></h3>
           <pre><code class="lang-php">array_udiff(array $array1, array $array2, ..., callable $value_compare_func): array</code></pre>
-          <p>Keeps the entries of the first array whose VALUE compares non-zero against every value of every other array, preserving keys. The comparator is the LAST argument and any number of operand arrays may precede it. DIVERGENCE: fewer than three arguments silently returns an empty array instead of raising, and the comparison is the direct O(n·m) form rather than PHP's sort-then-compare.</p>
+          <p>Keeps the entries of the first array whose VALUE compares non-zero against every value of every other array, preserving keys. The comparator is the LAST argument and any number of operand arrays may precede it. Ported from `php_array_diff`: every operand is `zend_sort`ed with the comparator and the sorted lists are walked in step, so the callback sees exactly the reference's pairs.</p>
           <pre><code class="lang-php">echo implode(",", array_udiff([1, 2, 3], [2], fn($a, $b) =&gt; $a &lt;=&gt; $b));   // =&gt; 1,3</code></pre>
         </article>
         <article class="doc-entry" id="doc-misc-6">
           <h3><a class="doc-anchor" href="#doc-misc-6">#</a> <code>array_uintersect</code></h3>
           <pre><code class="lang-php">array_uintersect(array $array1, array $array2, ..., callable $value_compare_func): array</code></pre>
-          <p>Keeps the entries of the first array whose value compares equal to some value in EVERY other array, preserving keys. Same comparator-last shape and same under-three-arguments behaviour as `array_udiff`.</p>
+          <p>Keeps the entries of the first array whose value compares equal to some value in EVERY other array, preserving keys. Same comparator-last shape and sort-then-walk port (`php_array_intersect`) as `array_udiff`.</p>
           <pre><code class="lang-php">echo implode(",", array_uintersect([1, 2, 3], [2, 3], fn($a, $b) =&gt; $a &lt;=&gt; $b));   // =&gt; 2,3</code></pre>
         </article>
         <article class="doc-entry" id="doc-misc-7">
@@ -5124,74 +5124,110 @@ $f = fopen("/tmp/php_ref_s.txt", "r"); fread($f, 2); rewind($f); echo fread($f, 
           <pre><code class="lang-php">echo implode(",", array_intersect_ukey(["a" =&gt; 1, "b" =&gt; 2], ["a" =&gt; 9], fn($x, $y) =&gt; strcmp($x, $y)));   // =&gt; 1</code></pre>
         </article>
         <article class="doc-entry" id="doc-misc-9">
-          <h3><a class="doc-anchor" href="#doc-misc-9">#</a> <code>array_multisort</code></h3>
+          <h3><a class="doc-anchor" href="#doc-misc-9">#</a> <code>array_diff_uassoc</code></h3>
+          <pre><code class="lang-php">array_diff_uassoc(array $array, array ...$arrays, callable $key_compare_func): array</code></pre>
+          <p>Keeps the entries of the first array whose KEY (compared by the callback) and VALUE (compared as strings) do not both match an entry of any other array.</p>
+          <pre><code class="lang-php">echo implode(",", array_diff_uassoc(["a" =&gt; 1, "b" =&gt; 2], ["a" =&gt; 1, "b" =&gt; 3], "strcmp"));   // =&gt; 2</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-misc-10">
+          <h3><a class="doc-anchor" href="#doc-misc-10">#</a> <code>array_intersect_uassoc</code></h3>
+          <pre><code class="lang-php">array_intersect_uassoc(array $array, array ...$arrays, callable $key_compare_func): array</code></pre>
+          <p>Keeps the entries of the first array whose key (compared by the callback) and value (compared as strings) match an entry of every other array.</p>
+          <pre><code class="lang-php">echo implode(",", array_intersect_uassoc(["a" =&gt; 1, "b" =&gt; 2], ["a" =&gt; 1, "b" =&gt; 3], "strcmp"));   // =&gt; 1</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-misc-11">
+          <h3><a class="doc-anchor" href="#doc-misc-11">#</a> <code>array_udiff_assoc</code></h3>
+          <pre><code class="lang-php">array_udiff_assoc(array $array, array ...$arrays, callable $value_compare_func): array</code></pre>
+          <p>Keeps the entries of the first array that no other array holds under the same key with a value the callback calls equal. Keys are matched by lookup, not by callback.</p>
+          <pre><code class="lang-php">echo implode(",", array_udiff_assoc(["a" =&gt; 1, "b" =&gt; 2], ["a" =&gt; 1, "b" =&gt; 3], fn($x, $y) =&gt; $x &lt;=&gt; $y));   // =&gt; 2</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-misc-12">
+          <h3><a class="doc-anchor" href="#doc-misc-12">#</a> <code>array_uintersect_assoc</code></h3>
+          <pre><code class="lang-php">array_uintersect_assoc(array $array, array ...$arrays, callable $value_compare_func): array</code></pre>
+          <p>Keeps the entries of the first array that every other array holds under the same key with a value the callback calls equal.</p>
+          <pre><code class="lang-php">echo implode(",", array_uintersect_assoc(["a" =&gt; 1, "b" =&gt; 2], ["a" =&gt; 1, "b" =&gt; 3], fn($x, $y) =&gt; $x &lt;=&gt; $y));   // =&gt; 1</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-misc-13">
+          <h3><a class="doc-anchor" href="#doc-misc-13">#</a> <code>array_udiff_uassoc</code></h3>
+          <pre><code class="lang-php">array_udiff_uassoc(array $array, array ...$arrays, callable $value_compare_func, callable $key_compare_func): array</code></pre>
+          <p>`array_diff_uassoc` with the values compared by the first callback as well; the key callback comes last.</p>
+          <pre><code class="lang-php">echo implode(",", array_udiff_uassoc(["a" =&gt; 1, "b" =&gt; 2], ["a" =&gt; 1, "b" =&gt; 3], fn($x, $y) =&gt; $x &lt;=&gt; $y, "strcmp"));   // =&gt; 2</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-misc-14">
+          <h3><a class="doc-anchor" href="#doc-misc-14">#</a> <code>array_uintersect_uassoc</code></h3>
+          <pre><code class="lang-php">array_uintersect_uassoc(array $array, array ...$arrays, callable $value_compare_func, callable $key_compare_func): array</code></pre>
+          <p>`array_intersect_uassoc` with the values compared by the first callback as well; the key callback comes last.</p>
+          <pre><code class="lang-php">echo implode(",", array_uintersect_uassoc(["a" =&gt; 1, "b" =&gt; 2], ["a" =&gt; 1, "b" =&gt; 3], fn($x, $y) =&gt; $x &lt;=&gt; $y, "strcmp"));   // =&gt; 1</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-misc-15">
+          <h3><a class="doc-anchor" href="#doc-misc-15">#</a> <code>array_multisort</code></h3>
           <pre><code class="lang-php">array_multisort(array $array1, mixed ...$rest): bool</code></pre>
           <p>Fully variadic: every array argument starts a new column and every scalar applies as a flag to the most recent column. Columns break ties left to right, and every column is reordered by the same permutation, reindexed from 0 with all keys discarded. Only `SORT_ASC`, `SORT_DESC`, `SORT_REGULAR`, `SORT_NUMERIC`, and `SORT_STRING` are recognized — `SORT_NATURAL`, `SORT_FLAG_CASE`, and any OR-combination are silently ignored. It returns `false` rather than raising when there is no array argument or the columns differ in length.</p>
           <pre><code class="lang-php">$a = [3, 1, 2]; $b = ["c", "a", "b"]; array_multisort($a, $b);
 echo implode(",", $a), "|", implode(",", $b);   // =&gt; 1,2,3|a,b,c</code></pre>
         </article>
-        <article class="doc-entry" id="doc-misc-10">
-          <h3><a class="doc-anchor" href="#doc-misc-10">#</a> <code>array_walk_recursive</code></h3>
+        <article class="doc-entry" id="doc-misc-16">
+          <h3><a class="doc-anchor" href="#doc-misc-16">#</a> <code>array_walk_recursive</code></h3>
           <pre><code class="lang-php">array_walk_recursive(array $array, callable $callback, mixed $arg = null): bool</code></pre>
           <p>Descends nested arrays and invokes `$callback($value, $key[, $arg])` on non-array LEAVES only — a nested array is recursed into but never passed to the callback. The leaf goes in through a reference cell, so a `function (&amp;$v)` callback rewrites it in place, exactly as with `array_walk`.</p>
           <pre><code class="lang-php">$a = [1, [2, 3]]; array_walk_recursive($a, function ($v, $k) { echo $v; });   // =&gt; 123</code></pre>
         </article>
-        <article class="doc-entry" id="doc-misc-11">
-          <h3><a class="doc-anchor" href="#doc-misc-11">#</a> <code>str_word_count</code></h3>
+        <article class="doc-entry" id="doc-misc-17">
+          <h3><a class="doc-anchor" href="#doc-misc-17">#</a> <code>str_word_count</code></h3>
           <pre><code class="lang-php">str_word_count(string $string, int $format = 0, ?string $characters = null): int|array</code></pre>
           <p>Format 1 returns the words, format 2 a byte-offset-to-word map, and 0 the count; any other value raises `ValueError: str_word_count(): Argument #2 ($format) must be a valid format value`. A word is a run of ASCII letters plus `'` and `-`, which are ALWAYS word characters; `$characters` only ADDS bytes to that set and can never restrict it. Matching is bytewise, so multibyte text is not recognized as words.</p>
           <pre><code class="lang-php">echo str_word_count("a b c");   // =&gt; 3</code></pre>
         </article>
-        <article class="doc-entry" id="doc-misc-12">
-          <h3><a class="doc-anchor" href="#doc-misc-12">#</a> <code>strnatcmp</code></h3>
+        <article class="doc-entry" id="doc-misc-18">
+          <h3><a class="doc-anchor" href="#doc-misc-18">#</a> <code>strnatcmp</code></h3>
           <pre><code class="lang-php">strnatcmp(string $string1, string $string2): int</code></pre>
           <p>A byte-for-byte port of PHP's natural-order comparison, returning only the sign. Leading zeros are stripped ONCE at the start of each string rather than per digit run, so `strnatcmp("1", "01")` is 0. A digit run compares left-aligned when either side starts with `0`, and by magnitude otherwise.</p>
           <pre><code class="lang-php">echo strnatcmp("img12", "img2");   // =&gt; 1</code></pre>
         </article>
-        <article class="doc-entry" id="doc-misc-13">
-          <h3><a class="doc-anchor" href="#doc-misc-13">#</a> <code>strnatcasecmp</code></h3>
+        <article class="doc-entry" id="doc-misc-19">
+          <h3><a class="doc-anchor" href="#doc-misc-19">#</a> <code>strnatcasecmp</code></h3>
           <pre><code class="lang-php">strnatcasecmp(string $string1, string $string2): int</code></pre>
           <p>`strnatcmp` with ASCII case folding, returning only the sign. Non-ASCII bytes are compared unfolded.</p>
           <pre><code class="lang-php">echo strnatcasecmp("IMG2", "img2");   // =&gt; 0</code></pre>
         </article>
-        <article class="doc-entry" id="doc-misc-14">
-          <h3><a class="doc-anchor" href="#doc-misc-14">#</a> <code>soundex</code></h3>
+        <article class="doc-entry" id="doc-misc-20">
+          <h3><a class="doc-anchor" href="#doc-misc-20">#</a> <code>soundex</code></h3>
           <pre><code class="lang-php">soundex(string $string): string</code></pre>
           <p>The real Soundex algorithm, ported from PHP's own `soundex.c`: the first letter verbatim, then up to three consonant codes, right-padded with zeros. ASCII-only — a string with no ASCII letters returns `"0000"`.</p>
           <pre><code class="lang-php">echo soundex("Robert");   // =&gt; R163</code></pre>
         </article>
-        <article class="doc-entry" id="doc-misc-15">
-          <h3><a class="doc-anchor" href="#doc-misc-15">#</a> <code>metaphone</code></h3>
+        <article class="doc-entry" id="doc-misc-21">
+          <h3><a class="doc-anchor" href="#doc-misc-21">#</a> <code>metaphone</code></h3>
           <pre><code class="lang-php">metaphone(string $string, int $max_phonemes = 0): string</code></pre>
           <p>The real traditional Metaphone, ported from PHP's `metaphone.c` including the special first-phoneme cases and the CH, TH, DG, GH, and TIO/TIA rules — so `TH` encodes as the DIGIT zero and `CH` as `X`, as in PHP. ASCII-only; a letterless input returns the empty string. `$max_phonemes` caps the length, with 0 or negative meaning unlimited.</p>
           <pre><code class="lang-php">echo metaphone("Thompson");   // =&gt; 0MPSN</code></pre>
         </article>
-        <article class="doc-entry" id="doc-misc-16">
-          <h3><a class="doc-anchor" href="#doc-misc-16">#</a> <code>str_getcsv</code></h3>
+        <article class="doc-entry" id="doc-misc-22">
+          <h3><a class="doc-anchor" href="#doc-misc-22">#</a> <code>str_getcsv</code></h3>
           <pre><code class="lang-php">str_getcsv(string $string, string $separator = ",", string $enclosure = "\"", string $escape = "\\"): array</code></pre>
           <p>Parses ONE line. Doubled enclosures inside a quoted field are literals, and unenclosed fields keep their blanks. DIVERGENCE: the escape character keeps BOTH itself and the following character — it is not stripped; an embedded newline is an ordinary field character, so multi-line records are never reassembled; an empty input returns a one-element array holding null; and an empty `$separator` or `$enclosure` falls back to the DEFAULT rather than disabling it. Omitting `$escape` raises PHP 8.4's deprecation notice.</p>
           <pre><code class="lang-php">print_r(str_getcsv("a,b"));   // =&gt; Array\n(\n    [0] =&gt; a\n    [1] =&gt; b\n)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-misc-17">
-          <h3><a class="doc-anchor" href="#doc-misc-17">#</a> <code>version_compare</code></h3>
+        <article class="doc-entry" id="doc-misc-23">
+          <h3><a class="doc-anchor" href="#doc-misc-23">#</a> <code>version_compare</code></h3>
           <pre><code class="lang-php">version_compare(string $version1, string $version2, ?string $operator = null): int|bool</code></pre>
           <p>Compares two PHP-standardized version strings: `-`, `_` and `+` become `.`, a `.` is inserted between digit and non-digit runs, and components compare numerically or by special-form rank (`dev` &lt; `alpha`/`a` &lt; `beta`/`b` &lt; `RC`/`rc` &lt; number &lt; `pl`/`p`). Without `$operator` returns -1, 0 or 1; with one (`&lt;`/`lt`, `&lt;=`/`le`, `&gt;`/`gt`, `&gt;=`/`ge`, `==`/`eq`, `!=`/`&lt;&gt;`/`ne`) returns whether it holds.</p>
           <pre><code class="lang-php">var_dump(version_compare("8.5.0RC1", "8.5.0", "&lt;"));   // =&gt; bool(true)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-misc-18">
-          <h3><a class="doc-anchor" href="#doc-misc-18">#</a> <code>uniqid</code></h3>
+        <article class="doc-entry" id="doc-misc-24">
+          <h3><a class="doc-anchor" href="#doc-misc-24">#</a> <code>uniqid</code></h3>
           <pre><code class="lang-php">uniqid(string $prefix = "", bool $more_entropy = false): string</code></pre>
           <p>A hex timestamp of the form `%08x%05x` from the wall clock's seconds and microseconds, prefixed by `$prefix`. `$more_entropy` is honoured and appends a fractional suffix of PHP's shape, but with only 1000 distinct values. DIVERGENCE: the clock is the ONLY entropy source — there is no RNG, no counter, and no collision avoidance, so two calls in the same microsecond return IDENTICAL strings. It is not suitable as a unique identifier under load.</p>
           <pre><code class="lang-php">var_dump(strlen(uniqid()) === 13);   // =&gt; bool(true)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-misc-19">
-          <h3><a class="doc-anchor" href="#doc-misc-19">#</a> <code>pack</code></h3>
+        <article class="doc-entry" id="doc-misc-25">
+          <h3><a class="doc-anchor" href="#doc-misc-25">#</a> <code>pack</code></h3>
           <pre><code class="lang-php">pack(string $format, mixed ...$values): string</code></pre>
           <p>A port of ext/standard/pack.c: every format code (`a A Z h H c C s S n v i I l L N V q Q J P f g G d e E x X @`), repeat counts and `*`, and its warnings and `ValueError`s. Bytes come out one per character, as `chr` makes them, so a byte of 0x80 or more is two bytes in this UTF-8 runtime (see BUGS.md).</p>
           <pre><code class="lang-php">echo bin2hex(pack("nv", 0x1234, 0x1234));   // =&gt; 12343412</code></pre>
         </article>
-        <article class="doc-entry" id="doc-misc-20">
-          <h3><a class="doc-anchor" href="#doc-misc-20">#</a> <code>unpack</code></h3>
+        <article class="doc-entry" id="doc-misc-26">
+          <h3><a class="doc-anchor" href="#doc-misc-26">#</a> <code>unpack</code></h3>
           <pre><code class="lang-php">unpack(string $format, string $string, int $offset = 0): array|false</code></pre>
           <p>A port of ext/standard/pack.c's `unpack`: `code[repeat]name` items separated by `/`, numbered keys for a repeat, and its warnings for short input. It reads the string's bytes, as `ord` does.</p>
           <pre><code class="lang-php">print_r(unpack("nbig/C2c", "\x12\x34AB"));   // =&gt; Array ( [big] =&gt; 4660 [c1] =&gt; 65 [c2] =&gt; 66 )</code></pre>

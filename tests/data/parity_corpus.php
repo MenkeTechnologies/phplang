@@ -1562,3 +1562,49 @@ $n = 0; usort($big, function ($x, $y) use (&$n) { $n++; return $x <=> $y; }); ec
 $z = [3, 1, 2, 5, 4];
 try { usort($z, function ($p, $q) { echo "$p-$q "; if ($p == 1 || $q == 1) throw new Exception("boom"); return $p <=> $q; }); }
 catch (Exception $e) { echo $e->getMessage(), "\n"; }
+#==#
+// The user-comparator diff/intersect family, ported from php_array_diff /
+// php_array_intersect (zend_sort each operand, walk the sorted lists) and
+// php_array_diff_key / php_array_intersect_key (array_udiff_assoc and
+// array_uintersect_assoc: key lookup, then zval_user_compare). The callback
+// order, the active-callback swaps and the "+f"/"+ff" parameter errors.
+$k = function($a,$b){ echo "k($a,$b) "; return strcmp($a,$b); };
+$d = function($a,$b){ echo "d($a,$b) "; return $a <=> $b; };
+$a = ["a"=>1,"b"=>2,"c"=>3,"d"=>4,"e"=>5];
+$b = ["a"=>1,"b"=>9,"c"=>3,"e"=>5];
+$c = ["a"=>1,"c"=>3,"e"=>6,"b"=>2];
+echo json_encode(array_uintersect_uassoc($a,$b,$c,$d,$k)),"\n";
+echo json_encode(array_udiff_uassoc($a,$b,$c,$d,$k)),"\n";
+echo json_encode(array_intersect_uassoc($a,$b,$c,$k)),"\n";
+echo json_encode(array_diff_uassoc($a,$b,$c,$k)),"\n";
+echo json_encode(array_uintersect($a,$b,$c,$d)),"\n";
+echo json_encode(array_udiff($a,$b,$c,$d)),"\n";
+echo json_encode(array_udiff_assoc($a,$b,$c,fn($x,$y)=>$x>$y)),"\n";
+echo json_encode(array_uintersect([3,1,2,3,1],[1,3],fn($x,$y)=>$x>$y)),"\n";
+echo json_encode(array_udiff([3,1,2,3,1],[1,3],fn($x,$y)=>$x>$y)),"\n";
+echo json_encode(array_diff_uassoc([1,[2],3],[1,[2]], fn($x,$y)=>$x<=>$y)),"\n";
+echo json_encode(array_uintersect_assoc(["x"=>"1","y"=>2],["x"=>1,"y"=>3], 'strcmp')),"\n";
+$big1=[]; $big2=[]; for($i=0;$i<40;$i++){ $big1["k$i"]=$i%7; $big2["k".($i*3)]=$i%5; }
+$n=0; $r=array_udiff_uassoc($big1,$big2,function($x,$y)use(&$n){$n++;return $x<=>$y;},function($x,$y)use(&$n){$n++;return strcmp($x,$y);}); echo $n, json_encode($r),"\n";
+try { array_udiff([1,2,3],[2], function($x,$y){ throw new Exception("t"); }); } catch(Exception $e) { echo "caught\n"; }
+$cmp = function ($a, $b) { echo "c($a,$b) "; return $a <=> $b; };
+$a = ["a"=>1,"b"=>2,"c"=>3,"d"=>4];
+$b = ["a"=>1,"b"=>5,"x"=>3,"d"=>4];
+echo json_encode(array_udiff($a,$b,$cmp)), "\n";
+echo json_encode(array_udiff_assoc($a,$b,$cmp)), "\n";
+echo json_encode(array_uintersect_assoc($a,$b,$cmp)), "\n";
+echo json_encode(array_diff_uassoc($a,$b,$cmp)), "\n";
+echo json_encode(array_intersect_uassoc($a,$b,$cmp)), "\n";
+echo json_encode(array_uintersect($a,$b,$cmp)), "\n";
+echo json_encode(array_diff_ukey($a,$b,$cmp)), "\n";
+echo json_encode(array_intersect_ukey($a,$b,$cmp)), "\n";
+echo json_encode(array_udiff_uassoc($a,$b,$cmp,$cmp)), "\n";
+echo json_encode(array_uintersect_uassoc($a,$b,$cmp,$cmp)), "\n";
+$c = fn($a, $b) => $a <=> $b;
+foreach (["array_udiff", "array_uintersect_assoc", "array_diff_ukey", "array_udiff_uassoc"] as $f) {
+  foreach ([[[1, 2], $c], [[1, 2], 5, $c], [5, [1], "nope"], [5, [1], "strcmp"], [[1, 2]]] as $args) {
+    try { echo json_encode($f(...$args)), "
+"; } catch (Throwable $e) { echo get_class($e), ": ", $e->getMessage(), "
+"; }
+  }
+}

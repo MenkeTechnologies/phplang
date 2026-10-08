@@ -206,33 +206,6 @@ the next — the usual shape — that is the same moment. It differs only for a
 library call that warns and then itself produces output before returning: that
 output comes first here.
 
-## A user comparator is called in a different ORDER, and a different number of times
-
-`array_udiff` and `array_uintersect` agree with the reference on the result, and
-disagree on the sequence of comparator calls that produced it — visible to any
-comparator with a side effect.
-
-```text
-$ P='$log=[]; $c=function($x,$y) use (&$log){ $log[]="$x<=>$y"; return $x <=> $y; };
-     $r=array_udiff([3,1,2,5],[2,4],$c); print_r($r); echo count($log),"\n",implode(",",$log);'
-
-$ php -r "$P"
-Array ( [0] => 3 [1] => 1 [3] => 5 )
-12
-3<=>1,2<=>1,3<=>2,3<=>5,2<=>4,1<=>2,1<=>2,2<=>2,2<=>3,3<=>4,3<=>5,5<=>4
-
-$ target/debug/php -r "$P"
-Array ( [0] => 3 [1] => 1 [3] => 5 )
-7
-3<=>2,3<=>4,1<=>2,1<=>4,2<=>2,5<=>2,5<=>4
-```
-
-The reference sorts both operands with the comparator and then walks them in
-step; phplang scans the pool linearly for each probe. The results agree for any
-consistent comparator, so closing this is a faithful port of `php_array_diff` /
-`php_array_intersect` from `ext/standard/array.c`, not a repair — nothing but the
-call log observes it.
-
 ## Argument type checks are missing on a broad set of library functions
 
 Sampled, reproduced; the reference throws and phplang continues:

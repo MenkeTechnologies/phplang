@@ -290,7 +290,6 @@ static PARAMS: &[(&str, Params)] = &[
     ("array_diff", &[(1, "array", "array")]),
     ("array_diff_assoc", &[(1, "array", "array")]),
     ("array_diff_key", &[(1, "array", "array")]),
-    ("array_diff_ukey", &[(1, "array", "array")]),
     (
         "array_fill",
         &[(1, "start_index", "int"), (2, "count", "int")],
@@ -304,7 +303,6 @@ static PARAMS: &[(&str, Params)] = &[
     ("array_intersect", &[(1, "array", "array")]),
     ("array_intersect_assoc", &[(1, "array", "array")]),
     ("array_intersect_key", &[(1, "array", "array")]),
-    ("array_intersect_ukey", &[(1, "array", "array")]),
     ("array_is_list", &[(1, "array", "array")]),
     ("array_key_exists", &[(2, "array", "array")]),
     ("array_key_first", &[(1, "array", "array")]),
@@ -343,8 +341,6 @@ static PARAMS: &[(&str, Params)] = &[
         &[(2, "offset", "int"), (3, "length", "?int")],
     ),
     ("array_sum", &[(1, "array", "array")]),
-    ("array_udiff", &[(1, "array", "array")]),
-    ("array_uintersect", &[(1, "array", "array")]),
     (
         "array_unique",
         &[(1, "array", "array"), (2, "flags", "int")],
