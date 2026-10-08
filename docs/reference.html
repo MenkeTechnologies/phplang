@@ -929,944 +929,1074 @@ $o = new C; unset($o-&gt;zz);   // =&gt; unset:zz</code></pre>
         </article>
         <article class="doc-entry" id="doc-predefined-constant-10">
           <h3><a class="doc-anchor" href="#doc-predefined-constant-10">#</a> <code>PHP_VERSION</code></h3>
-          <pre><code class="lang-php">PHP_VERSION: string = "8.3.0"</code></pre>
-          <p>The PHP language version phplang targets, reported as a fixed string.</p>
-          <pre><code class="lang-php">echo PHP_VERSION;   // =&gt; 8.3.0</code></pre>
+          <pre><code class="lang-php">PHP_VERSION: string</code></pre>
+          <p>The version of the reference PHP this engine is measured against (`major.minor.release`); `PHP_MAJOR_VERSION`, `PHP_MINOR_VERSION`, `PHP_RELEASE_VERSION`, `PHP_VERSION_ID` and `phpversion()` derive from it.</p>
+          <pre><code class="lang-php">var_dump(version_compare(PHP_VERSION, "8.4", "&gt;="));   // =&gt; bool(true)</code></pre>
         </article>
         <article class="doc-entry" id="doc-predefined-constant-11">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-11">#</a> <code>PHP_MAJOR_VERSION</code></h3>
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-11">#</a> <code>PHP_EXTRA_VERSION</code></h3>
+          <pre><code class="lang-php">PHP_EXTRA_VERSION: string = ""</code></pre>
+          <p>The version's suffix; empty for a release build.</p>
+        </article>
+        <article class="doc-entry" id="doc-predefined-constant-12">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-12">#</a> <code>PHP_DEBUG</code></h3>
+          <pre><code class="lang-php">PHP_DEBUG: bool = false</code></pre>
+          <p>Whether this is a debug build.</p>
+        </article>
+        <article class="doc-entry" id="doc-predefined-constant-13">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-13">#</a> <code>PHP_ZTS</code></h3>
+          <pre><code class="lang-php">PHP_ZTS: bool = false</code></pre>
+          <p>Whether this is a thread-safe build.</p>
+        </article>
+        <article class="doc-entry" id="doc-predefined-constant-14">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-14">#</a> <code>ZEND_THREAD_SAFE</code></h3>
+          <pre><code class="lang-php">ZEND_THREAD_SAFE: bool = false</code></pre>
+          <p>Whether the engine is thread-safe.</p>
+        </article>
+        <article class="doc-entry" id="doc-predefined-constant-15">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-15">#</a> <code>ZEND_DEBUG_BUILD</code></h3>
+          <pre><code class="lang-php">ZEND_DEBUG_BUILD: bool = false</code></pre>
+          <p>Whether the engine is a debug build.</p>
+        </article>
+        <article class="doc-entry" id="doc-predefined-constant-16">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-16">#</a> <code>PHP_MAXPATHLEN</code></h3>
+          <pre><code class="lang-php">PHP_MAXPATHLEN: int = 1024</code></pre>
+          <p>The longest file path the build supports.</p>
+        </article>
+        <article class="doc-entry" id="doc-predefined-constant-17">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-17">#</a> <code>PHP_FD_SETSIZE</code></h3>
+          <pre><code class="lang-php">PHP_FD_SETSIZE: int = 1024</code></pre>
+          <p>The highest file descriptor `select` can watch.</p>
+        </article>
+        <article class="doc-entry" id="doc-predefined-constant-18">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-18">#</a> <code>PHP_SHLIB_SUFFIX</code></h3>
+          <pre><code class="lang-php">PHP_SHLIB_SUFFIX: string = "so"</code></pre>
+          <p>The file suffix of a loadable extension.</p>
+        </article>
+        <article class="doc-entry" id="doc-predefined-constant-19">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-19">#</a> <code>M_LNPI</code></h3>
+          <pre><code class="lang-php">M_LNPI: float = 1.1447298858494002</code></pre>
+          <p>`log(M_PI)`.</p>
+        </article>
+        <article class="doc-entry" id="doc-predefined-constant-20">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-20">#</a> <code>INI_USER</code></h3>
+          <pre><code class="lang-php">INI_USER: int = 1</code></pre>
+          <p>An ini setting changeable from a script.</p>
+        </article>
+        <article class="doc-entry" id="doc-predefined-constant-21">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-21">#</a> <code>INI_PERDIR</code></h3>
+          <pre><code class="lang-php">INI_PERDIR: int = 2</code></pre>
+          <p>An ini setting changeable per directory.</p>
+        </article>
+        <article class="doc-entry" id="doc-predefined-constant-22">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-22">#</a> <code>INI_SYSTEM</code></h3>
+          <pre><code class="lang-php">INI_SYSTEM: int = 4</code></pre>
+          <p>An ini setting changeable only in php.ini.</p>
+        </article>
+        <article class="doc-entry" id="doc-predefined-constant-23">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-23">#</a> <code>INI_ALL</code></h3>
+          <pre><code class="lang-php">INI_ALL: int = 7</code></pre>
+          <p>An ini setting changeable anywhere.</p>
+        </article>
+        <article class="doc-entry" id="doc-predefined-constant-24">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-24">#</a> <code>CONNECTION_ABORTED</code></h3>
+          <pre><code class="lang-php">CONNECTION_ABORTED: int = 1</code></pre>
+          <p>`connection_status()` bit: the client disconnected.</p>
+        </article>
+        <article class="doc-entry" id="doc-predefined-constant-25">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-25">#</a> <code>CONNECTION_NORMAL</code></h3>
+          <pre><code class="lang-php">CONNECTION_NORMAL: int = 0</code></pre>
+          <p>`connection_status()`: the connection is up.</p>
+        </article>
+        <article class="doc-entry" id="doc-predefined-constant-26">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-26">#</a> <code>CONNECTION_TIMEOUT</code></h3>
+          <pre><code class="lang-php">CONNECTION_TIMEOUT: int = 2</code></pre>
+          <p>`connection_status()` bit: the time limit was reached.</p>
+        </article>
+        <article class="doc-entry" id="doc-predefined-constant-27">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-27">#</a> <code>PHP_QUERY_RFC1738</code></h3>
+          <pre><code class="lang-php">PHP_QUERY_RFC1738: int = 1</code></pre>
+          <p>`http_build_query` encoding: spaces as `+`.</p>
+        </article>
+        <article class="doc-entry" id="doc-predefined-constant-28">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-28">#</a> <code>PHP_QUERY_RFC3986</code></h3>
+          <pre><code class="lang-php">PHP_QUERY_RFC3986: int = 2</code></pre>
+          <p>`http_build_query` encoding: spaces as `%20`.</p>
+        </article>
+        <article class="doc-entry" id="doc-predefined-constant-29">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-29">#</a> <code>UPLOAD_ERR_OK</code></h3>
+          <pre><code class="lang-php">UPLOAD_ERR_OK: int = 0</code></pre>
+          <p>File upload status: no error.</p>
+        </article>
+        <article class="doc-entry" id="doc-predefined-constant-30">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-30">#</a> <code>UPLOAD_ERR_INI_SIZE</code></h3>
+          <pre><code class="lang-php">UPLOAD_ERR_INI_SIZE: int = 1</code></pre>
+          <p>File upload status: larger than `upload_max_filesize`.</p>
+        </article>
+        <article class="doc-entry" id="doc-predefined-constant-31">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-31">#</a> <code>UPLOAD_ERR_FORM_SIZE</code></h3>
+          <pre><code class="lang-php">UPLOAD_ERR_FORM_SIZE: int = 2</code></pre>
+          <p>File upload status: larger than the form's `MAX_FILE_SIZE`.</p>
+        </article>
+        <article class="doc-entry" id="doc-predefined-constant-32">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-32">#</a> <code>UPLOAD_ERR_PARTIAL</code></h3>
+          <pre><code class="lang-php">UPLOAD_ERR_PARTIAL: int = 3</code></pre>
+          <p>File upload status: only partly received.</p>
+        </article>
+        <article class="doc-entry" id="doc-predefined-constant-33">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-33">#</a> <code>UPLOAD_ERR_NO_FILE</code></h3>
+          <pre><code class="lang-php">UPLOAD_ERR_NO_FILE: int = 4</code></pre>
+          <p>File upload status: no file was sent.</p>
+        </article>
+        <article class="doc-entry" id="doc-predefined-constant-34">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-34">#</a> <code>UPLOAD_ERR_NO_TMP_DIR</code></h3>
+          <pre><code class="lang-php">UPLOAD_ERR_NO_TMP_DIR: int = 6</code></pre>
+          <p>File upload status: no temporary directory.</p>
+        </article>
+        <article class="doc-entry" id="doc-predefined-constant-35">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-35">#</a> <code>UPLOAD_ERR_CANT_WRITE</code></h3>
+          <pre><code class="lang-php">UPLOAD_ERR_CANT_WRITE: int = 7</code></pre>
+          <p>File upload status: the file could not be written.</p>
+        </article>
+        <article class="doc-entry" id="doc-predefined-constant-36">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-36">#</a> <code>UPLOAD_ERR_EXTENSION</code></h3>
+          <pre><code class="lang-php">UPLOAD_ERR_EXTENSION: int = 8</code></pre>
+          <p>File upload status: an extension stopped the upload.</p>
+        </article>
+        <article class="doc-entry" id="doc-predefined-constant-37">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-37">#</a> <code>PHP_MAJOR_VERSION</code></h3>
           <pre><code class="lang-php">PHP_MAJOR_VERSION: int = 8</code></pre>
           <p>Major component of `PHP_VERSION`.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-12">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-12">#</a> <code>PHP_MINOR_VERSION</code></h3>
-          <pre><code class="lang-php">PHP_MINOR_VERSION: int = 3</code></pre>
+        <article class="doc-entry" id="doc-predefined-constant-38">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-38">#</a> <code>PHP_MINOR_VERSION</code></h3>
+          <pre><code class="lang-php">PHP_MINOR_VERSION: int</code></pre>
           <p>Minor component of `PHP_VERSION`.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-13">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-13">#</a> <code>PHP_RELEASE_VERSION</code></h3>
-          <pre><code class="lang-php">PHP_RELEASE_VERSION: int = 0</code></pre>
+        <article class="doc-entry" id="doc-predefined-constant-39">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-39">#</a> <code>PHP_RELEASE_VERSION</code></h3>
+          <pre><code class="lang-php">PHP_RELEASE_VERSION: int</code></pre>
           <p>Release component of `PHP_VERSION`.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-14">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-14">#</a> <code>PHP_VERSION_ID</code></h3>
-          <pre><code class="lang-php">PHP_VERSION_ID: int = 80300</code></pre>
+        <article class="doc-entry" id="doc-predefined-constant-40">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-40">#</a> <code>PHP_VERSION_ID</code></h3>
+          <pre><code class="lang-php">PHP_VERSION_ID: int</code></pre>
           <p>The version as a single comparable integer, `major*10000 + minor*100 + release`.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-15">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-15">#</a> <code>PHP_OS</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-41">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-41">#</a> <code>PHP_OS</code></h3>
           <pre><code class="lang-php">PHP_OS: string = "Darwin" | "WINNT" | "Linux"</code></pre>
           <p>The host operating system, resolved at COMPILE time from `cfg!(target_os)` rather than by a runtime `uname(2)`.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-16">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-16">#</a> <code>PHP_OS_FAMILY</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-42">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-42">#</a> <code>PHP_OS_FAMILY</code></h3>
           <pre><code class="lang-php">PHP_OS_FAMILY: string = "Windows" | "Darwin" | "Linux"</code></pre>
           <p>The operating-system family, also decided at compile time. Every non-Windows, non-macOS target reports `Linux`.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-17">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-17">#</a> <code>PHP_EOL</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-43">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-43">#</a> <code>PHP_EOL</code></h3>
           <pre><code class="lang-php">PHP_EOL: string = "\n"</code></pre>
           <p>The platform line terminator. DIVERGENCE: it is `\n` unconditionally, including on Windows builds where PHP uses `\r\n`.</p>
           <pre><code class="lang-php">echo "a" . PHP_EOL . "b";   // =&gt; a&lt;newline&gt;b</code></pre>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-18">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-18">#</a> <code>STDIN</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-44">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-44">#</a> <code>STDIN</code></h3>
           <pre><code class="lang-php">STDIN: resource</code></pre>
           <p>Resource 1, the process's standard input. Reads pull from it lazily — a line at a time for `fgets`/`fscanf` — so a prompt-and-read script works interactively.</p>
           <pre><code class="lang-php">$line = fgets(STDIN);</code></pre>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-19">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-19">#</a> <code>STDOUT</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-45">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-45">#</a> <code>STDOUT</code></h3>
           <pre><code class="lang-php">STDOUT: resource</code></pre>
           <p>Resource 2, the process's standard output. A write bypasses output buffering, as in PHP.</p>
           <pre><code class="lang-php">fwrite(STDOUT, "hi\n");   // =&gt; hi</code></pre>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-20">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-20">#</a> <code>STDERR</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-46">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-46">#</a> <code>STDERR</code></h3>
           <pre><code class="lang-php">STDERR: resource</code></pre>
           <p>Resource 3, the process's standard error.</p>
           <pre><code class="lang-php">fwrite(STDERR, "oops\n");</code></pre>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-21">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-21">#</a> <code>DIRECTORY_SEPARATOR</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-47">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-47">#</a> <code>DIRECTORY_SEPARATOR</code></h3>
           <pre><code class="lang-php">DIRECTORY_SEPARATOR: string = "/" | "\\"</code></pre>
           <p>The path component separator, `\` on Windows builds and `/` everywhere else.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-22">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-22">#</a> <code>PATH_SEPARATOR</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-48">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-48">#</a> <code>PATH_SEPARATOR</code></h3>
           <pre><code class="lang-php">PATH_SEPARATOR: string = ":" | ";"</code></pre>
           <p>The separator between entries in a path list, `;` on Windows builds and `:` everywhere else.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-23">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-23">#</a> <code>PHP_ROUND_HALF_UP</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-49">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-49">#</a> <code>PHP_ROUND_HALF_UP</code></h3>
           <pre><code class="lang-php">PHP_ROUND_HALF_UP: int = 1</code></pre>
           <p>Rounding mode: halves away from zero. This is the behaviour `round()` always uses — the mode argument is not read.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-24">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-24">#</a> <code>PHP_ROUND_HALF_DOWN</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-50">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-50">#</a> <code>PHP_ROUND_HALF_DOWN</code></h3>
           <pre><code class="lang-php">PHP_ROUND_HALF_DOWN: int = 2</code></pre>
           <p>Rounding mode: halves toward zero. Defined for source compatibility; `round()` ignores the mode argument.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-25">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-25">#</a> <code>PHP_ROUND_HALF_EVEN</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-51">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-51">#</a> <code>PHP_ROUND_HALF_EVEN</code></h3>
           <pre><code class="lang-php">PHP_ROUND_HALF_EVEN: int = 3</code></pre>
           <p>Rounding mode: halves to the nearest even value. Honoured: `round(2.5, 0, PHP_ROUND_HALF_EVEN)` is `2` and `round(3.5, 0, PHP_ROUND_HALF_EVEN)` is `4`.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-26">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-26">#</a> <code>PHP_ROUND_HALF_ODD</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-52">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-52">#</a> <code>PHP_ROUND_HALF_ODD</code></h3>
           <pre><code class="lang-php">PHP_ROUND_HALF_ODD: int = 4</code></pre>
           <p>Rounding mode: halves to the nearest odd value. Honoured: `round(2.5, 0, PHP_ROUND_HALF_ODD)` is `3` and `round(3.5, 0, PHP_ROUND_HALF_ODD)` is `3`.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-27">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-27">#</a> <code>E_ERROR</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-53">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-53">#</a> <code>E_ERROR</code></h3>
           <pre><code class="lang-php">E_ERROR: int = 1</code></pre>
           <p>Error level for a fatal runtime error. phplang has no error-level machinery, so this is a value for scripts to pass around.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-28">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-28">#</a> <code>E_WARNING</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-54">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-54">#</a> <code>E_WARNING</code></h3>
           <pre><code class="lang-php">E_WARNING: int = 2</code></pre>
           <p>Error level for a non-fatal runtime warning.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-29">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-29">#</a> <code>E_PARSE</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-55">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-55">#</a> <code>E_PARSE</code></h3>
           <pre><code class="lang-php">E_PARSE: int = 4</code></pre>
           <p>Error level for a compile-time parse error.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-30">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-30">#</a> <code>E_NOTICE</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-56">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-56">#</a> <code>E_NOTICE</code></h3>
           <pre><code class="lang-php">E_NOTICE: int = 8</code></pre>
           <p>Error level for a runtime notice.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-31">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-31">#</a> <code>E_STRICT</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-57">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-57">#</a> <code>E_STRICT</code></h3>
           <pre><code class="lang-php">E_STRICT: int = 2048</code></pre>
           <p>Error level for interoperability suggestions. The level was REMOVED in PHP 8.4 — nothing raises it and it is not part of `E_ALL` — but the constant remains so an existing `E_ALL &amp; ~E_STRICT` still parses.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-32">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-32">#</a> <code>E_DEPRECATED</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-58">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-58">#</a> <code>E_DEPRECATED</code></h3>
           <pre><code class="lang-php">E_DEPRECATED: int = 8192</code></pre>
           <p>Error level for a deprecation notice.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-33">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-33">#</a> <code>E_ALL</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-59">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-59">#</a> <code>E_ALL</code></h3>
           <pre><code class="lang-php">E_ALL: int = 30719</code></pre>
           <p>Every error level that still exists. It is 30719, not the pre-8.4 32767: PHP 8.4 removed `E_STRICT` and took its bit out of `E_ALL`, so `E_ALL &amp; E_STRICT` is 0. This is also the level a program starts at unless `-d error_reporting=…` says otherwise.</p>
           <pre><code class="lang-php">echo E_ALL, "|", E_ALL &amp; E_STRICT;   // =&gt; 30719|0</code></pre>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-34">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-34">#</a> <code>E_USER_ERROR</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-60">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-60">#</a> <code>E_USER_ERROR</code></h3>
           <pre><code class="lang-php">E_USER_ERROR: int = 256</code></pre>
           <p>User-generated error level. Passed to `trigger_error()`, it prints `Fatal error: …` to stderr but does NOT halt the program.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-35">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-35">#</a> <code>E_USER_WARNING</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-61">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-61">#</a> <code>E_USER_WARNING</code></h3>
           <pre><code class="lang-php">E_USER_WARNING: int = 512</code></pre>
           <p>User-generated warning level; `trigger_error()` labels it `Warning`.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-36">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-36">#</a> <code>E_USER_NOTICE</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-62">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-62">#</a> <code>E_USER_NOTICE</code></h3>
           <pre><code class="lang-php">E_USER_NOTICE: int = 1024</code></pre>
           <p>User-generated notice level and the default for `trigger_error()`, which labels it `Notice`.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-37">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-37">#</a> <code>E_USER_DEPRECATED</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-63">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-63">#</a> <code>E_USER_DEPRECATED</code></h3>
           <pre><code class="lang-php">E_USER_DEPRECATED: int = 16384</code></pre>
           <p>User-generated deprecation level; `trigger_error()` labels it `Deprecated`.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-38">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-38">#</a> <code>SORT_REGULAR</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-64">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-64">#</a> <code>SORT_REGULAR</code></h3>
           <pre><code class="lang-php">SORT_REGULAR: int = 0</code></pre>
           <p>Sort flag for comparing items normally. phplang's sorts always compare this way — the flag argument is not read.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-39">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-39">#</a> <code>SORT_NUMERIC</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-65">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-65">#</a> <code>SORT_NUMERIC</code></h3>
           <pre><code class="lang-php">SORT_NUMERIC: int = 1</code></pre>
           <p>Sort flag for numeric comparison. Accepted by `array_multisort` as a column type marker; the plain sorts ignore it.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-40">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-40">#</a> <code>PHP_OUTPUT_HANDLER_START</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-66">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-66">#</a> <code>PHP_OUTPUT_HANDLER_START</code></h3>
           <pre><code class="lang-php">PHP_OUTPUT_HANDLER_START: int = 1</code></pre>
           <p>Handler phase bit: set on the first call a handler receives.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-41">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-41">#</a> <code>PHP_OUTPUT_HANDLER_WRITE</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-67">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-67">#</a> <code>PHP_OUTPUT_HANDLER_WRITE</code></h3>
           <pre><code class="lang-php">PHP_OUTPUT_HANDLER_WRITE: int = 0</code></pre>
           <p>Handler phase value of an ordinary write that filled a chunk.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-42">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-42">#</a> <code>PHP_OUTPUT_HANDLER_FLUSH</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-68">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-68">#</a> <code>PHP_OUTPUT_HANDLER_FLUSH</code></h3>
           <pre><code class="lang-php">PHP_OUTPUT_HANDLER_FLUSH: int = 4</code></pre>
           <p>Handler phase bit: the buffer is being flushed (`ob_flush`).</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-43">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-43">#</a> <code>PHP_OUTPUT_HANDLER_CLEAN</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-69">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-69">#</a> <code>PHP_OUTPUT_HANDLER_CLEAN</code></h3>
           <pre><code class="lang-php">PHP_OUTPUT_HANDLER_CLEAN: int = 2</code></pre>
           <p>Handler phase bit: the buffer is being cleaned (`ob_clean`, `ob_end_clean`, `ob_get_clean`).</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-44">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-44">#</a> <code>PHP_OUTPUT_HANDLER_FINAL</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-70">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-70">#</a> <code>PHP_OUTPUT_HANDLER_FINAL</code></h3>
           <pre><code class="lang-php">PHP_OUTPUT_HANDLER_FINAL: int = 8</code></pre>
           <p>Handler phase bit: the last call, as the buffer is removed.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-45">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-45">#</a> <code>PHP_OUTPUT_HANDLER_CONT</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-71">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-71">#</a> <code>PHP_OUTPUT_HANDLER_CONT</code></h3>
           <pre><code class="lang-php">PHP_OUTPUT_HANDLER_CONT: int = 0</code></pre>
           <p>Alias of `PHP_OUTPUT_HANDLER_WRITE`.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-46">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-46">#</a> <code>PHP_OUTPUT_HANDLER_END</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-72">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-72">#</a> <code>PHP_OUTPUT_HANDLER_END</code></h3>
           <pre><code class="lang-php">PHP_OUTPUT_HANDLER_END: int = 8</code></pre>
           <p>Alias of `PHP_OUTPUT_HANDLER_FINAL`.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-47">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-47">#</a> <code>PHP_OUTPUT_HANDLER_CLEANABLE</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-73">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-73">#</a> <code>PHP_OUTPUT_HANDLER_CLEANABLE</code></h3>
           <pre><code class="lang-php">PHP_OUTPUT_HANDLER_CLEANABLE: int = 16</code></pre>
           <p>`ob_start` flag: the buffer may be cleaned.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-48">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-48">#</a> <code>PHP_OUTPUT_HANDLER_FLUSHABLE</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-74">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-74">#</a> <code>PHP_OUTPUT_HANDLER_FLUSHABLE</code></h3>
           <pre><code class="lang-php">PHP_OUTPUT_HANDLER_FLUSHABLE: int = 32</code></pre>
           <p>`ob_start` flag: the buffer may be flushed.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-49">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-49">#</a> <code>PHP_OUTPUT_HANDLER_REMOVABLE</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-75">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-75">#</a> <code>PHP_OUTPUT_HANDLER_REMOVABLE</code></h3>
           <pre><code class="lang-php">PHP_OUTPUT_HANDLER_REMOVABLE: int = 64</code></pre>
           <p>`ob_start` flag: the buffer may be removed before the end of the script.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-50">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-50">#</a> <code>PHP_OUTPUT_HANDLER_STDFLAGS</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-76">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-76">#</a> <code>PHP_OUTPUT_HANDLER_STDFLAGS</code></h3>
           <pre><code class="lang-php">PHP_OUTPUT_HANDLER_STDFLAGS: int = 112</code></pre>
           <p>The default `ob_start` flags: cleanable, flushable and removable.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-51">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-51">#</a> <code>PHP_OUTPUT_HANDLER_STARTED</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-77">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-77">#</a> <code>PHP_OUTPUT_HANDLER_STARTED</code></h3>
           <pre><code class="lang-php">PHP_OUTPUT_HANDLER_STARTED: int = 4096</code></pre>
           <p>`ob_get_status` flag: the handler has run.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-52">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-52">#</a> <code>PHP_OUTPUT_HANDLER_DISABLED</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-78">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-78">#</a> <code>PHP_OUTPUT_HANDLER_DISABLED</code></h3>
           <pre><code class="lang-php">PHP_OUTPUT_HANDLER_DISABLED: int = 8192</code></pre>
           <p>`ob_get_status` flag: the handler returned false and now passes output through.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-53">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-53">#</a> <code>PHP_OUTPUT_HANDLER_PROCESSED</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-79">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-79">#</a> <code>PHP_OUTPUT_HANDLER_PROCESSED</code></h3>
           <pre><code class="lang-php">PHP_OUTPUT_HANDLER_PROCESSED: int = 16384</code></pre>
           <p>`ob_get_status` flag: the handler has processed its buffer.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-54">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-54">#</a> <code>SORT_STRING</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-80">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-80">#</a> <code>SORT_STRING</code></h3>
           <pre><code class="lang-php">SORT_STRING: int = 2</code></pre>
           <p>Sort flag for string comparison, with the same limited effect as `SORT_NUMERIC`.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-55">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-55">#</a> <code>SORT_DESC</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-81">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-81">#</a> <code>SORT_DESC</code></h3>
           <pre><code class="lang-php">SORT_DESC: int = 3</code></pre>
           <p>Descending sort order for `array_multisort` columns.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-56">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-56">#</a> <code>SORT_ASC</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-82">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-82">#</a> <code>SORT_ASC</code></h3>
           <pre><code class="lang-php">SORT_ASC: int = 4</code></pre>
           <p>Ascending sort order for `array_multisort` columns, and its default.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-57">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-57">#</a> <code>SORT_LOCALE_STRING</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-83">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-83">#</a> <code>SORT_LOCALE_STRING</code></h3>
           <pre><code class="lang-php">SORT_LOCALE_STRING: int = 5</code></pre>
           <p>Locale-aware string sort flag. Defined for compatibility; phplang has no locale support.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-58">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-58">#</a> <code>SORT_NATURAL</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-84">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-84">#</a> <code>SORT_NATURAL</code></h3>
           <pre><code class="lang-php">SORT_NATURAL: int = 6</code></pre>
           <p>Natural-order sort flag. Use `natsort()` for the real behaviour — the plain sorts do not read the flag.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-59">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-59">#</a> <code>SORT_FLAG_CASE</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-85">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-85">#</a> <code>SORT_FLAG_CASE</code></h3>
           <pre><code class="lang-php">SORT_FLAG_CASE: int = 8</code></pre>
           <p>Bit combined with `SORT_STRING` or `SORT_NATURAL` to fold case. Honoured: `sort($a, SORT_STRING|SORT_FLAG_CASE)` orders `["B", "a"]` as `["a", "B"]`.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-60">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-60">#</a> <code>COUNT_NORMAL</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-86">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-86">#</a> <code>COUNT_NORMAL</code></h3>
           <pre><code class="lang-php">COUNT_NORMAL: int = 0</code></pre>
           <p>`count()` mode counting only top-level elements. This is the only mode implemented.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-61">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-61">#</a> <code>COUNT_RECURSIVE</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-87">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-87">#</a> <code>COUNT_RECURSIVE</code></h3>
           <pre><code class="lang-php">COUNT_RECURSIVE: int = 1</code></pre>
           <p>`count()` mode that counts nested elements too: a nested array counts as one element AND contributes its own contents, at every depth. Recursion is into arrays only — a nested `Countable` is a single element and its own `count()` is not consulted.</p>
           <pre><code class="lang-php">echo count([1, [2, 3]], COUNT_RECURSIVE);   // =&gt; 4</code></pre>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-62">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-62">#</a> <code>STR_PAD_RIGHT</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-88">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-88">#</a> <code>STR_PAD_RIGHT</code></h3>
           <pre><code class="lang-php">STR_PAD_RIGHT: int = 1</code></pre>
           <p>`str_pad()` / `mb_str_pad()` mode padding on the right. The default, and the fallback for an unrecognized mode.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-63">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-63">#</a> <code>STR_PAD_LEFT</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-89">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-89">#</a> <code>STR_PAD_LEFT</code></h3>
           <pre><code class="lang-php">STR_PAD_LEFT: int = 0</code></pre>
           <p>`str_pad()` / `mb_str_pad()` mode padding on the left.</p>
           <pre><code class="lang-php">echo str_pad("5", 3, "0", STR_PAD_LEFT);   // =&gt; 005</code></pre>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-64">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-64">#</a> <code>STR_PAD_BOTH</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-90">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-90">#</a> <code>STR_PAD_BOTH</code></h3>
           <pre><code class="lang-php">STR_PAD_BOTH: int = 2</code></pre>
           <p>`str_pad()` / `mb_str_pad()` mode padding on both sides, with the left side floored.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-65">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-65">#</a> <code>ARRAY_FILTER_USE_KEY</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-91">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-91">#</a> <code>ARRAY_FILTER_USE_KEY</code></h3>
           <pre><code class="lang-php">ARRAY_FILTER_USE_KEY: int = 2</code></pre>
           <p>`array_filter()` mode passing only the key to the callback.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-66">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-66">#</a> <code>ARRAY_FILTER_USE_BOTH</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-92">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-92">#</a> <code>ARRAY_FILTER_USE_BOTH</code></h3>
           <pre><code class="lang-php">ARRAY_FILTER_USE_BOTH: int = 1</code></pre>
           <p>`array_filter()` mode passing the value and then the key to the callback.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-67">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-67">#</a> <code>PREG_PATTERN_ORDER</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-93">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-93">#</a> <code>PREG_PATTERN_ORDER</code></h3>
           <pre><code class="lang-php">PREG_PATTERN_ORDER: int = 1</code></pre>
           <p>`preg_match_all()` ordering that groups results by capture group: `$matches[group][set]`. The default.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-68">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-68">#</a> <code>PREG_SET_ORDER</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-94">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-94">#</a> <code>PREG_SET_ORDER</code></h3>
           <pre><code class="lang-php">PREG_SET_ORDER: int = 2</code></pre>
           <p>`preg_match_all()` ordering that groups results by match: `$matches[set][group]`. This bit is honoured.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-69">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-69">#</a> <code>PREG_OFFSET_CAPTURE</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-95">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-95">#</a> <code>PREG_OFFSET_CAPTURE</code></h3>
           <pre><code class="lang-php">PREG_OFFSET_CAPTURE: int = 256</code></pre>
           <p>Turns every `$matches` cell into a `[text, offset]` pair. The offset is a BYTE position, which is what PHP reports even under `/u`, where the subject is walked as UTF-8 but positions are still counted in bytes. A group that did not participate is `['', -1]`, not `['', 0]`. Honoured by `preg_match`, `preg_match_all` and `preg_replace_callback`; `preg_split` has its own separate `PREG_SPLIT_OFFSET_CAPTURE` bit.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-70">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-70">#</a> <code>PREG_UNMATCHED_AS_NULL</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-96">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-96">#</a> <code>PREG_UNMATCHED_AS_NULL</code></h3>
           <pre><code class="lang-php">PREG_UNMATCHED_AS_NULL: int = 512</code></pre>
           <p>Reports a non-participating group as null rather than an empty string, and SUPPRESSES the trailing-unmatched trim so the row keeps its full width. Combined with `PREG_OFFSET_CAPTURE` such a cell is `[null, -1]`.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-71">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-71">#</a> <code>PREG_SPLIT_NO_EMPTY</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-97">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-97">#</a> <code>PREG_SPLIT_NO_EMPTY</code></h3>
           <pre><code class="lang-php">PREG_SPLIT_NO_EMPTY: int = 1</code></pre>
           <p>`preg_split()` flag dropping empty pieces from the result. Honoured.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-72">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-72">#</a> <code>PREG_SPLIT_DELIM_CAPTURE</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-98">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-98">#</a> <code>PREG_SPLIT_DELIM_CAPTURE</code></h3>
           <pre><code class="lang-php">PREG_SPLIT_DELIM_CAPTURE: int = 2</code></pre>
           <p>`preg_split()` flag interleaving captured delimiter groups into the result. Honoured.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-73">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-73">#</a> <code>PREG_SPLIT_OFFSET_CAPTURE</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-99">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-99">#</a> <code>PREG_SPLIT_OFFSET_CAPTURE</code></h3>
           <pre><code class="lang-php">PREG_SPLIT_OFFSET_CAPTURE: int = 4</code></pre>
           <p>`preg_split()` flag emitting `[piece, byteOffset]` pairs instead of bare strings. Honoured.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-74">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-74">#</a> <code>JSON_HEX_TAG</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-100">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-100">#</a> <code>JSON_HEX_TAG</code></h3>
           <pre><code class="lang-php">JSON_HEX_TAG: int = 1</code></pre>
           <p>`json_encode()` flag escaping `&lt;` and `&gt;` as `\u003C` and `\u003E`. The hex digits are UPPER case, where the control and unicode escapes spell theirs in lower.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-75">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-75">#</a> <code>JSON_HEX_AMP</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-101">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-101">#</a> <code>JSON_HEX_AMP</code></h3>
           <pre><code class="lang-php">JSON_HEX_AMP: int = 2</code></pre>
           <p>`json_encode()` flag escaping `&amp;` as `\u0026`.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-76">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-76">#</a> <code>JSON_HEX_APOS</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-102">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-102">#</a> <code>JSON_HEX_APOS</code></h3>
           <pre><code class="lang-php">JSON_HEX_APOS: int = 4</code></pre>
           <p>`json_encode()` flag escaping `'` as `\u0027`.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-77">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-77">#</a> <code>JSON_HEX_QUOT</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-103">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-103">#</a> <code>JSON_HEX_QUOT</code></h3>
           <pre><code class="lang-php">JSON_HEX_QUOT: int = 8</code></pre>
           <p>`json_encode()` flag escaping `"` as `\u0022` instead of `\"`.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-78">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-78">#</a> <code>JSON_FORCE_OBJECT</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-104">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-104">#</a> <code>JSON_FORCE_OBJECT</code></h3>
           <pre><code class="lang-php">JSON_FORCE_OBJECT: int = 16</code></pre>
           <p>`json_encode()` flag emitting a JSON object even for an array whose keys are already `0..n`.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-79">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-79">#</a> <code>JSON_NUMERIC_CHECK</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-105">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-105">#</a> <code>JSON_NUMERIC_CHECK</code></h3>
           <pre><code class="lang-php">JSON_NUMERIC_CHECK: int = 32</code></pre>
           <p>`json_encode()` flag encoding a numeric string as the number it reads as, by PHP's own `is_numeric_string` — so `" 5"` and `"5 "` convert while `"0x1A"` does not. An integral result loses its fractional part (`"1e3"` encodes as `1000`), and a string that reads as a non-finite double (`"1e999"`) stays a string. Array KEYS are unaffected; JSON has no non-string key.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-80">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-80">#</a> <code>JSON_UNESCAPED_SLASHES</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-106">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-106">#</a> <code>JSON_UNESCAPED_SLASHES</code></h3>
           <pre><code class="lang-php">JSON_UNESCAPED_SLASHES: int = 64</code></pre>
           <p>`json_encode()` flag leaving `/` unescaped, where the default writes `\/`.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-81">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-81">#</a> <code>JSON_PRETTY_PRINT</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-107">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-107">#</a> <code>JSON_PRETTY_PRINT</code></h3>
           <pre><code class="lang-php">JSON_PRETTY_PRINT: int = 128</code></pre>
           <p>`json_encode()` flag requesting indented output: four spaces per level, and `": "` rather than `":"` after a key.</p>
           <pre><code class="lang-php">echo json_encode(["a" =&gt; 1], JSON_PRETTY_PRINT);   // =&gt; {
     "a": 1
 }</code></pre>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-82">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-82">#</a> <code>JSON_UNESCAPED_UNICODE</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-108">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-108">#</a> <code>JSON_UNESCAPED_UNICODE</code></h3>
           <pre><code class="lang-php">JSON_UNESCAPED_UNICODE: int = 256</code></pre>
           <p>`json_encode()` flag emitting literal UTF-8 instead of `\uXXXX`.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-83">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-83">#</a> <code>JSON_PARTIAL_OUTPUT_ON_ERROR</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-109">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-109">#</a> <code>JSON_PARTIAL_OUTPUT_ON_ERROR</code></h3>
           <pre><code class="lang-php">JSON_PARTIAL_OUTPUT_ON_ERROR: int = 512</code></pre>
           <p>`json_encode()` flag substituting for a value that cannot be encoded instead of failing: a cycle and a resource become `null`, a non-finite float and a pure enum case become `0`. The encode never fails or throws under it, `JSON_THROW_ON_ERROR` included, and `json_last_error()` reports the LAST error substituted, in document order.</p>
           <pre><code class="lang-php">echo json_encode([1, NAN], JSON_PARTIAL_OUTPUT_ON_ERROR);   // =&gt; [1,0]</code></pre>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-84">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-84">#</a> <code>JSON_PRESERVE_ZERO_FRACTION</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-110">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-110">#</a> <code>JSON_PRESERVE_ZERO_FRACTION</code></h3>
           <pre><code class="lang-php">JSON_PRESERVE_ZERO_FRACTION: int = 1024</code></pre>
           <p>`json_encode()` flag appending `.0` to an integral float — and to a numeric string `JSON_NUMERIC_CHECK` converts to one — so it decodes back as a float. A spelling that already has a fraction or exponent (`1.0e+25`) is left alone.</p>
           <pre><code class="lang-php">echo json_encode([1.0], JSON_PRESERVE_ZERO_FRACTION);   // =&gt; [1.0]</code></pre>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-85">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-85">#</a> <code>JSON_UNESCAPED_LINE_TERMINATORS</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-111">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-111">#</a> <code>JSON_UNESCAPED_LINE_TERMINATORS</code></h3>
           <pre><code class="lang-php">JSON_UNESCAPED_LINE_TERMINATORS: int = 2048</code></pre>
           <p>`json_encode()` flag leaving U+2028 and U+2029 raw under `JSON_UNESCAPED_UNICODE`. Without it those two stay `\u2028`/`\u2029` even when every other character is written literally, because they end a line in JavaScript.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-86">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-86">#</a> <code>JSON_THROW_ON_ERROR</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-112">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-112">#</a> <code>JSON_THROW_ON_ERROR</code></h3>
           <pre><code class="lang-php">JSON_THROW_ON_ERROR: int = 4194304</code></pre>
           <p>Flag asking the JSON functions to throw `JsonException` instead of returning `false`/null. Honoured by `json_encode`, `json_decode` and `json_validate`: the exception's `getCode()` is the `JSON_ERROR_*` constant, and `json_last_error()` is left at `JSON_ERROR_NONE` because the failure travelled on the throw instead of being recorded for a later read.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-87">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-87">#</a> <code>JSON_OBJECT_AS_ARRAY</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-113">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-113">#</a> <code>JSON_OBJECT_AS_ARRAY</code></h3>
           <pre><code class="lang-php">JSON_OBJECT_AS_ARRAY: int = 1</code></pre>
           <p>`json_decode()` flag decoding JSON objects as PHP arrays. Consulted only when `$associative` is left null, which is `ext/json`'s own precedence — an explicit `$associative` wins over the flag in both directions.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-88">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-88">#</a> <code>JSON_BIGINT_AS_STRING</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-114">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-114">#</a> <code>JSON_BIGINT_AS_STRING</code></h3>
           <pre><code class="lang-php">JSON_BIGINT_AS_STRING: int = 2</code></pre>
           <p>`json_decode()` flag keeping an integer literal too large for `int` as the string of its digits, sign included, instead of the nearest float. A float literal is unaffected, even one that overflows to `INF`.</p>
           <pre><code class="lang-php">var_dump(json_decode("[12345678901234567890]", true, 512, JSON_BIGINT_AS_STRING)[0]);   // =&gt; string(20) "12345678901234567890"</code></pre>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-89">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-89">#</a> <code>JSON_ERROR_NONE</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-115">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-115">#</a> <code>JSON_ERROR_NONE</code></h3>
           <pre><code class="lang-php">JSON_ERROR_NONE: int = 0</code></pre>
           <p>`json_last_error()` code meaning the last decode succeeded.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-90">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-90">#</a> <code>JSON_ERROR_DEPTH</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-116">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-116">#</a> <code>JSON_ERROR_DEPTH</code></h3>
           <pre><code class="lang-php">JSON_ERROR_DEPTH: int = 1</code></pre>
           <p>`json_last_error()` code meaning the maximum nesting depth was exceeded.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-91">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-91">#</a> <code>JSON_ERROR_STATE_MISMATCH</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-117">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-117">#</a> <code>JSON_ERROR_STATE_MISMATCH</code></h3>
           <pre><code class="lang-php">JSON_ERROR_STATE_MISMATCH: int = 2</code></pre>
           <p>`json_last_error()` code for invalid or malformed JSON.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-92">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-92">#</a> <code>JSON_ERROR_CTRL_CHAR</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-118">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-118">#</a> <code>JSON_ERROR_CTRL_CHAR</code></h3>
           <pre><code class="lang-php">JSON_ERROR_CTRL_CHAR: int = 3</code></pre>
           <p>`json_last_error()` code for a raw control character inside a string.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-93">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-93">#</a> <code>JSON_ERROR_SYNTAX</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-119">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-119">#</a> <code>JSON_ERROR_SYNTAX</code></h3>
           <pre><code class="lang-php">JSON_ERROR_SYNTAX: int = 4</code></pre>
           <p>`json_last_error()` code for a syntax error.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-94">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-94">#</a> <code>JSON_ERROR_UTF8</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-120">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-120">#</a> <code>JSON_ERROR_UTF8</code></h3>
           <pre><code class="lang-php">JSON_ERROR_UTF8: int = 5</code></pre>
           <p>`json_last_error()` code for malformed UTF-8.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-95">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-95">#</a> <code>JSON_ERROR_RECURSION</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-121">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-121">#</a> <code>JSON_ERROR_RECURSION</code></h3>
           <pre><code class="lang-php">JSON_ERROR_RECURSION: int = 6</code></pre>
           <p>`json_last_error()` code set by `json_encode()` for an array or object that contains itself.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-96">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-96">#</a> <code>JSON_ERROR_INF_OR_NAN</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-122">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-122">#</a> <code>JSON_ERROR_INF_OR_NAN</code></h3>
           <pre><code class="lang-php">JSON_ERROR_INF_OR_NAN: int = 7</code></pre>
           <p>`json_last_error()` code set by `json_encode()` for a `NAN` or `INF` float, which JSON cannot spell.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-97">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-97">#</a> <code>JSON_ERROR_UNSUPPORTED_TYPE</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-123">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-123">#</a> <code>JSON_ERROR_UNSUPPORTED_TYPE</code></h3>
           <pre><code class="lang-php">JSON_ERROR_UNSUPPORTED_TYPE: int = 8</code></pre>
           <p>`json_last_error()` code set by `json_encode()` for a value of a type JSON cannot spell: a stream resource, open or closed. `JSON_PARTIAL_OUTPUT_ON_ERROR` writes `null` in its place.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-98">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-98">#</a> <code>JSON_ERROR_INVALID_PROPERTY_NAME</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-124">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-124">#</a> <code>JSON_ERROR_INVALID_PROPERTY_NAME</code></h3>
           <pre><code class="lang-php">JSON_ERROR_INVALID_PROPERTY_NAME: int = 9</code></pre>
           <p>`json_last_error()` code set by `json_decode()` for an object key starting with a NUL byte when the object decodes to a `stdClass` (a NUL-led name is how PHP spells a mangled non-public property). Decoding to an array accepts the key, and `json_validate()` never reports it.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-99">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-99">#</a> <code>JSON_ERROR_UTF16</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-125">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-125">#</a> <code>JSON_ERROR_UTF16</code></h3>
           <pre><code class="lang-php">JSON_ERROR_UTF16: int = 10</code></pre>
           <p>`json_last_error()` code for a lone UTF-16 surrogate in a `\u` escape.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-100">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-100">#</a> <code>JSON_ERROR_NON_BACKED_ENUM</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-126">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-126">#</a> <code>JSON_ERROR_NON_BACKED_ENUM</code></h3>
           <pre><code class="lang-php">JSON_ERROR_NON_BACKED_ENUM: int = 11</code></pre>
           <p>`json_last_error()` code set by `json_encode()` for a case of a pure (non-backed) enum, which has no value to encode.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-101">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-101">#</a> <code>PHP_URL_SCHEME</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-127">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-127">#</a> <code>PHP_URL_SCHEME</code></h3>
           <pre><code class="lang-php">PHP_URL_SCHEME: int = 0</code></pre>
           <p>`parse_url()`'s `$component` selector for the scheme (`https`). A component the URL does not carry reads back as null.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-102">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-102">#</a> <code>PHP_URL_HOST</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-128">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-128">#</a> <code>PHP_URL_HOST</code></h3>
           <pre><code class="lang-php">PHP_URL_HOST: int = 1</code></pre>
           <p>`parse_url()`'s `$component` selector for the host. A component the URL does not carry reads back as null.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-103">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-103">#</a> <code>PHP_URL_PORT</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-129">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-129">#</a> <code>PHP_URL_PORT</code></h3>
           <pre><code class="lang-php">PHP_URL_PORT: int = 2</code></pre>
           <p>`parse_url()`'s `$component` selector for the port, as an int. A component the URL does not carry reads back as null.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-104">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-104">#</a> <code>PHP_URL_USER</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-130">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-130">#</a> <code>PHP_URL_USER</code></h3>
           <pre><code class="lang-php">PHP_URL_USER: int = 3</code></pre>
           <p>`parse_url()`'s `$component` selector for the userinfo user. A component the URL does not carry reads back as null.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-105">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-105">#</a> <code>PHP_URL_PASS</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-131">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-131">#</a> <code>PHP_URL_PASS</code></h3>
           <pre><code class="lang-php">PHP_URL_PASS: int = 4</code></pre>
           <p>`parse_url()`'s `$component` selector for the userinfo password. A component the URL does not carry reads back as null.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-106">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-106">#</a> <code>PHP_URL_PATH</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-132">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-132">#</a> <code>PHP_URL_PATH</code></h3>
           <pre><code class="lang-php">PHP_URL_PATH: int = 5</code></pre>
           <p>`parse_url()`'s `$component` selector for the path. A component the URL does not carry reads back as null.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-107">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-107">#</a> <code>PHP_URL_QUERY</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-133">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-133">#</a> <code>PHP_URL_QUERY</code></h3>
           <pre><code class="lang-php">PHP_URL_QUERY: int = 6</code></pre>
           <p>`parse_url()`'s `$component` selector for the query string, without the `?`. A component the URL does not carry reads back as null.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-108">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-108">#</a> <code>PHP_URL_FRAGMENT</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-134">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-134">#</a> <code>PHP_URL_FRAGMENT</code></h3>
           <pre><code class="lang-php">PHP_URL_FRAGMENT: int = 7</code></pre>
           <p>`parse_url()`'s `$component` selector for the fragment, without the `#`. A component the URL does not carry reads back as null.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-109">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-109">#</a> <code>INPUT_GET</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-135">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-135">#</a> <code>INPUT_GET</code></h3>
           <pre><code class="lang-php">INPUT_GET: int = 1</code></pre>
           <p>`filter_has_var()` input source for query parameters. phplang is standalone with no request context, so the lookup always reports false.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-110">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-110">#</a> <code>INPUT_POST</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-136">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-136">#</a> <code>INPUT_POST</code></h3>
           <pre><code class="lang-php">INPUT_POST: int = 0</code></pre>
           <p>`filter_has_var()` input source for form-body parameters, with the same always-false result.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-111">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-111">#</a> <code>FILTER_DEFAULT</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-137">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-137">#</a> <code>FILTER_DEFAULT</code></h3>
           <pre><code class="lang-php">FILTER_DEFAULT: int = 516</code></pre>
           <p>`filter_var()` filter that returns the value string-cast without validating. Also the fallback for any unrecognized filter id.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-112">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-112">#</a> <code>FILTER_UNSAFE_RAW</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-138">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-138">#</a> <code>FILTER_UNSAFE_RAW</code></h3>
           <pre><code class="lang-php">FILTER_UNSAFE_RAW: int = 516</code></pre>
           <p>The same id as `FILTER_DEFAULT` — an unfiltered string-cast pass-through.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-113">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-113">#</a> <code>FILTER_VALIDATE_INT</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-139">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-139">#</a> <code>FILTER_VALIDATE_INT</code></h3>
           <pre><code class="lang-php">FILTER_VALIDATE_INT: int = 257</code></pre>
           <p>Validates an integer, honouring `min_range`/`max_range` options and the hex/octal flags. Leading zeros are rejected.</p>
           <pre><code class="lang-php">var_dump(filter_var("42", FILTER_VALIDATE_INT));   // =&gt; int(42)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-114">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-114">#</a> <code>FILTER_VALIDATE_BOOLEAN</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-140">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-140">#</a> <code>FILTER_VALIDATE_BOOLEAN</code></h3>
           <pre><code class="lang-php">FILTER_VALIDATE_BOOLEAN: int = 258</code></pre>
           <p>Validates a boolean: `1/true/on/yes` are true, `0/false/off/no/""` are false, anything else fails.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-115">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-115">#</a> <code>FILTER_VALIDATE_BOOL</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-141">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-141">#</a> <code>FILTER_VALIDATE_BOOL</code></h3>
           <pre><code class="lang-php">FILTER_VALIDATE_BOOL: int = 258</code></pre>
           <p>The PHP 8 spelling of `FILTER_VALIDATE_BOOLEAN`, sharing its id and behaviour.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-116">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-116">#</a> <code>FILTER_VALIDATE_FLOAT</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-142">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-142">#</a> <code>FILTER_VALIDATE_FLOAT</code></h3>
           <pre><code class="lang-php">FILTER_VALIDATE_FLOAT: int = 259</code></pre>
           <p>Validates a float. Every byte must be in `[0-9+-.eE]`, so `inf` and `nan` fail, and a non-finite result is rejected.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-117">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-117">#</a> <code>FILTER_VALIDATE_REGEXP</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-143">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-143">#</a> <code>FILTER_VALIDATE_REGEXP</code></h3>
           <pre><code class="lang-php">FILTER_VALIDATE_REGEXP: int = 272</code></pre>
           <p>Validates against the `options['regexp']` pattern, compiled by the same engine pair `preg_match` uses — so the delimiter rules, the modifier set, look-around and backreferences all behave identically, and a pattern fault raises `Warning: filter_var(): &lt;reason&gt;` and sets `preg_last_error()` exactly as the reference does.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-118">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-118">#</a> <code>FILTER_VALIDATE_DOMAIN</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-144">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-144">#</a> <code>FILTER_VALIDATE_DOMAIN</code></h3>
           <pre><code class="lang-php">FILTER_VALIDATE_DOMAIN: int = 277</code></pre>
           <p>Validates a 1-253 byte domain, adding an RFC 1123 label check only when `FILTER_FLAG_HOSTNAME` is set.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-119">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-119">#</a> <code>FILTER_VALIDATE_URL</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-145">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-145">#</a> <code>FILTER_VALIDATE_URL</code></h3>
           <pre><code class="lang-php">FILTER_VALIDATE_URL: int = 273</code></pre>
           <p>Validates a URL, requiring both a scheme and a host.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-120">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-120">#</a> <code>FILTER_VALIDATE_EMAIL</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-146">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-146">#</a> <code>FILTER_VALIDATE_EMAIL</code></h3>
           <pre><code class="lang-php">FILTER_VALIDATE_EMAIL: int = 274</code></pre>
           <p>Validates an email address of at most 320 bytes against a dotted-domain pattern.</p>
           <pre><code class="lang-php">var_dump(filter_var("a@b.co", FILTER_VALIDATE_EMAIL));   // =&gt; string(6) "a@b.co"</code></pre>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-121">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-121">#</a> <code>FILTER_VALIDATE_IP</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-147">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-147">#</a> <code>FILTER_VALIDATE_IP</code></h3>
           <pre><code class="lang-php">FILTER_VALIDATE_IP: int = 275</code></pre>
           <p>Validates an IP address with `std::net`, gated by the IPv4/IPv6 flags. The private- and reserved-range flags are not implemented.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-122">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-122">#</a> <code>FILTER_VALIDATE_MAC</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-148">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-148">#</a> <code>FILTER_VALIDATE_MAC</code></h3>
           <pre><code class="lang-php">FILTER_VALIDATE_MAC: int = 276</code></pre>
           <p>Validates a MAC address in the 17-character `:`/`-` form or the 14-character `xxxx.xxxx.xxxx` form.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-123">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-123">#</a> <code>FILTER_SANITIZE_STRING</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-149">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-149">#</a> <code>FILTER_SANITIZE_STRING</code></h3>
           <pre><code class="lang-php">FILTER_SANITIZE_STRING: int = 513</code></pre>
           <p>Strips `&lt;…&gt;` tags then encodes `"` and `'` as numeric entities. Sanitizers never fail.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-124">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-124">#</a> <code>FILTER_SANITIZE_STRIPPED</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-150">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-150">#</a> <code>FILTER_SANITIZE_STRIPPED</code></h3>
           <pre><code class="lang-php">FILTER_SANITIZE_STRIPPED: int = 513</code></pre>
           <p>The legacy alias of `FILTER_SANITIZE_STRING`, sharing its id.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-125">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-125">#</a> <code>FILTER_SANITIZE_ENCODED</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-151">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-151">#</a> <code>FILTER_SANITIZE_ENCODED</code></h3>
           <pre><code class="lang-php">FILTER_SANITIZE_ENCODED: int = 514</code></pre>
           <p>URL-encoding sanitizer id. DIVERGENCE: not implemented — it falls through to the `FILTER_DEFAULT` pass-through.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-126">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-126">#</a> <code>FILTER_SANITIZE_SPECIAL_CHARS</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-152">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-152">#</a> <code>FILTER_SANITIZE_SPECIAL_CHARS</code></h3>
           <pre><code class="lang-php">FILTER_SANITIZE_SPECIAL_CHARS: int = 515</code></pre>
           <p>Encodes `&amp;`, `&lt;`, `&gt;`, `"`, and `'` as numeric character references.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-127">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-127">#</a> <code>FILTER_SANITIZE_FULL_SPECIAL_CHARS</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-153">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-153">#</a> <code>FILTER_SANITIZE_FULL_SPECIAL_CHARS</code></h3>
           <pre><code class="lang-php">FILTER_SANITIZE_FULL_SPECIAL_CHARS: int = 522</code></pre>
           <p>Encodes the same five characters as named entities: `&amp;amp;`, `&amp;lt;`, `&amp;gt;`, `&amp;quot;`, `&amp;#039;`.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-128">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-128">#</a> <code>FILTER_SANITIZE_EMAIL</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-154">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-154">#</a> <code>FILTER_SANITIZE_EMAIL</code></h3>
           <pre><code class="lang-php">FILTER_SANITIZE_EMAIL: int = 517</code></pre>
           <p>Keeps only characters legal in an email address, dropping everything else.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-129">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-129">#</a> <code>FILTER_SANITIZE_URL</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-155">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-155">#</a> <code>FILTER_SANITIZE_URL</code></h3>
           <pre><code class="lang-php">FILTER_SANITIZE_URL: int = 518</code></pre>
           <p>Keeps only characters legal in a URL.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-130">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-130">#</a> <code>FILTER_SANITIZE_NUMBER_INT</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-156">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-156">#</a> <code>FILTER_SANITIZE_NUMBER_INT</code></h3>
           <pre><code class="lang-php">FILTER_SANITIZE_NUMBER_INT: int = 519</code></pre>
           <p>Keeps only digits and the `+`/`-` signs.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-131">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-131">#</a> <code>FILTER_SANITIZE_NUMBER_FLOAT</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-157">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-157">#</a> <code>FILTER_SANITIZE_NUMBER_FLOAT</code></h3>
           <pre><code class="lang-php">FILTER_SANITIZE_NUMBER_FLOAT: int = 520</code></pre>
           <p>Keeps digits and signs, plus `.`, `,`, and `e`/`E` when the matching ALLOW flag is set.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-132">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-132">#</a> <code>FILTER_SANITIZE_ADD_SLASHES</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-158">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-158">#</a> <code>FILTER_SANITIZE_ADD_SLASHES</code></h3>
           <pre><code class="lang-php">FILTER_SANITIZE_ADD_SLASHES: int = 523</code></pre>
           <p>Backslash-escaping sanitizer id. DIVERGENCE: not implemented — it falls through to the `FILTER_DEFAULT` pass-through.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-133">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-133">#</a> <code>FILTER_FLAG_ALLOW_OCTAL</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-159">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-159">#</a> <code>FILTER_FLAG_ALLOW_OCTAL</code></h3>
           <pre><code class="lang-php">FILTER_FLAG_ALLOW_OCTAL: int = 1</code></pre>
           <p>Lets `FILTER_VALIDATE_INT` accept an unsigned `0`-prefixed octal literal.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-134">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-134">#</a> <code>FILTER_FLAG_ALLOW_HEX</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-160">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-160">#</a> <code>FILTER_FLAG_ALLOW_HEX</code></h3>
           <pre><code class="lang-php">FILTER_FLAG_ALLOW_HEX: int = 2</code></pre>
           <p>Lets `FILTER_VALIDATE_INT` accept an unsigned `0x`-prefixed hex literal.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-135">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-135">#</a> <code>FILTER_FLAG_STRIP_LOW</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-161">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-161">#</a> <code>FILTER_FLAG_STRIP_LOW</code></h3>
           <pre><code class="lang-php">FILTER_FLAG_STRIP_LOW: int = 4</code></pre>
           <p>Flag asking sanitizers to drop bytes below 0x20. DIVERGENCE: not implemented.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-136">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-136">#</a> <code>FILTER_FLAG_STRIP_HIGH</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-162">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-162">#</a> <code>FILTER_FLAG_STRIP_HIGH</code></h3>
           <pre><code class="lang-php">FILTER_FLAG_STRIP_HIGH: int = 8</code></pre>
           <p>Flag asking sanitizers to drop bytes at or above 0x80. DIVERGENCE: not implemented.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-137">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-137">#</a> <code>FILTER_FLAG_ALLOW_FRACTION</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-163">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-163">#</a> <code>FILTER_FLAG_ALLOW_FRACTION</code></h3>
           <pre><code class="lang-php">FILTER_FLAG_ALLOW_FRACTION: int = 4096</code></pre>
           <p>Lets `FILTER_SANITIZE_NUMBER_FLOAT` keep `.`.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-138">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-138">#</a> <code>FILTER_FLAG_ALLOW_THOUSAND</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-164">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-164">#</a> <code>FILTER_FLAG_ALLOW_THOUSAND</code></h3>
           <pre><code class="lang-php">FILTER_FLAG_ALLOW_THOUSAND: int = 8192</code></pre>
           <p>Lets `FILTER_SANITIZE_NUMBER_FLOAT` keep `,`, and lets `FILTER_VALIDATE_FLOAT` strip it before parsing.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-139">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-139">#</a> <code>FILTER_FLAG_ALLOW_SCIENTIFIC</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-165">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-165">#</a> <code>FILTER_FLAG_ALLOW_SCIENTIFIC</code></h3>
           <pre><code class="lang-php">FILTER_FLAG_ALLOW_SCIENTIFIC: int = 16384</code></pre>
           <p>Lets `FILTER_SANITIZE_NUMBER_FLOAT` keep `e` and `E`.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-140">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-140">#</a> <code>FILTER_FLAG_IPV4</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-166">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-166">#</a> <code>FILTER_FLAG_IPV4</code></h3>
           <pre><code class="lang-php">FILTER_FLAG_IPV4: int = 1048576</code></pre>
           <p>Restricts `FILTER_VALIDATE_IP` to IPv4. It shares its integer with `FILTER_FLAG_HOSTNAME`, so passing it to `FILTER_VALIDATE_DOMAIN` silently enables the hostname check.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-141">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-141">#</a> <code>FILTER_FLAG_IPV6</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-167">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-167">#</a> <code>FILTER_FLAG_IPV6</code></h3>
           <pre><code class="lang-php">FILTER_FLAG_IPV6: int = 2097152</code></pre>
           <p>Restricts `FILTER_VALIDATE_IP` to IPv6. Setting neither family flag, or both, accepts either.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-142">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-142">#</a> <code>FILTER_FLAG_HOSTNAME</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-168">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-168">#</a> <code>FILTER_FLAG_HOSTNAME</code></h3>
           <pre><code class="lang-php">FILTER_FLAG_HOSTNAME: int = 1048576</code></pre>
           <p>Adds an RFC 1123 label check to `FILTER_VALIDATE_DOMAIN`. Shares its integer with `FILTER_FLAG_IPV4`.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-143">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-143">#</a> <code>FILTER_NULL_ON_FAILURE</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-169">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-169">#</a> <code>FILTER_NULL_ON_FAILURE</code></h3>
           <pre><code class="lang-php">FILTER_NULL_ON_FAILURE: int = 134217728</code></pre>
           <p>Makes a failing `filter_var()` return null instead of false. Honoured by every validating filter.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-144">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-144">#</a> <code>FILTER_REQUIRE_SCALAR</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-170">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-170">#</a> <code>FILTER_REQUIRE_SCALAR</code></h3>
           <pre><code class="lang-php">FILTER_REQUIRE_SCALAR: int = 33554432</code></pre>
           <p>Flag requiring a scalar subject. Redundant here: an array subject already fails every filter.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-145">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-145">#</a> <code>FILTER_REQUIRE_ARRAY</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-171">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-171">#</a> <code>FILTER_REQUIRE_ARRAY</code></h3>
           <pre><code class="lang-php">FILTER_REQUIRE_ARRAY: int = 16777216</code></pre>
           <p>Flag requiring an array subject. DIVERGENCE: not implemented.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-146">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-146">#</a> <code>FILTER_FORCE_ARRAY</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-172">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-172">#</a> <code>FILTER_FORCE_ARRAY</code></h3>
           <pre><code class="lang-php">FILTER_FORCE_ARRAY: int = 67108864</code></pre>
           <p>Flag wrapping a scalar result in an array. DIVERGENCE: not implemented.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-147">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-147">#</a> <code>MB_CASE_UPPER</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-173">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-173">#</a> <code>MB_CASE_UPPER</code></h3>
           <pre><code class="lang-php">MB_CASE_UPPER: int = 0</code></pre>
           <p>`mb_convert_case()` mode uppercasing the whole string. Also the fallback for any unrecognized mode.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-148">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-148">#</a> <code>MB_CASE_LOWER</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-174">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-174">#</a> <code>MB_CASE_LOWER</code></h3>
           <pre><code class="lang-php">MB_CASE_LOWER: int = 1</code></pre>
           <p>`mb_convert_case()` mode lowercasing the whole string.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-149">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-149">#</a> <code>MB_CASE_TITLE</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-175">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-175">#</a> <code>MB_CASE_TITLE</code></h3>
           <pre><code class="lang-php">MB_CASE_TITLE: int = 2</code></pre>
           <p>`mb_convert_case()` mode title-casing each run of letters. PHP's `_SIMPLE` variants (3-5) are not distinguished and fall into the uppercase branch.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-150">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-150">#</a> <code>FILE_USE_INCLUDE_PATH</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-176">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-176">#</a> <code>FILE_USE_INCLUDE_PATH</code></h3>
           <pre><code class="lang-php">FILE_USE_INCLUDE_PATH: int = 1</code></pre>
           <p>Flag asking the file functions to search the include path. DIVERGENCE: not honoured — phplang has no include path.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-151">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-151">#</a> <code>FILE_APPEND</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-177">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-177">#</a> <code>FILE_APPEND</code></h3>
           <pre><code class="lang-php">FILE_APPEND: int = 8</code></pre>
           <p>`file_put_contents()` flag appending instead of truncating. This is the one flag that function honours.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-152">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-152">#</a> <code>FILE_IGNORE_NEW_LINES</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-178">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-178">#</a> <code>FILE_IGNORE_NEW_LINES</code></h3>
           <pre><code class="lang-php">FILE_IGNORE_NEW_LINES: int = 2</code></pre>
           <p>`file()` flag stripping the trailing `\n` (and a preceding `\r`) from each line. Honoured.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-153">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-153">#</a> <code>FILE_SKIP_EMPTY_LINES</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-179">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-179">#</a> <code>FILE_SKIP_EMPTY_LINES</code></h3>
           <pre><code class="lang-php">FILE_SKIP_EMPTY_LINES: int = 4</code></pre>
           <p>`file()` flag dropping empty lines. Honoured.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-154">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-154">#</a> <code>FILE_NO_DEFAULT_CONTEXT</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-180">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-180">#</a> <code>FILE_NO_DEFAULT_CONTEXT</code></h3>
           <pre><code class="lang-php">FILE_NO_DEFAULT_CONTEXT: int = 16</code></pre>
           <p>Stream-context flag. Defined for compatibility; phplang has no stream contexts.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-155">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-155">#</a> <code>LOCK_SH</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-181">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-181">#</a> <code>LOCK_SH</code></h3>
           <pre><code class="lang-php">LOCK_SH: int = 1</code></pre>
           <p>Shared advisory lock. DIVERGENCE: there is no `flock()` in this build and `file_put_contents` ignores `LOCK_EX`, so no locking happens anywhere.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-156">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-156">#</a> <code>LOCK_EX</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-182">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-182">#</a> <code>LOCK_EX</code></h3>
           <pre><code class="lang-php">LOCK_EX: int = 2</code></pre>
           <p>Exclusive advisory lock. Accepted by `file_put_contents` and silently ignored.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-157">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-157">#</a> <code>LOCK_UN</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-183">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-183">#</a> <code>LOCK_UN</code></h3>
           <pre><code class="lang-php">LOCK_UN: int = 3</code></pre>
           <p>Lock release. Defined for compatibility only.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-158">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-158">#</a> <code>LOCK_NB</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-184">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-184">#</a> <code>LOCK_NB</code></h3>
           <pre><code class="lang-php">LOCK_NB: int = 4</code></pre>
           <p>Non-blocking lock flag. Defined for compatibility only.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-159">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-159">#</a> <code>SEEK_SET</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-185">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-185">#</a> <code>SEEK_SET</code></h3>
           <pre><code class="lang-php">SEEK_SET: int = 0</code></pre>
           <p>`fseek` whence: from the start of the stream.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-160">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-160">#</a> <code>SEEK_CUR</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-186">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-186">#</a> <code>SEEK_CUR</code></h3>
           <pre><code class="lang-php">SEEK_CUR: int = 1</code></pre>
           <p>`fseek` whence: from the current position.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-161">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-161">#</a> <code>SEEK_END</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-187">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-187">#</a> <code>SEEK_END</code></h3>
           <pre><code class="lang-php">SEEK_END: int = 2</code></pre>
           <p>`fseek` whence: from the end of the stream.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-162">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-162">#</a> <code>SCANDIR_SORT_ASCENDING</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-188">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-188">#</a> <code>SCANDIR_SORT_ASCENDING</code></h3>
           <pre><code class="lang-php">SCANDIR_SORT_ASCENDING: int = 0</code></pre>
           <p>`scandir()` sort order, ascending. The default; sorting is Rust byte order, not PHP's locale collation.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-163">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-163">#</a> <code>SCANDIR_SORT_DESCENDING</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-189">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-189">#</a> <code>SCANDIR_SORT_DESCENDING</code></h3>
           <pre><code class="lang-php">SCANDIR_SORT_DESCENDING: int = 1</code></pre>
           <p>`scandir()` sort order, descending. Honoured.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-164">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-164">#</a> <code>SCANDIR_SORT_NONE</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-190">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-190">#</a> <code>SCANDIR_SORT_NONE</code></h3>
           <pre><code class="lang-php">SCANDIR_SORT_NONE: int = 2</code></pre>
           <p>`scandir()` mode leaving the entries unsorted. DIVERGENCE: not recognized — the result is always sorted.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-165">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-165">#</a> <code>PATHINFO_DIRNAME</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-191">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-191">#</a> <code>PATHINFO_DIRNAME</code></h3>
           <pre><code class="lang-php">PATHINFO_DIRNAME: int = 1</code></pre>
           <p>`pathinfo()` selector returning just the directory component as a string.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-166">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-166">#</a> <code>PATHINFO_BASENAME</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-192">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-192">#</a> <code>PATHINFO_BASENAME</code></h3>
           <pre><code class="lang-php">PATHINFO_BASENAME: int = 2</code></pre>
           <p>`pathinfo()` selector returning just the final component.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-167">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-167">#</a> <code>PATHINFO_EXTENSION</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-193">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-193">#</a> <code>PATHINFO_EXTENSION</code></h3>
           <pre><code class="lang-php">PATHINFO_EXTENSION: int = 4</code></pre>
           <p>`pathinfo()` selector returning the text after the last dot.</p>
           <pre><code class="lang-php">echo pathinfo("a/b.txt", PATHINFO_EXTENSION);   // =&gt; txt</code></pre>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-168">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-168">#</a> <code>PATHINFO_FILENAME</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-194">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-194">#</a> <code>PATHINFO_FILENAME</code></h3>
           <pre><code class="lang-php">PATHINFO_FILENAME: int = 8</code></pre>
           <p>`pathinfo()` selector returning the basename with its extension removed.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-169">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-169">#</a> <code>PATHINFO_ALL</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-195">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-195">#</a> <code>PATHINFO_ALL</code></h3>
           <pre><code class="lang-php">PATHINFO_ALL: int = 15</code></pre>
           <p>`pathinfo()` selector returning the full associative array. This is what a call with no second argument produces.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-170">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-170">#</a> <code>ENT_NOQUOTES</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-196">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-196">#</a> <code>ENT_NOQUOTES</code></h3>
           <pre><code class="lang-php">ENT_NOQUOTES: int = 0</code></pre>
           <p>HTML-entity flag leaving both quote characters alone. Read by `get_html_translation_table()`; `htmlspecialchars()` itself ignores its flags argument.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-171">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-171">#</a> <code>ENT_COMPAT</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-197">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-197">#</a> <code>ENT_COMPAT</code></h3>
           <pre><code class="lang-php">ENT_COMPAT: int = 2</code></pre>
           <p>HTML-entity flag converting double quotes only.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-172">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-172">#</a> <code>ENT_QUOTES</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-198">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-198">#</a> <code>ENT_QUOTES</code></h3>
           <pre><code class="lang-php">ENT_QUOTES: int = 3</code></pre>
           <p>HTML-entity flag converting both quote characters. The default for `get_html_translation_table()`.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-173">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-173">#</a> <code>ENT_HTML401</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-199">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-199">#</a> <code>ENT_HTML401</code></h3>
           <pre><code class="lang-php">ENT_HTML401: int = 0</code></pre>
           <p>Document-type bit selecting HTML 4.01. DIVERGENCE: the doctype bits are not read, so the single quote is always emitted as `&amp;#039;`.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-174">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-174">#</a> <code>ENT_HTML5</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-200">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-200">#</a> <code>ENT_HTML5</code></h3>
           <pre><code class="lang-php">ENT_HTML5: int = 48</code></pre>
           <p>Document-type bit selecting HTML 5. Not honoured.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-175">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-175">#</a> <code>ENT_XML1</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-201">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-201">#</a> <code>ENT_XML1</code></h3>
           <pre><code class="lang-php">ENT_XML1: int = 16</code></pre>
           <p>Document-type bit selecting XML 1. Not honoured.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-176">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-176">#</a> <code>ENT_XHTML</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-202">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-202">#</a> <code>ENT_XHTML</code></h3>
           <pre><code class="lang-php">ENT_XHTML: int = 32</code></pre>
           <p>Document-type bit selecting XHTML. Not honoured.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-177">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-177">#</a> <code>ENT_SUBSTITUTE</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-203">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-203">#</a> <code>ENT_SUBSTITUTE</code></h3>
           <pre><code class="lang-php">ENT_SUBSTITUTE: int = 8</code></pre>
           <p>Flag replacing invalid code unit sequences with U+FFFD. Not honoured; phplang strings are always valid UTF-8.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-178">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-178">#</a> <code>ENT_IGNORE</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-204">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-204">#</a> <code>ENT_IGNORE</code></h3>
           <pre><code class="lang-php">ENT_IGNORE: int = 4</code></pre>
           <p>Flag discarding invalid code unit sequences. Not honoured, for the same reason as `ENT_SUBSTITUTE`.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-179">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-179">#</a> <code>M_PI</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-205">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-205">#</a> <code>M_PI</code></h3>
           <pre><code class="lang-php">M_PI: float = 3.141592653589793</code></pre>
           <p>The ratio of a circle's circumference to its diameter. `pi()` returns the same value.</p>
           <pre><code class="lang-php">echo round(M_PI, 4);   // =&gt; 3.1416</code></pre>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-180">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-180">#</a> <code>M_E</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-206">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-206">#</a> <code>M_E</code></h3>
           <pre><code class="lang-php">M_E: float = 2.718281828459045</code></pre>
           <p>Euler's number, the base of the natural logarithm.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-181">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-181">#</a> <code>M_SQRT2</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-207">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-207">#</a> <code>M_SQRT2</code></h3>
           <pre><code class="lang-php">M_SQRT2: float = 1.4142135623730951</code></pre>
           <p>The square root of 2.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-182">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-182">#</a> <code>M_SQRT1_2</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-208">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-208">#</a> <code>M_SQRT1_2</code></h3>
           <pre><code class="lang-php">M_SQRT1_2: float = 0.7071067811865476</code></pre>
           <p>The square root of 1/2.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-183">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-183">#</a> <code>M_SQRT3</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-209">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-209">#</a> <code>M_SQRT3</code></h3>
           <pre><code class="lang-php">M_SQRT3: float = 1.7320508075688772</code></pre>
           <p>The square root of 3.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-184">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-184">#</a> <code>M_2_SQRTPI</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-210">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-210">#</a> <code>M_2_SQRTPI</code></h3>
           <pre><code class="lang-php">M_2_SQRTPI: float = 1.1283791670955126</code></pre>
           <p>Two divided by the square root of pi.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-185">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-185">#</a> <code>M_SQRTPI</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-211">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-211">#</a> <code>M_SQRTPI</code></h3>
           <pre><code class="lang-php">M_SQRTPI: float = 1.7724538509055159</code></pre>
           <p>The square root of pi.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-186">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-186">#</a> <code>M_PI_2</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-212">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-212">#</a> <code>M_PI_2</code></h3>
           <pre><code class="lang-php">M_PI_2: float = 1.5707963267948966</code></pre>
           <p>Pi divided by 2.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-187">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-187">#</a> <code>M_PI_4</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-213">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-213">#</a> <code>M_PI_4</code></h3>
           <pre><code class="lang-php">M_PI_4: float = 0.7853981633974483</code></pre>
           <p>Pi divided by 4.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-188">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-188">#</a> <code>M_1_PI</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-214">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-214">#</a> <code>M_1_PI</code></h3>
           <pre><code class="lang-php">M_1_PI: float = 0.3183098861837907</code></pre>
           <p>One divided by pi.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-189">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-189">#</a> <code>M_2_PI</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-215">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-215">#</a> <code>M_2_PI</code></h3>
           <pre><code class="lang-php">M_2_PI: float = 0.6366197723675814</code></pre>
           <p>Two divided by pi.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-190">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-190">#</a> <code>M_LN2</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-216">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-216">#</a> <code>M_LN2</code></h3>
           <pre><code class="lang-php">M_LN2: float = 0.6931471805599453</code></pre>
           <p>The natural logarithm of 2.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-191">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-191">#</a> <code>M_LN10</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-217">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-217">#</a> <code>M_LN10</code></h3>
           <pre><code class="lang-php">M_LN10: float = 2.302585092994046</code></pre>
           <p>The natural logarithm of 10.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-192">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-192">#</a> <code>M_LOG2E</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-218">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-218">#</a> <code>M_LOG2E</code></h3>
           <pre><code class="lang-php">M_LOG2E: float = 1.4426950408889634</code></pre>
           <p>The base-2 logarithm of e.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-193">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-193">#</a> <code>M_LOG10E</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-219">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-219">#</a> <code>M_LOG10E</code></h3>
           <pre><code class="lang-php">M_LOG10E: float = 0.4342944819032518</code></pre>
           <p>The base-10 logarithm of e.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-194">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-194">#</a> <code>M_EULER</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-220">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-220">#</a> <code>M_EULER</code></h3>
           <pre><code class="lang-php">M_EULER: float = 0.5772156649015329</code></pre>
           <p>The Euler-Mascheroni constant.</p>
         </article>
@@ -5426,9 +5556,9 @@ echo implode(",", $a), "|", implode(",", $b);   // =&gt; 1,2,3|a,b,c</code></pre
         </article>
         <article class="doc-entry" id="doc-system-and-runtime-environment-6">
           <h3><a class="doc-anchor" href="#doc-system-and-runtime-environment-6">#</a> <code>phpversion</code></h3>
-          <pre><code class="lang-php">phpversion(?string $extension = null): string</code></pre>
-          <p>DIVERGENCE: always the literal `"8.3.0"`. The `$extension` argument is never read, so a per-extension lookup returns the PHP version instead of `false`.</p>
-          <pre><code class="lang-php">echo phpversion();   // =&gt; 8.3.0</code></pre>
+          <pre><code class="lang-php">phpversion(?string $extension = null): string|false</code></pre>
+          <p>`PHP_VERSION`. DIVERGENCE: the `$extension` argument is never read, so a per-extension lookup returns the PHP version instead of the extension's or `false`.</p>
+          <pre><code class="lang-php">var_dump(phpversion() === PHP_VERSION);   // =&gt; bool(true)</code></pre>
         </article>
         <article class="doc-entry" id="doc-system-and-runtime-environment-7">
           <h3><a class="doc-anchor" href="#doc-system-and-runtime-environment-7">#</a> <code>php_sapi_name</code></h3>

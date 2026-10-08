@@ -1733,12 +1733,24 @@ impl PhpHost {
     /// that leniency was PHP 7's and was removed. Raising it needs a throw, which
     /// this cannot do, so both callers turn the `None` into one themselves.
     pub fn const_fetch(&self, name: &str) -> Option<Value> {
-        self.constants.get(name).cloned()
+        // `zend_get_constant_str_impl`: a leading `\` names the global
+        // namespace, and a name the table lacks may still be one of the three
+        // special constants, matched case-insensitively (`zend_get_special_const`).
+        let name = name.strip_prefix('\\').unwrap_or(name);
+        self.constants
+            .get(name)
+            .cloned()
+            .or_else(|| match name.to_ascii_lowercase().as_str() {
+                "true" => Some(Value::bool(true)),
+                "false" => Some(Value::bool(false)),
+                "null" => Some(Value::Undef),
+                _ => None,
+            })
     }
 
     /// Whether a constant of this name is defined.
     pub fn const_defined(&self, name: &str) -> bool {
-        self.constants.contains_key(name)
+        self.const_fetch(name).is_some()
     }
 
     /// Defines a constant, returning `true` unless it was already defined — PHP
@@ -6390,6 +6402,19 @@ pub fn is_superglobal(name: &str) -> bool {
     )
 }
 
+/// The PHP version this engine answers to: the reference it is measured
+/// against (`tests/data/parity_reference_version.txt`). `PHP_VERSION`,
+/// `PHP_*_VERSION`, `PHP_VERSION_ID` and `phpversion()` all derive from it, so a
+/// `version_compare(PHP_VERSION, "8.4", ">=")` takes the branch the reference does.
+pub const PHP_VERSION: &str = "8.5.11";
+
+/// `PHP_VERSION` split into its three numbers.
+fn php_version_parts() -> (i64, i64, i64) {
+    let mut it = PHP_VERSION.split('.').map(|p| p.parse().unwrap_or(0));
+    let mut next = || it.next().unwrap_or(0);
+    (next(), next(), next())
+}
+
 fn predefined_constants() -> FxHashMap<String, Value> {
     let mut m = FxHashMap::default();
     let mut si = |k: &str, v: i64| {
@@ -6400,10 +6425,37 @@ fn predefined_constants() -> FxHashMap<String, Value> {
     si("PHP_INT_MIN", i64::MIN);
     si("PHP_INT_SIZE", 8);
     si("PHP_FLOAT_DIG", 15);
-    si("PHP_MAJOR_VERSION", 8);
-    si("PHP_MINOR_VERSION", 3);
-    si("PHP_RELEASE_VERSION", 0);
-    si("PHP_VERSION_ID", 80300);
+    let (major, minor, release) = php_version_parts();
+    si("PHP_MAJOR_VERSION", major);
+    si("PHP_MINOR_VERSION", minor);
+    si("PHP_RELEASE_VERSION", release);
+    si("PHP_VERSION_ID", major * 10000 + minor * 100 + release);
+    si("PHP_MAXPATHLEN", 1024);
+    si("PHP_FD_SETSIZE", 1024);
+    si("INI_USER", 1);
+    si("INI_PERDIR", 2);
+    si("INI_SYSTEM", 4);
+    si("INI_ALL", 7);
+    si("CONNECTION_ABORTED", 1);
+    si("CONNECTION_NORMAL", 0);
+    si("CONNECTION_TIMEOUT", 2);
+    si("PHP_QUERY_RFC1738", 1);
+    si("PHP_QUERY_RFC3986", 2);
+    for (i, k) in [
+        "UPLOAD_ERR_OK",
+        "UPLOAD_ERR_INI_SIZE",
+        "UPLOAD_ERR_FORM_SIZE",
+        "UPLOAD_ERR_PARTIAL",
+        "UPLOAD_ERR_NO_FILE",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        si(k, i as i64);
+    }
+    si("UPLOAD_ERR_NO_TMP_DIR", 6);
+    si("UPLOAD_ERR_CANT_WRITE", 7);
+    si("UPLOAD_ERR_EXTENSION", 8);
     si("PHP_ROUND_HALF_UP", 1);
     si("PHP_ROUND_HALF_DOWN", 2);
     si("PHP_ROUND_HALF_EVEN", 3);
@@ -6654,7 +6706,9 @@ fn predefined_constants() -> FxHashMap<String, Value> {
     ] {
         ss(k, v);
     }
-    ss("PHP_VERSION", "8.3.0");
+    ss("PHP_VERSION", PHP_VERSION);
+    ss("PHP_EXTRA_VERSION", "");
+    ss("PHP_SHLIB_SUFFIX", "so");
     ss(
         "PHP_OS",
         if cfg!(target_os = "macos") {
@@ -6700,11 +6754,21 @@ fn predefined_constants() -> FxHashMap<String, Value> {
     sf("M_LOG10E", std::f64::consts::LOG10_E);
     sf("M_EULER", 0.5772156649015329);
     sf("M_SQRTPI", 1.7724538509055159);
+    sf("M_LNPI", 1.1447298858494002);
     sf("PHP_FLOAT_EPSILON", f64::EPSILON);
     sf("PHP_FLOAT_MAX", f64::MAX);
     sf("PHP_FLOAT_MIN", f64::MIN_POSITIVE);
     sf("INF", f64::INFINITY);
     sf("NAN", f64::NAN);
+    // build facts, booleans in the reference
+    for k in [
+        "ZEND_THREAD_SAFE",
+        "ZEND_DEBUG_BUILD",
+        "PHP_DEBUG",
+        "PHP_ZTS",
+    ] {
+        m.insert(k.to_string(), Value::bool(false));
+    }
     m
 }
 

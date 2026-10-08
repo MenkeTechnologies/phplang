@@ -86,6 +86,17 @@ block in `tests/data/parity_corpus.php`.
   end of the request finalizes every buffer after the shutdown functions and
   destructors. A closure handler is named `{closure:<file>:<line>}`, as
   `zend_get_callable_name_ex` names it.
+* **The engine reported itself as PHP 8.3.0.** `PHP_VERSION`, the
+  `PHP_*_VERSION` parts, `PHP_VERSION_ID` and `phpversion()` now all derive from
+  one constant, the reference's version, so `version_compare(PHP_VERSION,
+  "8.4", ">=")` takes the reference's branch. `defined()`/`constant()` answer
+  `true`/`false`/`null` in any case and strip a leading `\\`
+  (`zend_get_constant_str_impl`), and the Core/standard build constants
+  `PHP_EXTRA_VERSION`, `PHP_DEBUG`, `PHP_ZTS`, `ZEND_THREAD_SAFE`,
+  `ZEND_DEBUG_BUILD`, `PHP_MAXPATHLEN`, `PHP_FD_SETSIZE`, `PHP_SHLIB_SUFFIX`,
+  `M_LNPI`, `INI_*`, `CONNECTION_*`, `PHP_QUERY_*` and `UPLOAD_ERR_*` exist.
+  `tests/superglobals.rs` asserted `8.3.0`; it now asserts the reference's
+  major.minor from `tests/data/parity_reference_version.txt`.
 
 ## Round 20 — prelude closures and frames, SPL iterators
 

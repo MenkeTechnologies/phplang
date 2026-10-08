@@ -1678,3 +1678,14 @@ class D { function __destruct() { echo "dtor"; } }
 $d = new D;
 ob_start(fn($b) => strrev($b), 2); echo "abc";
 exit(3);
+#==#
+// The version constants are the reference's, all from one string, and
+// true/false/null are constants to defined()/constant() in any case; a leading
+// backslash names the global namespace.
+var_dump(PHP_VERSION === phpversion(), PHP_VERSION_ID === PHP_MAJOR_VERSION * 10000 + PHP_MINOR_VERSION * 100 + PHP_RELEASE_VERSION);
+var_dump(PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION . "." . PHP_RELEASE_VERSION . PHP_EXTRA_VERSION === PHP_VERSION);
+var_dump(version_compare(PHP_VERSION, "8.4", ">="), PHP_VERSION_ID >= 80400);
+var_dump(defined("TRUE"), defined("true"), constant("False"), constant("NULL"), defined("\\TRUE"), defined("\\PHP_EOL"), constant("\\M_PI"), defined("\\Foo\\BAR"));
+var_dump(ZEND_THREAD_SAFE, ZEND_DEBUG_BUILD, PHP_DEBUG, PHP_ZTS, PHP_EXTRA_VERSION, M_LNPI, PHP_QUERY_RFC1738, PHP_QUERY_RFC3986);
+var_dump(INI_USER, INI_PERDIR, INI_SYSTEM, INI_ALL, CONNECTION_ABORTED, CONNECTION_NORMAL, CONNECTION_TIMEOUT);
+var_dump(UPLOAD_ERR_OK, UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE, UPLOAD_ERR_PARTIAL, UPLOAD_ERR_NO_FILE, UPLOAD_ERR_NO_TMP_DIR, UPLOAD_ERR_CANT_WRITE, UPLOAD_ERR_EXTENSION);

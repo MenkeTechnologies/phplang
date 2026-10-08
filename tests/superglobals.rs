@@ -59,7 +59,17 @@ fn getenv_and_putenv_roundtrip() {
 
 #[test]
 fn version_and_sapi() {
-    assert_eq!(run("<?php echo phpversion();"), "8.3.0");
+    // The version is the reference's, whose major.minor the parity harness
+    // records, and `phpversion()` agrees with `PHP_VERSION`.
+    let reference = include_str!("data/parity_reference_version.txt").trim();
+    assert_eq!(
+        run("<?php echo PHP_MAJOR_VERSION, '.', PHP_MINOR_VERSION;"),
+        reference
+    );
+    assert_eq!(
+        run("<?php echo phpversion() === PHP_VERSION ? 'Y' : 'N';"),
+        "Y"
+    );
     assert_eq!(run("<?php echo php_sapi_name();"), "cli");
     assert_eq!(run("<?php echo getmypid() > 0 ? 'Y' : 'N';"), "Y");
 }

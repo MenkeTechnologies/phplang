@@ -3179,3 +3179,41 @@ Stack trace:
 
 #REC 149 exit=3 out=12 err=0
 <xcbadsrotd>
+#REC 150 exit=0 out=359 err=0
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(false)
+NULL
+bool(true)
+bool(true)
+float(3.141592653589793)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+string(0) ""
+float(1.1447298858494002)
+int(1)
+int(2)
+int(1)
+int(2)
+int(4)
+int(7)
+int(1)
+int(0)
+int(2)
+int(0)
+int(1)
+int(2)
+int(3)
+int(4)
+int(6)
+int(7)
+int(8)
+

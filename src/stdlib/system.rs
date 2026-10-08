@@ -33,7 +33,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             }
             Value::bool(true)
         }
-        "phpversion" => Value::str("8.3.0"),
+        "phpversion" => Value::str(crate::host::PHP_VERSION),
         "php_sapi_name" => Value::str("cli"),
         "php_uname" => {
             let mode = if args.is_empty() {
