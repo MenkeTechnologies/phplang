@@ -1216,6 +1216,7 @@ static PARAMS: &[(&str, Params)] = &[
         "str_contains",
         &[(1, "haystack", "string"), (2, "needle", "string")],
     ),
+    ("str_decrement", &[(1, "string", "string")]),
     (
         "str_ends_with",
         &[(1, "haystack", "string"), (2, "needle", "string")],
@@ -1229,6 +1230,7 @@ static PARAMS: &[(&str, Params)] = &[
             (4, "escape", "string"),
         ],
     ),
+    ("str_increment", &[(1, "string", "string")]),
     (
         "str_ireplace",
         &[

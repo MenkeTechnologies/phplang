@@ -3008,157 +3008,169 @@ strtr(string $string, string $from, string $to): string</code></pre>
           <pre><code class="lang-php">echo strrchr("a/b/c", "/");   // =&gt; /c</code></pre>
         </article>
         <article class="doc-entry" id="doc-strings-12">
-          <h3><a class="doc-anchor" href="#doc-strings-12">#</a> <code>strpbrk</code></h3>
+          <h3><a class="doc-anchor" href="#doc-strings-12">#</a> <code>str_increment</code></h3>
+          <pre><code class="lang-php">str_increment(string $string): string</code></pre>
+          <p>Perl-style alphanumeric increment (PHP 8.3): each position steps within `a-z`, `A-Z` or `0-9` and carries left on wrap-around; a carry out of the first position prepends `1` for a digit or the wrapped letter otherwise. An empty or non-alphanumeric-ASCII string is a `ValueError`.</p>
+          <pre><code class="lang-php">var_dump(str_increment("Az"));   // =&gt; string(2) "Ba"</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-strings-13">
+          <h3><a class="doc-anchor" href="#doc-strings-13">#</a> <code>str_decrement</code></h3>
+          <pre><code class="lang-php">str_decrement(string $string): string</code></pre>
+          <p>Inverse of `str_increment` (PHP 8.3): borrows leftwards, and drops the first position when it borrows out of it or leaves a leading `0`. A string starting with `0`, or a single `a`/`A`, is out of decrement range (`ValueError`), as are empty and non-alphanumeric-ASCII strings.</p>
+          <pre><code class="lang-php">var_dump(str_decrement("Ba"));   // =&gt; string(2) "Az"</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-strings-14">
+          <h3><a class="doc-anchor" href="#doc-strings-14">#</a> <code>strpbrk</code></h3>
           <pre><code class="lang-php">strpbrk(string $string, string $characters): string|false</code></pre>
           <p>The substring beginning at the first byte that belongs to the character set, through the end; `false` when no byte matches.</p>
           <pre><code class="lang-php">echo strpbrk("This is a test", "st");   // =&gt; s is a test</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-13">
-          <h3><a class="doc-anchor" href="#doc-strings-13">#</a> <code>strspn</code></h3>
+        <article class="doc-entry" id="doc-strings-15">
+          <h3><a class="doc-anchor" href="#doc-strings-15">#</a> <code>strspn</code></h3>
           <pre><code class="lang-php">strspn(string $string, string $characters, int $offset = 0, ?int $length = null): int</code></pre>
           <p>Length in bytes of the initial run within the window whose bytes all belong to the set. Set membership is byte-oriented, so a multibyte mask character is matched byte by byte.</p>
           <pre><code class="lang-php">echo strspn("42 apples", "0123456789");   // =&gt; 2</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-14">
-          <h3><a class="doc-anchor" href="#doc-strings-14">#</a> <code>strcspn</code></h3>
+        <article class="doc-entry" id="doc-strings-16">
+          <h3><a class="doc-anchor" href="#doc-strings-16">#</a> <code>strcspn</code></h3>
           <pre><code class="lang-php">strcspn(string $string, string $characters, int $offset = 0, ?int $length = null): int</code></pre>
           <p>The complement of `strspn`: the length of the initial run of bytes NOT in the set. It shares the same match arm with the membership test inverted.</p>
           <pre><code class="lang-php">echo strcspn("abc123", "0123456789");   // =&gt; 3</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-15">
-          <h3><a class="doc-anchor" href="#doc-strings-15">#</a> <code>stripos</code></h3>
+        <article class="doc-entry" id="doc-strings-17">
+          <h3><a class="doc-anchor" href="#doc-strings-17">#</a> <code>stripos</code></h3>
           <pre><code class="lang-php">stripos(string $haystack, string $needle, int $offset = 0): int|false</code></pre>
           <p>Byte offset of the first ASCII-case-insensitive match at or after the offset, or `false`. A negative offset counts from the end and an empty needle returns the offset. DIVERGENCE: folding is ASCII-only.</p>
           <pre><code class="lang-php">echo stripos("Hello", "L");   // =&gt; 2</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-16">
-          <h3><a class="doc-anchor" href="#doc-strings-16">#</a> <code>strrpos</code></h3>
+        <article class="doc-entry" id="doc-strings-18">
+          <h3><a class="doc-anchor" href="#doc-strings-18">#</a> <code>strrpos</code></h3>
           <pre><code class="lang-php">strrpos(string $haystack, string $needle, int $offset = 0): int|false</code></pre>
           <p>Byte offset of the LAST match. A non-negative offset requires the match to start at or after it; a negative one caps how late it may start. An empty needle returns the string length (PHP 8 semantics).</p>
           <pre><code class="lang-php">echo strrpos("hello", "l");   // =&gt; 3</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-17">
-          <h3><a class="doc-anchor" href="#doc-strings-17">#</a> <code>strripos</code></h3>
+        <article class="doc-entry" id="doc-strings-19">
+          <h3><a class="doc-anchor" href="#doc-strings-19">#</a> <code>strripos</code></h3>
           <pre><code class="lang-php">strripos(string $haystack, string $needle, int $offset = 0): int|false</code></pre>
           <p>`strrpos` with ASCII case-insensitive comparison; it shares the same match arm. DIVERGENCE: folding is ASCII-only.</p>
           <pre><code class="lang-php">echo strripos("HELLO", "l");   // =&gt; 3</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-18">
-          <h3><a class="doc-anchor" href="#doc-strings-18">#</a> <code>strncasecmp</code></h3>
+        <article class="doc-entry" id="doc-strings-20">
+          <h3><a class="doc-anchor" href="#doc-strings-20">#</a> <code>strncasecmp</code></h3>
           <pre><code class="lang-php">strncasecmp(string $string1, string $string2, int $length): int</code></pre>
           <p>Compares the first `$length` bytes after ASCII-lowercasing, returning `-1`, `0`, or `1`. A negative length raises `strncasecmp(): Argument #3 ($length) must be greater than or equal to 0`.</p>
           <pre><code class="lang-php">echo strncasecmp("Hello", "HELLO world", 5);   // =&gt; 0</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-19">
-          <h3><a class="doc-anchor" href="#doc-strings-19">#</a> <code>str_ireplace</code></h3>
+        <article class="doc-entry" id="doc-strings-21">
+          <h3><a class="doc-anchor" href="#doc-strings-21">#</a> <code>str_ireplace</code></h3>
           <pre><code class="lang-php">str_ireplace(array|string $search, array|string $replace, string $subject): string</code></pre>
           <p>ASCII-case-insensitive `str_replace`. An array `$search` is applied in sequence, index-matched against an array `$replace` (missing entries become `""`) or with one scalar for all. DIVERGENCE: an array `$subject` is string-cast rather than mapped, and there is no `$count` out-parameter.</p>
           <pre><code class="lang-php">echo str_ireplace("WORLD", "there", "Hello world");   // =&gt; Hello there</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-20">
-          <h3><a class="doc-anchor" href="#doc-strings-20">#</a> <code>nl2br</code></h3>
+        <article class="doc-entry" id="doc-strings-22">
+          <h3><a class="doc-anchor" href="#doc-strings-22">#</a> <code>nl2br</code></h3>
           <pre><code class="lang-php">nl2br(string $string): string</code></pre>
           <p>Inserts a `&lt;br /&gt;` before each `\r\n`, `\n\r`, `\r`, or `\n`, keeping the original break. DIVERGENCE: the `$use_xhtml` argument is not read, so the output is always the XHTML `&lt;br /&gt;`.</p>
           <pre><code class="lang-php">echo nl2br("a\nb");   // =&gt; a&lt;br /&gt;\nb</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-21">
-          <h3><a class="doc-anchor" href="#doc-strings-21">#</a> <code>chunk_split</code></h3>
+        <article class="doc-entry" id="doc-strings-23">
+          <h3><a class="doc-anchor" href="#doc-strings-23">#</a> <code>chunk_split</code></h3>
           <pre><code class="lang-php">chunk_split(string $string, int $length = 76, string $separator = "\r\n"): string</code></pre>
           <p>Appends the separator after every `$length` units. DIVERGENCE: chunking counts CODEPOINTS, not bytes as PHP does, so multibyte input chunks differently. A non-positive length throws `ValueError: chunk_split(): Argument #2 ($length) must be greater than 0`.</p>
           <pre><code class="lang-php">echo chunk_split("abcdef", 2, "-");   // =&gt; ab-cd-ef-</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-22">
-          <h3><a class="doc-anchor" href="#doc-strings-22">#</a> <code>quotemeta</code></h3>
+        <article class="doc-entry" id="doc-strings-24">
+          <h3><a class="doc-anchor" href="#doc-strings-24">#</a> <code>quotemeta</code></h3>
           <pre><code class="lang-php">quotemeta(string $string): string</code></pre>
           <p>Backslash-escapes each of `. \ + * ? [ ^ ] $ ( )`. The escape set is ASCII, so the result matches PHP's byte behaviour.</p>
           <pre><code class="lang-php">echo quotemeta("1+1=2");   // =&gt; 1\+1=2</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-23">
-          <h3><a class="doc-anchor" href="#doc-strings-23">#</a> <code>addslashes</code></h3>
+        <article class="doc-entry" id="doc-strings-25">
+          <h3><a class="doc-anchor" href="#doc-strings-25">#</a> <code>addslashes</code></h3>
           <pre><code class="lang-php">addslashes(string $string): string</code></pre>
           <p>Backslash-escapes `'`, `"`, and `\`, and maps a NUL byte to the two-character sequence `\0`.</p>
           <pre><code class="lang-php">echo addslashes("O'Reilly");   // =&gt; O\'Reilly</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-24">
-          <h3><a class="doc-anchor" href="#doc-strings-24">#</a> <code>stripslashes</code></h3>
+        <article class="doc-entry" id="doc-strings-26">
+          <h3><a class="doc-anchor" href="#doc-strings-26">#</a> <code>stripslashes</code></h3>
           <pre><code class="lang-php">stripslashes(string $string): string</code></pre>
           <p>Removes one level of backslashes, keeping the escaped character — except `\0`, which becomes a real NUL. A trailing lone backslash is dropped.</p>
           <pre><code class="lang-php">echo stripslashes("O\\'Reilly");   // =&gt; O'Reilly</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-25">
-          <h3><a class="doc-anchor" href="#doc-strings-25">#</a> <code>str_rot13</code></h3>
+        <article class="doc-entry" id="doc-strings-27">
+          <h3><a class="doc-anchor" href="#doc-strings-27">#</a> <code>str_rot13</code></h3>
           <pre><code class="lang-php">str_rot13(string $string): string</code></pre>
           <p>Rotates ASCII letters by 13 places. Every other character, including all non-ASCII, passes through untouched. Applying it twice restores the input.</p>
           <pre><code class="lang-php">echo str_rot13("abc");   // =&gt; nop</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-26">
-          <h3><a class="doc-anchor" href="#doc-strings-26">#</a> <code>similar_text</code></h3>
+        <article class="doc-entry" id="doc-strings-28">
+          <h3><a class="doc-anchor" href="#doc-strings-28">#</a> <code>similar_text</code></h3>
           <pre><code class="lang-php">similar_text(string $string1, string $string2): int</code></pre>
           <p>The number of matching characters, using PHP's own recursive longest-common-substring algorithm. DIVERGENCE: the by-reference `$percent` out-parameter does not exist, so only the count is available.</p>
           <pre><code class="lang-php">echo similar_text("World", "word");   // =&gt; 3</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-27">
-          <h3><a class="doc-anchor" href="#doc-strings-27">#</a> <code>levenshtein</code></h3>
+        <article class="doc-entry" id="doc-strings-29">
+          <h3><a class="doc-anchor" href="#doc-strings-29">#</a> <code>levenshtein</code></h3>
           <pre><code class="lang-php">levenshtein(string $string1, string $string2, int $insertion_cost = 1, int $replacement_cost = 1, int $deletion_cost = 1): int</code></pre>
           <p>Weighted edit distance over BYTES, so a multibyte character counts as several edits. Note the cost defaults apply only when the argument is absent — passing an explicit null coerces that cost to 0.</p>
           <pre><code class="lang-php">echo levenshtein("kitten", "sitting");   // =&gt; 3</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-28">
-          <h3><a class="doc-anchor" href="#doc-strings-28">#</a> <code>vsprintf</code></h3>
+        <article class="doc-entry" id="doc-strings-30">
+          <h3><a class="doc-anchor" href="#doc-strings-30">#</a> <code>vsprintf</code></h3>
           <pre><code class="lang-php">vsprintf(string $format, array $values): string</code></pre>
           <p>`sprintf` with the arguments supplied as one array, spread in iteration order with keys discarded.</p>
           <pre><code class="lang-php">echo vsprintf("%d-%s", [1, "x"]);   // =&gt; 1-x</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-29">
-          <h3><a class="doc-anchor" href="#doc-strings-29">#</a> <code>vprintf</code></h3>
+        <article class="doc-entry" id="doc-strings-31">
+          <h3><a class="doc-anchor" href="#doc-strings-31">#</a> <code>vprintf</code></h3>
           <pre><code class="lang-php">vprintf(string $format, array $values): int</code></pre>
           <p>Writes a `vsprintf` result to output and returns its length in BYTES.</p>
           <pre><code class="lang-php">vprintf("%d", [7]);   // =&gt; 7</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-30">
-          <h3><a class="doc-anchor" href="#doc-strings-30">#</a> <code>sscanf</code></h3>
+        <article class="doc-entry" id="doc-strings-32">
+          <h3><a class="doc-anchor" href="#doc-strings-32">#</a> <code>sscanf</code></h3>
           <pre><code class="lang-php">sscanf(string $string, string $format, mixed &amp;...$vars): array|int|null</code></pre>
           <p>Parses the string against the format. With two arguments the result is an array of the converted values, padded with nulls to one entry per non-suppressed specifier; with by-reference arguments it is the number of specifiers processed, and a variable no conversion reached is left untouched. Supports `%d %D %i %o %x %X %u %f %e %E %g %s %c %n %[…] %%`, `*` suppression, field widths, the ignored `l`/`L`/`h` size modifiers, literal text and whitespace runs. When the input runs out before any conversion the answer is `null` (two-argument) or `-1` (by-reference). DIVERGENCE: the `%n$` positional form is not implemented, and no format is rejected up front the way PHP's `ValidateFormat` does.</p>
           <pre><code class="lang-php">print_r(sscanf("age:42", "age:%d"));   // =&gt; Array\n(\n    [0] =&gt; 42\n)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-31">
-          <h3><a class="doc-anchor" href="#doc-strings-31">#</a> <code>htmlspecialchars_decode</code></h3>
+        <article class="doc-entry" id="doc-strings-33">
+          <h3><a class="doc-anchor" href="#doc-strings-33">#</a> <code>htmlspecialchars_decode</code></h3>
           <pre><code class="lang-php">htmlspecialchars_decode(string $string): string</code></pre>
           <p>Decodes only what `htmlspecialchars` can produce — `&amp;lt;`, `&amp;gt;`, `&amp;amp;`, `&amp;quot;` and the numeric single quote — and `$flags` gates the two quote entities. A named entity like `&amp;eacute;` and any other numeric reference are left standing, which is what separates it from `html_entity_decode`.</p>
           <pre><code class="lang-php">echo htmlspecialchars_decode("a&amp;lt;b");   // =&gt; a&lt;b</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-32">
-          <h3><a class="doc-anchor" href="#doc-strings-32">#</a> <code>html_entity_decode</code></h3>
+        <article class="doc-entry" id="doc-strings-34">
+          <h3><a class="doc-anchor" href="#doc-strings-34">#</a> <code>html_entity_decode</code></h3>
           <pre><code class="lang-php">html_entity_decode(string $string): string</code></pre>
           <p>Decodes the full HTML 4.01 named-entity table plus decimal (`&amp;#233;`) and hexadecimal (`&amp;#xE9;`) references; an unknown entity, and an `&amp;` with no terminating `;`, are copied through verbatim. `$flags` gates the quote entities. DIVERGENCE: `$encoding` is not read (input is treated as UTF-8).</p>
           <pre><code class="lang-php">echo html_entity_decode("caf&amp;eacute;");   // =&gt; café</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-33">
-          <h3><a class="doc-anchor" href="#doc-strings-33">#</a> <code>strip_tags</code></h3>
+        <article class="doc-entry" id="doc-strings-35">
+          <h3><a class="doc-anchor" href="#doc-strings-35">#</a> <code>strip_tags</code></h3>
           <pre><code class="lang-php">strip_tags(string $string): string</code></pre>
           <p>A port of `php_strip_tags_ex`, so its five-state scanner — HTML tag, `&lt;? … ?&gt;`, `&lt;! … &gt;`, `&lt;!-- … --&gt;`, and the `&lt;?xml` / `&lt;!DOCTYPE` re-entries — matches the reference on quoted attributes containing `&gt;`, nested `&lt;`, and unterminated tags. `$allowed_tags` is honoured in both spellings, the string `"&lt;b&gt;&lt;i&gt;"` and the array `["b", "i"]`; an allowed tag is re-emitted verbatim, attributes included.</p>
           <pre><code class="lang-php">echo strip_tags("&lt;p&gt;hi&lt;/p&gt;");   // =&gt; hi</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-34">
-          <h3><a class="doc-anchor" href="#doc-strings-34">#</a> <code>mb_strlen</code></h3>
+        <article class="doc-entry" id="doc-strings-36">
+          <h3><a class="doc-anchor" href="#doc-strings-36">#</a> <code>mb_strlen</code></h3>
           <pre><code class="lang-php">mb_strlen(string $string): int</code></pre>
           <p>The number of Unicode CODEPOINTS, the multibyte counterpart of `strlen`. The `$encoding` argument is accepted and ignored — phplang strings are always UTF-8.</p>
           <pre><code class="lang-php">echo mb_strlen("héllo");   // =&gt; 5</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-35">
-          <h3><a class="doc-anchor" href="#doc-strings-35">#</a> <code>mb_strtoupper</code></h3>
+        <article class="doc-entry" id="doc-strings-37">
+          <h3><a class="doc-anchor" href="#doc-strings-37">#</a> <code>mb_strtoupper</code></h3>
           <pre><code class="lang-php">mb_strtoupper(string $string): string</code></pre>
           <p>Full Unicode uppercase, which can change the string's length (German sharp s becomes `SS`). The `$encoding` argument is ignored.</p>
           <pre><code class="lang-php">echo mb_strtoupper("héllo");   // =&gt; HÉLLO</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-36">
-          <h3><a class="doc-anchor" href="#doc-strings-36">#</a> <code>mb_strtolower</code></h3>
+        <article class="doc-entry" id="doc-strings-38">
+          <h3><a class="doc-anchor" href="#doc-strings-38">#</a> <code>mb_strtolower</code></h3>
           <pre><code class="lang-php">mb_strtolower(string $string): string</code></pre>
           <p>Full Unicode lowercase. The `$encoding` argument is ignored.</p>
           <pre><code class="lang-php">echo mb_strtolower("HÉLLO");   // =&gt; héllo</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-37">
-          <h3><a class="doc-anchor" href="#doc-strings-37">#</a> <code>mb_substr</code></h3>
+        <article class="doc-entry" id="doc-strings-39">
+          <h3><a class="doc-anchor" href="#doc-strings-39">#</a> <code>mb_substr</code></h3>
           <pre><code class="lang-php">mb_substr(string $string, int $start, ?int $length = null): string</code></pre>
           <p>Codepoint-aware substring. A negative start counts from the end, a negative length omits that many trailing codepoints, and the end is clamped. The `$encoding` argument is ignored.</p>
           <pre><code class="lang-php">echo mb_substr("héllo", 1, 3);   // =&gt; éll</code></pre>

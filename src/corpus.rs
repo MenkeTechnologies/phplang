@@ -3450,6 +3450,20 @@ pub const CORPUS: &[Entry] = &[
         "echo strrchr(\"a/b/c\", \"/\");   // => /c",
     ),
     (
+        "str_increment",
+        "Strings",
+        "str_increment(string $string): string",
+        "Perl-style alphanumeric increment (PHP 8.3): each position steps within `a-z`, `A-Z` or `0-9` and carries left on wrap-around; a carry out of the first position prepends `1` for a digit or the wrapped letter otherwise. An empty or non-alphanumeric-ASCII string is a `ValueError`.",
+        "var_dump(str_increment(\"Az\"));   // => string(2) \"Ba\"",
+    ),
+    (
+        "str_decrement",
+        "Strings",
+        "str_decrement(string $string): string",
+        "Inverse of `str_increment` (PHP 8.3): borrows leftwards, and drops the first position when it borrows out of it or leaves a leading `0`. A string starting with `0`, or a single `a`/`A`, is out of decrement range (`ValueError`), as are empty and non-alphanumeric-ASCII strings.",
+        "var_dump(str_decrement(\"Ba\"));   // => string(2) \"Az\"",
+    ),
+    (
         "strpbrk",
         "Strings",
         "strpbrk(string $string, string $characters): string|false",

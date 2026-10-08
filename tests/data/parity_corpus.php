@@ -1428,3 +1428,13 @@ foreach ($vs as $a) { foreach ($vs as $b) echo version_compare($a, $b) + 1; echo
 foreach (["<", "lt", "<=", "le", ">", "gt", ">=", "ge", "==", "eq", "!=", "<>", "ne"] as $op) echo $op, "=", var_export(version_compare("8.5.0RC1", "8.5.0", $op), true), " ";
 echo "\n"; var_dump(version_compare("1", "1", null), version_compare("1\0.5", "1"));
 foreach (["~", "LT"] as $op) { try { version_compare("1", "2", $op); } catch (ValueError $e) { echo $e->getMessage(), "\n"; } }
+#==#
+// str_increment / str_decrement: per-class carry and borrow, growth and
+// shrinkage at the first position, and the ValueError cases.
+foreach (["a","z","Z","9","Az","zz","ZZ","99","a9","Zz9","zZ9","0","00","09","a0","Aa","aA","A","10","100","1a","z9Z","abc"] as $s) {
+  foreach (["str_increment","str_decrement"] as $f) { try { echo $f($s), " "; } catch (ValueError $e) { echo "[", $e->getMessage(), "] "; } }
+  echo "\n";
+}
+foreach (["", "a b", "é", "a\0"] as $s) foreach (["str_increment","str_decrement"] as $f) { try { $f($s); } catch (ValueError $e) { echo $e->getMessage(), "\n"; } }
+try { str_increment([]); } catch (TypeError $e) { echo $e->getMessage(), "\n"; }
+var_dump(str_increment(12));

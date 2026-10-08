@@ -28,6 +28,8 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         "stristr" => strstr(args, true),
         "strrchr" => strrchr(args),
         "strpbrk" => strpbrk(args),
+        "str_increment" => return Some(str_step(args, true)),
+        "str_decrement" => return Some(str_step(args, false)),
         "strspn" => strspn(args, true),
         "strcspn" => strspn(args, false),
         "stripos" => return Some(strpos_ci(args)),
@@ -187,6 +189,62 @@ fn strrchr(args: &[Value]) -> Value {
 
 /// `strpbrk($string, $characters)`: from the first byte of `$string` present in
 /// `$characters` to the end, or `false`.
+/// `str_increment` / `str_decrement` (PHP 8.3) — Perl-style alphanumeric
+/// stepping. Port of `PHP_FUNCTION(str_increment)` / `PHP_FUNCTION(str_decrement)`
+/// in `ext/standard/string.c`: each position steps within its own class
+/// (`a-z`, `A-Z`, `0-9`) and carries leftwards on wrap-around. An increment that
+/// carries out of the first position grows the string by one (`"zz"` → `"aaa"`,
+/// `"9"` → `"10"`); a decrement that borrows out of it, or leaves a leading
+/// `0`, drops the first position (`"aa"` → `"z"`, `"10"` → `"9"`).
+fn str_step(args: &[Value], up: bool) -> Result<Value, String> {
+    let name = if up { "str_increment" } else { "str_decrement" };
+    let s = str_arg(args, 0);
+    let fail = |what: String| {
+        Err(throws(
+            "ValueError",
+            format!("{name}(): Argument #1 ($string) {what}"),
+        ))
+    };
+    if s.is_empty() {
+        return fail("must not be empty".into());
+    }
+    if !s.bytes().all(|c| c.is_ascii_alphanumeric()) {
+        return fail("must be composed only of alphanumeric ASCII characters".into());
+    }
+    let out_of_range = || fail(format!("\"{s}\" is out of decrement range"));
+    if !up && s.starts_with('0') {
+        return out_of_range();
+    }
+    let mut b = s.clone().into_bytes();
+    let mut carry = true;
+    for c in b.iter_mut().rev() {
+        let (edge, wrap) = match (up, *c) {
+            (true, b'9') => (true, b'0'),
+            (true, b'z' | b'Z') => (true, *c - 25),
+            (false, b'0') => (true, b'9'),
+            (false, b'a' | b'A') => (true, *c + 25),
+            _ => (false, if up { *c + 1 } else { *c - 1 }),
+        };
+        *c = wrap;
+        carry = edge;
+        if !carry {
+            break;
+        }
+    }
+    if up && carry {
+        // A carry out of the first position prepends: `1` before a digit,
+        // otherwise a copy of the (already wrapped) first letter.
+        let lead = if b[0] == b'0' { b'1' } else { b[0] };
+        b.insert(0, lead);
+    } else if !up && (carry || (b[0] == b'0' && b.len() > 1)) {
+        if b.len() == 1 {
+            return out_of_range();
+        }
+        b.remove(0);
+    }
+    Ok(Value::str(String::from_utf8(b).unwrap_or_default()))
+}
+
 fn strpbrk(args: &[Value]) -> Value {
     let s = str_arg(args, 0);
     let set = str_arg(args, 1);
