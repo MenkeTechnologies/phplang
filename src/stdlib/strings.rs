@@ -1294,9 +1294,9 @@ fn similar_text_bytes(s1: &[u8], s2: &[u8]) -> usize {
 fn levenshtein(args: &[Value]) -> Value {
     let a = str_arg(args, 0);
     let b = str_arg(args, 1);
-    let cins = args.get(2).map(|v| v.to_int()).unwrap_or(1);
-    let crep = args.get(3).map(|v| v.to_int()).unwrap_or(1);
-    let cdel = args.get(4).map(|v| v.to_int()).unwrap_or(1);
+    let cins = args.get(2).map(crate::host::long_of).unwrap_or(1);
+    let crep = args.get(3).map(crate::host::long_of).unwrap_or(1);
+    let cdel = args.get(4).map(crate::host::long_of).unwrap_or(1);
     let ab = a.as_bytes();
     let bb = b.as_bytes();
     let (n, m) = (ab.len(), bb.len());

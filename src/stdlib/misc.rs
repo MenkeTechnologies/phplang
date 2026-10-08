@@ -115,6 +115,9 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         "array_uintersect_assoc" => return Some(php_array_set_op_key(name, args, true)),
         "array_multisort" => return Some(array_multisort(args)),
         "version_compare" => return Some(version_compare(args)),
+        "ip2long" => return Some(ip2long(args)),
+        "long2ip" => Value::str(long2ip(int_arg(args, 0))),
+        "strcoll" => Value::int(strcoll(&str_arg(args, 0), &str_arg(args, 1))),
         _ => return None,
     };
     Some(Ok(v))
@@ -2126,4 +2129,66 @@ fn version_compare(args: &[Value]) -> Result<Value, String> {
             )),
         };
     Ok(Value::Bool(holds))
+}
+
+// ── ip2long / long2ip / strcoll ──────────────────────────────────────────────
+
+/// `ip2long($ip)` (`ext/standard/basic_functions.c`): the dotted quad as the
+/// host-order integer of `inet_pton(AF_INET, …)`, or false. The platform's own
+/// `inet_pton` is the parser, as it is the reference's — which is why a leading
+/// zero (`"01.2.3.4"`) is accepted on BSD/macOS and refused by glibc.
+fn ip2long(args: &[Value]) -> Result<Value, String> {
+    let ip = str_arg(args, 0);
+    // `Z_PARAM_PATH`.
+    if ip.contains('\0') {
+        return Err(throws(
+            "ValueError",
+            "ip2long(): Argument #1 ($ip) must not contain any null bytes",
+        ));
+    }
+    if ip.is_empty() {
+        return Ok(Value::bool(false));
+    }
+    let Ok(c) = std::ffi::CString::new(ip) else {
+        return Ok(Value::bool(false));
+    };
+    extern "C" {
+        // POSIX; the `libc` crate does not bind it.
+        fn inet_pton(
+            af: libc::c_int,
+            src: *const libc::c_char,
+            dst: *mut libc::c_void,
+        ) -> libc::c_int;
+    }
+    let mut addr = libc::in_addr { s_addr: 0 };
+    // SAFETY: `c` is a NUL-terminated string and `addr` an `in_addr`, which is
+    // what `inet_pton(AF_INET, …)` writes.
+    let ok = unsafe {
+        inet_pton(
+            libc::AF_INET,
+            c.as_ptr(),
+            (&mut addr as *mut libc::in_addr).cast(),
+        )
+    };
+    Ok(if ok == 1 {
+        Value::int(u32::from_be(addr.s_addr) as i64)
+    } else {
+        Value::bool(false)
+    })
+}
+
+/// `long2ip($ip)`: the low 32 bits, network order, as `inet_ntop` prints them.
+fn long2ip(ip: i64) -> String {
+    std::net::Ipv4Addr::from(ip as u32).to_string()
+}
+
+/// `strcoll($string1, $string2)`: the C library's `strcoll` under the current
+/// `LC_COLLATE`, its raw answer included (not only its sign). A string holding
+/// a NUL compares up to it, as the C call does.
+fn strcoll(a: &str, b: &str) -> i64 {
+    let cut =
+        |s: &str| std::ffi::CString::new(s.split('\0').next().unwrap_or("")).unwrap_or_default();
+    let (a, b) = (cut(a), cut(b));
+    // SAFETY: both are NUL-terminated C strings.
+    unsafe { libc::strcoll(a.as_ptr(), b.as_ptr()) as i64 }
 }

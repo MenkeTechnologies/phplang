@@ -188,7 +188,7 @@ fn json_decode(args: &[Value]) -> Result<Value, String> {
     let json = crate::host::with_host(|h| h.to_str(&args.first().cloned().unwrap_or(Value::Undef)));
     // 3rd argument is depth; default 512 (see `decode_depth`).
     let depth = decode_depth(args, 2, "json_decode", 3)?;
-    let flags = args.get(3).map(|v| v.to_int()).unwrap_or(0);
+    let flags = args.get(3).map(crate::host::long_of).unwrap_or(0);
     let assoc = match args.get(1) {
         // Absent or an explicit `null`: the flag bit is the tie-breaker.
         None | Some(Value::Undef) => flags & JSON_OBJECT_AS_ARRAY != 0,

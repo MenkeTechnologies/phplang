@@ -4163,7 +4163,7 @@ pub fn call_library(name: &str, args: &[Value]) -> Result<Value, String> {
             // `$mode` is COUNT_NORMAL (0) or COUNT_RECURSIVE (1) and nothing
             // else — any other value is a ValueError, checked before the
             // subject so `count(1, 99)` reports the mode.
-            let mode = args.get(1).map(|m| m.to_int()).unwrap_or(0);
+            let mode = args.get(1).map(crate::host::long_of).unwrap_or(0);
             if mode != 0 && mode != 1 {
                 return Err(throws(
                     "ValueError",
@@ -4205,7 +4205,7 @@ pub fn call_library(name: &str, args: &[Value]) -> Result<Value, String> {
         "ltrim" => with_host(|h| php_trim(h, args, true, false)),
         "rtrim" | "chop" => with_host(|h| php_trim(h, args, false, true)),
         "str_repeat" => {
-            let n = arg(args, 1).to_int();
+            let n = host::long_of(&arg(args, 1));
             if n < 0 {
                 return Err(throws(
                     "ValueError",
@@ -4256,9 +4256,9 @@ pub fn call_library(name: &str, args: &[Value]) -> Result<Value, String> {
             // `ZEND_LONG_INT_OVFL`/`UDFL`: a `$precision` outside the int range
             // SATURATES rather than wrapping, so `round(1.5, 2147483648)` is
             // `round(1.5, INT_MAX)` and not `round(1.5, INT_MIN)`.
-            let p = args.get(1).map(|v| v.to_int()).unwrap_or(0);
+            let p = args.get(1).map(crate::host::long_of).unwrap_or(0);
             let places = p.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
-            let mode = args.get(2).map(|v| v.to_int()).unwrap_or(1);
+            let mode = args.get(2).map(crate::host::long_of).unwrap_or(1);
             Value::float(php_round(x, places, mode))
         }),
         "intval" => with_host(|h| {
@@ -4402,7 +4402,7 @@ pub fn call_library(name: &str, args: &[Value]) -> Result<Value, String> {
         "strncmp" => with_host(|h| {
             let a = h.to_str(&arg(args, 0));
             let b = h.to_str(&arg(args, 1));
-            let n = arg(args, 2).to_int().max(0) as usize;
+            let n = host::long_of(&arg(args, 2)).max(0) as usize;
             let (ab, bb) = (a.as_bytes(), b.as_bytes());
             Value::int(binary_strcmp(
                 &ab[..n.min(ab.len())],
@@ -4504,7 +4504,7 @@ pub fn call_library(name: &str, args: &[Value]) -> Result<Value, String> {
             // Objects are resolved to plain data FIRST, outside the host borrow:
             // `jsonSerialize()` is PHP code and cannot run while the host is
             // borrowed. See `json_prepare`.
-            let flags = arg(args, 1).to_int();
+            let flags = host::long_of(&arg(args, 1));
             let partial = flags & JSON_PARTIAL_OUTPUT_ON_ERROR != 0;
             let (prepared, partial_error) = json_prepare(&arg(args, 0), partial);
             if let (true, Ok(doc)) = (partial, &prepared) {
@@ -4837,14 +4837,14 @@ fn fold_cmp(h: &host::PhpHost, args: &[Value], want_max: bool) -> Result<Value, 
 fn php_substr(s: &str, args: &[Value]) -> String {
     let chars: Vec<char> = s.chars().collect();
     let len = chars.len() as i64;
-    let mut start = arg(args, 1).to_int();
+    let mut start = host::long_of(&arg(args, 1));
     if start < 0 {
         start = (len + start).max(0);
     }
     let start = start.min(len).max(0) as usize;
     let count = match args.get(2) {
         Some(v) if !matches!(v, Value::Undef) => {
-            let l = v.to_int();
+            let l = host::long_of(v);
             if l < 0 {
                 (len - start as i64 + l).max(0) as usize
             } else {
@@ -6089,7 +6089,7 @@ fn pad_field(body: String, s: &FmtSpec, is_num: bool) -> String {
 /// `wordwrap($str, $width = 75, $break = "\n", $cut = false)`.
 fn php_wordwrap(h: &host::PhpHost, args: &[Value]) -> Result<Value, String> {
     let text = h.to_str(&arg(args, 0));
-    let raw_width = args.get(1).map(|v| v.to_int()).unwrap_or(75);
+    let raw_width = args.get(1).map(crate::host::long_of).unwrap_or(75);
     let cut_flag = args.get(3).map(|v| h.is_truthy(v)).unwrap_or(false);
     // A zero width with cutting on has no answer — every word is longer than the
     // line — and the reference refuses rather than looping or clamping.
@@ -6515,7 +6515,11 @@ fn php_substr_compare(h: &mut host::PhpHost, args: &[Value]) -> Result<Value, St
     let slen = mb.len() as i64;
 
     let len_given = matches!(args.get(3), Some(v) if !matches!(v, Value::Undef));
-    let len = if len_given { arg(args, 3).to_int() } else { 0 };
+    let len = if len_given {
+        host::long_of(&arg(args, 3))
+    } else {
+        0
+    };
     if len_given && len <= 0 {
         if len == 0 {
             return Ok(Value::int(0));
@@ -6526,7 +6530,7 @@ fn php_substr_compare(h: &mut host::PhpHost, args: &[Value]) -> Result<Value, St
         ));
     }
 
-    let mut off = arg(args, 2).to_int();
+    let mut off = host::long_of(&arg(args, 2));
     if off < 0 {
         off = (slen + off).max(0);
     }
@@ -6569,7 +6573,7 @@ fn php_substr_compare(h: &mut host::PhpHost, args: &[Value]) -> Result<Value, St
 
 fn php_str_split(h: &mut host::PhpHost, args: &[Value]) -> Result<Value, String> {
     let s = h.to_str(&arg(args, 0));
-    let raw_len = args.get(1).map(|v| v.to_int()).unwrap_or(1);
+    let raw_len = args.get(1).map(crate::host::long_of).unwrap_or(1);
     if raw_len < 1 {
         return Err(throws(
             "ValueError",
@@ -6591,7 +6595,7 @@ fn php_str_split(h: &mut host::PhpHost, args: &[Value]) -> Result<Value, String>
 
 fn php_str_pad(h: &host::PhpHost, args: &[Value]) -> Result<String, String> {
     let s = h.to_str(&arg(args, 0));
-    let target = arg(args, 1).to_int();
+    let target = host::long_of(&arg(args, 1));
     // An explicitly EMPTY pad string is rejected; an omitted one defaults to a
     // space. Silently substituting the default for `""` turns an error into a
     // plausible-looking result.
@@ -6609,7 +6613,7 @@ fn php_str_pad(h: &host::PhpHost, args: &[Value]) -> Result<String, String> {
         _ => " ".to_string(),
     };
     // STR_PAD_RIGHT=1 (default), STR_PAD_LEFT=0, STR_PAD_BOTH=2.
-    let ty = args.get(3).map(|v| v.to_int()).unwrap_or(1);
+    let ty = args.get(3).map(crate::host::long_of).unwrap_or(1);
     let cur = s.chars().count() as i64;
     if target <= cur {
         return Ok(s);
@@ -6668,7 +6672,7 @@ fn lcfirst(s: &str) -> String {
 /// rounded to `$decimals` places first (negative places included) and only
 /// then is `$decimals` clamped to zero for the formatting.
 fn php_number_format(h: &host::PhpHost, args: &[Value]) -> String {
-    let dec_arg = args.get(1).map(|v| v.to_int()).unwrap_or(0);
+    let dec_arg = args.get(1).map(crate::host::long_of).unwrap_or(0);
     let dec = dec_arg.max(0) as usize;
     let dp = args
         .get(2)
@@ -7054,7 +7058,7 @@ fn php_array_slice(h: &mut host::PhpHost, args: &[Value]) -> Value {
     let arr = arg(args, 0);
     let pairs = h.array_pairs(&arr).unwrap_or_default();
     let n = pairs.len() as i64;
-    let mut off = arg(args, 1).to_int();
+    let mut off = host::long_of(&arg(args, 1));
     if off < 0 {
         off = (n + off).max(0);
     }
@@ -7359,8 +7363,8 @@ fn php_ksort(h: &mut host::PhpHost, arr: &Value, reverse: bool, flags: i64) -> V
 /// The order matters — the range check is made BEFORE any element is written,
 /// so the failure leaves nothing behind.
 fn php_array_fill(h: &mut host::PhpHost, args: &[Value]) -> Result<Value, String> {
-    let start = arg(args, 0).to_int();
-    let count = arg(args, 1).to_int();
+    let start = host::long_of(&arg(args, 0));
+    let count = host::long_of(&arg(args, 1));
     let val = arg(args, 2);
     if count < 0 {
         return Err(throws(

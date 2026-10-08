@@ -90,13 +90,29 @@ block in `tests/data/parity_corpus.php`.
   `PHP_*_VERSION` parts, `PHP_VERSION_ID` and `phpversion()` now all derive from
   one constant, the reference's version, so `version_compare(PHP_VERSION,
   "8.4", ">=")` takes the reference's branch. `defined()`/`constant()` answer
-  `true`/`false`/`null` in any case and strip a leading `\\`
+  `true`/`false`/`null` in any case and strip a leading `\`
   (`zend_get_constant_str_impl`), and the Core/standard build constants
   `PHP_EXTRA_VERSION`, `PHP_DEBUG`, `PHP_ZTS`, `ZEND_THREAD_SAFE`,
   `ZEND_DEBUG_BUILD`, `PHP_MAXPATHLEN`, `PHP_FD_SETSIZE`, `PHP_SHLIB_SUFFIX`,
   `M_LNPI`, `INI_*`, `CONNECTION_*`, `PHP_QUERY_*` and `UPLOAD_ERR_*` exist.
   `tests/superglobals.rs` asserted `8.3.0`; it now asserts the reference's
   major.minor from `tests/data/parity_reference_version.txt`.
+* **An `int` parameter was not `zend_parse_arg_long_weak`.** A float with a
+  fraction, or a float-form numeric string, was accepted without the
+  `Implicit conversion from float … to int loses precision` / `from
+  float-string "…"` deprecation; NaN, the infinities and anything outside
+  `[-2^63, 2^63)` were wrapped instead of refused with `must be of type int,
+  float|string given` (`str_repeat("a", NAN)` aborted the process on the
+  allocation); and a numeric string with whitespace or a fraction read as 0 in
+  the functions that narrowed with `Value::to_int` (`str_repeat("ab", "2.5")`
+  was `""`). The declared-type check now ports the weak long parse for every
+  `int` parameter it describes, and those functions narrow through
+  `host::long_of`.
+* **`ip2long`, `long2ip`, `fpow` and `strcoll` were missing.** `ip2long` parses
+  with the platform's `inet_pton` and `strcoll` returns the C library's raw
+  answer under the current `LC_COLLATE`, as the reference does — so a leading
+  zero in an address (`"01.2.3.4"`) is accepted on macOS and refused on glibc,
+  and `strcoll`'s magnitude differs between the two.
 
 ## Round 20 — prelude closures and frames, SPL iterators
 

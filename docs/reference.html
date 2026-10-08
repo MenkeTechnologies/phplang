@@ -3828,101 +3828,107 @@ echo implode(",", array_keys($a));   // =&gt; a,b</code></pre>
           <pre><code class="lang-php">echo rad2deg(0);   // =&gt; 0</code></pre>
         </article>
         <article class="doc-entry" id="doc-math-15">
-          <h3><a class="doc-anchor" href="#doc-math-15">#</a> <code>hypot</code></h3>
+          <h3><a class="doc-anchor" href="#doc-math-15">#</a> <code>fpow</code></h3>
+          <pre><code class="lang-php">fpow(float $num, float $exponent): float</code></pre>
+          <p>IEEE 754 `pow` on two floats: no integer result and no error for a zero base with a negative exponent (`INF`).</p>
+          <pre><code class="lang-php">var_dump(fpow(0, -1));   // =&gt; float(INF)</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-math-16">
+          <h3><a class="doc-anchor" href="#doc-math-16">#</a> <code>hypot</code></h3>
           <pre><code class="lang-php">hypot(float $x, float $y): float</code></pre>
           <p>The Euclidean length `sqrt($x**2 + $y**2)`, computed without intermediate overflow.</p>
           <pre><code class="lang-php">echo hypot(3, 4);   // =&gt; 5</code></pre>
         </article>
-        <article class="doc-entry" id="doc-math-16">
-          <h3><a class="doc-anchor" href="#doc-math-16">#</a> <code>fdiv</code></h3>
+        <article class="doc-entry" id="doc-math-17">
+          <h3><a class="doc-anchor" href="#doc-math-17">#</a> <code>fdiv</code></h3>
           <pre><code class="lang-php">fdiv(float $num1, float $num2): float</code></pre>
           <p>Plain IEEE-754 division with no zero check, so a zero divisor yields `INF`, `-INF`, or `NAN` rather than aborting the way `/` does.</p>
           <pre><code class="lang-php">echo fdiv(1, 0);   // =&gt; INF</code></pre>
         </article>
-        <article class="doc-entry" id="doc-math-17">
-          <h3><a class="doc-anchor" href="#doc-math-17">#</a> <code>is_nan</code></h3>
+        <article class="doc-entry" id="doc-math-18">
+          <h3><a class="doc-anchor" href="#doc-math-18">#</a> <code>is_nan</code></h3>
           <pre><code class="lang-php">is_nan(float $num): bool</code></pre>
           <p>True when the float cast of the argument is IEEE not-a-number.</p>
           <pre><code class="lang-php">var_dump(is_nan(NAN));   // =&gt; bool(true)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-math-18">
-          <h3><a class="doc-anchor" href="#doc-math-18">#</a> <code>is_finite</code></h3>
+        <article class="doc-entry" id="doc-math-19">
+          <h3><a class="doc-anchor" href="#doc-math-19">#</a> <code>is_finite</code></h3>
           <pre><code class="lang-php">is_finite(float $num): bool</code></pre>
           <p>True when the value is neither infinite nor NAN.</p>
           <pre><code class="lang-php">var_dump(is_finite(1.0));   // =&gt; bool(true)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-math-19">
-          <h3><a class="doc-anchor" href="#doc-math-19">#</a> <code>is_infinite</code></h3>
+        <article class="doc-entry" id="doc-math-20">
+          <h3><a class="doc-anchor" href="#doc-math-20">#</a> <code>is_infinite</code></h3>
           <pre><code class="lang-php">is_infinite(float $num): bool</code></pre>
           <p>True for positive or negative infinity.</p>
           <pre><code class="lang-php">var_dump(is_infinite(INF));   // =&gt; bool(true)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-math-20">
-          <h3><a class="doc-anchor" href="#doc-math-20">#</a> <code>decbin</code></h3>
+        <article class="doc-entry" id="doc-math-21">
+          <h3><a class="doc-anchor" href="#doc-math-21">#</a> <code>decbin</code></h3>
           <pre><code class="lang-php">decbin(int $num): string</code></pre>
           <p>The binary rendering of an integer. DIVERGENCE: PHP treats the value as unsigned 64-bit, so a negative argument gives PHP's two's-complement bit string; here it gives a leading `-` followed by the magnitude.</p>
           <pre><code class="lang-php">echo decbin(5);   // =&gt; 101</code></pre>
         </article>
-        <article class="doc-entry" id="doc-math-21">
-          <h3><a class="doc-anchor" href="#doc-math-21">#</a> <code>decoct</code></h3>
+        <article class="doc-entry" id="doc-math-22">
+          <h3><a class="doc-anchor" href="#doc-math-22">#</a> <code>decoct</code></h3>
           <pre><code class="lang-php">decoct(int $num): string</code></pre>
           <p>The octal rendering of an integer, with the same negative-number divergence as `decbin`.</p>
           <pre><code class="lang-php">echo decoct(8);   // =&gt; 10</code></pre>
         </article>
-        <article class="doc-entry" id="doc-math-22">
-          <h3><a class="doc-anchor" href="#doc-math-22">#</a> <code>bindec</code></h3>
+        <article class="doc-entry" id="doc-math-23">
+          <h3><a class="doc-anchor" href="#doc-math-23">#</a> <code>bindec</code></h3>
           <pre><code class="lang-php">bindec(string $binary_string): int|float</code></pre>
           <p>Parses a base-2 string, dropping a leading `0b`/`0B` and skipping any character that is not a binary digit — skipping any raises `Deprecated: Invalid characters passed for attempted conversion, these have been ignored`. The result is an integer when it fits `PHP_INT_MAX` and a float otherwise; accumulation saturates rather than wrapping.</p>
           <pre><code class="lang-php">echo bindec("101");   // =&gt; 5</code></pre>
         </article>
-        <article class="doc-entry" id="doc-math-23">
-          <h3><a class="doc-anchor" href="#doc-math-23">#</a> <code>octdec</code></h3>
+        <article class="doc-entry" id="doc-math-24">
+          <h3><a class="doc-anchor" href="#doc-math-24">#</a> <code>octdec</code></h3>
           <pre><code class="lang-php">octdec(string $octal_string): int|float</code></pre>
           <p>Parses a base-8 string, dropping a leading `0o`/`0O` and skipping invalid digits (which raises the same `Invalid characters passed for attempted conversion` deprecation as `bindec`), with the same integer-or-float result rule.</p>
           <pre><code class="lang-php">echo octdec("10");   // =&gt; 8</code></pre>
         </article>
-        <article class="doc-entry" id="doc-math-24">
-          <h3><a class="doc-anchor" href="#doc-math-24">#</a> <code>base_convert</code></h3>
+        <article class="doc-entry" id="doc-math-25">
+          <h3><a class="doc-anchor" href="#doc-math-25">#</a> <code>base_convert</code></h3>
           <pre><code class="lang-php">base_convert(string $num, int $from_base, int $to_base): string</code></pre>
           <p>Re-renders a number from one base to another with lowercase digits, silently dropping invalid digits. A base outside `2..36` is an error. Accumulation is 128-bit and saturating, so enormous values clamp instead of wrapping.</p>
           <pre><code class="lang-php">echo base_convert("ff", 16, 2);   // =&gt; 11111111</code></pre>
         </article>
-        <article class="doc-entry" id="doc-math-25">
-          <h3><a class="doc-anchor" href="#doc-math-25">#</a> <code>mt_getrandmax</code></h3>
+        <article class="doc-entry" id="doc-math-26">
+          <h3><a class="doc-anchor" href="#doc-math-26">#</a> <code>mt_getrandmax</code></h3>
           <pre><code class="lang-php">mt_getrandmax(): int</code></pre>
           <p>Returns the constant 2147483647, the largest value `mt_rand()` produces with no arguments.</p>
           <pre><code class="lang-php">echo mt_getrandmax();   // =&gt; 2147483647</code></pre>
         </article>
-        <article class="doc-entry" id="doc-math-26">
-          <h3><a class="doc-anchor" href="#doc-math-26">#</a> <code>getrandmax</code></h3>
+        <article class="doc-entry" id="doc-math-27">
+          <h3><a class="doc-anchor" href="#doc-math-27">#</a> <code>getrandmax</code></h3>
           <pre><code class="lang-php">getrandmax(): int</code></pre>
           <p>Returns the same constant 2147483647 for `rand()`.</p>
           <pre><code class="lang-php">echo getrandmax();   // =&gt; 2147483647</code></pre>
         </article>
-        <article class="doc-entry" id="doc-math-27">
-          <h3><a class="doc-anchor" href="#doc-math-27">#</a> <code>srand</code></h3>
+        <article class="doc-entry" id="doc-math-28">
+          <h3><a class="doc-anchor" href="#doc-math-28">#</a> <code>srand</code></h3>
           <pre><code class="lang-php">srand(?int $seed = null): void</code></pre>
           <p>Seeds the shared Mt19937 engine with the low 32 bits of `$seed`, or from clock and counter entropy when called with no argument. As in the reference, `srand` is an alias of `mt_srand`, and the one engine feeds `rand`, `mt_rand`, `shuffle`, `str_shuffle` and `array_rand` — a seeded program reproduces the reference's sequence.</p>
         </article>
-        <article class="doc-entry" id="doc-math-28">
-          <h3><a class="doc-anchor" href="#doc-math-28">#</a> <code>mt_srand</code></h3>
+        <article class="doc-entry" id="doc-math-29">
+          <h3><a class="doc-anchor" href="#doc-math-29">#</a> <code>mt_srand</code></h3>
           <pre><code class="lang-php">mt_srand(?int $seed = null, int $mode = MT_RAND_MT19937): void</code></pre>
           <p>Shares the `srand` arm and therefore the same Mt19937 engine (a port of `ext/random/engine_mt19937.c`). The `$mode` argument is accepted and ignored: only `MT_RAND_MT19937` is modelled.</p>
         </article>
-        <article class="doc-entry" id="doc-math-29">
-          <h3><a class="doc-anchor" href="#doc-math-29">#</a> <code>rand</code></h3>
+        <article class="doc-entry" id="doc-math-30">
+          <h3><a class="doc-anchor" href="#doc-math-30">#</a> <code>rand</code></h3>
           <pre><code class="lang-php">rand(int $min = 0, int $max = 2147483647): int</code></pre>
           <p>A value in the inclusive range, from the shared Mt19937 engine through the reference's unbiased range reduction (`php_random_range`). Inverted bounds are swapped rather than raising. With no arguments it is the engine's 32-bit output shifted right by one.</p>
           <pre><code class="lang-php">srand(5); echo rand(1, 6);   // =&gt; 6</code></pre>
         </article>
-        <article class="doc-entry" id="doc-math-30">
-          <h3><a class="doc-anchor" href="#doc-math-30">#</a> <code>mt_rand</code></h3>
+        <article class="doc-entry" id="doc-math-31">
+          <h3><a class="doc-anchor" href="#doc-math-31">#</a> <code>mt_rand</code></h3>
           <pre><code class="lang-php">mt_rand(int $min = 0, int $max = 2147483647): int</code></pre>
           <p>The same Mt19937 engine and range reduction as `rand`, except that `$min &gt; $max` raises `Argument #2 ($max) must be greater than or equal to argument #1 ($min)`.</p>
           <pre><code class="lang-php">mt_srand(1); echo mt_rand(1, 100), " ", mt_rand();   // =&gt; 46 2141438069</code></pre>
         </article>
-        <article class="doc-entry" id="doc-math-31">
-          <h3><a class="doc-anchor" href="#doc-math-31">#</a> <code>random_int</code></h3>
+        <article class="doc-entry" id="doc-math-32">
+          <h3><a class="doc-anchor" href="#doc-math-32">#</a> <code>random_int</code></h3>
           <pre><code class="lang-php">random_int(int $min, int $max): int</code></pre>
           <p>Draws fresh bits rather than using the seeded generator, and raises when `$min &gt; $max`. DIVERGENCE: NOT cryptographically secure — the bits come from clock nanoseconds XOR an atomic counter, mixed with SplitMix64. Do not use it for keys, tokens, or salts.</p>
         </article>
@@ -5409,25 +5415,43 @@ echo implode(",", $a), "|", implode(",", $b);   // =&gt; 1,2,3|a,b,c</code></pre
           <pre><code class="lang-php">print_r(str_getcsv("a,b"));   // =&gt; Array\n(\n    [0] =&gt; a\n    [1] =&gt; b\n)</code></pre>
         </article>
         <article class="doc-entry" id="doc-misc-23">
-          <h3><a class="doc-anchor" href="#doc-misc-23">#</a> <code>version_compare</code></h3>
+          <h3><a class="doc-anchor" href="#doc-misc-23">#</a> <code>ip2long</code></h3>
+          <pre><code class="lang-php">ip2long(string $ip): int|false</code></pre>
+          <p>A dotted-quad IPv4 address as an integer, parsed by the platform's `inet_pton`; false for anything else. A NUL byte is a `ValueError`.</p>
+          <pre><code class="lang-php">echo ip2long("192.168.1.1");   // =&gt; 3232235777</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-misc-24">
+          <h3><a class="doc-anchor" href="#doc-misc-24">#</a> <code>long2ip</code></h3>
+          <pre><code class="lang-php">long2ip(int $ip): string</code></pre>
+          <p>The low 32 bits of `$ip` as a dotted quad.</p>
+          <pre><code class="lang-php">echo long2ip(3232235777);   // =&gt; 192.168.1.1</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-misc-25">
+          <h3><a class="doc-anchor" href="#doc-misc-25">#</a> <code>strcoll</code></h3>
+          <pre><code class="lang-php">strcoll(string $string1, string $string2): int</code></pre>
+          <p>Locale-aware comparison under the current `LC_COLLATE`: the C library's `strcoll`, its raw result returned.</p>
+          <pre><code class="lang-php">var_dump(strcoll("a", "b") &lt; 0);   // =&gt; bool(true)</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-misc-26">
+          <h3><a class="doc-anchor" href="#doc-misc-26">#</a> <code>version_compare</code></h3>
           <pre><code class="lang-php">version_compare(string $version1, string $version2, ?string $operator = null): int|bool</code></pre>
           <p>Compares two PHP-standardized version strings: `-`, `_` and `+` become `.`, a `.` is inserted between digit and non-digit runs, and components compare numerically or by special-form rank (`dev` &lt; `alpha`/`a` &lt; `beta`/`b` &lt; `RC`/`rc` &lt; number &lt; `pl`/`p`). Without `$operator` returns -1, 0 or 1; with one (`&lt;`/`lt`, `&lt;=`/`le`, `&gt;`/`gt`, `&gt;=`/`ge`, `==`/`eq`, `!=`/`&lt;&gt;`/`ne`) returns whether it holds.</p>
           <pre><code class="lang-php">var_dump(version_compare("8.5.0RC1", "8.5.0", "&lt;"));   // =&gt; bool(true)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-misc-24">
-          <h3><a class="doc-anchor" href="#doc-misc-24">#</a> <code>uniqid</code></h3>
+        <article class="doc-entry" id="doc-misc-27">
+          <h3><a class="doc-anchor" href="#doc-misc-27">#</a> <code>uniqid</code></h3>
           <pre><code class="lang-php">uniqid(string $prefix = "", bool $more_entropy = false): string</code></pre>
           <p>A hex timestamp of the form `%08x%05x` from the wall clock's seconds and microseconds, prefixed by `$prefix`. `$more_entropy` is honoured and appends a fractional suffix of PHP's shape, but with only 1000 distinct values. DIVERGENCE: the clock is the ONLY entropy source — there is no RNG, no counter, and no collision avoidance, so two calls in the same microsecond return IDENTICAL strings. It is not suitable as a unique identifier under load.</p>
           <pre><code class="lang-php">var_dump(strlen(uniqid()) === 13);   // =&gt; bool(true)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-misc-25">
-          <h3><a class="doc-anchor" href="#doc-misc-25">#</a> <code>pack</code></h3>
+        <article class="doc-entry" id="doc-misc-28">
+          <h3><a class="doc-anchor" href="#doc-misc-28">#</a> <code>pack</code></h3>
           <pre><code class="lang-php">pack(string $format, mixed ...$values): string</code></pre>
           <p>A port of ext/standard/pack.c: every format code (`a A Z h H c C s S n v i I l L N V q Q J P f g G d e E x X @`), repeat counts and `*`, and its warnings and `ValueError`s. Bytes come out one per character, as `chr` makes them, so a byte of 0x80 or more is two bytes in this UTF-8 runtime (see BUGS.md).</p>
           <pre><code class="lang-php">echo bin2hex(pack("nv", 0x1234, 0x1234));   // =&gt; 12343412</code></pre>
         </article>
-        <article class="doc-entry" id="doc-misc-26">
-          <h3><a class="doc-anchor" href="#doc-misc-26">#</a> <code>unpack</code></h3>
+        <article class="doc-entry" id="doc-misc-29">
+          <h3><a class="doc-anchor" href="#doc-misc-29">#</a> <code>unpack</code></h3>
           <pre><code class="lang-php">unpack(string $format, string $string, int $offset = 0): array|false</code></pre>
           <p>A port of ext/standard/pack.c's `unpack`: `code[repeat]name` items separated by `/`, numbered keys for a repeat, and its warnings for short input. It reads the string's bytes, as `ord` does.</p>
           <pre><code class="lang-php">print_r(unpack("nbig/C2c", "\x12\x34AB"));   // =&gt; Array ( [big] =&gt; 4660 [c1] =&gt; 65 [c2] =&gt; 66 )</code></pre>

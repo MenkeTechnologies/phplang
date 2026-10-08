@@ -4448,6 +4448,13 @@ pub const CORPUS: &[Entry] = &[
         "echo rad2deg(0);   // => 0",
     ),
     (
+        "fpow",
+        "Math",
+        "fpow(float $num, float $exponent): float",
+        "IEEE 754 `pow` on two floats: no integer result and no error for a zero base with a negative exponent (`INF`).",
+        "var_dump(fpow(0, -1));   // => float(INF)",
+    ),
+    (
         "hypot",
         "Math",
         "hypot(float $x, float $y): float",
@@ -6312,6 +6319,27 @@ pub const CORPUS: &[Entry] = &[
         "str_getcsv(string $string, string $separator = \",\", string $enclosure = \"\\\"\", string $escape = \"\\\\\"): array",
         "Parses ONE line. Doubled enclosures inside a quoted field are literals, and unenclosed fields keep their blanks. DIVERGENCE: the escape character keeps BOTH itself and the following character — it is not stripped; an embedded newline is an ordinary field character, so multi-line records are never reassembled; an empty input returns a one-element array holding null; and an empty `$separator` or `$enclosure` falls back to the DEFAULT rather than disabling it. Omitting `$escape` raises PHP 8.4's deprecation notice.",
         "print_r(str_getcsv(\"a,b\"));   // => Array\\n(\\n    [0] => a\\n    [1] => b\\n)",
+    ),
+    (
+        "ip2long",
+        "Misc",
+        "ip2long(string $ip): int|false",
+        "A dotted-quad IPv4 address as an integer, parsed by the platform's `inet_pton`; false for anything else. A NUL byte is a `ValueError`.",
+        "echo ip2long(\"192.168.1.1\");   // => 3232235777",
+    ),
+    (
+        "long2ip",
+        "Misc",
+        "long2ip(int $ip): string",
+        "The low 32 bits of `$ip` as a dotted quad.",
+        "echo long2ip(3232235777);   // => 192.168.1.1",
+    ),
+    (
+        "strcoll",
+        "Misc",
+        "strcoll(string $string1, string $string2): int",
+        "Locale-aware comparison under the current `LC_COLLATE`: the C library's `strcoll`, its raw result returned.",
+        "var_dump(strcoll(\"a\", \"b\") < 0);   // => bool(true)",
     ),
     (
         "version_compare",

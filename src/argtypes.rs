@@ -42,6 +42,36 @@ type Params = &'static [(u32, &'static str, &'static str)];
 /// * `null` is NOT handled here — see [`check_call`], because for a scalar it is
 ///   a deprecation and for `array` it is an error;
 /// * `bool`, `int`, `float` satisfy every scalar type.
+/// `ZEND_DOUBLE_FITS_LONG`: false for NaN, and the bounds are `[-2^63, 2^63)`.
+fn double_fits_long(d: f64) -> bool {
+    const TWO_63: f64 = 9223372036854775808.0;
+    (-TWO_63..TWO_63).contains(&d)
+}
+
+/// The deprecation `zend_parse_arg_long_weak` raises for an accepted float, or
+/// float-form numeric string, with a fractional part: the parameter gets the
+/// truncated value, and the loss is reported.
+fn deprecate_lossy_long(h: &mut PhpHost, v: &Value) {
+    match v {
+        Value::Float(f) if f.fract() != 0.0 => {
+            let shown = h.to_str(v);
+            h.deprecated(format!(
+                "Implicit conversion from float {shown} to int loses precision"
+            ));
+        }
+        Value::Str(s) => {
+            if let Some(Value::Float(d)) = host::parse_php_number_full(s) {
+                if d.fract() != 0.0 {
+                    h.deprecated(format!(
+                        "Implicit conversion from float-string \"{s}\" to int loses precision"
+                    ));
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 fn satisfies(h: &PhpHost, ty: &str, v: &Value) -> bool {
     // A union is satisfied by any member. `?T` is `T` plus null, and null never
     // reaches here.
@@ -64,7 +94,20 @@ fn satisfies(h: &PhpHost, ty: &str, v: &Value) -> bool {
                 .is_some_and(|c| h.class_has_method(&c, "__tostring")),
             _ => true,
         },
-        "int" | "float" => match v {
+        // `zend_parse_arg_long_weak`: a float, or a numeric string that is one,
+        // must be a number an `int` can hold — NaN and anything outside
+        // [-2^63, 2^63) is refused rather than wrapped.
+        "int" => match v {
+            _ if is_array || is_object => false,
+            Value::Float(f) => double_fits_long(*f),
+            Value::Str(s) => match host::parse_php_number_full(s) {
+                Some(Value::Float(d)) => double_fits_long(d),
+                Some(_) => true,
+                None => false,
+            },
+            _ => true,
+        },
+        "float" => match v {
             _ if is_array || is_object => false,
             // `"5"` converts, `"5abc"` does not — this is the numeric-string
             // test, not the leading-numeric one the arithmetic operators use.
@@ -136,6 +179,9 @@ pub fn check_call(name: &str, args: &[Value], stop_at: u32) -> Result<(), String
                 continue;
             }
         } else if host::with_host(|h| satisfies(h, ty, v)) {
+            if ty.trim_start_matches('?') == "int" {
+                host::with_host(|h| deprecate_lossy_long(h, v));
+            }
             // `PHP_Z_PARAM_STREAM` fetches the stream while parsing, so a
             // closed one is refused at ITS position, before later arguments.
             if ty == "stream" && !host::with_host(|h| h.is_resource(v)) {
@@ -612,6 +658,7 @@ static PARAMS: &[(&str, Params)] = &[
         ],
     ),
     ("fpassthru", &[(1, "stream", "stream")]),
+    ("fpow", &[(1, "num", "float"), (2, "exponent", "float")]),
     (
         "fprintf",
         &[(1, "stream", "stream"), (2, "format", "string")],
@@ -797,6 +844,7 @@ static PARAMS: &[(&str, Params)] = &[
         &[(1, "interface", "string"), (2, "autoload", "bool")],
     ),
     ("intval", &[(2, "base", "int")]),
+    ("ip2long", &[(1, "ip", "string")]),
     (
         "is_a",
         &[(2, "class", "string"), (3, "allow_string", "bool")],
@@ -853,6 +901,7 @@ static PARAMS: &[(&str, Params)] = &[
     ("log", &[(1, "num", "float"), (2, "base", "float")]),
     ("log10", &[(1, "num", "float")]),
     ("log1p", &[(1, "num", "float")]),
+    ("long2ip", &[(1, "ip", "int")]),
     ("lstat", &[(1, "filename", "string")]),
     (
         "ltrim",
@@ -1297,6 +1346,10 @@ static PARAMS: &[(&str, Params)] = &[
     ),
     (
         "strcmp",
+        &[(1, "string1", "string"), (2, "string2", "string")],
+    ),
+    (
+        "strcoll",
         &[(1, "string1", "string"), (2, "string2", "string")],
     ),
     (

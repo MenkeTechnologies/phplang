@@ -1689,3 +1689,26 @@ var_dump(defined("TRUE"), defined("true"), constant("False"), constant("NULL"), 
 var_dump(ZEND_THREAD_SAFE, ZEND_DEBUG_BUILD, PHP_DEBUG, PHP_ZTS, PHP_EXTRA_VERSION, M_LNPI, PHP_QUERY_RFC1738, PHP_QUERY_RFC3986);
 var_dump(INI_USER, INI_PERDIR, INI_SYSTEM, INI_ALL, CONNECTION_ABORTED, CONNECTION_NORMAL, CONNECTION_TIMEOUT);
 var_dump(UPLOAD_ERR_OK, UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE, UPLOAD_ERR_PARTIAL, UPLOAD_ERR_NO_FILE, UPLOAD_ERR_NO_TMP_DIR, UPLOAD_ERR_CANT_WRITE, UPLOAD_ERR_EXTENSION);
+#==#
+// ip2long / long2ip (inet_pton / inet_ntop), fpow (C pow), strcoll (C strcoll;
+// only its sign is portable across C libraries).
+var_dump(ip2long("192.168.1.1"), ip2long("0.0.0.0"), ip2long("255.255.255.255"), ip2long("1.2.3"), ip2long("255.255.255.256"), ip2long(" 1.2.3.4"), ip2long(""), ip2long("1.2.3.4.5"), ip2long("1..2.3"));
+var_dump(long2ip(-1), long2ip(3232235777), long2ip(PHP_INT_MAX), long2ip("12"), long2ip(1.5));
+var_dump(fpow(2, 0.5), fpow(-8, 1 / 3), fpow(0, -1), fpow("3", "2"), fpow(2, 1024));
+var_dump(strcoll("a", "b") <=> 0, strcoll("b", "a") <=> 0, strcoll("abc", "abc"), strcoll("", "abc") <=> 0);
+foreach ([fn() => ip2long("1.2.3.4\0"), fn() => long2ip("x"), fn() => fpow("a", 1), fn() => strcoll([], "a")] as $f) {
+  try { $f(); } catch (Throwable $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+}
+#==#
+// An int parameter is zend_parse_arg_long_weak: a float or float-form numeric
+// string with a fraction is truncated and deprecated, one an int cannot hold
+// (NaN, out of [-2^63, 2^63)) and a non-numeric string are TypeErrors, and a
+// numeric string with whitespace converts in full.
+foreach (["2abc", "abc", " 2", "2 ", "0x1A", "1e3", "-2.5", "", "9223372036854775808", "9223372036854775807", -0.0, 1e18,
+          -9.2233720368547758E18, 9.2233720368547758E18, true, false, 2.5, "2.5", NAN, INF, 1e20, "1e20", " 2.5", "2.0", 2.0,
+          "1.5e3", " 1 ", "1_000", "-9223372036854775808", "-9223372036854775809"] as $v) {
+  try { echo dechex($v), "\n"; } catch (Throwable $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+}
+var_dump(str_repeat("ab", "2.5"), str_repeat("ab", " 2"), strncmp("abcd", "abef", " 2"), substr("abcdef", "1.9", " 3"));
+var_dump(str_pad("x", "3.7", "-"), array_slice([1, 2, 3, 4], "1.5"), array_fill("1", "2.5", 0), wordwrap("aaa bbb", " 3", "\n", true));
+var_dump(preg_split("/,/", "a,b,c", " 2"), str_split("abcdef", " 4"), chr(65.5), round(2.555, 1.5));

@@ -3217,3 +3217,135 @@ int(6)
 int(7)
 int(8)
 
+#REC 151 exit=0 out=737 err=106
+int(3232235777)
+int(0)
+int(4294967295)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+
+Deprecated: Implicit conversion from float 1.5 to int loses precision in Command line code on line 4
+string(15) "255.255.255.255"
+string(11) "192.168.1.1"
+string(15) "255.255.255.255"
+string(8) "0.0.0.12"
+string(7) "0.0.0.1"
+float(1.4142135623730951)
+float(NAN)
+float(INF)
+float(9)
+float(INF)
+int(-1)
+int(1)
+int(0)
+int(-1)
+ValueError: ip2long(): Argument #1 ($ip) must not contain any null bytes
+TypeError: long2ip(): Argument #1 ($ip) must be of type int, string given
+TypeError: fpow(): Argument #1 ($num) must be of type float, string given
+TypeError: strcoll(): Argument #1 ($string1) must be of type string, array given
+PHP Deprecated:  Implicit conversion from float 1.5 to int loses precision in Command line code on line 4
+
+#REC 152 exit=0 out=2502 err=1248
+TypeError: dechex(): Argument #1 ($num) must be of type int, string given
+TypeError: dechex(): Argument #1 ($num) must be of type int, string given
+2
+2
+TypeError: dechex(): Argument #1 ($num) must be of type int, string given
+3e8
+
+Deprecated: Implicit conversion from float-string "-2.5" to int loses precision in Command line code on line 8
+fffffffffffffffe
+TypeError: dechex(): Argument #1 ($num) must be of type int, string given
+TypeError: dechex(): Argument #1 ($num) must be of type int, string given
+7fffffffffffffff
+0
+de0b6b3a7640000
+8000000000000000
+TypeError: dechex(): Argument #1 ($num) must be of type int, float given
+1
+0
+
+Deprecated: Implicit conversion from float 2.5 to int loses precision in Command line code on line 8
+2
+
+Deprecated: Implicit conversion from float-string "2.5" to int loses precision in Command line code on line 8
+2
+TypeError: dechex(): Argument #1 ($num) must be of type int, float given
+TypeError: dechex(): Argument #1 ($num) must be of type int, float given
+TypeError: dechex(): Argument #1 ($num) must be of type int, float given
+TypeError: dechex(): Argument #1 ($num) must be of type int, string given
+
+Deprecated: Implicit conversion from float-string " 2.5" to int loses precision in Command line code on line 8
+2
+2
+2
+5dc
+1
+TypeError: dechex(): Argument #1 ($num) must be of type int, string given
+8000000000000000
+8000000000000000
+
+Deprecated: Implicit conversion from float-string "2.5" to int loses precision in Command line code on line 10
+
+Deprecated: Implicit conversion from float-string "1.9" to int loses precision in Command line code on line 10
+string(4) "abab"
+string(4) "abab"
+int(0)
+string(3) "bcd"
+
+Deprecated: Implicit conversion from float-string "3.7" to int loses precision in Command line code on line 11
+
+Deprecated: Implicit conversion from float-string "1.5" to int loses precision in Command line code on line 11
+
+Deprecated: Implicit conversion from float-string "2.5" to int loses precision in Command line code on line 11
+string(3) "x--"
+array(3) {
+  [0]=>
+  int(2)
+  [1]=>
+  int(3)
+  [2]=>
+  int(4)
+}
+array(2) {
+  [1]=>
+  int(0)
+  [2]=>
+  int(0)
+}
+string(7) "aaa
+bbb"
+
+Deprecated: Implicit conversion from float 65.5 to int loses precision in Command line code on line 12
+
+Deprecated: Implicit conversion from float 1.5 to int loses precision in Command line code on line 12
+array(2) {
+  [0]=>
+  string(1) "a"
+  [1]=>
+  string(3) "b,c"
+}
+array(2) {
+  [0]=>
+  string(4) "abcd"
+  [1]=>
+  string(2) "ef"
+}
+string(1) "A"
+float(2.6)
+PHP Deprecated:  Implicit conversion from float-string "-2.5" to int loses precision in Command line code on line 8
+PHP Deprecated:  Implicit conversion from float 2.5 to int loses precision in Command line code on line 8
+PHP Deprecated:  Implicit conversion from float-string "2.5" to int loses precision in Command line code on line 8
+PHP Deprecated:  Implicit conversion from float-string " 2.5" to int loses precision in Command line code on line 8
+PHP Deprecated:  Implicit conversion from float-string "2.5" to int loses precision in Command line code on line 10
+PHP Deprecated:  Implicit conversion from float-string "1.9" to int loses precision in Command line code on line 10
+PHP Deprecated:  Implicit conversion from float-string "3.7" to int loses precision in Command line code on line 11
+PHP Deprecated:  Implicit conversion from float-string "1.5" to int loses precision in Command line code on line 11
+PHP Deprecated:  Implicit conversion from float-string "2.5" to int loses precision in Command line code on line 11
+PHP Deprecated:  Implicit conversion from float 65.5 to int loses precision in Command line code on line 12
+PHP Deprecated:  Implicit conversion from float 1.5 to int loses precision in Command line code on line 12
+

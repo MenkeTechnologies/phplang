@@ -1347,7 +1347,7 @@ fn fill_out(target: &Value, pos: usize, rows: Vec<(Value, Value)>) {
 fn preg_match(args: &[Value]) -> Result<Value, String> {
     let pat = with_host(|h| h.to_str(&arg(args, 0)));
     let subject = with_host(|h| h.to_str(&arg(args, 1)));
-    let fmt = CellFmt::from_flags(args.get(3).map(|v| v.to_int()).unwrap_or(0));
+    let fmt = CellFmt::from_flags(args.get(3).map(crate::host::long_of).unwrap_or(0));
     let Some(re) = compile_for("preg_match", &pat) else {
         return Ok(Value::bool(false));
     };
@@ -1400,7 +1400,7 @@ fn bad_offset(args: &[Value]) -> Result<Value, String> {
 fn preg_match_all(args: &[Value]) -> Result<Value, String> {
     let pat = with_host(|h| h.to_str(&arg(args, 0)));
     let subject = with_host(|h| h.to_str(&arg(args, 1)));
-    let flags = args.get(3).map(|v| v.to_int()).unwrap_or(0);
+    let flags = args.get(3).map(crate::host::long_of).unwrap_or(0);
     let Some(re) = compile_for("preg_match_all", &pat) else {
         return Ok(Value::bool(false));
     };
@@ -1574,7 +1574,7 @@ fn preg_replace_common(args: &[Value], func: &str, is_filter: bool) -> Result<Va
             ),
         ));
     }
-    let limit = args.get(3).map(|v| v.to_int()).unwrap_or(-1);
+    let limit = args.get(3).map(crate::host::long_of).unwrap_or(-1);
     let mut count: i64 = 0;
     // `php_pcre_replace_array`: an array of replacements pairs up with the
     // patterns, and a pattern past its end replaces with "".
@@ -1630,7 +1630,7 @@ fn preg_replace_common(args: &[Value], func: &str, is_filter: bool) -> Result<Va
 fn preg_replace_callback(args: &[Value]) -> Result<Value, String> {
     let pats = pattern_list(&arg(args, 0));
     let cb = arg(args, 1);
-    let limit = args.get(3).map(|v| v.to_int()).unwrap_or(-1);
+    let limit = args.get(3).map(crate::host::long_of).unwrap_or(-1);
 
     let mut compiled: Vec<Rc<Pattern>> = Vec::with_capacity(pats.len());
     for p in &pats {
@@ -1642,7 +1642,7 @@ fn preg_replace_callback(args: &[Value]) -> Result<Value, String> {
 
     let subj = arg(args, 2);
     // `$flags` sits AFTER `$count` in the signature, so it is argument 5.
-    let fmt = CellFmt::from_flags(args.get(5).map(|v| v.to_int()).unwrap_or(0));
+    let fmt = CellFmt::from_flags(args.get(5).map(crate::host::long_of).unwrap_or(0));
     let mut count: i64 = 0;
     let run = |s: &str, count: &mut i64| -> Result<String, String> {
         let mut cur = s.to_string();
@@ -1691,8 +1691,8 @@ fn preg_replace_callback_array(args: &[Value]) -> Result<Value, String> {
             "preg_replace_callback_array(): Argument #1 ($pattern) must contain only valid callbacks",
         ));
     }
-    let limit = args.get(2).map(|v| v.to_int()).unwrap_or(-1);
-    let fmt = CellFmt::from_flags(args.get(4).map(|v| v.to_int()).unwrap_or(0));
+    let limit = args.get(2).map(crate::host::long_of).unwrap_or(-1);
+    let fmt = CellFmt::from_flags(args.get(4).map(crate::host::long_of).unwrap_or(0));
     let mut subj = arg(args, 1);
     let mut count: i64 = 0;
     for (pat, cb) in &map {
@@ -1763,8 +1763,8 @@ fn replace_all_cb(
 fn preg_split(args: &[Value]) -> Result<Value, String> {
     let pat = with_host(|h| h.to_str(&arg(args, 0)));
     let subject = with_host(|h| h.to_str(&arg(args, 1)));
-    let limit = args.get(2).map(|v| v.to_int()).unwrap_or(-1);
-    let flags = args.get(3).map(|v| v.to_int()).unwrap_or(0);
+    let limit = args.get(2).map(crate::host::long_of).unwrap_or(-1);
+    let flags = args.get(3).map(crate::host::long_of).unwrap_or(0);
     let Some(re) = compile_for("preg_split", &pat) else {
         return Ok(Value::bool(false));
     };
@@ -1857,7 +1857,7 @@ fn preg_quote(args: &[Value]) -> Result<Value, String> {
 fn preg_grep(args: &[Value]) -> Result<Value, String> {
     let pat = with_host(|h| h.to_str(&arg(args, 0)));
     let input = arg(args, 1);
-    let flags = args.get(2).map(|v| v.to_int()).unwrap_or(0);
+    let flags = args.get(2).map(crate::host::long_of).unwrap_or(0);
     let invert = flags & GREP_INVERT != 0;
     let Some(re) = compile_for("preg_grep", &pat) else {
         return Ok(Value::bool(false));

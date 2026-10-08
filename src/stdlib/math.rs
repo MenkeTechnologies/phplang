@@ -308,6 +308,8 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         // ── geometry / IEEE division ────────────────────────────────────────
         "hypot" => return f(float_arg(args, 0).hypot(float_arg(args, 1))),
         "fdiv" => return f(float_arg(args, 0) / float_arg(args, 1)),
+        // `fpow`: C `pow` on two doubles, with none of `**`'s int arithmetic.
+        "fpow" => return f(float_arg(args, 0).powf(float_arg(args, 1))),
 
         // ── IEEE predicates ─────────────────────────────────────────────────
         "is_nan" => Ok(Value::bool(a0().is_nan())),

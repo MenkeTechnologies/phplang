@@ -515,7 +515,7 @@ use Def::{Bool, EmptyArray, Float, Int, Null, Required, Str, Unknown};
 /// default in this generated table is a literal too.
 #[allow(clippy::approx_constant)]
 static SIGS: &[(&str, Sig)] = &[
-    // generated: 561 functions
+    // generated: 565 functions
     (
         "abs",
         Sig {
@@ -2390,6 +2390,17 @@ static SIGS: &[(&str, Sig)] = &[
         },
     ),
     (
+        "fpow",
+        Sig {
+            req: 2,
+            params: &[
+                p("num", Required, "float"),
+                p("exponent", Required, "float"),
+            ],
+            variadic: false,
+        },
+    ),
+    (
         "fprintf",
         Sig {
             req: 2,
@@ -3303,6 +3314,14 @@ static SIGS: &[(&str, Sig)] = &[
         },
     ),
     (
+        "ip2long",
+        Sig {
+            req: 1,
+            params: &[p("ip", Required, "string")],
+            variadic: false,
+        },
+    ),
+    (
         "is_a",
         Sig {
             req: 2,
@@ -3711,6 +3730,14 @@ static SIGS: &[(&str, Sig)] = &[
         Sig {
             req: 1,
             params: &[p("num", Required, "float")],
+            variadic: false,
+        },
+    ),
+    (
+        "long2ip",
+        Sig {
+            req: 1,
+            params: &[p("ip", Required, "int")],
             variadic: false,
         },
     ),
@@ -5209,6 +5236,17 @@ static SIGS: &[(&str, Sig)] = &[
     ),
     (
         "strcmp",
+        Sig {
+            req: 2,
+            params: &[
+                p("string1", Required, "string"),
+                p("string2", Required, "string"),
+            ],
+            variadic: false,
+        },
+    ),
+    (
+        "strcoll",
         Sig {
             req: 2,
             params: &[

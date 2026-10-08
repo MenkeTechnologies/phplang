@@ -10744,6 +10744,21 @@ fn increment_alnum_string(s: &str) -> String {
     String::from_utf8_lossy(&b).into_owned()
 }
 
+/// The `zend_long` an `int` parameter receives in coercive mode, without the
+/// host borrow: a numeric string converts in full (`" 2"` and `"2.5"` are 2,
+/// where `Value::to_int` would parse neither), a float truncates. The
+/// parameter's refusals and deprecations are `crate::argtypes`'s, raised
+/// before the function runs; a string that got past them unparsed reads its
+/// leading number.
+pub fn long_of(v: &Value) -> i64 {
+    match v {
+        Value::Str(s) => parse_php_number_full(s)
+            .unwrap_or_else(|| parse_php_number(s))
+            .to_int(),
+        other => other.to_int(),
+    }
+}
+
 pub fn is_numeric_string(s: &str) -> bool {
     parse_php_number_full(s).is_some()
 }
