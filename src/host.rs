@@ -3811,16 +3811,6 @@ impl PhpHost {
             ),
             _ => return None,
         };
-        // A `static` closure has no instance and may not be given one. The
-        // reference warns and answers null rather than binding.
-        if is_static && this.is_some() {
-            self.warn(
-                "Cannot bind an instance to a static closure, this will be an error in PHP 9",
-            );
-            // The reference answers NULL here — a refusal, not "that was not a
-            // closure", which is what `None` means to the caller.
-            return Some(Value::Undef);
-        }
         // `do_closure_bind`: the new object's class, or the new scope without
         // one — in its declared spelling, since a scope may arrive lowercased.
         let called_scope = match &this {
@@ -3860,6 +3850,24 @@ impl PhpHost {
             Some(PhpObj::Closure { scope, .. }) => scope.clone(),
             _ => None,
         }
+    }
+
+    /// Whether the closure was declared `static` (`ZEND_ACC_STATIC`).
+    fn closure_is_static(&self, v: &Value) -> bool {
+        matches!(
+            self.as_array(v),
+            Some(PhpObj::Closure {
+                is_static: true,
+                ..
+            })
+        )
+    }
+
+    /// Whether the declared class `lower` is one the reference ships
+    /// (`ZEND_INTERNAL_CLASS`): an engine type, or a PHP-written prelude class
+    /// standing in for one.
+    fn is_internal_class(&self, lower: &str) -> bool {
+        crate::prelude_type(lower).is_some() || !self.classes.contains_key(lower)
     }
 
     // ── objects / classes ──────────────────────────────────────────────────
@@ -8968,32 +8976,76 @@ pub fn call_value_named(
 /// closure with `$this` rebound to `obj` and its private-access scope set. `scope`
 /// may be a class-name string, an object (its class is used), or null/"static"
 /// (keep the current scope). A null `obj` unbinds `$this` (a static closure).
+///
+/// Port of `do_closure_bind` and the non-fake-closure checks of
+/// `zend_valid_closure_binding` (`Zend/zend_closures.c`). Every refusal is a
+/// warning and a NULL result, never an exception.
 pub fn closure_bind(closure: &Value, obj: Value, scope: Option<Value>) -> Result<Value, String> {
     let this = matches!(obj, Value::Obj(_)).then_some(obj.clone());
-    let scope_class = with_host(|h| resolve_bind_scope(h, closure, &obj, scope));
+    let Some(mut scope_class) = with_host(|h| resolve_bind_scope(h, closure, scope)) else {
+        return Ok(Value::Undef);
+    };
+    let refusal = with_host(|h| {
+        if this.is_some() && h.closure_is_static(closure) {
+            return Some(
+                "Cannot bind an instance to a static closure, this will be an error in PHP 9"
+                    .to_string(),
+            );
+        }
+        let current = h.closure_scope(closure).map(|s| s.to_ascii_lowercase());
+        let internal = scope_class.as_deref().filter(|s| {
+            let lower = s.to_ascii_lowercase();
+            Some(&lower) != current.as_ref() && h.is_internal_class(&lower)
+        });
+        internal.map(|s| {
+            format!(
+                "Cannot bind closure to scope of internal class {s}, this will be an error in PHP 9"
+            )
+        })
+    });
+    if let Some(msg) = refusal {
+        with_host(|h| h.warn(msg));
+        return Ok(Value::Undef);
+    }
+    // `zend_create_closure_ex`: an object bound without any scope gets the dummy
+    // scope `Closure`, so `self::` names `Closure` and no private member opens.
+    if scope_class.is_none() && this.is_some() {
+        scope_class = Some("Closure".to_string());
+    }
     match with_host(|h| h.rebind_closure(closure, this, scope_class)) {
         Some(v) => Ok(v),
         None => Err("Closure::bind expects a Closure".to_string()),
     }
 }
 
-/// Resolve the `$scope` argument of `bind`/`bindTo` to a class name (or `None` for
-/// the global scope). An object argument uses its class; a class-name string is
-/// taken verbatim; an omitted scope or the literal `"static"` keeps the closure's
-/// *current* scope (PHP's default — it does NOT grant access to the new object's
-/// class unless a scope is named explicitly).
+/// Resolve the `$scope` argument of `bind`/`bindTo` the way `do_closure_bind`
+/// does: an object names its class; the exact string `"static"` — also what an
+/// omitted argument defaults to — keeps the closure's current scope; any other
+/// string must name a class; and `null` is the unscoped closure. The outer
+/// `None` is the refusal for a class that does not exist, after its warning.
 fn resolve_bind_scope(
     h: &mut PhpHost,
     closure: &Value,
-    _obj: &Value,
     scope: Option<Value>,
-) -> Option<String> {
-    match scope {
-        Some(Value::Obj(_)) => h.object_class(scope.as_ref().unwrap()),
-        Some(Value::Str(s)) if !s.eq_ignore_ascii_case("static") => Some(s.to_string()),
-        // Omitted / null / "static" → leave the closure's scope unchanged.
-        _ => h.closure_scope(closure),
+) -> Option<Option<String>> {
+    let s = match scope {
+        None => return Some(h.closure_scope(closure)),
+        Some(Value::Undef) => return Some(None),
+        Some(o @ Value::Obj(_)) if h.is_object(&o) => return Some(h.object_class(&o)),
+        Some(other) => h.to_str(&other),
+    };
+    if s == "static" {
+        return Some(h.closure_scope(closure));
     }
+    if !h.class_exists(&s) {
+        h.warn(format!("Class \"{s}\" not found"));
+        return None;
+    }
+    let lower = s.to_ascii_lowercase();
+    Some(Some(match h.classes.get(&lower) {
+        Some(d) => d.name.clone(),
+        None => builtin_type(&lower).map_or(s, |(n, ..)| n.to_string()),
+    }))
 }
 
 /// `$fn->call($obj, ...$args)` — bind `$fn` to `$obj` with the scope set to
@@ -9002,6 +9054,10 @@ pub fn closure_call(closure: &Value, obj: Value, args: Vec<Value>) -> Result<Val
     // `call` always scopes to the bound object's class — pass the object as the
     // scope so `resolve_bind_scope` derives its class.
     let bound = closure_bind(closure, obj.clone(), Some(obj))?;
+    // A refused binding has already warned; `call` then answers null.
+    if matches!(bound, Value::Undef) {
+        return Ok(Value::Undef);
+    }
     call_value(bound, args)
 }
 

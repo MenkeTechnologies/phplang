@@ -3080,9 +3080,19 @@ impl Parser {
                         is_static: true,
                         line,
                     },
-                    // `static fn (…)`: an arrow function captures by value and
-                    // reads no `$this` it was not given, so the keyword changes
-                    // nothing observable about it.
+                    Expr::ArrowFn {
+                        params,
+                        body,
+                        ret,
+                        line,
+                        ..
+                    } => Expr::ArrowFn {
+                        params,
+                        body,
+                        ret,
+                        is_static: true,
+                        line,
+                    },
                     other => other,
                 })
             }
@@ -3135,6 +3145,7 @@ impl Parser {
                     params,
                     body: Box::new(body),
                     ret,
+                    is_static: false,
                     line,
                 })
             }

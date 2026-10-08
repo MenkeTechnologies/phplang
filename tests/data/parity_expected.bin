@@ -2694,3 +2694,61 @@ P
 Cannot access "parent" when current class scope has no parent
 Cannot use "parent" when current class scope has no parent
 
+#REC 133 exit=0 out=901 err=735
+array(3) {
+  [0]=>
+  string(7) "Closure"
+  [1]=>
+  string(1) "A"
+  [2]=>
+  string(1) "A"
+}
+
+Warning: Class "Nope" not found in Command line code on line 7
+
+Warning: Cannot bind closure to scope of internal class ArrayObject, this will be an error in PHP 9 in Command line code on line 7
+
+Warning: Cannot bind closure to scope of internal class ArrayObject, this will be an error in PHP 9 in Command line code on line 7
+NULL
+NULL
+NULL
+
+Warning: Cannot bind closure to scope of internal class ArrayObject, this will be an error in PHP 9 in Command line code on line 8
+NULL
+
+Warning: Class "STATIC" not found in Command line code on line 10
+
+Warning: Class "5" not found in Command line code on line 10
+NULL
+NULL
+string(1) "A"
+string(1) "A"
+Cannot access private property A::$x
+ax
+
+Warning: Cannot bind an instance to a static closure, this will be an error in PHP 9 in Command line code on line 14
+NULL
+PHP Warning:  Class "Nope" not found in Command line code on line 7
+PHP Warning:  Cannot bind closure to scope of internal class ArrayObject, this will be an error in PHP 9 in Command line code on line 7
+PHP Warning:  Cannot bind closure to scope of internal class ArrayObject, this will be an error in PHP 9 in Command line code on line 7
+PHP Warning:  Cannot bind closure to scope of internal class ArrayObject, this will be an error in PHP 9 in Command line code on line 8
+PHP Warning:  Class "STATIC" not found in Command line code on line 10
+PHP Warning:  Class "5" not found in Command line code on line 10
+PHP Warning:  Cannot bind an instance to a static closure, this will be an error in PHP 9 in Command line code on line 14
+
+#REC 134 exit=0 out=249 err=121
+array(3) {
+  [0]=>
+  bool(false)
+  [1]=>
+  bool(true)
+  [2]=>
+  string(2) "B2"
+}
+Using $this when not in object context
+
+Warning: Cannot bind an instance to a static closure, this will be an error in PHP 9 in Command line code on line 5
+NULL
+int(1)
+PHP Warning:  Cannot bind an instance to a static closure, this will be an error in PHP 9 in Command line code on line 5
+

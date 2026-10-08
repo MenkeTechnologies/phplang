@@ -1498,3 +1498,24 @@ $g = function () { return parent::f(); };
 try { Closure::bind($g, null, P::class)(); } catch (Error $e) { echo $e->getMessage(), "\n"; }
 trait T { function t() { return parent::class; } } class U { use T; }
 try { (new U)->t(); } catch (Error $e) { echo $e->getMessage(), "\n"; }
+#==#
+// Closure::bind/bindTo/call per do_closure_bind: an object bound with no scope
+// gets the dummy scope Closure; "static" (exactly) keeps the scope; an unknown
+// class or an internal class scope warns and yields null.
+class A { private $x = "ax"; static function l() { return function () { return static::class; }; } }
+$f = function () { return [self::class, static::class, isset($this) ? get_class($this) : null]; };
+var_dump($f->bindTo(new A)());
+var_dump(Closure::bind($f, null, "Nope"), Closure::bind($f, null, ArrayObject::class), Closure::bind($f, new ArrayObject, ArrayObject::class));
+var_dump($f->call(new ArrayObject));
+$l = A::l();
+var_dump(Closure::bind($l, null, "STATIC"), Closure::bind($l, null, 5), Closure::bind($l, null, "a")(), Closure::bind($l, new A)());
+$p = function () { return $this->x; };
+try { $p->bindTo(new A)(); } catch (Error $e) { echo $e->getMessage(), "\n"; }
+echo $p->bindTo(new A, A::class)(), "\n";
+$s = static fn() => 1; var_dump(Closure::bind($s, new A, A::class));
+#==#
+// static fn withholds $this (and so can never be bound to one), but keeps
+// the called scope.
+class A2 { public $v = 1; function m() { return [(static fn() => isset($this))(), (fn() => isset($this))(), (static fn() => static::class)()]; } } class B2 extends A2 {} var_dump((new B2)->m());
+class C2 { public $v = 1; function m() { return (static fn() => $this->v)(); } } try { (new C2)->m(); } catch (Error $e) { echo $e->getMessage(), "\n"; }
+var_dump(Closure::bind(static fn() => 1, new C2), (static fn() => 1)->bindTo(null)());

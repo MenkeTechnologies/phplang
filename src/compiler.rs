@@ -4074,6 +4074,7 @@ impl Compiler {
                 params,
                 body,
                 ret: ret_ty,
+                is_static,
                 line,
             } => {
                 // An arrow fn desugars to a closure whose single-statement body
@@ -4086,6 +4087,10 @@ impl Compiler {
                 let mut captures = Vec::new();
                 collect_free_vars(body, &mut captures);
                 captures.retain(|n| !params.iter().any(|p| p.name == *n));
+                // A `static fn` is never given the enclosing `$this`.
+                if *is_static {
+                    captures.retain(|n| n != "this");
+                }
                 // An arrow function has no `use` clause, so every capture is by
                 // value — PHP has no by-reference form of it.
                 let captures: Vec<Capture> = captures
@@ -4099,7 +4104,7 @@ impl Compiler {
                 // refuses; a `never` one is exempt (`fn(): never => throw $e`).
                 let rule = ret_rule(ret_ty.as_ref(), &ret).filter(|r| *r == "void");
                 let saved_rule = std::mem::replace(&mut self.ret_rule, rule);
-                self.compile_closure(b, params, &captures, &ret, ret_ty.as_ref(), false, *line)?;
+                self.compile_closure(b, params, &captures, &ret, ret_ty.as_ref(), *is_static, *line)?;
                 self.ret_rule = saved_rule;
             }
             // The declaration is compiled here, once, and the expression becomes
@@ -5621,6 +5626,7 @@ impl Compiler {
                 params: vec![param],
                 body: Box::new(body),
                 ret: None,
+                is_static: false,
                 // The closure the reference synthesizes for `f(...)` is written
                 // where the syntax is, so that is the line its frames name.
                 line: self.cur_line,

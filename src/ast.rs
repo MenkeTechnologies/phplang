@@ -276,6 +276,9 @@ pub enum Expr {
         body: Box<Expr>,
         /// The declared return type (`fn (): int => …`), or `None`.
         ret: Option<TypeHint>,
+        /// `static fn (…)` — withholds the enclosing `$this`, exactly as
+        /// `Closure::is_static` does for `static function`.
+        is_static: bool,
         /// The line the `fn` keyword is on — see `Closure::line`.
         line: u32,
     },
