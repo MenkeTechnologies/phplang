@@ -2075,7 +2075,7 @@ impl PhpHost {
     }
 
     /// A buffered write — `php_output_write`: into the output-buffering stack
-    /// when a handler is active (see [`crate::stdlib::output`]), else the
+    /// when a handler is active (see `crate::stdlib::output`), else the
     /// capture buffer if active, else stdout.
     pub fn write_out(&mut self, s: &str) {
         let top = self.ob.handlers.len();
@@ -2908,7 +2908,7 @@ impl PhpHost {
     }
 
     /// The structured frame list as the PHP array `getTrace()` returns:
-    /// `file`, `line`, `function`, `class`, [`object`], `type`, `args`, in the
+    /// `file`, `line`, `function`, `class`, `object`, `type`, `args`, in the
     /// reference's key order. A frame entered from internal code has no `file`
     /// or `line`; an include has `args` before `function`.
     pub fn trace_array(&mut self, provide_object: bool, ignore_args: bool, limit: usize) -> Value {

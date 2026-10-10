@@ -2063,7 +2063,7 @@ pub fn load_merged(prog: compiler::Program) -> fusevm::Chunk {
 ///
 /// The output buffers still open at the end are finalized (their handlers run
 /// with `PHP_OUTPUT_HANDLER_FINAL`), as the end of a request does. A whole
-/// program defers that to [`run_program`]'s shutdown sequence, after the
+/// program defers that to `run_program`'s shutdown sequence, after the
 /// shutdown functions and destructors, whose output the buffers still take.
 pub fn run_compiled(prog: compiler::Program) -> Result<Value, String> {
     let r = run_compiled_open(prog);

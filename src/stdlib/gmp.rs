@@ -202,7 +202,7 @@ fn rounding_mode(func: &str, args: &[Value], i: usize) -> Result<i64, String> {
 fn division_by_zero(func: &str, pname_index: usize, what: &str) -> String {
     throws(
         "DivisionByZeroError",
-        &format!(
+        format!(
             "{func}(): Argument #{} (${}) {what}",
             pname_index + 1,
             param_name(func, pname_index)

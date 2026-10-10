@@ -42,7 +42,7 @@ type Params = &'static [(u32, &'static str, &'static str)];
 /// * `null` is NOT handled here — see [`check_call`], because for a scalar it is
 ///   a deprecation and for `array` it is an error;
 /// * `bool`, `int`, `float` satisfy every scalar type.
-/// `ZEND_DOUBLE_FITS_LONG`: false for NaN, and the bounds are `[-2^63, 2^63)`.
+///   `ZEND_DOUBLE_FITS_LONG`: false for NaN, and the bounds are `[-2^63, 2^63)`.
 fn double_fits_long(d: f64) -> bool {
     const TWO_63: f64 = 9223372036854775808.0;
     (-TWO_63..TWO_63).contains(&d)

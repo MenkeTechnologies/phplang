@@ -1008,7 +1008,7 @@ impl Compiler {
                     // Straight to `compile_assign`: whether a by-reference argument
                     // may be a temporary is decided where the reference knows the
                     // callee, not by the write-context check of a written `=`.
-                    self.compile_assign(b, &arg, None, &Expr::Var(tmp))?;
+                    self.compile_assign(b, arg, None, &Expr::Var(tmp))?;
                     b.emit(Op::Pop, 0);
                 }
             }
