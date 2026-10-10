@@ -4214,6 +4214,361 @@ fn gen_magiccall(seed: u64) -> Vec<String> {
     )]
 }
 
+/// Syntax-error parity: a valid program, written with a space between every
+/// token, gets one stray operand token inserted at a random boundary. Both sides must
+/// agree on the whole diagnostic — the offending token's description, the
+/// `expecting …` clause the reference's parser tables produce, and the line.
+fn gen_parse_error(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let bases = [
+        "$a = f ( 1 , 2 ) ;",
+        "$a = [ 1 , 2 , 3 ] ;",
+        "$a = [ 'k' => 1 , 'j' => [ 2 , 3 ] ] ;",
+        "$a = array ( 1 , 2 ) ;",
+        "echo 1 , 2 ;",
+        "return 1 ;",
+        "function f ( $a , $b = 1 ) { return $a ; }",
+        "function f ( int $a , string ... $r ) : int { return 1 ; }",
+        "class A { public $a = 1 ; const X = 2 ; function m ( $p ) { return $p ; } }",
+        "class A extends B implements C , D { }",
+        "interface I { function m ( ) ; }",
+        "enum E { case A ; case B ; }",
+        "enum E : int { case A = 1 ; }",
+        "trait T { public $t ; }",
+        "$f = function ( $a ) use ( $b , $c ) { return 1 ; } ;",
+        "$f = fn ( $a ) => $a ;",
+        "foreach ( $a as $k => $v ) { echo $v ; }",
+        "for ( $i = 0 ; $i < 3 ; $i ++ ) { echo $i ; }",
+        "while ( $a ) { break ; }",
+        "do { $a ++ ; } while ( $a < 3 ) ;",
+        "if ( $a ) { echo 1 ; } else { echo 2 ; }",
+        "switch ( $a ) { case 1 : echo 1 ; break ; default : echo 2 ; }",
+        "try { f ( ) ; } catch ( E $e ) { echo 1 ; } finally { echo 2 ; }",
+        "$x = match ( $a ) { 1 , 2 => 'a' , default => 'b' } ;",
+        "$x = new A ( 1 , 2 ) ;",
+        "$x = $a -> m ( 1 , 2 ) ;",
+        "$x = A :: m ( 1 ) ;",
+        "$x = $a [ 1 ] [ 2 ] ;",
+        "global $a , $b ;",
+        "static $a = 1 , $b = 2 ;",
+        "const A = 1 , B = 2 ;",
+        "unset ( $a , $b ) ;",
+        "isset ( $a , $b ) ;",
+        "$x = isset ( $a ) ;",
+        "$x = empty ( $a ) ;",
+        "declare ( ticks = 1 ) ;",
+        "namespace A ;",
+        "use A \\ B ;",
+        "list ( $a , $b ) = $c ;",
+        "[ $a , [ $b ] ] = $c ;",
+        "goto a ;",
+        "$x = $a ? 1 : 2 ;",
+        "$x = $a ?? 2 ;",
+        "abstract class A { abstract function m ( ) ; }",
+    ];
+    // Operand-like strays only: the shape of a missing separator, which is where
+    // the reference lists what it expected. Punctuation strays mostly land in
+    // contexts whose list lives in PHP's LALR tables (see BUGS.md).
+    let stray = ["1", "$z", "'s'", "2.5"];
+    let mut tokens: Vec<&str> = r.pick(&bases).split(' ').collect();
+    let at = r.below(tokens.len() + 1);
+    tokens.insert(at, r.pick(&stray));
+    vec![tokens.join(" ")]
+}
+
+/// `fnmatch` with random patterns over a small alphabet and every combination of
+/// the four flags. The alphabet is dense in the characters the flags give
+/// meaning to — `.` and `/` for `FNM_PERIOD`/`FNM_PATHNAME`, `\` for
+/// `FNM_NOESCAPE`, and brackets, including an unterminated one.
+fn gen_fnmatch_flags(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let tokens = [
+        "a",
+        "b",
+        "c",
+        ".",
+        "/",
+        "*",
+        "?",
+        "[ab]",
+        "[!a]",
+        "[a-c]",
+        "[^b]",
+        "[[:alpha:]]",
+        "[[:digit:]]",
+        "[.]",
+        "[/]",
+        "\\\\*",
+        "\\\\.",
+        "\\\\\\\\",
+        "[",
+        "[a",
+        "]",
+        "-",
+        "[a-]",
+        "[]a]",
+    ];
+    let subject_tokens = ["a", "b", "c", ".", "/", "*", "1", "-", "[", "\\\\"];
+    let mut pattern = String::new();
+    for _ in 0..1 + r.below(5) {
+        pattern.push_str(r.pick(&tokens));
+    }
+    let mut subject = String::new();
+    for _ in 0..r.below(6) {
+        subject.push_str(r.pick(&subject_tokens));
+    }
+    let mut flags = 0;
+    for bit in [1, 2, 4, 16] {
+        if r.below(2) == 0 {
+            flags |= bit;
+        }
+    }
+    vec![format!(
+        "var_dump(fnmatch(\"{pattern}\", \"{subject}\", {flags}));"
+    )]
+}
+
+/// The `gmp_*` family in the string-result model: every operation over operands
+/// that straddle zero, base prefixes and the 64-bit boundary, with each rounding
+/// mode, and the argument errors the functions raise.
+fn gen_gmp_ops(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let operands = [
+        "0",
+        "1",
+        "-1",
+        "2",
+        "-2",
+        "7",
+        "-7",
+        "12",
+        "-18",
+        "97",
+        "100",
+        "255",
+        "\"0x1f\"",
+        "\"0b101\"",
+        "\"010\"",
+        "\"-0xff\"",
+        "\" 42 \"",
+        "\"12x\"",
+        "\"\"",
+        "\"+3\"",
+        "\"9223372036854775807\"",
+        "\"-9223372036854775808\"",
+        "\"18446744073709551617\"",
+        "\"123456789012345678901234567890\"",
+    ];
+    let a = *r.pick(&operands);
+    let b = *r.pick(&operands);
+    let small = *r.pick(&["0", "1", "2", "3", "5", "-1", "63", "64"]);
+    let mode = *r.pick(&[
+        "GMP_ROUND_ZERO",
+        "GMP_ROUND_PLUSINF",
+        "GMP_ROUND_MINUSINF",
+        "3",
+    ]);
+    let call = match r.below(10) {
+        0 => format!(
+            "{}({a}, {b}, {mode})",
+            r.pick(&["gmp_div_q", "gmp_div_r", "gmp_div_qr"])
+        ),
+        1 => format!(
+            "{}({a}, {b})",
+            r.pick(&[
+                "gmp_add",
+                "gmp_sub",
+                "gmp_mul",
+                "gmp_mod",
+                "gmp_gcd",
+                "gmp_lcm",
+                "gmp_and",
+                "gmp_or",
+                "gmp_xor",
+                "gmp_cmp",
+                "gmp_gcdext",
+                "gmp_invert",
+                "gmp_jacobi",
+                "gmp_kronecker",
+                "gmp_hamdist",
+            ])
+        ),
+        2 => format!(
+            "{}({a})",
+            r.pick(&[
+                "gmp_abs",
+                "gmp_neg",
+                "gmp_com",
+                "gmp_sign",
+                "gmp_sqrt",
+                "gmp_sqrtrem",
+                "gmp_perfect_square",
+                "gmp_perfect_power",
+                "gmp_popcount",
+                "gmp_intval",
+                "gmp_prob_prime",
+                "gmp_nextprime",
+            ])
+        ),
+        3 => format!(
+            "gmp_strval({a}, {})",
+            r.pick(&["2", "8", "16", "36", "62", "-16", "-36", "1", "37", "-37", "0"])
+        ),
+        4 => format!(
+            "gmp_init({a}, {})",
+            r.pick(&["0", "2", "8", "10", "16", "36", "62", "1", "63"])
+        ),
+        5 => format!("gmp_pow({a}, {small})"),
+        6 => format!("gmp_powm({a}, {small}, {b})"),
+        7 => format!(
+            "{}({a}, {small})",
+            r.pick(&[
+                "gmp_root",
+                "gmp_rootrem",
+                "gmp_binomial",
+                "gmp_testbit",
+                "gmp_scan0",
+                "gmp_scan1"
+            ])
+        ),
+        8 => format!("gmp_fact({small})"),
+        _ => format!("gmp_legendre({a}, {b})"),
+    };
+    vec![format!(
+        "try {{ $r = {call}; echo is_array($r) ? implode(',', array_map('strval', $r)) : var_export(is_object($r) ? (string)$r : $r, true); }} \
+         catch (Throwable $e) {{ echo get_class($e), ': ', $e->getMessage(); }} echo \"\\n\";"
+    )]
+}
+
+/// `hash`, `hash_hmac`, `hash_pbkdf2` and `hash_file`-free digests over the
+/// algorithms beyond md5/sha1/sha2 core, at input lengths that straddle each
+/// algorithm's block and sponge-rate boundary.
+fn gen_hash_algos(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let algo = *r.pick(&[
+        "md4",
+        "md5",
+        "sha1",
+        "sha224",
+        "sha256",
+        "sha384",
+        "sha512",
+        "sha512/224",
+        "sha512/256",
+        "sha3-224",
+        "sha3-256",
+        "sha3-384",
+        "sha3-512",
+        "adler32",
+        "crc32",
+        "crc32b",
+        "crc32c",
+        "fnv132",
+        "fnv1a32",
+        "fnv164",
+        "fnv1a64",
+        "joaat",
+        "nope",
+    ]);
+    let len = *r.pick(&[
+        0, 1, 3, 55, 56, 63, 64, 65, 71, 72, 73, 103, 104, 135, 136, 137, 143, 144, 200, 257,
+    ]);
+    let fill = *r.pick(&["a", "xyz", "0", "~"]);
+    let key_len = *r.pick(&[0, 1, 32, 64, 65, 128, 129, 300]);
+    let guard =
+        "try { {} } catch (Throwable $e) { echo get_class($e), ': ', $e->getMessage(), \"\\n\"; }";
+    let body = format!(
+        "$d = substr(str_repeat(\"{fill}\", {len}), 0, {len}); $k = str_repeat(\"k\", {key_len}); \
+         echo hash(\"{algo}\", $d), \"\\n\"; echo hash_hmac(\"{algo}\", $d, $k), \"\\n\"; \
+         echo hash_pbkdf2(\"{algo}\", $d, \"salt\", 2, 24), \"\\n\";"
+    );
+    vec![guard.replace("{}", &body)]
+}
+
+/// `ctype_*` over every argument type: a non-string raises the 8.1 deprecation,
+/// and an int is classified as a character code. Codes 128..=255 (and the
+/// negatives that wrap onto them) are left out: the reference classifies them
+/// with the platform libc's locale tables, which is not a PHP semantic.
+fn gen_ctype_args(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let func = *r.pick(&[
+        "ctype_alnum",
+        "ctype_alpha",
+        "ctype_cntrl",
+        "ctype_digit",
+        "ctype_graph",
+        "ctype_lower",
+        "ctype_print",
+        "ctype_punct",
+        "ctype_space",
+        "ctype_upper",
+        "ctype_xdigit",
+    ]);
+    let value = *r.pick(&[
+        "48", "65", "97", "-129", "256", "1000", "-200", "0", "32", "9", "127", "\"a\"", "\"12\"",
+        "\"\"", "\" \\t\"", "null", "true", "false", "1.5", "[]", "\"A1\"", "\"!\"",
+    ]);
+    vec![format!("var_dump({func}({value}));")]
+}
+
+/// `var_export` over values with an exact-spelling rule: `PHP_INT_MIN`, NUL
+/// bytes in values, keys and property names, quotes, backslashes, floats and
+/// nested containers.
+fn gen_var_export(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let leaves = [
+        "PHP_INT_MIN",
+        "PHP_INT_MAX",
+        "-PHP_INT_MAX - 1",
+        "0",
+        "-0.0",
+        "1.0",
+        "0.1 + 0.2",
+        "1e100",
+        "-1.5e-7",
+        "NAN",
+        "INF",
+        "-INF",
+        "true",
+        "false",
+        "null",
+        "\"\"",
+        "\"a\\0b\"",
+        "\"\\0\"",
+        "\"it's\"",
+        "\"back\\\\slash\"",
+        "\"multi\\nline\"",
+        "\"\\r\\t\"",
+        "\"é\"",
+    ];
+    let keys = [
+        "0",
+        "7",
+        "-3",
+        "\"k\"",
+        "\"a\\0b\"",
+        "\"it's\"",
+        "\"p\\\\q\"",
+        "\"\"",
+        "\"12\"",
+        "PHP_INT_MIN",
+    ];
+    let mut parts = Vec::new();
+    for _ in 0..1 + r.below(4) {
+        let leaf = r.pick(&leaves);
+        parts.push(match r.below(3) {
+            0 => leaf.to_string(),
+            1 => format!("{} => {leaf}", r.pick(&keys)),
+            _ => format!("{} => [{leaf}, {}]", r.pick(&keys), r.pick(&leaves)),
+        });
+    }
+    let list = parts.join(", ");
+    vec![
+        format!("var_export([{list}]); echo \"\\n\";"),
+        format!("var_export((object)[{list}]); echo \"\\n\";"),
+    ]
+}
+
 #[derive(Clone, Copy)]
 struct Mode {
     name: &'static str,
@@ -4568,6 +4923,30 @@ const MODES: &[Mode] = &[
     Mode {
         name: "magiccall",
         gen: gen_magiccall,
+    },
+    Mode {
+        name: "fnmatchflags",
+        gen: gen_fnmatch_flags,
+    },
+    Mode {
+        name: "gmpops",
+        gen: gen_gmp_ops,
+    },
+    Mode {
+        name: "hashalgos",
+        gen: gen_hash_algos,
+    },
+    Mode {
+        name: "ctypeargs",
+        gen: gen_ctype_args,
+    },
+    Mode {
+        name: "varexport",
+        gen: gen_var_export,
+    },
+    Mode {
+        name: "parseerr",
+        gen: gen_parse_error,
     },
 ];
 

@@ -3445,3 +3445,438 @@ PHP Warning:  Array to string conversion in Command line code on line 10
 PHP Deprecated:  fgetcsv(): the $escape parameter must be provided as its default value will change in Command line code on line 15
 PHP Deprecated:  fgetcsv(): the $escape parameter must be provided as its default value will change in Command line code on line 19
 
+#REC 154 exit=0 out=752 err=0
+"*" ".hid" 4 => false
+"?x" ".x" 4 => false
+".*" ".a" 4 => true
+"[.]a" ".a" 4 => false
+"\\.a" ".a" 4 => true
+"a\/*" "a\/.b" 4 => true
+"a\/*" "a\/.b" 6 => false
+"*\/.*" "a\/.b" 6 => true
+"*" "a\/b" 2 => false
+"a?b" "a\/b" 2 => false
+"a[\/]b" "a\/b" 2 => false
+"a*\/b" "ax\/b" 2 => true
+"*\/b" "a\/c\/b" 2 => false
+"*\/b" "a\/c\/b" 0 => true
+"\\*" "*" 0 => true
+"\\*" "\\" 1 => true
+"a\\" "a\\" 0 => false
+"[a" "[a" 0 => false
+"[[:alpha:]]" "a" 0 => true
+"[[:upper:]]" "a" 16 => false
+"[[:digit:]-]" "-" 0 => true
+"[[:nope:]]" "a" 0 => false
+"[z-a]" "m" 0 => false
+"[a-]" "-" 0 => true
+"[]a]" "]" 0 => true
+"[!]]" "a" 0 => true
+"ABC" "abc" 16 => true
+"[A-C]" "b" 16 => true
+"**" "" 0 => true
+"" "" 0 => true
+"*a*b" "xaxb" 0 => true
+"?" "\u00e9" 0 => true
+
+#REC 155 exit=0 out=255 err=0
+string(0) ""
+string(0) ""
+string(1) "."
+string(1) "."
+array(2) {
+  ["basename"]=>
+  string(0) ""
+  ["filename"]=>
+  string(0) ""
+}
+string(0) ""
+array(3) {
+  ["dirname"]=>
+  string(1) "."
+  ["basename"]=>
+  string(1) "a"
+  ["filename"]=>
+  string(1) "a"
+}
+
+#REC 156 exit=0 out=1296 err=1208
+
+Deprecated: ctype_digit(): Argument of type int will be interpreted as string in the future in Command line code on line 3
+
+Deprecated: ctype_alpha(): Argument of type null will be interpreted as string in the future in Command line code on line 3
+
+Deprecated: ctype_alnum(): Argument of type float will be interpreted as string in the future in Command line code on line 3
+
+Deprecated: ctype_space(): Argument of type array will be interpreted as string in the future in Command line code on line 3
+
+Deprecated: ctype_upper(): Argument of type bool will be interpreted as string in the future in Command line code on line 3
+
+Deprecated: ctype_print(): Argument of type int will be interpreted as string in the future in Command line code on line 3
+
+Deprecated: ctype_digit(): Argument of type int will be interpreted as string in the future in Command line code on line 3
+bool(true)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+bool(true)
+bool(true)
+bool(true)
+
+Deprecated: Function utf8_encode() is deprecated since 8.2, visit the php.net documentation for various alternatives in Command line code on line 4
+
+Deprecated: Function utf8_decode() is deprecated since 8.2, visit the php.net documentation for various alternatives in Command line code on line 4
+string(3) "abc"
+string(3) "abc"
+PHP Deprecated:  ctype_digit(): Argument of type int will be interpreted as string in the future in Command line code on line 3
+PHP Deprecated:  ctype_alpha(): Argument of type null will be interpreted as string in the future in Command line code on line 3
+PHP Deprecated:  ctype_alnum(): Argument of type float will be interpreted as string in the future in Command line code on line 3
+PHP Deprecated:  ctype_space(): Argument of type array will be interpreted as string in the future in Command line code on line 3
+PHP Deprecated:  ctype_upper(): Argument of type bool will be interpreted as string in the future in Command line code on line 3
+PHP Deprecated:  ctype_print(): Argument of type int will be interpreted as string in the future in Command line code on line 3
+PHP Deprecated:  ctype_digit(): Argument of type int will be interpreted as string in the future in Command line code on line 3
+PHP Deprecated:  Function utf8_encode() is deprecated since 8.2, visit the php.net documentation for various alternatives in Command line code on line 4
+PHP Deprecated:  Function utf8_decode() is deprecated since 8.2, visit the php.net documentation for various alternatives in Command line code on line 4
+
+#REC 157 exit=0 out=4345 err=0
+md4 0 31d6cfe0d16ae931b73c59d7e0c089c0
+md4 5 866437cb7a794bce2b727acc0362ee27
+md4 135 be0e505ce33f9ee5ddf247bda7c64035
+md4 400 d2db6b20ce4fbc14b78c046eea25e22c
+sha224 0 d14a028c2a3a2bc9476102bb288234c415a2b01f828ea62ac5b3e42f
+sha224 5 ea09ae9cc6768c50fcee903ed054556e5bfc8347907f12598aa24193
+sha224 135 c146edc094e2e9327b8d48fb2e37189359c83a2f5fb1e04d32d26d77
+sha224 400 fcf0e67dd1cd9ea6c086d211fdc5a0c5940670ad37938c8cab3dead0
+sha512/224 0 6ed0dd02806fa89e25de060c19d3ac86cabb87d6a0ddd05c333b84f4
+sha512/224 5 fe8509ed1fb7dcefc27e6ac1a80eddbec4cb3d2c6fe565244374061c
+sha512/224 135 285f136d2decefb83c42d694e43b76910840a2ee927c6fc25e13e2e6
+sha512/224 400 56b55926c2efafe031430e894eaf7a305b761c09d654c3d79f2449f7
+sha512/256 0 c672b8d1ef56ed28ab87c3622c5114069bdd3ad7b8f9737498d0c01ecef0967a
+sha512/256 5 e30d87cfa2a75db545eac4d61baf970366a8357c7f72fa95b52d0accb698f13a
+sha512/256 135 fd4e56a487589d7488dd1fe347cd806820f798dcf7deeb191e5f00593ec08728
+sha512/256 400 03cdf45fd662e62ef6ee08e73552daa673d63c218e83aacba5cd5fb80d410602
+sha3-224 0 6b4e03423667dbb73b6e15454f0eb1abd4597f9a1b078e3f5b5a6bc7
+sha3-224 5 b87f88c72702fff1748e58b87e9141a42c0dbedc29a78cb0d4a5cd81
+sha3-224 135 c89bfc35994db464160c9b93ac67c5b9dd32012bcadce75c4ed4548b
+sha3-224 400 8b11c2fbf045cb6654992079294fb22a8935837177c255d6217cc375
+sha3-256 0 a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a
+sha3-256 5 3338be694f50c5f338814986cdf0686453a888b84f424d792af4b9202398f392
+sha3-256 135 c150125edc74b56fb5cbfdd024fabe20ea5a99bd3c97305bbf7cb55885c106fe
+sha3-256 400 b9ba721bf991ec285c5ee53ad07c38515f19d22f504a8a45e288aaed639d9bbc
+sha3-384 0 0c63a75b845e4f7d01107d852e4c2485c51a50aaaa94fc61995e71bbee983a2ac3713831264adb47fb6bd1e058d5f004
+sha3-384 5 720aea11019ef06440fbf05d87aa24680a2153df3907b23631e7177ce620fa1330ff07c0fddee54699a4c3ee0ee9d887
+sha3-384 135 0183ceb1ae9b947885fa71b419e10cb384fe5a8084780c6bf684ede36d83470786a72c5333ae0aa472ab664aa5efeff4
+sha3-384 400 9577311ae919f903149bd111cf32ae7d43c80fff6d9dbe57c15bbd710f324288131d9a885117317e51602ef1b3293451
+sha3-512 0 a69f73cca23a9ac5c8b567dc185a756e97c982164fe25859e0d1dcc1475c80a615b2123af1f5f94c11e3e9402c3ac558f500199d95b6d3e301758586281dcd26
+sha3-512 5 75d527c368f2efe848ecf6b073a36767800805e9eef2b1857d5f984f036eb6df891d75f72d9b154518c1cd58835286d1da9a38deba3de98b5a53e5ed78a84976
+sha3-512 135 8e6c97077cf3abcbeff3f6e9dfb54d30b21139d2cc91fa6eb8885fa06ef6179b70dd6101dab98351d8108e3298977f1ce264895cf9a13223dc5862e85c877cbb
+sha3-512 400 0bf5d889cfc086dc7f1bb018337f2fc4ac13fe121ef1cf35f60f1a0550fd2fe5ce4dc0274bd155f225eac697ae774085974fc38827f1cba4a55f33bcd28b10bf
+adler32 0 00000001
+adler32 5 062c0215
+adler32 135 d0973f49
+adler32 400 59119859
+crc32c 0 00000000
+crc32c 5 9a71bb4c
+crc32c 135 ec4f4eac
+crc32c 400 a3ac88ee
+fnv132 0 811c9dc5
+fnv132 5 b6fa7167
+fnv132 135 faa820cf
+fnv132 400 a452a0d5
+fnv1a32 0 811c9dc5
+fnv1a32 5 4f9f2cab
+fnv1a32 135 8a5d01df
+fnv1a32 400 eb792455
+fnv164 0 cbf29ce484222325
+fnv164 5 7b495389bdbdd4c7
+fnv164 135 8b5a2fd5f71ea80f
+fnv164 400 27d8a3984549df35
+fnv1a64 0 cbf29ce484222325
+fnv1a64 5 a430d84680aabd0b
+fnv1a64 135 e508b853075d075f
+fnv1a64 400 5b275a7e3e3cb7b5
+joaat 0 00000000
+joaat 5 c8fd181b
+joaat 135 3a530ae4
+joaat 400 dda5db48
+dbb72bdb593dc1eeec298f0f83d7e380 9c1e5cc31a2c9b860982c2d870f3a4b4 60cffb796acc6ac864216a026d1e4e2b35a513cb
+10476a2b9f1f7bc096417cee1655c9d36dfc8ec2dd2969b37b7c35c1 4424d156c9e047cca091919142770fae90c680f7f0b0eb85ccd30f78 26ada39be31f195500c2ef7890d39b8a230230af
+1fc8dfa35bed730ced23ef2916316a7a96bc1cd8aba86e2f776495d63e927718 0ac8272672c090a00977226d943b8343ab256248a5aa3df719d3a20ed9bd4fc8 bab0fe07d3104d41954ec2444e7708d0b6302bf8
+3f52197c35a65814440e4b01bdcfeda3d0a70430e7957f5e9156f1bebda99388 2009d9da673912233f8c6e89d706785509f9fd2fd8e28424d6b70cbd52d2da67 aed9faa5b67ac0547e5e2d5de5354f5b2be85356
+7ea185b240d79aa18949de679381c0577fdb1dc07e0b564daba08d1d7170c17d3e71ccf53be0887fa56df7d76bd14d1d88a5787e5a21dc9815e5841d61d0e7d6 23c713b6217ce4404ed69c6930df94873c57f135a4acfadb30b0cbe4cdc5b4bd7d7aae2916a4263214d1c5ace43fabd6447dbaea72e1794a6647234a616f7833 79c1e3b3e1fd2148eb6c32f68e5d39adb0924b25
+hash_hmac(): Argument #1 ($algo) must be a valid cryptographic hashing algorithm
+hash_pbkdf2(): Argument #1 ($algo) must be a valid cryptographic hashing algorithm
+hash(): Argument #1 ($algo) must be a valid hashing algorithm
+
+#REC 158 exit=0 out=213 err=0
+array (
+  0 => -9223372036854775807-1,
+  1 => 'a' . "\0" . 'b',
+  'k' . "\0" . '' => 'it\'s',
+  'p\\q' => 1,
+  5 => -9223372036854775807-1,
+)
+\VeK::__set_state(array(
+   'a' => 'x' . "\0" . 'y',
+))
+'' . "\0" . ''
+
+#REC 159 exit=0 out=443 err=455
+
+Deprecated: chr(): Providing a value not in-between 0 and 255 is deprecated, this is because a byte value must be in the [0, 255] interval. The value used will be constrained using % 256 in Command line code on line 5
+
+Deprecated: Implicit conversion from float 2.5 to int loses precision in Command line code on line 6
+
+Deprecated: strlen(): Passing null to parameter #1 ($string) of type string is deprecated in Command line code on line 7
+PHP Deprecated:  chr(): Providing a value not in-between 0 and 255 is deprecated, this is because a byte value must be in the [0, 255] interval. The value used will be constrained using % 256 in Command line code on line 5
+PHP Deprecated:  Implicit conversion from float 2.5 to int loses precision in Command line code on line 6
+PHP Deprecated:  strlen(): Passing null to parameter #1 ($string) of type string is deprecated in Command line code on line 7
+
+#REC 160 exit=0 out=1469 err=0
+string(2) "-3"
+string(2) "-4"
+string(2) "-1"
+string(2) "-1"
+string(1) "1"
+string(3) "4,1"
+string(3) "255"
+string(3) "511"
+string(4) "2231"
+string(2) "FF"
+string(2) "zz"
+string(5) "6,1,1"
+string(5) "0,0,0"
+string(1) "5"
+string(0) ""
+string(3) "4,1"
+string(5) "-2,-1"
+string(1) "1"
+string(2) "-1"
+string(1) "0"
+string(1) "1"
+string(0) ""
+string(1) "6"
+string(18) "118264581564861424"
+string(1) "2"
+string(2) "-6"
+string(0) ""
+string(1) "0"
+string(1) "3"
+string(2) "-1"
+string(2) "-1"
+string(2) "-1"
+string(20) "-7766279631452241919"
+string(20) "-9223372036854775808"
+string(1) "2"
+ValueError: gmp_add(): Argument #1 ($num1) is not an integer string
+ValueError: gmp_add(): Argument #2 ($num2) is not an integer string
+ValueError: gmp_init(): Argument #2 ($base) must be 0 or between 2 and 62
+ValueError: gmp_strval(): Argument #2 ($base) must be between 2 and 62, or -2 and -36
+DivisionByZeroError: gmp_div_q(): Argument #2 ($num2) Division by zero
+DivisionByZeroError: gmp_mod(): Argument #2 ($num2) Modulo by zero
+ValueError: gmp_div_q(): Argument #3 ($rounding_mode) must be one of GMP_ROUND_ZERO, GMP_ROUND_PLUSINF, or GMP_ROUND_MINUSINF
+ValueError: gmp_powm(): Argument #2 ($exponent) must be greater than or equal to 0
+ValueError: gmp_testbit(): Argument #2 ($index) must be between 0 and 2147483647 * 64
+ValueError: gmp_sqrtrem(): Argument #1 ($num) must be greater than or equal to 0
+ValueError: gmp_binomial(): Argument #2 ($k) must be greater than or equal to 0
+
+#REC 161 exit=0 out=1511 err=0
+#0 Command line code(6): K->m(Array, 2, 3)
+#1 Command line code(10): K::s(Array)
+#2 Command line code(11): g(Object(stdClass))
+#3 {main}
+Array
+(
+    [0] => Array
+        (
+            [0] => file
+            [1] => line
+            [2] => function
+            [3] => class
+            [4] => type
+            [5] => args
+        )
+
+    [1] => Array
+        (
+            [0] => file
+            [1] => line
+            [2] => function
+            [3] => class
+            [4] => type
+            [5] => args
+        )
+
+    [2] => Array
+        (
+            [0] => file
+            [1] => line
+            [2] => function
+            [3] => args
+        )
+
+)
+#0 Command line code(7): K->{closure:K::viaClosure():7}(7)
+#1 Command line code(14): K->viaClosure()
+#2 {main}
+[["{closure:K::viaClosure():7}","K","->",true],["viaClosure","K","->",true]]
+#0 Command line code(17): K->__call('undefinedThing', Array)
+#1 {main}
+#0 [internal function]: cb(1)
+#1 Command line code(19): array_map('cb', Array)
+#2 {main}
+[["function","args"],["file","line","function","args"]]
+#0 Command line code(22): eval()
+#1 {main}
+[["file","line","function"]]
+#0 Command line code(25): strlen()
+#1 {main}
+array(1) {
+  [0]=>
+  array(4) {
+    ["file"]=>
+    string(17) "Command line code"
+    ["line"]=>
+    int(25)
+    ["function"]=>
+    string(6) "strlen"
+    ["args"]=>
+    array(0) {
+    }
+  }
+}
+#0 Command line code(26): typed('x')
+#1 {main}
+~*~message ~Exception~string ~*~code ~*~file ~*~line ~Exception~trace ~Exception~previous 
+
+#REC 162 exit=255 out=1085 err=325
+array(7) {
+  [0]=>
+  string(4) "file"
+  [1]=>
+  string(4) "line"
+  [2]=>
+  string(8) "function"
+  [3]=>
+  string(5) "class"
+  [4]=>
+  string(6) "object"
+  [5]=>
+  string(4) "type"
+  [6]=>
+  string(4) "args"
+}
+string(1) "D"
+string(2) "->"
+array(1) {
+  [0]=>
+  array(1) {
+    [0]=>
+    int(1)
+  }
+}
+array(5) {
+  [0]=>
+  string(4) "file"
+  [1]=>
+  string(4) "line"
+  [2]=>
+  string(8) "function"
+  [3]=>
+  string(5) "class"
+  [4]=>
+  string(4) "type"
+}
+int(2)
+int(0)
+int(0)
+#0 Command line code(11): pr('a long string a...', 1.5, Array)
+#1 Command line code(11): P->go()
+#2 Command line code(12): P::st()
+#0 Command line code(11): pr()
+#1 Command line code(11): P->go()
+#2 Command line code(12): P::st()
+#0 Command line code(11): pr('a long string a...', 1.5, Array)
+
+Fatal error: Uncaught ArgumentCountError: Too few arguments to function pr(), 0 passed in Command line code on line 13 and exactly 1 expected in Command line code:10
+Stack trace:
+#0 Command line code(13): pr()
+#1 Command line code(13): {closure:Command line code:13}()
+#2 {main}
+  thrown in Command line code on line 10
+PHP Fatal error:  Uncaught ArgumentCountError: Too few arguments to function pr(), 0 passed in Command line code on line 13 and exactly 1 expected in Command line code:10
+Stack trace:
+#0 Command line code(13): pr()
+#1 Command line code(13): {closure:Command line code:13}()
+#2 {main}
+  thrown in Command line code on line 10
+
+#REC 163 exit=0 out=138 err=0
+[-3,-2,-1]
+["x",-5,-4]
+[-5,-4,-3]
+[0,1]
+[-3,-2,-1]
+[-3,-1,0]
+[-1,0]
+[-5,-4]
+[0,1]
+[0]
+[-9223372036854775808,-9223372036854775807]
+[-3,-2]
+
+#REC 164 exit=0 out=307 err=315
+a
+
+Warning: Undefined variable $undefined in Command line code on line 4
+
+Warning: Trying to access array offset on null in Command line code on line 4
+b
+
+Warning: Undefined variable $undefined in Command line code on line 5
+
+Warning: Attempt to read property "p" on null in Command line code on line 5
+c
+d
+PHP Warning:  Undefined variable $undefined in Command line code on line 4
+PHP Warning:  Trying to access array offset on null in Command line code on line 4
+PHP Warning:  Undefined variable $undefined in Command line code on line 5
+PHP Warning:  Attempt to read property "p" on null in Command line code on line 5
+
+#REC 165 exit=0 out=1327 err=0
+syntax error, unexpected integer "2", expecting ")"
+syntax error, unexpected integer "2", expecting "," or ";"
+syntax error, unexpected integer "2", expecting ";"
+syntax error, unexpected integer "2", expecting "]"
+syntax error, unexpected variable "$b", expecting ")"
+syntax error, unexpected variable "$c", expecting "->" or "?->" or "["
+syntax error, unexpected variable "$i", expecting ";"
+syntax error, unexpected variable "$b", expecting "," or ";"
+syntax error, unexpected integer "1", expecting "function"
+syntax error, unexpected identifier "int", expecting "function"
+Unmatched ')'
+Unclosed '[' does not match ')'
+syntax error, unexpected variable "$b", expecting "->" or "?->" or "["
+syntax error, unexpected variable "$b"
+syntax error, unexpected variable "$b"
+syntax error, unexpected variable "$a", expecting "("
+syntax error, unexpected variable "$z", expecting "("
+syntax error, unexpected integer "1", expecting identifier
+syntax error, unexpected integer "1", expecting variable or "$"
+syntax error, unexpected integer "1", expecting "while"
+syntax error, unexpected integer "1", expecting "="
+syntax error, unexpected identifier "B", expecting ")"
+syntax error, unexpected identifier "C", expecting "{"
+syntax error, unexpected token "case", expecting ";"
+syntax error, unexpected integer "3", expecting "}"
+
+#REC 166 exit=255 out=133 err=137
+
+Fatal error: 'break' operator with non-integer operand is no longer supported in Command line code on line 2
+Stack trace:
+#0 {main}
+PHP Fatal error:  'break' operator with non-integer operand is no longer supported in Command line code on line 2
+Stack trace:
+#0 {main}
+

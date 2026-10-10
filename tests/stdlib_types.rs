@@ -401,3 +401,22 @@ fn intval_honours_an_explicit_base() {
     // Base 10 keeps the ordinary numeric-string reading, exponents included.
     assert_eq!(run(r#"<?php echo intval("1e3", 10);"#), "1000");
 }
+
+#[test]
+fn var_export_spells_int_min_and_nul_bytes_like_the_reference() {
+    // `ZEND_LONG_MIN` has no literal, and a NUL byte cannot sit inside a quoted
+    // PHP string, so the reference splices both in as expressions. String keys
+    // and property names go through the same escaping as values.
+    let out = run(r#"<?php
+        var_export([PHP_INT_MIN, "a\0b", "k\0" => "it's", "p\\q" => 1]);
+        echo "\n";
+        class K { public $a = "x\0y"; }
+        var_export(new K);
+    "#);
+    assert_eq!(
+        out,
+        "array (\n  0 => -9223372036854775807-1,\n  1 => 'a' . \"\\0\" . 'b',\n  \
+         'k' . \"\\0\" . '' => 'it\\'s',\n  'p\\\\q' => 1,\n)\n\
+         \\K::__set_state(array(\n   'a' => 'x' . \"\\0\" . 'y',\n))"
+    );
+}

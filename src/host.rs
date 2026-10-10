@@ -763,13 +763,37 @@ impl ArrayKey {
     }
 }
 
+/// `nNextFreeElement` of an array no integer key has touched. PHP 8.3 starts it
+/// at `ZEND_LONG_MIN` rather than 0, so the first integer key stored — a
+/// negative one included — decides the next: `[-3 => 'a']` appends at `-2`. An
+/// append onto an untouched array still lands on 0.
+pub const NO_INDEX: i64 = i64::MIN;
+
+/// The key an append would use given `next_index`.
+fn next_key(next_index: i64) -> i64 {
+    if next_index == NO_INDEX {
+        0
+    } else {
+        next_index
+    }
+}
+
+/// Claim the append key and advance `next_index` past it (saturating at
+/// `PHP_INT_MAX`).
+fn take_next_index(next_index: &mut i64) -> i64 {
+    let k = next_key(*next_index);
+    *next_index = k.saturating_add(1);
+    k
+}
+
 /// A heap object. Arrays and closures live here in the scaffold; user-defined
 /// objects are a later wave.
 #[derive(Debug, Clone)]
 pub enum PhpObj {
     Array {
         entries: IndexMap<ArrayKey, Value>,
-        /// The next integer key an append (`$a[] = ...`) will use.
+        /// The next integer key an append (`$a[] = ...`) will use, or [`NO_INDEX`]
+        /// while no integer key has been stored.
         next_index: i64,
     },
     /// A first-class callable: its parameters, its lowered body chunk, and the
@@ -979,13 +1003,33 @@ struct Scope {
 /// One running `include`/`require`/`eval`: the code it loaded executes on the
 /// frame at `depth` (an index into the scope stack), so a stack trace shows it
 /// as a frame of its own between that one and whatever it calls.
+/// One frame of a stack trace in the structured form `Exception::getTrace()` and
+/// `debug_backtrace()` report: where it was called from, what was called, and
+/// with what.
+#[derive(Clone)]
+struct TraceEntry {
+    /// The calling file and line, `None` when internal code made the call.
+    site: Option<(String, u32)>,
+    function: String,
+    /// The declared class name and the call type (`->` or `::`) of a method.
+    class: Option<(String, &'static str)>,
+    args: Vec<(Option<String>, Value)>,
+    /// `$this` of a method frame, for `debug_backtrace()`'s `object` key.
+    object: Option<Value>,
+    /// An `include`/`require`/`eval` frame, whose `args` precede its `function`.
+    include: bool,
+}
+
 struct IncludeFrame {
     depth: usize,
     /// The file the loaded code came from — for `eval`, the synthetic
     /// `<file>(<line>) : eval()'d code` name the reference gives it.
     file: std::sync::Arc<str>,
-    /// How a trace names the frame: `include('/path/to/f.php')`, `eval()`.
-    label: String,
+    /// The construct a trace names the frame after: `include`, `require_once`,
+    /// `eval`, ….
+    construct: &'static str,
+    /// The file the construct was handed, `None` for `eval`.
+    arg: Option<String>,
     /// The line of the construct in the code that reached it.
     call_line: u32,
 }
@@ -2629,13 +2673,26 @@ impl PhpHost {
         format!("Unhandled match case {rendered}")
     }
 
-    /// A frame's name as a trace prints it: `f`, `A->m` for an instance method,
-    /// `A::m` for a static one. Frames are recorded as `Class::method` with the
-    /// class lowercased (that is the lookup key); the declared spelling comes back
-    /// off the `ClassDef`, and the arrow form from whether the frame bound `$this`.
-    fn trace_frame_name(&self, scope: &Scope) -> String {
+    /// A frame's name as a trace prints it, in the three parts the structured
+    /// trace keeps apart: the class (declared spelling) and the call type `->`
+    /// or `::` for a method, and the function. Frames are recorded as
+    /// `Class::method` with the class lowercased (that is the lookup key); the
+    /// declared spelling comes back off the `ClassDef`, and the arrow form from
+    /// whether the frame bound `$this`.
+    fn trace_frame_parts(&self, scope: &Scope) -> (Option<(String, &'static str)>, String) {
         let Some(name) = &scope.name else {
-            return String::new();
+            return (None, String::new());
+        };
+        let call_type = if !matches!(scope.vars.get("this"), Slot::Unset) {
+            "->"
+        } else {
+            "::"
+        };
+        let declared = |class: &str| {
+            self.classes
+                .get(class)
+                .map(|d| d.name.clone())
+                .unwrap_or_else(|| class.to_string())
         };
         // A closure frame is named for where the LITERAL was written, not for
         // anything about the call: `{closure:K::m():4}`, `{closure:outer():16}`,
@@ -2656,36 +2713,22 @@ impl PhpHost {
                 other => other.render(scope.file.as_deref().unwrap_or(&self.script_name)),
             };
             return match name.split_once("::") {
-                Some((class, _)) => {
-                    let class = self
-                        .classes
-                        .get(class)
-                        .map(|d| d.name.as_str())
-                        .unwrap_or(class);
-                    let sep = if !matches!(scope.vars.get("this"), Slot::Unset) {
-                        "->"
-                    } else {
-                        "::"
-                    };
-                    format!("{class}{sep}{rendered}")
-                }
-                None => rendered,
+                Some((class, _)) => (Some((declared(class), call_type)), rendered),
+                None => (None, rendered),
             };
         }
-        let Some((class, method)) = name.split_once("::") else {
-            return name.clone();
-        };
-        let class = self
-            .classes
-            .get(class)
-            .map(|d| d.name.as_str())
-            .unwrap_or(class);
-        let sep = if !matches!(scope.vars.get("this"), Slot::Unset) {
-            "->"
-        } else {
-            "::"
-        };
-        format!("{class}{sep}{method}")
+        match name.split_once("::") {
+            Some((class, method)) => (Some((declared(class), call_type)), method.to_string()),
+            None => (None, name.clone()),
+        }
+    }
+
+    /// [`trace_frame_parts`](Self::trace_frame_parts) joined: `f`, `A->m`, `A::m`.
+    fn trace_frame_name(&self, scope: &Scope) -> String {
+        match self.trace_frame_parts(scope) {
+            (Some((class, ty)), function) => format!("{class}{ty}{function}"),
+            (None, function) => function,
+        }
     }
 
     /// PHP's `Stack trace:` body for the call stack as it stands right now —
@@ -2700,14 +2743,20 @@ impl PhpHost {
     /// say) has no PHP call site, so its `file(line)` half is the literal
     /// `[internal function]` — the library frame below it carries the real one.
     /// A closure frame is named the way PHP 8.4 names it — see
-    /// `trace_frame_name`.
+    /// `trace_frame_parts`.
     pub fn backtrace(&self) -> String {
+        self.render_trace(&self.trace_entries())
+    }
+
+    /// The frames of [`PhpHost::backtrace`], innermost first, in the structured
+    /// form `Exception::getTrace()` and `debug_backtrace()` report them.
+    fn trace_entries(&self) -> Vec<TraceEntry> {
         // The frames outermost first, each with the file and line its code is
         // at: a scope, then any include running on it. A frame's line is where
         // it called deeper — an include's own line for a scope that is running
         // one, the scope's live line otherwise.
         struct Frame<'a> {
-            label: Option<String>,
+            entry: Option<TraceEntry>,
             file: &'a str,
             line: u32,
             internal: bool,
@@ -2726,7 +2775,7 @@ impl PhpHost {
         let mut frames: Vec<Frame<'_>> = Vec::new();
         for (i, scope) in self.scopes.iter().enumerate() {
             let incs: Vec<&IncludeFrame> = self.includes.iter().filter(|f| f.depth == i).collect();
-            let label = (i > 0).then(|| {
+            let entry = (i > 0).then(|| {
                 // A STRING key in a frame's argument array is a named argument
                 // the callee could not place — the only way one survives to
                 // here — and the reference renders it `name: value`.
@@ -2734,18 +2783,27 @@ impl PhpHost {
                 let args = self
                     .frame_args(i)
                     .unwrap_or_default()
-                    .iter()
+                    .into_iter()
                     .enumerate()
-                    .map(|(j, v)| match names.get(j).and_then(Option::as_deref) {
-                        Some(n) => format!("{n}: {}", self.trace_arg(v)),
-                        None => self.trace_arg(v),
-                    })
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                format!("{}({args})", self.trace_frame_name(scope))
+                    .map(|(j, v)| (names.get(j).cloned().flatten(), v))
+                    .collect();
+                let (class, function) = self.trace_frame_parts(scope);
+                let object = match scope.vars.get("this") {
+                    Slot::Unset => None,
+                    slot => Some(self.read_slot(&slot.clone())),
+                }
+                .filter(|_| class.is_some());
+                TraceEntry {
+                    site: None,
+                    function,
+                    class,
+                    args,
+                    object,
+                    include: false,
+                }
             });
             frames.push(Frame {
-                label,
+                entry,
                 file: self.scope_file(i),
                 line: incs.first().map_or(scope.line, |f| f.call_line),
                 internal: scope.internal,
@@ -2761,7 +2819,19 @@ impl PhpHost {
             });
             for (k, inc) in incs.iter().enumerate() {
                 frames.push(Frame {
-                    label: Some(inc.label.clone()),
+                    entry: Some(TraceEntry {
+                        site: None,
+                        function: inc.construct.to_string(),
+                        class: None,
+                        args: inc
+                            .arg
+                            .clone()
+                            .map(|p| (None, Value::str(p)))
+                            .into_iter()
+                            .collect(),
+                        object: None,
+                        include: true,
+                    }),
                     file: &inc.file,
                     line: incs.get(k + 1).map_or(scope.line, |f| f.call_line),
                     internal: false,
@@ -2783,8 +2853,7 @@ impl PhpHost {
                         || frames[j - 1].prelude && (frames[j].helper || frames[j].internal))
             })
             .collect();
-        let mut out = String::new();
-        let mut n = 0;
+        let mut out = Vec::new();
         for j in (1..frames.len()).rev() {
             if !visible[j] {
                 continue;
@@ -2794,20 +2863,157 @@ impl PhpHost {
                 k -= 1;
             }
             let caller = &frames[k];
-            let site = if caller.internal || caller.prelude {
-                "[internal function]".to_string()
-            } else {
-                format!("{}({})", caller.file, caller.line)
+            let Some(mut entry) = frames[j].entry.clone() else {
+                continue;
             };
-            let label = frames[j].label.as_deref().unwrap_or_default();
-            out.push_str(&format!(
-                "#{n} {site}: {label}
-"
-            ));
-            n += 1;
+            if !(caller.internal || caller.prelude) {
+                entry.site = Some((caller.file.to_string(), caller.line));
+            }
+            out.push(entry);
         }
-        out.push_str(&format!("#{n} {{main}}"));
         out
+    }
+
+    /// One argument list as the reference's `_build_trace_args` renders it.
+    fn trace_args_string(&self, args: &[(Option<String>, Value)]) -> String {
+        args.iter()
+            .map(|(name, v)| match name {
+                Some(n) => format!("{n}: {}", self.trace_arg(v)),
+                None => self.trace_arg(v),
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// The `getTraceAsString()` text of a frame list: `#N file(line): f(args)`,
+    /// closed by `#N {main}`.
+    fn render_trace(&self, entries: &[TraceEntry]) -> String {
+        let mut out = String::new();
+        for (n, e) in entries.iter().enumerate() {
+            let site = match &e.site {
+                Some((file, line)) => format!("{file}({line})"),
+                None => "[internal function]".to_string(),
+            };
+            let name = match &e.class {
+                Some((class, ty)) => format!("{class}{ty}{}", e.function),
+                None => e.function.clone(),
+            };
+            let args = self.trace_args_string(&e.args);
+            // `eval()` and `include('f')` are frames of their own; PHP prints
+            // them as the construct and its argument, never the file's name.
+            out.push_str(&format!("#{n} {site}: {name}({args})\n"));
+        }
+        out.push_str(&format!("#{} {{main}}", entries.len()));
+        out
+    }
+
+    /// The structured frame list as the PHP array `getTrace()` returns:
+    /// `file`, `line`, `function`, `class`, [`object`], `type`, `args`, in the
+    /// reference's key order. A frame entered from internal code has no `file`
+    /// or `line`; an include has `args` before `function`.
+    pub fn trace_array(&mut self, provide_object: bool, ignore_args: bool, limit: usize) -> Value {
+        let mut entries = self.trace_entries();
+        if limit > 0 {
+            entries.truncate(limit);
+        }
+        let out = self.new_array();
+        for e in entries {
+            let frame = self.new_array();
+            if let Some((file, line)) = &e.site {
+                self.arr_set_key(&frame, &Value::str("file"), Value::str(file.clone()));
+                self.arr_set_key(&frame, &Value::str("line"), Value::int(*line as i64));
+            }
+            let args_arr = (!ignore_args).then(|| {
+                let a = self.new_array();
+                for (name, v) in &e.args {
+                    match name {
+                        Some(n) => self.arr_set_key(&a, &Value::str(n.clone()), v.clone()),
+                        None => self.arr_push_auto(&a, v.clone()),
+                    }
+                }
+                a
+            });
+            if e.include {
+                // `eval` takes no argument and carries no `args` key.
+                if let Some(a) = args_arr.filter(|_| !e.args.is_empty()) {
+                    self.arr_set_key(&frame, &Value::str("args"), a);
+                }
+                self.arr_set_key(
+                    &frame,
+                    &Value::str("function"),
+                    Value::str(e.function.clone()),
+                );
+            } else {
+                self.arr_set_key(
+                    &frame,
+                    &Value::str("function"),
+                    Value::str(e.function.clone()),
+                );
+                if let Some((class, ty)) = &e.class {
+                    self.arr_set_key(&frame, &Value::str("class"), Value::str(class.clone()));
+                    if let (true, Some(obj)) = (provide_object, &e.object) {
+                        self.arr_set_key(&frame, &Value::str("object"), obj.clone());
+                    }
+                    self.arr_set_key(&frame, &Value::str("type"), Value::str(*ty));
+                }
+                if let Some(a) = args_arr {
+                    self.arr_set_key(&frame, &Value::str("args"), a);
+                }
+            }
+            self.arr_push_auto(&out, frame);
+        }
+        out
+    }
+
+    /// The `getTraceAsString()` text of a trace array — what `Exception` keeps
+    /// in its `trace` property. Frames the array does not describe well enough
+    /// to render (a hand-built one) read as `[internal function]: ()`.
+    pub fn render_trace_array(&self, trace: &Value) -> String {
+        let key = |f: &Value, k: &str| self.index_get(f, &Value::str(k.to_string()));
+        let entries: Vec<TraceEntry> = self
+            .array_pairs(trace)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(_, f)| {
+                let file = key(&f, "file");
+                let site = match file {
+                    Value::Undef => None,
+                    file => Some((self.to_str(&file), key(&f, "line").to_int() as u32)),
+                };
+                let class = match key(&f, "class") {
+                    Value::Undef => None,
+                    c => Some((
+                        self.to_str(&c),
+                        if self.to_str(&key(&f, "type")) == "::" {
+                            "::"
+                        } else {
+                            "->"
+                        },
+                    )),
+                };
+                let args = match key(&f, "args") {
+                    a if self.is_array(&a) => self
+                        .array_pairs(&a)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|(k, v)| match k {
+                            Value::Str(s) => (Some(s.to_string()), v),
+                            _ => (None, v),
+                        })
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                TraceEntry {
+                    site,
+                    function: self.to_str(&key(&f, "function")),
+                    class,
+                    args,
+                    object: None,
+                    include: false,
+                }
+            })
+            .collect();
+        self.render_trace(&entries)
     }
 
     /// Push a call frame for a LIBRARY function so [`PhpHost::backtrace`] names
@@ -3382,8 +3588,7 @@ impl PhpHost {
             next_index,
         }) = self.as_array_mut(&arr)
         {
-            let k = ArrayKey::Int(*next_index);
-            *next_index = next_index.saturating_add(1);
+            let k = ArrayKey::Int(take_next_index(next_index));
             entries.insert(k, handle);
         }
         Ok(())
@@ -3630,7 +3835,7 @@ impl PhpHost {
     pub fn new_array(&mut self) -> Value {
         self.objs.push(PhpObj::Array {
             entries: IndexMap::new(),
-            next_index: 0,
+            next_index: NO_INDEX,
         });
         Value::Obj((self.objs.len() - 1) as u32)
     }
@@ -5710,8 +5915,7 @@ impl PhpHost {
             next_index,
         }) = self.as_array_mut(&arr)
         {
-            let k = ArrayKey::Int(*next_index);
-            *next_index = next_index.saturating_add(1);
+            let k = ArrayKey::Int(take_next_index(next_index));
             entries.insert(k, val);
         }
         Ok(())
@@ -5838,7 +6042,7 @@ impl PhpHost {
         matches!(
             self.as_array(arr),
             Some(PhpObj::Array { entries, next_index })
-                if entries.contains_key(&ArrayKey::Int(*next_index))
+                if entries.contains_key(&ArrayKey::Int(next_key(*next_index)))
         )
     }
 
@@ -5855,8 +6059,7 @@ impl PhpHost {
             next_index,
         }) = self.as_array_mut(arr)
         {
-            let k = ArrayKey::Int(*next_index);
-            *next_index = next_index.saturating_add(1);
+            let k = ArrayKey::Int(take_next_index(next_index));
             entries.insert(k, v);
         }
     }
@@ -5940,7 +6143,7 @@ impl PhpHost {
         }) = self.as_array_mut(arr)
         {
             entries.clear();
-            *next_index = 0;
+            *next_index = NO_INDEX;
             for (k, v) in normed {
                 if let ArrayKey::Int(n) = k {
                     if n >= *next_index {
@@ -5999,7 +6202,7 @@ impl PhpHost {
             let before = *next_index;
             let popped = entries.pop();
             if let Some((ArrayKey::Int(n), _)) = &popped {
-                if *n == before - 1 {
+                if before.checked_sub(1) == Some(*n) {
                     *next_index = *n;
                 }
             }
@@ -6659,6 +6862,13 @@ fn predefined_constants() -> FxHashMap<String, Value> {
     si("FNM_PATHNAME", crate::stdlib::fileio::FNM_PATHNAME);
     si("FNM_PERIOD", crate::stdlib::fileio::FNM_PERIOD);
     si("FNM_CASEFOLD", crate::stdlib::fileio::FNM_CASEFOLD);
+    // gmp_div_q / gmp_div_r / gmp_div_qr rounding modes.
+    si("GMP_ROUND_ZERO", crate::stdlib::gmp::GMP_ROUND_ZERO);
+    si("GMP_ROUND_PLUSINF", crate::stdlib::gmp::GMP_ROUND_PLUSINF);
+    si("GMP_ROUND_MINUSINF", crate::stdlib::gmp::GMP_ROUND_MINUSINF);
+    // debug_backtrace / debug_print_backtrace option bits.
+    si("DEBUG_BACKTRACE_PROVIDE_OBJECT", 1);
+    si("DEBUG_BACKTRACE_IGNORE_ARGS", 2);
     si("PATHINFO_DIRNAME", 1);
     si("PATHINFO_BASENAME", 2);
     si("PATHINFO_EXTENSION", 4);
@@ -9271,10 +9481,10 @@ fn seed_throwable(class: &str, obj: &Value) {
         } else {
             (h.scope_file(i).to_string(), h.scopes[i].line as i64)
         };
-        let trace = h.backtrace();
+        let trace = h.trace_array(false, false, 0);
         h.prop_set(obj, "file", Value::str(file));
         h.prop_set(obj, "line", Value::int(line));
-        h.prop_set(obj, "trace", Value::str(trace));
+        h.prop_set(obj, "trace", trace);
     });
 }
 
@@ -11333,8 +11543,7 @@ pub fn run_include(kind: crate::ast::IncludeKind, path: &Value) -> Result<Value,
             h.included_files.push(real.clone());
         }
     });
-    let label = with_host(|h| format!("{construct}({})", h.trace_arg(&Value::str(real.clone()))));
-    run_loaded(&src, real, label, false)
+    run_loaded(&src, real.clone(), construct, Some(real), false)
 }
 
 /// `eval($code)`: compile and run `$code` in the current frame. The code is
@@ -11349,7 +11558,7 @@ pub fn run_eval(code: &Value) -> Result<Value, String> {
             h.cur_frame_line()
         )
     });
-    run_loaded(&format!("<?php {src}"), file, "eval()".to_string(), true)
+    run_loaded(&format!("<?php {src}"), file, "eval", None, true)
 }
 
 /// Compile `src` as the file `file` and run it on the current frame.
@@ -11358,7 +11567,13 @@ pub fn run_eval(code: &Value) -> Result<Value, String> {
 /// message the lexer and parser raise — and the `ParseError` a syntax error
 /// becomes — names it. A syntax error is thrown as a catchable `ParseError`
 /// carrying that file and line, as the reference does.
-fn run_loaded(src: &str, file: String, label: String, eval: bool) -> Result<Value, String> {
+fn run_loaded(
+    src: &str,
+    file: String,
+    construct: &'static str,
+    arg: Option<String>,
+    eval: bool,
+) -> Result<Value, String> {
     let saved = with_host(|h| std::mem::replace(&mut h.script_name, file.clone()));
     let counters = with_host(|h| h.compile_counters);
     let compiled = crate::parser::parse_meta(src)
@@ -11403,7 +11618,8 @@ fn run_loaded(src: &str, file: String, label: String, eval: bool) -> Result<Valu
         h.includes.push(IncludeFrame {
             depth: h.scopes.len() - 1,
             file: arc,
-            label,
+            construct,
+            arg,
             call_line,
         });
         for d in &diags {

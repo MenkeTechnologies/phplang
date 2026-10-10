@@ -26,6 +26,63 @@ comment above it.
 
 ---
 
+## Round 22 — differential sweep: parse errors, traces, GMP, hashing, fnmatch
+
+Measured under `PHP 8.5.11 (cli) (built: Sep 22 2026 13:32:06) (NTS)`. Found by
+the library-surface cross-reference in the README's parity-fuzzer chapter and by
+five new `parity-fuzz` modes (`fnmatchflags`, `gmpops`, `hashalgos`, `ctypeargs`,
+`varexport`) plus `parseerr`, which inserts a stray operand token into valid
+programs. Each fix has a block in `tests/data/parity_corpus.php`.
+
+* **`getTrace()` did not exist and `debug_backtrace()` returned `[]`.** The
+  rendered trace string was the only thing kept. Frames are now built in the
+  structured form (`file`, `line`, `function`, `class`, `type`, `args`, with
+  `file`/`line` absent for a frame entered from internal code, and `args`
+  before `function` for an `include`/`eval` frame); `getTraceAsString()`
+  renders that array, `debug_backtrace()` reports it with the `object` key
+  under `DEBUG_BACKTRACE_PROVIDE_OBJECT` and honours
+  `DEBUG_BACKTRACE_IGNORE_ARGS` and the limit, and `debug_print_backtrace()`
+  prints it. `Exception`/`Error` keep `string`, `trace` and `previous` as the
+  reference's private properties in its declaration order.
+* **A parse error now carries `, expecting …` where the reference prints one**:
+  after an argument, array element, parameter, `use` item, `echo`/`return`/
+  `break`/`continue` operand, `global`/`static`/`const`/property declaration,
+  `for` header, `catch` header, a missing `(`, `{`, `=>`, `=`, `while`, a class
+  member that opens with no modifier (`expecting "function"`), and the
+  `unset`/`foreach` operand chain; `empty($a $b)` and `if ($a $b)` correctly
+  print none. The scanner's bracket diagnostics (`Unmatched ')'`, `Unclosed '['
+  does not match ')'`) are reproduced exactly. `break $x` is the compile-time
+  `'break' operator with non-integer operand is no longer supported`,
+  `class A { int $a; }` and `class A { case X; }` are refused, and `namespace;`
+  and `function f` without a name or `(` no longer parse.
+* **`$undefined;` raised a warning.** A bare variable statement compiles to no
+  opcode in the reference; the read is no longer performed.
+* **The next append key after a negative key is that key plus one** (8.3):
+  `[-3 => 'a', 'b']` holds `-3` and `-2`; an untouched array still starts at 0.
+* **`fnmatch` is the libc matcher**: `FNM_PERIOD`, `FNM_PATHNAME` and
+  `FNM_NOESCAPE` were ignored, backslash escapes and `[[:class:]]` did not
+  exist, and an unterminated bracket or trailing backslash matched.
+  `glob()` shares it.
+* **GMP**: `gmp_div_q`/`gmp_div_r`/`gmp_div_qr` take `GMP_ROUND_*` (`gmp_div_r`
+  was `gmp_mod`), `gmp_init` and `gmp_strval` take every base in range, an
+  operand that is not an integer string is the reference's `ValueError` for that
+  parameter, `gmp_intval` wraps like `mpz_get_si`, and `gmp_gcdext`,
+  `gmp_invert`, `gmp_sqrtrem`, `gmp_rootrem`, `gmp_binomial`, `gmp_nextprime`,
+  `gmp_perfect_power`, `gmp_jacobi`/`legendre`/`kronecker`, `gmp_popcount`,
+  `gmp_hamdist`, `gmp_testbit`, `gmp_scan0`/`scan1`, `gmp_com` and
+  `gmp_divexact` were added.
+* **Hashing**: one algorithm table now serves `hash`, `hash_hmac`, `hash_file`,
+  `hash_pbkdf2` and `hash_algos`; `md4`, `sha224`, `sha512/224`, `sha512/256`,
+  `sha3-*`, `adler32`, `crc32c`, `fnv*` and `joaat` were added, and `hash("sha384")`
+  no longer throws.
+* **Deprecations**: `ctype_*` on a non-string raises `Argument of type T will be
+  interpreted as string in the future`; `utf8_encode`/`utf8_decode` raise their
+  8.2 function deprecation.
+* **Smaller**: `dirname("")` is `""` and `pathinfo("")` has no `dirname`;
+  `var_export` spells `PHP_INT_MIN` as `-9223372036854775807-1` and splices NUL
+  bytes in as `'' . "\0" . ''`; a diagnostic raised inside an arrow function
+  names the line of its `fn`.
+
 ## Round 21 — sort algorithm, user-comparator array family
 
 Measured under `PHP 8.5.11 (cli) (built: Sep 22 2026 13:32:06) (NTS)`; ini state

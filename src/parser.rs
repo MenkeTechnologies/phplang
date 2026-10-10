@@ -489,6 +489,54 @@ impl Parser {
         open.pop()
     }
 
+    /// The scanner-level diagnostic for a closing bracket that does not pair with
+    /// the opener on top of the nesting stack, if the token stream has one at or
+    /// before `idx` — the point the reference's parser had read up to when it
+    /// stopped, which is the only reason the scanner would have seen it.
+    ///
+    /// PHP's scanner keeps that stack itself and throws before the grammar is
+    /// consulted: `Unmatched ')'` with nothing open, and `Unclosed '(' does not
+    /// match ']'` otherwise, the latter adding `on line N` when the opener sits
+    /// on another line than the closer. It is independent of the parser tables,
+    /// so unlike the `expecting` lists it is reproduced exactly.
+    fn nesting_error_through(&self, idx: usize) -> Option<String> {
+        let mut open: Vec<(char, u32)> = Vec::new();
+        for sp in self.toks.iter().take(idx.saturating_add(1)) {
+            let Tok::Punct(p) = &sp.tok else { continue };
+            let closer = match *p {
+                "(" | "[" | "{" | "#[" => {
+                    open.push((if *p == "#[" { '[' } else { p.chars().next()? }, sp.line));
+                    continue;
+                }
+                ")" => ')',
+                "]" => ']',
+                "}" => '}',
+                _ => continue,
+            };
+            let expected = match closer {
+                ')' => '(',
+                ']' => '[',
+                _ => '{',
+            };
+            let msg = match open.pop() {
+                None => format!("Unmatched '{closer}'"),
+                Some((c, _)) if c == expected => continue,
+                Some((c, line)) => {
+                    let on = if line == sp.line {
+                        String::new()
+                    } else {
+                        format!(" on line {line}")
+                    };
+                    format!("Unclosed '{c}'{on} does not match '{closer}'")
+                }
+            };
+            return Some(crate::host::with_host(|h| {
+                format!("{msg} in {} on line {}", h.script_name(), sp.line)
+            }));
+        }
+        None
+    }
+
     /// The line of the token at the cursor. Past the end there is no such token,
     /// so the last one's line stands in — PHP reports `unexpected end of file`
     /// against the final line of the source, not line zero.
@@ -623,6 +671,40 @@ impl Parser {
         }
     }
 
+    /// Consume the closing delimiter of a list (`)` or `]`) after its last
+    /// element. The grammar leaves only that token open at this point, so a
+    /// stray token here is reported as the reference does:
+    /// `unexpected integer "2", expecting ")"`. Contexts where the reference
+    /// prints no list (`if ($a $b)`) keep using [`expect_punct`](Self::expect_punct).
+    /// Whether the token just before the cursor is a member modifier keyword.
+    fn after_member_modifier(&self) -> bool {
+        self.pos > 0
+            && matches!(
+                self.toks.get(self.pos - 1).map(|s| &s.tok),
+                Some(Tok::Ident(w)) if matches!(
+                    w.to_ascii_lowercase().as_str(),
+                    "public" | "protected" | "private" | "static" | "readonly" | "var" | "abstract" | "final"
+                )
+            )
+    }
+
+    fn expect_closer(&mut self, p: &str) -> Result<(), String> {
+        self.expect_listing(p, &format!("\"{p}\""))
+    }
+
+    /// [`expect_punct`](Self::expect_punct) for a position where the reference
+    /// names what it would have accepted: `listing` is that clause as it prints,
+    /// e.g. `"," or ";"`. Used only where the grammar reduces the preceding
+    /// construct to a nonterminal before the punctuation, which is what makes
+    /// the list short enough for the reference to print it.
+    fn expect_listing(&mut self, p: &str, listing: &str) -> Result<(), String> {
+        if self.eat_punct(p) {
+            Ok(())
+        } else {
+            Err(self.syntax_error_expecting(listing))
+        }
+    }
+
     // ── syntax errors ──────────────────────────────────────────────────────
 
     /// PHP's `syntax error, …` diagnostic for the token at the cursor, in the
@@ -632,15 +714,19 @@ impl Parser {
     /// DIVERGENCE: the reference message often carries a `, expecting "X" or "Y"`
     /// suffix listing the tokens its LALR state would have accepted. That set is a
     /// property of PHP's generated parser tables, not of the grammar as written
-    /// here, so it is omitted rather than guessed at — an invented list would be
-    /// wrong more often than no list.
+    /// here, so it is printed only at the sites whose list was measured against
+    /// the reference ([`expect_listing`](Self::expect_listing) and
+    /// [`expect_closer`](Self::expect_closer)) and omitted everywhere else — an
+    /// invented list would be wrong more often than no list.
     ///
     /// Observed rather than assumed: whether a list appears at all is table-
     /// dependent, not a property of how specific the expectation looks.
     /// `for ($i=0; $i<3 {` says `expecting ";"`, but `if ($a {` — the same shape
-    /// of mistake, one token from a closing delimiter — says nothing at all.
-    /// Emitting the token THIS parser was about to demand would print a suffix
-    /// in the second case, where the reference prints none.
+    /// of mistake, one token from a closing delimiter — says nothing at all. The
+    /// rule that fits every probe is that a list appears when the construct
+    /// reduces its operand to a nonterminal before the punctuation (an argument,
+    /// an `echo` list, a `for` expression list), and not when the punctuation
+    /// follows a bare `expr` (`if (expr)`, `while (expr)`, `$a = expr;`).
     ///
     /// What does NOT depend on those tables is handled, in
     /// [`syntax_error_at`](Self::syntax_error_at): an unterminated bracket is
@@ -699,6 +785,21 @@ impl Parser {
     /// consumed — a `match self.next()` arm reports `self.pos - 1`, the token it
     /// just took, not the one after it.
     fn syntax_error_at(&self, idx: usize) -> String {
+        self.syntax_error_expecting_at(idx, None)
+    }
+
+    /// [`syntax_error`](Self::syntax_error) for a position where the grammar
+    /// leaves exactly one token open: the closing delimiter of a list whose
+    /// element has just been parsed. The reference appends `, expecting "X"` to
+    /// the message there — see [`expect_closer`](Self::expect_closer).
+    fn syntax_error_expecting(&self, expected: &str) -> String {
+        self.syntax_error_expecting_at(self.pos, Some(expected))
+    }
+
+    fn syntax_error_expecting_at(&self, idx: usize, expected: Option<&str>) -> String {
+        if let Some(nesting) = self.nesting_error_through(idx) {
+            return nesting;
+        }
         // At END OF INPUT the reference says something else entirely when a
         // bracket is still open: `Unclosed '{' on line N`, naming where the
         // construct began rather than where the file stopped.
@@ -724,8 +825,9 @@ impl Parser {
         }
         crate::host::with_host(|h| {
             format!(
-                "syntax error, unexpected {} in {} on line {}",
+                "syntax error, unexpected {}{} in {} on line {}",
                 self.tok_desc_at(idx),
+                expected.map_or(String::new(), |e| format!(", expecting {e}")),
                 h.script_name(),
                 if idx >= self.toks.len() {
                     self.eof_line
@@ -775,14 +877,25 @@ impl Parser {
     /// defaulting to 1. PHP only accepts a literal integer here. A literal that
     /// is not a positive integer (`0`, `1.5`) reads as level 0, which the
     /// compiler refuses with `'break' operator accepts only positive integers`.
-    fn break_level(&mut self) -> u32 {
+    /// The operand of `break` / `continue`, read after the keyword. A literal
+    /// integer is the level; a literal float truncates to 0; anything else that
+    /// parses as an expression is the reference's compile-time refusal.
+    fn break_level(&mut self, kw: &str) -> Result<u32, String> {
         let level = match self.peek() {
             Some(Tok::Int(n)) => (*n).clamp(0, u32::MAX as i64) as u32,
             Some(Tok::Float(_)) => 0,
-            _ => return 1,
+            None | Some(Tok::Punct(";")) => return Ok(1),
+            _ => {
+                let line = self.line();
+                self.expression()?;
+                return Err(self.fatal_at(
+                    line,
+                    format!("'{kw}' operator with non-integer operand is no longer supported"),
+                ));
+            }
         };
         self.pos += 1;
-        level
+        Ok(level)
     }
 
     /// True if the next token is the keyword `kw` (case-insensitive, as PHP).
@@ -832,9 +945,11 @@ impl Parser {
                 self.pos += 1;
                 let name = match self.next() {
                     Some(Tok::Ident(n)) if reserved_spelling(&n).is_none() => n,
-                    _ => return Err(self.syntax_error_at(self.pos - 1)),
+                    _ => {
+                        return Err(self.syntax_error_expecting_at(self.pos - 1, Some("identifier")))
+                    }
                 };
-                self.expect_punct(";")?;
+                self.expect_listing(";", "\";\"")?;
                 StmtKind::Goto(name)
             }
             Some(Tok::Ident(n)) if reserved_spelling(n).is_none() && self.nth_is_punct(1, ":") => {
@@ -850,7 +965,7 @@ impl Parser {
                 while self.eat_punct(",") {
                     args.push(self.expression()?);
                 }
-                self.expect_punct(";")?;
+                self.expect_listing(";", "\",\" or \";\"")?;
                 StmtKind::Echo(args)
             }
             _ if self.at_kw("declare") => self.declare_stmt()?,
@@ -911,7 +1026,7 @@ impl Parser {
                         break;
                     }
                 }
-                self.expect_punct(";")?;
+                self.expect_listing(";", "\",\" or \";\"")?;
                 StmtKind::StaticLocal(decls)
             }
             // `global $a, $b;` — bind each name to the global variable of that
@@ -921,12 +1036,15 @@ impl Parser {
                 self.pos += 1; // global
                 let mut names = Vec::new();
                 loop {
+                    if !matches!(self.peek(), Some(Tok::Var(_))) {
+                        return Err(self.syntax_error_expecting("variable or \"$\""));
+                    }
                     names.push(self.expect_var()?);
                     if !self.eat_punct(",") {
                         break;
                     }
                 }
-                self.expect_punct(";")?;
+                self.expect_listing(";", "\",\" or \";\"")?;
                 StmtKind::Global(names)
             }
             _ if self.at_kw("class")
@@ -959,24 +1077,28 @@ impl Parser {
                 } else {
                     Some(self.expression()?)
                 };
-                self.expect_punct(";")?;
+                self.expect_listing(";", "\";\"")?;
                 StmtKind::Return(e)
             }
             _ if self.at_kw("break") => {
                 self.pos += 1;
-                let level = self.break_level();
-                self.expect_punct(";")?;
+                let level = self.break_level("break")?;
+                self.expect_listing(";", "\";\"")?;
                 StmtKind::Break(level)
             }
             _ if self.at_kw("continue") => {
                 self.pos += 1;
-                let level = self.break_level();
-                self.expect_punct(";")?;
+                let level = self.break_level("continue")?;
+                self.expect_listing(";", "\";\"")?;
                 StmtKind::Continue(level)
             }
             _ => {
                 let e = self.expression()?;
-                self.expect_punct(";")?;
+                if matches!(e, Expr::Unset(_)) {
+                    self.expect_listing(";", "\";\"")?;
+                } else {
+                    self.expect_punct(";")?;
+                }
                 StmtKind::Expr(e)
             }
         };
@@ -998,7 +1120,7 @@ impl Parser {
     fn braced_body(&mut self, top_level: bool) -> Result<Vec<Stmt>, String> {
         let outer = self.top_level;
         self.top_level = top_level;
-        self.expect_punct("{")?;
+        self.expect_closer("{")?;
         let mut body = Vec::new();
         while !self.at_punct("}") && !self.at_end() {
             body.push(self.statement()?);
@@ -1054,7 +1176,7 @@ impl Parser {
 
     fn if_stmt(&mut self) -> Result<StmtKind, String> {
         self.pos += 1; // if
-        self.expect_punct("(")?;
+        self.expect_closer("(")?;
         let cond = self.expression()?;
         self.expect_punct(")")?;
         const IF_ENDS: &[&str] = &["elseif", "else", "endif"];
@@ -1063,7 +1185,7 @@ impl Parser {
         let mut els = None;
         loop {
             if self.eat_kw("elseif") {
-                self.expect_punct("(")?;
+                self.expect_closer("(")?;
                 let c = self.expression()?;
                 self.expect_punct(")")?;
                 elifs.push((c, self.control_body(IF_ENDS)?.0));
@@ -1074,7 +1196,7 @@ impl Parser {
                 // requires `elseif` there), but accepting it costs nothing and
                 // rejecting it would need a second error path.
                 if self.eat_kw("if") {
-                    self.expect_punct("(")?;
+                    self.expect_closer("(")?;
                     let c = self.expression()?;
                     self.expect_punct(")")?;
                     elifs.push((c, self.control_body(IF_ENDS)?.0));
@@ -1099,7 +1221,7 @@ impl Parser {
 
     fn while_stmt(&mut self) -> Result<StmtKind, String> {
         self.pos += 1;
-        self.expect_punct("(")?;
+        self.expect_closer("(")?;
         let cond = self.expression()?;
         self.expect_punct(")")?;
         let (body, alt) = self.control_body(&["endwhile"])?;
@@ -1113,9 +1235,9 @@ impl Parser {
         self.pos += 1; // do
         let body = self.body()?;
         if !self.eat_kw("while") {
-            return Err(self.syntax_error());
+            return Err(self.syntax_error_expecting("\"while\""));
         }
-        self.expect_punct("(")?;
+        self.expect_closer("(")?;
         let cond = self.expression()?;
         self.expect_punct(")")?;
         self.expect_punct(";")?;
@@ -1124,14 +1246,14 @@ impl Parser {
 
     fn switch_stmt(&mut self) -> Result<StmtKind, String> {
         self.pos += 1; // switch
-        self.expect_punct("(")?;
+        self.expect_closer("(")?;
         let subj = self.expression()?;
         self.expect_punct(")")?;
         // `switch ($x):` opens the alternative form, closed by `endswitch;`
         // instead of `}`. The case labels themselves are spelled identically.
         let alt = self.eat_punct(":");
         if !alt {
-            self.expect_punct("{")?;
+            self.expect_listing("{", "\":\" or \"{\"")?;
         }
         let mut cases = Vec::new();
         while !self.at_punct("}") && !self.at_kw("endswitch") && !self.at_end() {
@@ -1144,11 +1266,15 @@ impl Parser {
                 Some(e)
             } else if self.eat_kw("default") {
                 if !self.eat_punct(":") {
-                    self.expect_punct(";")?;
+                    self.expect_listing(";", "\":\" or \";\"")?;
                 }
                 None
             } else {
-                return Err(self.syntax_error());
+                return Err(if alt {
+                    self.syntax_error()
+                } else {
+                    self.syntax_error_expecting("\"case\" or \"default\" or \"}\"")
+                });
             };
             // The case body runs until the next case/default or the closing brace.
             let mut body = Vec::new();
@@ -1172,17 +1298,17 @@ impl Parser {
 
     fn for_stmt(&mut self) -> Result<StmtKind, String> {
         self.pos += 1;
-        self.expect_punct("(")?;
+        self.expect_closer("(")?;
         let init = self.expr_list_until(";")?;
-        self.expect_punct(";")?;
+        self.expect_listing(";", "\";\"")?;
         let cond = if self.at_punct(";") {
             None
         } else {
             Some(self.expression()?)
         };
-        self.expect_punct(";")?;
+        self.expect_listing(";", "\";\"")?;
         let step = self.expr_list_until(")")?;
-        self.expect_punct(")")?;
+        self.expect_closer(")")?;
         let (body, alt) = self.control_body(&["endfor"])?;
         if alt {
             self.expect_end_kw("endfor")?;
@@ -1210,7 +1336,7 @@ impl Parser {
 
     fn foreach_stmt(&mut self) -> Result<StmtKind, String> {
         self.pos += 1;
-        self.expect_punct("(")?;
+        self.expect_closer("(")?;
         let arr = self.expression()?;
         if !self.eat_kw("as") {
             return Err(self.syntax_error());
@@ -1236,7 +1362,11 @@ impl Parser {
         if by_ref && matches!(val, ForeachVal::Pattern(_)) {
             return Err(self.syntax_error_at(self.pos - 1));
         }
-        self.expect_punct(")")?;
+        if matches!(val, ForeachVal::Var(_)) {
+            self.expect_listing(")", "\"->\" or \"?->\" or \"[\"")?;
+        } else {
+            self.expect_punct(")")?;
+        }
         let (body, alt) = self.control_body(&["endforeach"])?;
         if alt {
             self.expect_end_kw("endforeach")?;
@@ -1312,7 +1442,7 @@ impl Parser {
         let by_ref_return = self.eat_punct("&");
         let name = match self.next() {
             Some(Tok::Ident(n)) => n,
-            _ => return Err(self.syntax_error_at(self.pos - 1)),
+            _ => return Err(self.syntax_error_expecting_at(self.pos - 1, Some("\"(\""))),
         };
         let saved = self.enter_function(&name);
         let params = self.param_list()?;
@@ -1350,7 +1480,7 @@ impl Parser {
     fn declare_stmt(&mut self) -> Result<StmtKind, String> {
         let kw_line = self.line();
         self.pos += 1; // `declare`
-        self.expect_punct("(")?;
+        self.expect_closer("(")?;
         let mut body: Option<Vec<Stmt>> = None;
         // Whether THIS `declare` names `strict_types` — the block-mode rule is
         // about this statement, not about one that ran earlier in the file.
@@ -1358,9 +1488,9 @@ impl Parser {
         loop {
             let name = match self.next() {
                 Some(Tok::Ident(n)) => n,
-                _ => return Err(self.syntax_error_at(self.pos - 1)),
+                _ => return Err(self.syntax_error_expecting_at(self.pos - 1, Some("identifier"))),
             };
-            self.expect_punct("=")?;
+            self.expect_closer("=")?;
             if name.eq_ignore_ascii_case("strict_types") {
                 // The value is read BEFORE the position is judged, because PHP
                 // reports a bad value on a first-statement `declare` too — the
@@ -1423,7 +1553,7 @@ impl Parser {
                 break;
             }
         }
-        self.expect_punct(")")?;
+        self.expect_listing(")", "\",\" or \")\"")?;
         // Both bodied spellings — `{ … }` and `: … enddeclare;` — are block
         // mode, and the reference refuses `strict_types` in either.
         if self.at_punct("{") || self.at_punct(":") {
@@ -1453,7 +1583,8 @@ impl Parser {
     /// constant of that exact name.
     fn namespace_stmt(&mut self) -> Result<StmtKind, String> {
         self.pos += 1; // namespace
-        if matches!(self.peek(), Some(Tok::Ident(_))) || self.at_punct("\\") {
+        let named = matches!(self.peek(), Some(Tok::Ident(_))) || self.at_punct("\\");
+        if named {
             // The FULL name is kept, unlike a class reference: `__NAMESPACE__`
             // answers `A\B`, not the last segment the flat model folds to.
             self.eat_punct("\\");
@@ -1471,8 +1602,11 @@ impl Parser {
         }
         if self.at_punct("{") {
             Ok(StmtKind::Block(self.namespace_block()?))
+        } else if !named {
+            // A bare `namespace;` has no name for the `;` to follow.
+            Err(self.syntax_error_expecting("\"{\""))
         } else {
-            self.expect_punct(";")?;
+            self.expect_listing(";", "\"{\"")?;
             Ok(StmtKind::Block(Vec::new()))
         }
     }
@@ -1493,7 +1627,7 @@ impl Parser {
                 break;
             }
         }
-        self.expect_punct(";")?;
+        self.expect_listing(";", "\",\" or \";\"")?;
         Ok(StmtKind::Block(Vec::new()))
     }
 
@@ -1506,14 +1640,18 @@ impl Parser {
         self.pos += 1; // const
         let mut decls = Vec::new();
         loop {
-            let name = self.member_name()?;
-            self.expect_punct("=")?;
+            let name = if matches!(self.peek(), Some(Tok::Ident(_))) {
+                self.member_name()?
+            } else {
+                return Err(self.syntax_error_expecting("identifier"));
+            };
+            self.expect_closer("=")?;
             decls.push((name, self.expression()?));
             if !self.eat_punct(",") {
                 break;
             }
         }
-        self.expect_punct(";")?;
+        self.expect_listing(";", "\",\" or \";\"")?;
         Ok(StmtKind::ConstDecl(decls))
     }
 
@@ -1525,7 +1663,7 @@ impl Parser {
         let mut catches = Vec::new();
         while self.at_kw("catch") {
             self.pos += 1;
-            self.expect_punct("(")?;
+            self.expect_closer("(")?;
             // A `|`-separated union of class names.
             let mut types = vec![self.expect_type_name()?];
             while self.eat_punct("|") {
@@ -1536,7 +1674,7 @@ impl Parser {
                 Some(Tok::Var(_)) => Some(self.expect_var()?),
                 _ => None,
             };
-            self.expect_punct(")")?;
+            self.expect_closer(")")?;
             let cbody = self.block()?;
             catches.push(CatchArm {
                 types,
@@ -1666,7 +1804,12 @@ impl Parser {
     /// Parse an optional return-type hint (`: [?]type`).
     fn return_type(&mut self) -> Result<Option<TypeHint>, String> {
         if self.eat_punct(":") {
-            self.type_hint()
+            // After the `:` a type is mandatory; the reference reports the stray
+            // token itself, with no list of what could have followed.
+            match self.type_hint()? {
+                Some(t) => Ok(Some(t)),
+                None => Err(self.syntax_error()),
+            }
         } else {
             Ok(None)
         }
@@ -1799,7 +1942,7 @@ impl Parser {
     }
 
     fn param_list(&mut self) -> Result<Vec<Param>, String> {
-        self.expect_punct("(")?;
+        self.expect_closer("(")?;
         let mut params = Vec::new();
         if !self.at_punct(")") {
             loop {
@@ -1842,6 +1985,9 @@ impl Parser {
                 }
                 // `...$rest` collects all trailing arguments into an array.
                 let variadic = self.eat_punct("...");
+                if !matches!(self.peek(), Some(Tok::Var(_))) {
+                    return Err(self.syntax_error_expecting("variable"));
+                }
                 let name = self.expect_var()?;
                 // A default value (`$x = expr`), applied when the caller omits it.
                 let default = if self.eat_punct("=") {
@@ -1866,7 +2012,7 @@ impl Parser {
                 }
             }
         }
-        self.expect_punct(")")?;
+        self.expect_closer(")")?;
         Ok(params)
     }
 
@@ -1874,6 +2020,14 @@ impl Parser {
     /// `(` is already eaten). Supports `...$arr` argument unpacking and PHP 8.0
     /// named arguments (`name: value`).
     fn arg_list(&mut self) -> Result<Vec<Expr>, String> {
+        self.arg_list_listing(Some("\")\""))
+    }
+
+    /// [`arg_list`](Self::arg_list) with the `expecting` clause a stray token
+    /// after the last argument is reported with — `None` for the constructs
+    /// whose operand sits directly before the `)` (`empty($a $b)`), where the
+    /// reference prints no list, and the chain tokens for `unset`.
+    fn arg_list_listing(&mut self, listing: Option<&str>) -> Result<Vec<Expr>, String> {
         let mut args = Vec::new();
         if !self.at_punct(")") {
             loop {
@@ -1890,7 +2044,10 @@ impl Parser {
                 }
             }
         }
-        self.expect_punct(")")?;
+        match listing {
+            Some(l) => self.expect_listing(")", l)?,
+            None => self.expect_punct(")")?,
+        }
         Ok(args)
     }
 
@@ -1948,7 +2105,9 @@ impl Parser {
                 } else if self.eat_kw("readonly") {
                     (&mut is_readonly_class, "readonly")
                 } else {
-                    return Err(self.syntax_error());
+                    return Err(self.syntax_error_expecting(
+                        "\"abstract\" or \"final\" or \"readonly\" or \"class\"",
+                    ));
                 };
                 if std::mem::replace(flag, true) {
                     return Err(self.bare_fatal_at(
@@ -1967,7 +2126,7 @@ impl Parser {
         self.pos += 1; // class / interface / trait / enum
         let name = match self.next() {
             Some(Tok::Ident(n)) => n,
-            _ => return Err(self.syntax_error_at(self.pos - 1)),
+            _ => return Err(self.syntax_error_expecting_at(self.pos - 1, Some("identifier"))),
         };
         // A backed enum names its scalar backing type after `:` (`enum E: string`).
         let mut enum_backing = None;
@@ -2064,7 +2223,7 @@ impl Parser {
                 }
             }
         }
-        self.expect_punct("{")?;
+        self.expect_closer("{")?;
         let mut consts = Vec::new();
         let mut const_lines = Vec::new();
         let mut const_vis = Vec::new();
@@ -2092,7 +2251,7 @@ impl Parser {
                 } else {
                     None
                 };
-                self.expect_punct(";")?;
+                self.expect_listing(";", "\";\"")?;
                 cases.push(EnumCase {
                     name: cname,
                     value,
@@ -2115,7 +2274,7 @@ impl Parser {
                 if self.at_punct("{") {
                     self.trait_adaptations(&mut trait_insteadof, &mut trait_aliases)?;
                 } else {
-                    self.expect_punct(";")?;
+                    self.expect_listing(";", "\",\" or \";\" or \"{\"")?;
                 }
                 continue;
             }
@@ -2129,6 +2288,7 @@ impl Parser {
             // Each modifier may be written once (the three visibilities count as
             // one); the reference rejects a repeat at the repeated word's line.
             let (mut seen_vis, mut seen_readonly) = (false, false);
+            let member_start = self.pos;
             loop {
                 let line = self.line();
                 let (repeated, word) = if self.eat_kw("static") {
@@ -2163,6 +2323,17 @@ impl Parser {
                 }
             }
             let const_line = self.line();
+            // A member that opens with no modifier can only be a constant or a
+            // method; anything else (`$a;`, `int $a;`, a stray literal) is
+            // refused where the reference refuses it, naming `function`.
+            if self.at_kw("case") && !is_enum {
+                return Err(
+                    self.bare_fatal_at(self.line(), "Case can only be used in enums".to_string())
+                );
+            }
+            if self.pos == member_start && !self.at_kw("const") && !self.at_kw("function") {
+                return Err(self.syntax_error_expecting("\"function\""));
+            }
             let misplaced = if self.at_kw("const") {
                 // A constant takes a visibility and `final`, nothing else.
                 [
@@ -2190,7 +2361,7 @@ impl Parser {
                         Some(Tok::Ident(n)) => n,
                         _ => return Err(self.syntax_error_at(self.pos - 1)),
                     };
-                    self.expect_punct("=")?;
+                    self.expect_closer("=")?;
                     if visibility != Visibility::Public {
                         const_vis.push((cname.clone(), visibility));
                     }
@@ -2202,7 +2373,7 @@ impl Parser {
                         break;
                     }
                 }
-                self.expect_punct(";")?;
+                self.expect_listing(";", "\",\" or \";\"")?;
             } else if self.at_kw("function") {
                 let fn_line = self.line();
                 self.pos += 1; // function
@@ -2231,6 +2402,9 @@ impl Parser {
                 let ret = self.return_type()?;
                 // An abstract/interface method has no body, just `;`.
                 let has_body = !self.eat_punct(";");
+                if has_body && !self.at_punct("{") {
+                    return Err(self.syntax_error_expecting("\";\" or \"{\""));
+                }
                 let body = if has_body { self.block()? } else { Vec::new() };
                 self.magic = saved;
                 methods.push(Method {
@@ -2253,7 +2427,16 @@ impl Parser {
                 let ty = self.type_hint()?;
                 loop {
                     let prop_line = self.line();
-                    let pname = self.expect_var()?;
+                    // After a modifier the reference expects a variable; at a member
+                    // that starts with nothing recognisable it says `function`
+                    // instead, which is not modelled, so no list is printed there.
+                    let pname = if !matches!(self.peek(), Some(Tok::Var(_)))
+                        && self.after_member_modifier()
+                    {
+                        return Err(self.syntax_error_expecting("variable"));
+                    } else {
+                        self.expect_var()?
+                    };
                     let default = if self.eat_punct("=") {
                         Some(self.expression()?)
                     } else {
@@ -2273,7 +2456,7 @@ impl Parser {
                         break;
                     }
                 }
-                self.expect_punct(";")?;
+                self.expect_listing(";", "\",\" or \";\"")?;
             }
         }
         self.expect_punct("}")?;
@@ -2756,7 +2939,7 @@ impl Parser {
                     e = Expr::Append(Box::new(e));
                 } else {
                     let idx = self.expression()?;
-                    self.expect_punct("]")?;
+                    self.expect_closer("]")?;
                     e = Expr::Index(Box::new(e), Box::new(idx));
                 }
             } else if self.eat_punct("->") {
@@ -2969,7 +3152,17 @@ impl Parser {
             // when followed by `(`, so a bareword `list` still parses as a name.
             Some(Tok::Ident(kw)) if kw.eq_ignore_ascii_case("list") && self.at_punct("(") => {
                 self.expect_punct("(")?;
-                self.array_literal(")", ArraySyntax::List)
+                let list = self.array_literal(")", ArraySyntax::List)?;
+                // `list(...)` is only a destructuring target: unless it is a
+                // nested element (`,` / `)` / `]` follows) it must meet its `=`.
+                if !(self.at_punct("=")
+                    || self.at_punct(",")
+                    || self.at_punct(")")
+                    || self.at_punct("]"))
+                {
+                    return Err(self.syntax_error_expecting("\"=\""));
+                }
+                Ok(list)
             }
             // `exit` / `die` — the one construct whose parentheses AND argument
             // are both optional, so `exit;` is a complete expression. Without
@@ -3042,7 +3235,9 @@ impl Parser {
                 }
                 let class = match self.next() {
                     Some(Tok::Ident(n)) => n,
-                    _ => return Err(self.syntax_error_at(self.pos - 1)),
+                    _ => {
+                        return Err(self.syntax_error_expecting_at(self.pos - 1, Some("\"class\"")))
+                    }
                 };
                 let args = if self.eat_punct("(") {
                     self.arg_list()?
@@ -3105,7 +3300,7 @@ impl Parser {
                 let params = self.param_list()?;
                 let mut uses = Vec::new();
                 if self.eat_kw("use") {
-                    self.expect_punct("(")?;
+                    self.expect_closer("(")?;
                     if !self.at_punct(")") {
                         loop {
                             // `use (&$v)` captures the enclosing variable itself
@@ -3118,7 +3313,7 @@ impl Parser {
                             }
                         }
                     }
-                    self.expect_punct(")")?;
+                    self.expect_closer(")")?;
                 }
                 let ret = self.return_type()?;
                 let body = self.block()?;
@@ -3138,7 +3333,7 @@ impl Parser {
                 let saved = self.enter_closure(line);
                 let params = self.param_list()?;
                 let ret = self.return_type()?;
-                self.expect_punct("=>")?;
+                self.expect_closer("=>")?;
                 let body = self.expression()?;
                 self.magic = saved;
                 Ok(Expr::ArrowFn {
@@ -3148,6 +3343,13 @@ impl Parser {
                     is_static: false,
                     line,
                 })
+            }
+            // `function` / `fn` is reserved: anything but `(` after it is a
+            // syntax error whose only way forward is the parameter list.
+            Some(Tok::Ident(kw))
+                if kw.eq_ignore_ascii_case("function") || kw.eq_ignore_ascii_case("fn") =>
+            {
+                Err(self.syntax_error_expecting("\"(\""))
             }
             // A magic constant. PHP resolves these where they are WRITTEN, so the
             // answer comes from the parse context rather than from any table —
@@ -3197,7 +3399,19 @@ impl Parser {
                     if let Some(fcc) = self.try_fcc(Expr::Str(name.clone()), false)? {
                         return Ok(fcc);
                     }
-                    let args = self.arg_list()?;
+                    let args = {
+                        // `unset` lists the tokens that could continue its operand,
+                        // `empty` is `empty ( expr )` with nothing reduced before the
+                        // `)`, so the reference lists nothing for either's neighbours.
+                        let listing = if name.eq_ignore_ascii_case("unset") {
+                            Some("\"->\" or \"?->\" or \"[\"")
+                        } else if name.eq_ignore_ascii_case("empty") {
+                            None
+                        } else {
+                            Some("\")\"")
+                        };
+                        self.arg_list_listing(listing)?
+                    };
                     // `eval()` is a construct too: it runs in the caller's scope.
                     if name.eq_ignore_ascii_case("eval") && args.len() == 1 {
                         return Ok(Expr::Eval(Box::new(args.into_iter().next().unwrap())));
@@ -3248,6 +3462,14 @@ impl Parser {
                     }
                     Ok(Expr::Call(name, args))
                 } else {
+                    // `isset`, `unset`, `empty` and `eval` are constructs that
+                    // cannot stand without their parenthesised operand.
+                    if ["isset", "unset", "empty", "eval"]
+                        .iter()
+                        .any(|k| name.eq_ignore_ascii_case(k))
+                    {
+                        return Err(self.syntax_error_expecting("\"(\""));
+                    }
                     // A constant reference, resolved against the constant table
                     // at run time. An undefined name throws
                     // `Error: Undefined constant "<name>"` — PHP 8 behaviour;
@@ -3312,17 +3534,17 @@ impl Parser {
                 break;
             }
         }
-        self.expect_punct(close)?;
+        self.expect_closer(close)?;
         Ok(Expr::Array(elems, syntax))
     }
 
     /// Parse a `match (subj) { A, B => R, default => D }` expression. The `match`
     /// keyword has already been consumed by `primary`.
     fn match_expr(&mut self) -> Result<Expr, String> {
-        self.expect_punct("(")?;
+        self.expect_closer("(")?;
         let subj = self.expression()?;
         self.expect_punct(")")?;
-        self.expect_punct("{")?;
+        self.expect_closer("{")?;
         let mut arms = Vec::new();
         while !self.at_punct("}") && !self.at_end() {
             let conds = if self.eat_kw("default") {
@@ -3338,7 +3560,7 @@ impl Parser {
                 }
                 Some(cs)
             };
-            self.expect_punct("=>")?;
+            self.expect_closer("=>")?;
             let body = self.expression()?;
             arms.push(MatchArm {
                 conds,
@@ -3348,7 +3570,7 @@ impl Parser {
                 break;
             }
         }
-        self.expect_punct("}")?;
+        self.expect_closer("}")?;
         Ok(Expr::Match {
             subj: Box::new(subj),
             arms,

@@ -515,7 +515,7 @@ use Def::{Bool, EmptyArray, Float, Int, Null, Required, Str, Unknown};
 /// default in this generated table is a literal too.
 #[allow(clippy::approx_constant)]
 static SIGS: &[(&str, Sig)] = &[
-    // generated: 567 functions
+    // generated: 585 functions
     (
         "abs",
         Sig {
@@ -2849,6 +2849,14 @@ static SIGS: &[(&str, Sig)] = &[
         },
     ),
     (
+        "gmp_binomial",
+        Sig {
+            req: 2,
+            params: &[p("n", Required, "GMP|string|int"), p("k", Required, "int")],
+            variadic: false,
+        },
+    ),
+    (
         "gmp_cmp",
         Sig {
             req: 2,
@@ -2856,6 +2864,14 @@ static SIGS: &[(&str, Sig)] = &[
                 p("num1", Required, "GMP|string|int"),
                 p("num2", Required, "GMP|string|int"),
             ],
+            variadic: false,
+        },
+    ),
+    (
+        "gmp_com",
+        Sig {
+            req: 1,
+            params: &[p("num", Required, "GMP|string|int")],
             variadic: false,
         },
     ),
@@ -2884,6 +2900,18 @@ static SIGS: &[(&str, Sig)] = &[
         },
     ),
     (
+        "gmp_div_qr",
+        Sig {
+            req: 2,
+            params: &[
+                p("num1", Required, "GMP|string|int"),
+                p("num2", Required, "GMP|string|int"),
+                p("rounding_mode", Int(0), "int"),
+            ],
+            variadic: false,
+        },
+    ),
+    (
         "gmp_div_r",
         Sig {
             req: 2,
@@ -2891,6 +2919,17 @@ static SIGS: &[(&str, Sig)] = &[
                 p("num1", Required, "GMP|string|int"),
                 p("num2", Required, "GMP|string|int"),
                 p("rounding_mode", Int(0), "int"),
+            ],
+            variadic: false,
+        },
+    ),
+    (
+        "gmp_divexact",
+        Sig {
+            req: 2,
+            params: &[
+                p("num1", Required, "GMP|string|int"),
+                p("num2", Required, "GMP|string|int"),
             ],
             variadic: false,
         },
@@ -2905,6 +2944,28 @@ static SIGS: &[(&str, Sig)] = &[
     ),
     (
         "gmp_gcd",
+        Sig {
+            req: 2,
+            params: &[
+                p("num1", Required, "GMP|string|int"),
+                p("num2", Required, "GMP|string|int"),
+            ],
+            variadic: false,
+        },
+    ),
+    (
+        "gmp_gcdext",
+        Sig {
+            req: 2,
+            params: &[
+                p("num1", Required, "GMP|string|int"),
+                p("num2", Required, "GMP|string|int"),
+            ],
+            variadic: false,
+        },
+    ),
+    (
+        "gmp_hamdist",
         Sig {
             req: 2,
             params: &[
@@ -2931,7 +2992,51 @@ static SIGS: &[(&str, Sig)] = &[
         },
     ),
     (
+        "gmp_invert",
+        Sig {
+            req: 2,
+            params: &[
+                p("num1", Required, "GMP|string|int"),
+                p("num2", Required, "GMP|string|int"),
+            ],
+            variadic: false,
+        },
+    ),
+    (
+        "gmp_jacobi",
+        Sig {
+            req: 2,
+            params: &[
+                p("num1", Required, "GMP|string|int"),
+                p("num2", Required, "GMP|string|int"),
+            ],
+            variadic: false,
+        },
+    ),
+    (
+        "gmp_kronecker",
+        Sig {
+            req: 2,
+            params: &[
+                p("num1", Required, "GMP|string|int"),
+                p("num2", Required, "GMP|string|int"),
+            ],
+            variadic: false,
+        },
+    ),
+    (
         "gmp_lcm",
+        Sig {
+            req: 2,
+            params: &[
+                p("num1", Required, "GMP|string|int"),
+                p("num2", Required, "GMP|string|int"),
+            ],
+            variadic: false,
+        },
+    ),
+    (
+        "gmp_legendre",
         Sig {
             req: 2,
             params: &[
@@ -2972,6 +3077,14 @@ static SIGS: &[(&str, Sig)] = &[
         },
     ),
     (
+        "gmp_nextprime",
+        Sig {
+            req: 1,
+            params: &[p("num", Required, "GMP|string|int")],
+            variadic: false,
+        },
+    ),
+    (
         "gmp_or",
         Sig {
             req: 2,
@@ -2983,7 +3096,23 @@ static SIGS: &[(&str, Sig)] = &[
         },
     ),
     (
+        "gmp_perfect_power",
+        Sig {
+            req: 1,
+            params: &[p("num", Required, "GMP|string|int")],
+            variadic: false,
+        },
+    ),
+    (
         "gmp_perfect_square",
+        Sig {
+            req: 1,
+            params: &[p("num", Required, "GMP|string|int")],
+            variadic: false,
+        },
+    ),
+    (
+        "gmp_popcount",
         Sig {
             req: 1,
             params: &[p("num", Required, "GMP|string|int")],
@@ -3036,6 +3165,39 @@ static SIGS: &[(&str, Sig)] = &[
         },
     ),
     (
+        "gmp_rootrem",
+        Sig {
+            req: 2,
+            params: &[
+                p("num", Required, "GMP|string|int"),
+                p("nth", Required, "int"),
+            ],
+            variadic: false,
+        },
+    ),
+    (
+        "gmp_scan0",
+        Sig {
+            req: 2,
+            params: &[
+                p("num1", Required, "GMP|string|int"),
+                p("start", Required, "int"),
+            ],
+            variadic: false,
+        },
+    ),
+    (
+        "gmp_scan1",
+        Sig {
+            req: 2,
+            params: &[
+                p("num1", Required, "GMP|string|int"),
+                p("start", Required, "int"),
+            ],
+            variadic: false,
+        },
+    ),
+    (
         "gmp_sign",
         Sig {
             req: 1,
@@ -3045,6 +3207,14 @@ static SIGS: &[(&str, Sig)] = &[
     ),
     (
         "gmp_sqrt",
+        Sig {
+            req: 1,
+            params: &[p("num", Required, "GMP|string|int")],
+            variadic: false,
+        },
+    ),
+    (
+        "gmp_sqrtrem",
         Sig {
             req: 1,
             params: &[p("num", Required, "GMP|string|int")],
@@ -3069,6 +3239,17 @@ static SIGS: &[(&str, Sig)] = &[
             params: &[
                 p("num1", Required, "GMP|string|int"),
                 p("num2", Required, "GMP|string|int"),
+            ],
+            variadic: false,
+        },
+    ),
+    (
+        "gmp_testbit",
+        Sig {
+            req: 2,
+            params: &[
+                p("num", Required, "GMP|string|int"),
+                p("index", Required, "int"),
             ],
             variadic: false,
         },

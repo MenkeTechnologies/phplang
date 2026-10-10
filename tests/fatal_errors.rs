@@ -284,43 +284,43 @@ fn a_number_keeps_its_source_spelling_in_the_message() {
 fn token_kinds_are_named_the_way_the_reference_names_them() {
     // A reserved word is a `token` in its canonical spelling, whatever case it
     // was written in; a name the scanner leaves alone is an `identifier`. Every
-    // case here is one the reference follows with `, expecting "," or ";"` — the
-    // documented omission — so these assert the `unexpected <token>` half.
+    // case here is a stray token after an `echo` operand, which the reference
+    // follows with `, expecting "," or ";"`.
     assert_eq!(
         parse_error("<?php echo 1 RETURN;"),
-        r#"syntax error, unexpected token "return" in Command line code on line 1"#
+        r#"syntax error, unexpected token "return", expecting "," or ";" in Command line code on line 1"#
     );
     assert_eq!(
         parse_error("<?php echo 1 foo;"),
-        r#"syntax error, unexpected identifier "foo" in Command line code on line 1"#
+        r#"syntax error, unexpected identifier "foo", expecting "," or ";" in Command line code on line 1"#
     );
     // `true`/`false`/`null` are constants, not keywords — the reference reports
     // them as identifiers.
     assert_eq!(
         parse_error("<?php echo 1 true;"),
-        r#"syntax error, unexpected identifier "true" in Command line code on line 1"#
+        r#"syntax error, unexpected identifier "true", expecting "," or ";" in Command line code on line 1"#
     );
     assert_eq!(
         parse_error("<?php echo 1 $v;"),
-        r#"syntax error, unexpected variable "$v" in Command line code on line 1"#
+        r#"syntax error, unexpected variable "$v", expecting "," or ";" in Command line code on line 1"#
     );
     assert_eq!(
         parse_error("<?php echo 1 'sq';"),
-        r#"syntax error, unexpected single-quoted string "sq" in Command line code on line 1"#
+        r#"syntax error, unexpected single-quoted string "sq", expecting "," or ";" in Command line code on line 1"#
     );
     assert_eq!(
         parse_error(r#"<?php echo 1 "dq";"#),
-        r#"syntax error, unexpected double-quoted string "dq" in Command line code on line 1"#
+        r#"syntax error, unexpected double-quoted string "dq", expecting "," or ";" in Command line code on line 1"#
     );
     // `die` is an alias the scanner folds onto the `exit` token.
     assert_eq!(
         parse_error("<?php echo 1 die;"),
-        r#"syntax error, unexpected token "exit" in Command line code on line 1"#
+        r#"syntax error, unexpected token "exit", expecting "," or ";" in Command line code on line 1"#
     );
     // A magic constant keeps its uppercase canonical spelling.
     assert_eq!(
         parse_error("<?php echo 1 __class__;"),
-        r#"syntax error, unexpected token "__CLASS__" in Command line code on line 1"#
+        r#"syntax error, unexpected token "__CLASS__", expecting "," or ";" in Command line code on line 1"#
     );
 }
 
@@ -330,7 +330,7 @@ fn running_out_of_tokens_is_reported_against_the_last_line_not_line_zero() {
     // file, expecting "," or ";" … on line 3` — the line is the point here.
     assert_eq!(
         parse_error("<?php\n\necho 1"),
-        "syntax error, unexpected end of file in Command line code on line 3"
+        "syntax error, unexpected end of file, expecting \",\" or \";\" in Command line code on line 3"
     );
 }
 
@@ -445,4 +445,160 @@ fn a_const_declaration_outside_top_level_is_rejected_at_the_const() {
         phplang::eval_capture("<?php class K { const A = 1; } echo K::A;").unwrap(),
         "1"
     );
+}
+
+// ── syntax-error expectation lists ───────────────────────────────────────────
+
+#[test]
+fn syntax_errors_carry_the_reference_expecting_clause_and_scanner_nesting_errors() {
+    // Every row was read off reference php 8.5: a stray token where the grammar
+    // leaves a closer or terminator open (`expecting "," or ";"`), and the
+    // scanner-level bracket diagnostics, which no parser table decides.
+    let rows: &[(&str, &str)] = &[
+        ("<?php echo 1 2;", "syntax error, unexpected integer \"2\", expecting \",\" or \";\" in Command line code on line 1"),
+        ("<?php echo 1, 2 3;", "syntax error, unexpected integer \"3\", expecting \",\" or \";\" in Command line code on line 1"),
+        ("<?php return 1 2;", "syntax error, unexpected integer \"2\", expecting \";\" in Command line code on line 1"),
+        ("<?php break 1 2;", "syntax error, unexpected integer \"2\", expecting \";\" in Command line code on line 1"),
+        ("<?php continue 1 2;", "syntax error, unexpected integer \"2\", expecting \";\" in Command line code on line 1"),
+        ("<?php global $a $b;", "syntax error, unexpected variable \"$b\", expecting \",\" or \";\" in Command line code on line 1"),
+        ("<?php static $a $b;", "syntax error, unexpected variable \"$b\", expecting \",\" or \";\" in Command line code on line 1"),
+        ("<?php static $a = 1 $b;", "syntax error, unexpected variable \"$b\", expecting \",\" or \";\" in Command line code on line 1"),
+        ("<?php const A = 1 2;", "syntax error, unexpected integer \"2\", expecting \",\" or \";\" in Command line code on line 1"),
+        ("<?php const A = 1, B = 2 3;", "syntax error, unexpected integer \"3\", expecting \",\" or \";\" in Command line code on line 1"),
+        ("<?php use A\\B C;", "syntax error, unexpected identifier \"C\", expecting \",\" or \";\" in Command line code on line 1"),
+        ("<?php namespace A B;", "syntax error, unexpected identifier \"B\", expecting \"{\" in Command line code on line 1"),
+        ("<?php goto a b;", "syntax error, unexpected identifier \"b\", expecting \";\" in Command line code on line 1"),
+        ("<?php class A { public $a $b; }", "syntax error, unexpected variable \"$b\", expecting \",\" or \";\" in Command line code on line 1"),
+        ("<?php class A { public $a = 1 $b; }", "syntax error, unexpected variable \"$b\", expecting \",\" or \";\" in Command line code on line 1"),
+        ("<?php class A { const X = 1 2; }", "syntax error, unexpected integer \"2\", expecting \",\" or \";\" in Command line code on line 1"),
+        ("<?php class A { use B C; }", "syntax error, unexpected identifier \"C\", expecting \",\" or \";\" or \"{\" in Command line code on line 1"),
+        ("<?php class A { function f() {} 1 }", "syntax error, unexpected integer \"1\", expecting \"function\" in Command line code on line 1"),
+        ("<?php class A extends B C {}", "syntax error, unexpected identifier \"C\", expecting \"{\" in Command line code on line 1"),
+        ("<?php class A implements B C {}", "syntax error, unexpected identifier \"C\", expecting \"{\" in Command line code on line 1"),
+        ("<?php interface I extends J K {}", "syntax error, unexpected identifier \"K\", expecting \"{\" in Command line code on line 1"),
+        ("<?php enum E { case A case B; }", "syntax error, unexpected token \"case\", expecting \";\" in Command line code on line 1"),
+        ("<?php enum E: int { case A = 1 2; }", "syntax error, unexpected integer \"2\", expecting \";\" in Command line code on line 1"),
+        ("<?php function f(): int string {}", "syntax error, unexpected identifier \"string\", expecting \"{\" in Command line code on line 1"),
+        ("<?php function f($a = 1 2) {}", "syntax error, unexpected integer \"2\", expecting \")\" in Command line code on line 1"),
+        ("<?php function f(int $a 2) {}", "syntax error, unexpected integer \"2\", expecting \")\" in Command line code on line 1"),
+        ("<?php fn($x 2) => 1;", "syntax error, unexpected integer \"2\", expecting \")\" in Command line code on line 1"),
+        ("<?php $x = fn($a) 1;", "syntax error, unexpected integer \"1\", expecting \"=>\" in Command line code on line 1"),
+        ("<?php $x = function() 1;", "syntax error, unexpected integer \"1\", expecting \"{\" in Command line code on line 1"),
+        ("<?php $x = list($a, $b) 1;", "syntax error, unexpected integer \"1\", expecting \"=\" in Command line code on line 1"),
+        ("<?php $x = f(a: 1 2);", "syntax error, unexpected integer \"2\", expecting \")\" in Command line code on line 1"),
+        ("<?php $x = f(...$a 2);", "syntax error, unexpected integer \"2\", expecting \")\" in Command line code on line 1"),
+        ("<?php $x = [...$a 2];", "syntax error, unexpected integer \"2\", expecting \"]\" in Command line code on line 1"),
+        ("<?php $x = [1 => 2 3];", "syntax error, unexpected integer \"3\", expecting \"]\" in Command line code on line 1"),
+        ("<?php $x = [1 => 2, 3 => 4 5];", "syntax error, unexpected integer \"5\", expecting \"]\" in Command line code on line 1"),
+        ("<?php $x = $a[1 2];", "syntax error, unexpected integer \"2\", expecting \"]\" in Command line code on line 1"),
+        ("<?php $x = $a[1][2 3];", "syntax error, unexpected integer \"3\", expecting \"]\" in Command line code on line 1"),
+        ("<?php $x = \"{$a[1 2]}\";", "syntax error, unexpected integer \"2\", expecting \"]\" in Command line code on line 1"),
+        ("<?php foreach ($a as $b $c) {}", "syntax error, unexpected variable \"$c\", expecting \"->\" or \"?->\" or \"[\" in Command line code on line 1"),
+        ("<?php foreach ($a as $b => $c $d) {}", "syntax error, unexpected variable \"$d\", expecting \"->\" or \"?->\" or \"[\" in Command line code on line 1"),
+        ("<?php for ($i = 0 $i < 3; $i++) {}", "syntax error, unexpected variable \"$i\", expecting \";\" in Command line code on line 1"),
+        ("<?php for ($i = 0; $i < 3; $i++ $j) {}", "syntax error, unexpected variable \"$j\", expecting \")\" in Command line code on line 1"),
+        ("<?php try {} catch (A B $c) {}", "syntax error, unexpected identifier \"B\", expecting \")\" in Command line code on line 1"),
+        ("<?php try {} catch (A $c $d) {}", "syntax error, unexpected variable \"$d\", expecting \")\" in Command line code on line 1"),
+        ("<?php try {} finally 1", "syntax error, unexpected integer \"1\", expecting \"{\" in Command line code on line 1"),
+        ("<?php declare(strict_types=1 2);", "syntax error, unexpected integer \"2\", expecting \",\" or \")\" in Command line code on line 1"),
+        ("<?php unset($a $b);", "syntax error, unexpected variable \"$b\", expecting \"->\" or \"?->\" or \"[\" in Command line code on line 1"),
+        ("<?php unset($a, $b $c);", "syntax error, unexpected variable \"$c\", expecting \"->\" or \"?->\" or \"[\" in Command line code on line 1"),
+        ("<?php isset($a, $b $c);", "syntax error, unexpected variable \"$c\", expecting \")\" in Command line code on line 1"),
+        ("<?php $x = match($a) { 1 => 2 3 => 4 };", "syntax error, unexpected integer \"3\", expecting \"}\" in Command line code on line 1"),
+        ("<?php $x = match($a) { 1, 2 => 3 4 };", "syntax error, unexpected integer \"4\", expecting \"}\" in Command line code on line 1"),
+        ("<?php $x = new;", "syntax error, unexpected token \";\", expecting \"class\" in Command line code on line 1"),
+        ("<?php class A { function f() { return 1 2; } }", "syntax error, unexpected integer \"2\", expecting \";\" in Command line code on line 1"),
+        ("<?php abstract class { }", "syntax error, unexpected token \"{\", expecting identifier in Command line code on line 1"),
+        ("<?php class A { public }", "syntax error, unexpected token \"}\", expecting variable in Command line code on line 1"),
+        ("<?php class A { function f( }", "Unclosed '(' does not match '}' in Command line code on line 1"),
+        ("<?php function ( {}", "syntax error, unexpected token \"{\", expecting variable in Command line code on line 1"),
+        ("<?php class A { function f() 1 }", "syntax error, unexpected integer \"1\", expecting \";\" or \"{\" in Command line code on line 1"),
+        ("<?php class A { function f(): int 1 }", "syntax error, unexpected integer \"1\", expecting \";\" or \"{\" in Command line code on line 1"),
+        ("<?php class A { abstract function f() 1 }", "syntax error, unexpected integer \"1\", expecting \";\" or \"{\" in Command line code on line 1"),
+        ("<?php interface I { function f() 1 }", "syntax error, unexpected integer \"1\", expecting \";\" or \"{\" in Command line code on line 1"),
+        ("<?php class A { function f }", "syntax error, unexpected token \"}\", expecting \"(\" in Command line code on line 1"),
+        ("<?php trait T { function f() 1 }", "syntax error, unexpected integer \"1\", expecting \";\" or \"{\" in Command line code on line 1"),
+        ("<?php $x = function() use ($a) 1;", "syntax error, unexpected integer \"1\", expecting \"{\" in Command line code on line 1"),
+        ("<?php $x = function() use 1 {};", "syntax error, unexpected integer \"1\", expecting \"(\" in Command line code on line 1"),
+        ("<?php function f() 1", "syntax error, unexpected integer \"1\", expecting \"{\" in Command line code on line 1"),
+        ("<?php function f", "syntax error, unexpected end of file, expecting \"(\" in Command line code on line 1"),
+        ("<?php function", "syntax error, unexpected end of file, expecting \"(\" in Command line code on line 1"),
+        ("<?php class", "syntax error, unexpected end of file, expecting identifier in Command line code on line 1"),
+        ("<?php interface", "syntax error, unexpected end of file, expecting identifier in Command line code on line 1"),
+        ("<?php trait", "syntax error, unexpected end of file, expecting identifier in Command line code on line 1"),
+        ("<?php namespace;", "syntax error, unexpected token \";\", expecting \"{\" in Command line code on line 1"),
+        ("<?php namespace A\\B C;", "syntax error, unexpected identifier \"C\", expecting \"{\" in Command line code on line 1"),
+        ("<?php use function A\\f B;", "syntax error, unexpected identifier \"B\", expecting \",\" or \";\" in Command line code on line 1"),
+        ("<?php use const A\\B C;", "syntax error, unexpected identifier \"C\", expecting \",\" or \";\" in Command line code on line 1"),
+        ("<?php try 1", "syntax error, unexpected integer \"1\", expecting \"{\" in Command line code on line 1"),
+        ("<?php try {} catch 1 {}", "syntax error, unexpected integer \"1\", expecting \"(\" in Command line code on line 1"),
+        ("<?php try {} catch (A) 1", "syntax error, unexpected integer \"1\", expecting \"{\" in Command line code on line 1"),
+        ("<?php do {} while 1;", "syntax error, unexpected integer \"1\", expecting \"(\" in Command line code on line 1"),
+        ("<?php switch (1) 2", "syntax error, unexpected integer \"2\", expecting \":\" or \"{\" in Command line code on line 1"),
+        ("<?php switch (1) { 2 }", "syntax error, unexpected integer \"2\", expecting \"case\" or \"default\" or \"}\" in Command line code on line 1"),
+        ("<?php switch (1) { default 2: }", "syntax error, unexpected integer \"2\", expecting \":\" or \";\" in Command line code on line 1"),
+        ("<?php declare(ticks);", "syntax error, unexpected token \")\", expecting \"=\" in Command line code on line 1"),
+        ("<?php $a = [1, 2 3, 4];", "syntax error, unexpected integer \"3\", expecting \"]\" in Command line code on line 1"),
+        ("<?php $a = [1, 2, 3 4];", "syntax error, unexpected integer \"4\", expecting \"]\" in Command line code on line 1"),
+        ("<?php $a = ['a' => 1 'b' => 2];", "syntax error, unexpected single-quoted string \"b\", expecting \"]\" in Command line code on line 1"),
+        ("<?php $a = [[1 2]];", "syntax error, unexpected integer \"2\", expecting \"]\" in Command line code on line 1"),
+        ("<?php f(f(1 2));", "syntax error, unexpected integer \"2\", expecting \")\" in Command line code on line 1"),
+        ("<?php f([1 2]);", "syntax error, unexpected integer \"2\", expecting \"]\" in Command line code on line 1"),
+        ("<?php f(1, g(2 3));", "syntax error, unexpected integer \"3\", expecting \")\" in Command line code on line 1"),
+        ("<?php $a = f(1)[2 3];", "syntax error, unexpected integer \"3\", expecting \"]\" in Command line code on line 1"),
+        ("<?php $a->b(1 2)->c;", "syntax error, unexpected integer \"2\", expecting \")\" in Command line code on line 1"),
+        ("<?php $a = new A(1, 2 3);", "syntax error, unexpected integer \"3\", expecting \")\" in Command line code on line 1"),
+        ("<?php foo(1 {", "syntax error, unexpected token \"{\", expecting \")\" in Command line code on line 1"),
+        ("<?php foo(1 { }", "syntax error, unexpected token \"{\", expecting \")\" in Command line code on line 1"),
+        ("<?php foo(1 ;", "syntax error, unexpected token \";\", expecting \")\" in Command line code on line 1"),
+        ("<?php foo(1 ; }", "syntax error, unexpected token \";\", expecting \")\" in Command line code on line 1"),
+        ("<?php foo(1 ; ]", "syntax error, unexpected token \";\", expecting \")\" in Command line code on line 1"),
+        ("<?php $x = [1 ;", "syntax error, unexpected token \";\", expecting \"]\" in Command line code on line 1"),
+        ("<?php $x = [1 ; ]", "syntax error, unexpected token \";\", expecting \"]\" in Command line code on line 1"),
+        ("<?php foo(1 2", "syntax error, unexpected integer \"2\", expecting \")\" in Command line code on line 1"),
+        ("<?php foo(1 2 }", "syntax error, unexpected integer \"2\", expecting \")\" in Command line code on line 1"),
+        ("<?php foo(1 2 ) )", "syntax error, unexpected integer \"2\", expecting \")\" in Command line code on line 1"),
+        ("<?php if ($a) { foo(1 2 }", "syntax error, unexpected integer \"2\", expecting \")\" in Command line code on line 1"),
+        ("<?php if ($a) { foo(1 2 ", "syntax error, unexpected integer \"2\", expecting \")\" in Command line code on line 1"),
+        ("<?php class A { foo }", "syntax error, unexpected identifier \"foo\", expecting \"function\" in Command line code on line 1"),
+        ("<?php class A { $a }", "syntax error, unexpected variable \"$a\", expecting \"function\" in Command line code on line 1"),
+        ("<?php class A { ; }", "syntax error, unexpected token \";\", expecting \"function\" in Command line code on line 1"),
+        ("<?php class A { 1 }", "syntax error, unexpected integer \"1\", expecting \"function\" in Command line code on line 1"),
+        ("<?php class A { 'x' }", "syntax error, unexpected single-quoted string \"x\", expecting \"function\" in Command line code on line 1"),
+        ("<?php class A { int $a; }", "syntax error, unexpected identifier \"int\", expecting \"function\" in Command line code on line 1"),
+        ("<?php class A { ?int $a; }", "syntax error, unexpected token \"?\", expecting \"function\" in Command line code on line 1"),
+        ("<?php class A { static }", "syntax error, unexpected token \"}\", expecting variable in Command line code on line 1"),
+        ("<?php class A { public 1 }", "syntax error, unexpected integer \"1\", expecting variable in Command line code on line 1"),
+        ("<?php class A { public static 1 }", "syntax error, unexpected integer \"1\", expecting variable in Command line code on line 1"),
+        ("<?php class A { function f() {} $z }", "syntax error, unexpected variable \"$z\", expecting \"function\" in Command line code on line 1"),
+        ("<?php interface I { 1 }", "syntax error, unexpected integer \"1\", expecting \"function\" in Command line code on line 1"),
+        ("<?php enum E { 1 }", "syntax error, unexpected integer \"1\", expecting \"function\" in Command line code on line 1"),
+        ("<?php trait T { 1 }", "syntax error, unexpected integer \"1\", expecting \"function\" in Command line code on line 1"),
+        ("<?php if $z ($a) {}", "syntax error, unexpected variable \"$z\", expecting \"(\" in Command line code on line 1"),
+        ("<?php for $z (;;) {}", "syntax error, unexpected variable \"$z\", expecting \"(\" in Command line code on line 1"),
+        ("<?php foreach $z ($a as $b) {}", "syntax error, unexpected variable \"$z\", expecting \"(\" in Command line code on line 1"),
+        ("<?php function $z () {}", "syntax error, unexpected variable \"$z\", expecting \"(\" in Command line code on line 1"),
+        ("<?php declare $z (ticks=1);", "syntax error, unexpected variable \"$z\", expecting \"(\" in Command line code on line 1"),
+        ("<?php $x = fn $z () => 1;", "syntax error, unexpected variable \"$z\", expecting \"(\" in Command line code on line 1"),
+        ("<?php $x = function $z () {};", "syntax error, unexpected variable \"$z\", expecting \"(\" in Command line code on line 1"),
+        ("<?php goto 1;", "syntax error, unexpected integer \"1\", expecting identifier in Command line code on line 1"),
+        ("<?php global 1;", "syntax error, unexpected integer \"1\", expecting variable or \"$\" in Command line code on line 1"),
+        ("<?php global $a 1;", "syntax error, unexpected integer \"1\", expecting \",\" or \";\" in Command line code on line 1"),
+        ("<?php unset ($a) 1;", "syntax error, unexpected integer \"1\", expecting \";\" in Command line code on line 1"),
+        ("<?php unset ($a) $z;", "syntax error, unexpected variable \"$z\", expecting \";\" in Command line code on line 1"),
+        ("<?php list($a) 1;", "syntax error, unexpected integer \"1\", expecting \"=\" in Command line code on line 1"),
+        ("<?php do {} 1 while (1);", "syntax error, unexpected integer \"1\", expecting \"while\" in Command line code on line 1"),
+        ("<?php use A\\B 1;", "syntax error, unexpected integer \"1\", expecting \",\" or \";\" in Command line code on line 1"),
+        ("<?php const 1 = 2;", "syntax error, unexpected integer \"1\", expecting identifier in Command line code on line 1"),
+        ("<?php const A 1;", "syntax error, unexpected integer \"1\", expecting \"=\" in Command line code on line 1"),
+        ("<?php static $a 1;", "syntax error, unexpected integer \"1\", expecting \",\" or \";\" in Command line code on line 1"),
+        ("<?php new 1;", "syntax error, unexpected integer \"1\", expecting \"class\" in Command line code on line 1"),
+        ("<?php return 1 2 3;", "syntax error, unexpected integer \"2\", expecting \";\" in Command line code on line 1"),
+        ("<?php while (1) { break 2 3; }", "syntax error, unexpected integer \"3\", expecting \";\" in Command line code on line 1"),
+        ("<?php isset 1 ($a);", "syntax error, unexpected integer \"1\", expecting \"(\" in Command line code on line 1"),
+        ("<?php $x = new 1;", "syntax error, unexpected integer \"1\", expecting \"class\" in Command line code on line 1"),
+    ];
+    for (src, expected) in rows {
+        assert_eq!(parse_error(src), *expected, "{src}");
+    }
 }

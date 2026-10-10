@@ -7437,6 +7437,14 @@ fn php_array_diff(h: &mut host::PhpHost, args: &[Value], intersect: bool) -> Val
 
 // ── var_export / json_encode ─────────────────────────────────────────────────
 
+/// A string as `var_export` writes it: single-quoted with `\` and `'` escaped, and
+/// every NUL byte, which no quoted literal can carry, spliced in as a
+/// double-quoted `"\0"` between concatenated halves.
+fn export_string(s: &str) -> String {
+    let escaped = s.replace('\\', "\\\\").replace('\'', "\\'");
+    format!("'{}'", escaped.replace('\0', "' . \"\\0\" . '"))
+}
+
 /// `var_export` of one value.
 ///
 /// A circular structure is not fatal here either: the reference warns
@@ -7469,6 +7477,9 @@ fn php_var_export_body(
     match v {
         Value::Undef => "NULL".to_string(),
         Value::Bool(b) => if *b { "true" } else { "false" }.to_string(),
+        // `ZEND_LONG_MIN` has no literal of its own: the reference spells it
+        // `-9223372036854775807-1`, which reads back as an int.
+        Value::Int(i64::MIN) => "-9223372036854775807-1".to_string(),
         Value::Int(n) => n.to_string(),
         // var_export prints floats at serialize_precision and guarantees the
         // result reads back as a float, so a whole number gains a ".0" tail
@@ -7481,7 +7492,7 @@ fn php_var_export_body(
                 s
             }
         }
-        Value::Str(s) => format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'")),
+        Value::Str(s) => export_string(s),
         Value::Obj(_) if h.is_object(v) => php_var_export_object(h, v, depth, seen),
         Value::Obj(_) if h.is_array(v) => {
             let pad = "  ".repeat(depth);
@@ -7490,7 +7501,7 @@ fn php_var_export_body(
             for (k, val) in h.array_pairs(v).unwrap_or_default() {
                 let key = match k {
                     Value::Int(n) => n.to_string(),
-                    other => format!("'{}'", h.to_str(&other).replace('\'', "\\'")),
+                    other => export_string(&h.to_str(&other)),
                 };
                 out.push_str(&format!(
                     "{inner}{key} => {},\n",
@@ -7550,7 +7561,7 @@ fn php_var_export_object(
     for (name, val) in h.object_props(v) {
         out.push_str(&format!(
             "{inner}'{}' => {},\n",
-            name.replace('\'', "\\'"),
+            name.replace('\\', "\\\\").replace('\'', "\\'"),
             var_export_item(h, &val, depth + 1, seen)
         ));
     }

@@ -69,16 +69,17 @@ fn compile_with_meta(src: &str, debug: bool) -> Result<compiler::Program, String
 /// `file`, `line` and `trace` are filled in by `host::seed_throwable` at
 /// construction, exactly when the reference engine records them, so `getFile`,
 /// `getLine` and `getTraceAsString` report the `new` site rather than the
-/// `throw` site. DIVERGENCE: `getTrace()` (the structured array form) is not
-/// provided — only the rendered `getTraceAsString()`.
+/// `throw` site. `trace` is the structured frame array `getTrace()` returns;
+/// `getTraceAsString()` renders it.
 const EXCEPTION_PRELUDE: &str = r#"<?php
 class Exception {
     protected $message = "";
+    private $string = "";
     protected $code = 0;
-    protected $previous = null;
     protected $file = "";
     protected $line = 0;
-    protected $trace = "";
+    private $trace = [];
+    private $previous = null;
     public function __construct($message = "", $code = 0, $previous = null) {
         $this->message = $message;
         $this->code = $code;
@@ -89,16 +90,18 @@ class Exception {
     final public function getPrevious() { return $this->previous; }
     final public function getFile() { return $this->file; }
     final public function getLine() { return $this->line; }
-    final public function getTraceAsString() { return $this->trace; }
+    final public function getTrace() { return $this->trace; }
+    final public function getTraceAsString() { return __phplang_trace_string($this->trace); }
     public function __toString() { return __phplang_throwable_string($this); }
 }
 class Error {
     protected $message = "";
+    private $string = "";
     protected $code = 0;
-    protected $previous = null;
     protected $file = "";
     protected $line = 0;
-    protected $trace = "";
+    private $trace = [];
+    private $previous = null;
     public function __construct($message = "", $code = 0, $previous = null) {
         $this->message = $message;
         $this->code = $code;
@@ -109,7 +112,8 @@ class Error {
     final public function getPrevious() { return $this->previous; }
     final public function getFile() { return $this->file; }
     final public function getLine() { return $this->line; }
-    final public function getTraceAsString() { return $this->trace; }
+    final public function getTrace() { return $this->trace; }
+    final public function getTraceAsString() { return __phplang_trace_string($this->trace); }
     public function __toString() { return __phplang_throwable_string($this); }
 }
 class ErrorException extends Exception {

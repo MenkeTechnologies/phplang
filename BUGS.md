@@ -150,18 +150,28 @@ missing `intdiv` trace frame, and `echo NAN`'s coercion warning). All four are
 gone, and the entries they were half of say so. Re-run this section before
 trusting it.
 
-## A parse error does not say what was expected
+## A parse error does not always say what was expected
 
 ```text
-$ php -r '$s = "hello"; var_dump($s{0});'
-PHP Parse error:  syntax error, unexpected token "{", expecting ")"
+$ php -r 'class A { function f() {} 1 }'
+PHP Parse error:  syntax error, unexpected integer "1", expecting "function"
 $ target/debug/php -r '… same …'
-Parse error: syntax error, unexpected token "{"
+Parse error: syntax error, unexpected integer "1"
 ```
 
-The token that was found is right; the `, expecting <token>` tail is missing
-everywhere. The parser knows what it was about to accept at each of these
-sites, so this is threading that through the error, not new analysis.
+The `, expecting …` tail is printed at the sites whose list was measured: a
+stray token after an argument, array element, parameter, `use` item, `echo`
+operand, `return`/`break`/`continue` operand, `global`/`static`/`const`/property
+declaration, a `for` header, a `catch` header, a missing `{`, `=>`, `=` or `(`,
+and the `unset`/`foreach` operand chain. The scanner-level bracket diagnostics
+(`Unmatched ')'`, `Unclosed '[' does not match ')'`) are exact. What remains is
+the long tail that lives in PHP's LALR tables, not in the grammar: a list appears
+only when the construct reduces its operand to a nonterminal before the
+punctuation (`f(1 2)`, `echo 1 2;`) and not after a bare `expr` (`if ($a $b)`),
+so each further site has to be measured, not derived. `parity-fuzz --mode
+parseerr` inserts a stray operand token into valid programs and reports the
+sites still missing — for instance a statement keyword where only `"function"`
+may start a class member, `list(…)` without its `=`, and the group-`use` forms.
 
 ## `Array to string conversion` is not raised where an array is a KEY
 
@@ -317,6 +327,13 @@ file's directory. The same value is what `get_include_path()` returns.
 |---|---|---|
 | `try { goto out; } finally { … } out:` — a `goto` out of a `try`/`catch`/`finally` body | runs the `finally`, then jumps | a phplang compile error: a `try` body is a chunk of its own and the jump cannot leave it |
 | `iconv_strlen("héllo")` | `int(5)` | `Call to undefined function iconv_strlen()` |
+| `class A { public string $n { get => $this->n; } }`, `public private(set) int $x`, `$a |> f(...)`, `clone($o, [...])`, `(void) f();` — the PHP 8.4/8.5 language additions | each runs | a parse error. Property hooks, asymmetric visibility, the pipe operator, `clone` with and the `(void)` cast have no lowering; `mb_trim`/`mb_ltrim`/`mb_rtrim` and the `RoundingMode` enum are likewise absent |
+| `var_dump(gmp_add(1, 2))`, `$a + $b` over GMP values, `gmp_setbit`, `gmp_clrbit`, `gmp_random_*`, `gmp_import`/`gmp_export` | `object(GMP)#1 (1) { ["num"]=> string(1) "3" }`; operator overloading | `string(1) "3"` — GMP values are decimal strings, so there is no object to dump, no operator overload (`+` over two big strings loses precision), and the by-reference and random functions that need one are absent. `GMP_VERSION` and the `GMP_MSW_FIRST` family are unseeded |
+| `hash("ripemd160", "")`, `whirlpool`, `tiger*`, `snefru*`, `gost*`, `haval*`, `murmur3*`, `xxh*`, `md2`, `hash_init`/`hash_update`/`hash_final` | the digest | `ValueError`/undefined function: only `md4`, `md5`, `sha1`, `sha2*`, `sha3-*`, `adler32`, `crc32*`, `fnv*` and `joaat` are implemented, and `hash_algos()` lists exactly those |
+| `ctype_alpha(chr(233))`, `ctype_alnum(255)` | follows the platform libc's locale tables (true on macOS, false on glibc) | always false for a byte at or above 0x80 — the glibc "C" locale |
+| `assert_options(ASSERT_ACTIVE)`, `mt_srand(5, MT_RAND_PHP)` | the deprecated constants resolve (with a `Deprecated:` each) | `Undefined constant`: `ASSERT_*` and `MT_RAND_PHP` are not seeded and the legacy Mt19937 variant is not modelled |
+| `f(... 1)` where `f` does not exist | `Error: Call to undefined function f()` | `TypeError: Only arrays and Traversables can be unpacked` — the unpack is checked before the callee is resolved |
+| `Closure`/generator/enum-case handle numbers | `#N` counts them | see the object-handle entry below |
 | `strtotime("2024-03-01 10:00 Europe/Paris")`, `new DateTimeZone("Europe/Paris")` — any zone identifier whose offset is not fixed | `int(1709283600)`; a zone | `false`; `DateInvalidTimeZoneException`: there is no tz database, so only `UTC` and its aliases and the `Etc/GMT±N` zones resolve (abbreviations such as `CEST` do) |
 | `new DatePeriod("R2/2024-01-01T00:00:00Z/P1D")` — the deprecated ISO-string form | a period, with a deprecation | `TypeError`: only the date/interval forms are implemented |
 | `$s = new SplStack; $s->push(1); var_dump((array) $s); var_export($s);` — likewise `SplHeap`, `SplPriorityQueue`, `SplFixedArray` | `array(0) {}`; `\SplStack::__set_state(array())` | the private properties the PHP-written prelude keeps the elements in (`flags`/`dllist`, `heap`, `__elements`). `var_dump`, `print_r`, `json_encode` and `serialize` match, through `__debugInfo` / `jsonSerialize` / `__serialize` |

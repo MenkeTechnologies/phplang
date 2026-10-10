@@ -19,6 +19,13 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
     let v = match name {
         // `Exception::__toString` / `Error::__toString`, called by the prelude.
         "__phplang_throwable_string" => return Some(crate::host::throwable_string(&arg(args, 0))),
+        // `Exception::getTraceAsString` / `Error::getTraceAsString`: the text of
+        // the structured trace array the throwable kept.
+        "__phplang_trace_string" => {
+            return Some(Ok(Value::str(with_host(|h| {
+                h.render_trace_array(&arg(args, 0))
+            }))));
+        }
         // `SplFixedArray`'s offset conversion, called by the prelude.
         "__phplang_spl_offset" => return Some(crate::host::spl_offset(&arg(args, 0))),
         // Call a closure for the prelude and answer `[true, $result]`, or
@@ -113,11 +120,30 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             }
         }
 
-        // debug_backtrace($options = ..., $limit = 0): array
-        // No real call-stack capture; return an empty frame list.
-        "debug_backtrace" => make_list(vec![]),
-        // debug_print_backtrace(): void — nothing to print, returns null.
-        "debug_print_backtrace" => Value::Undef,
+        // `debug_backtrace($options = DEBUG_BACKTRACE_PROVIDE_OBJECT, $limit = 0)`:
+        // the frames of the call stack as `getTrace()` reports them, plus the
+        // `object` key unless `DEBUG_BACKTRACE_IGNORE_ARGS` / a missing
+        // `PROVIDE_OBJECT` bit says otherwise.
+        "debug_backtrace" => {
+            let options = if args.is_empty() { 1 } else { int_arg(args, 0) };
+            let limit = int_arg(args, 1).max(0) as usize;
+            with_host(|h| h.trace_array(options & 1 != 0, options & 2 != 0, limit))
+        }
+        // `debug_print_backtrace($options = 0, $limit = 0)`: the same frames as
+        // `getTraceAsString()` prints them, without the closing `{main}`.
+        "debug_print_backtrace" => {
+            let options = int_arg(args, 0);
+            let limit = int_arg(args, 1).max(0) as usize;
+            with_host(|h| {
+                let trace = h.trace_array(false, options & 2 != 0, limit);
+                let text = h.render_trace_array(&trace);
+                let frames = text.rsplit_once("\n").map_or("", |(frames, _main)| frames);
+                if !frames.is_empty() {
+                    h.write_out(&format!("{frames}\n"));
+                }
+            });
+            Value::Undef
+        }
 
         // A stack of `(callback, error_levels)`; see `host::drain_error_handlers`.
         "set_error_handler" => {

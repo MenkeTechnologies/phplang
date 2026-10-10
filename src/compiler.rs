@@ -1513,6 +1513,11 @@ impl Compiler {
                     b.emit(Op::Pop, line);
                 }
             }
+            // A bare `$name;` reads a compiled variable whose value nothing
+            // wants, which the reference compiles to no opcode at all — so an
+            // undefined one raises no `Undefined variable` warning.
+            StmtKind::Expr(Expr::Var(name))
+                if name != "this" && !crate::host::is_superglobal(name) => {}
             StmtKind::Expr(e) => {
                 self.compile_expr(b, e)?;
                 b.emit(Op::Pop, line);
@@ -4093,9 +4098,11 @@ impl Compiler {
             } => {
                 // An arrow fn desugars to a closure whose single-statement body
                 // returns the expression; it captures every free variable of the
-                // body (minus its own parameters) by value.
+                // body (minus its own parameters) by value. The synthesized
+                // statement carries the `fn` keyword's line, so a diagnostic raised
+                // by the body names it rather than the enclosing statement.
                 let ret = vec![Stmt {
-                    line: 0,
+                    line: *line,
                     kind: StmtKind::Return(Some((**body).clone())),
                 }];
                 let mut captures = Vec::new();

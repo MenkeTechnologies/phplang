@@ -4,8 +4,8 @@
 //!
 //!   * `hash_algos()` pins THIS engine's algorithms (the reference's relative
 //!     order, minus the ones not implemented), not the reference's sixty-odd. It
-//!     is a coverage statement about `src/stdlib/hash.rs`, and it is the one assertion in this file that would fail against the reference
-//!     by design.
+//!     is a coverage statement about `src/stdlib/hash.rs`, and it is the one
+//!     assertion in this file that would fail against the reference by design.
 //!   * `ord(md5("", true))` omits the `Deprecated: ord(): Providing a string
 //!     that is not one byte long is deprecated` the reference prints first.
 

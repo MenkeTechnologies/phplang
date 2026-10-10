@@ -1733,3 +1733,157 @@ $calls[] = fn() => str_getcsv("a", ",", "\"", "ab"); $calls[] = fn() => str_getc
 $calls[] = fn() => fputcsv($f, [1], ",,"); $calls[] = fn() => fputcsv($f, [1], ",", ""); $calls[] = fn() => fputcsv($f, [1], ",", "\"", "ab");
 $calls[] = fn() => fgetcsv($f, -1); $calls[] = fn() => fgetcsv($f, 0, "", "\"", "");
 foreach ($calls as $c) { try { $c(); } catch (Throwable $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; } }
+#==#
+// fnmatch is the libc matcher: FNM_PERIOD / FNM_PATHNAME / FNM_NOESCAPE /
+// FNM_CASEFOLD, bracket classes, escapes, and an unterminated bracket or a
+// trailing backslash matching nothing.
+$c = [
+  ['*', '.hid', FNM_PERIOD], ['?x', '.x', FNM_PERIOD], ['.*', '.a', FNM_PERIOD], ['[.]a', '.a', FNM_PERIOD], ['\.a', '.a', FNM_PERIOD],
+  ['a/*', 'a/.b', FNM_PERIOD], ['a/*', 'a/.b', FNM_PERIOD | FNM_PATHNAME], ['*/.*', 'a/.b', FNM_PERIOD | FNM_PATHNAME],
+  ['*', 'a/b', FNM_PATHNAME], ['a?b', 'a/b', FNM_PATHNAME], ['a[/]b', 'a/b', FNM_PATHNAME], ['a*/b', 'ax/b', FNM_PATHNAME],
+  ['*/b', 'a/c/b', FNM_PATHNAME], ['*/b', 'a/c/b', 0], ['\*', '*', 0], ['\*', '\\', FNM_NOESCAPE], ['a\\', 'a\\', 0],
+  ['[a', '[a', 0], ['[[:alpha:]]', 'a', 0], ['[[:upper:]]', 'a', FNM_CASEFOLD], ['[[:digit:]-]', '-', 0], ['[[:nope:]]', 'a', 0],
+  ['[z-a]', 'm', 0], ['[a-]', '-', 0], ['[]a]', ']', 0], ['[!]]', 'a', 0], ['ABC', 'abc', FNM_CASEFOLD], ['[A-C]', 'b', FNM_CASEFOLD],
+  ['**', '', 0], ['', '', 0], ['*a*b', 'xaxb', 0], ['?', 'é', 0],
+];
+foreach ($c as [$p, $s, $f]) echo json_encode($p), ' ', json_encode($s), ' ', $f, ' => ', var_export(fnmatch($p, $s, $f), true), "\n";
+#==#
+// dirname/pathinfo of the empty string: dirname stays empty and pathinfo omits it.
+var_dump(dirname(""), dirname("", 3), dirname("."), dirname("a/"), pathinfo(""), pathinfo("", PATHINFO_DIRNAME), pathinfo("a"));
+#==#
+// ctype_* on a non-string raises one E_DEPRECATED naming the argument type
+// (8.1+) and still classifies; utf8_encode/utf8_decode are deprecated since 8.2.
+var_dump(ctype_digit(48), ctype_alpha(null), ctype_alnum(1.5), ctype_space([]), ctype_upper(true), ctype_digit("48"), ctype_print(32), ctype_digit(1000));
+var_dump(utf8_encode("abc"), utf8_decode("abc"));
+#==#
+// hash() beyond the md5/sha1/sha2 core: md4, sha224, sha512/t, sha3, and the
+// non-cryptographic checksums; hmac/pbkdf2 refuse the checksums.
+foreach (["md4", "sha224", "sha512/224", "sha512/256", "sha3-224", "sha3-256", "sha3-384", "sha3-512", "adler32", "crc32c", "fnv132", "fnv1a32", "fnv164", "fnv1a64", "joaat"] as $a) {
+  foreach (["", "hello", str_repeat("x", 135), str_repeat("ab", 200)] as $s) echo $a, " ", strlen($s), " ", hash($a, $s), "\n";
+}
+foreach (["md4", "sha224", "sha512/256", "sha3-256", "sha3-512"] as $a) {
+  echo hash_hmac($a, "data", "k"), " ", hash_hmac($a, "data", str_repeat("k", 300)), " ", hash_pbkdf2($a, "pw", "salt", 3, 40), "\n";
+}
+foreach ([fn() => hash_hmac("crc32", "a", "b"), fn() => hash_pbkdf2("adler32", "a", "b", 1), fn() => hash("nope", "a")] as $f) {
+  try { $f(); } catch (ValueError $e) { echo $e->getMessage(), "\n"; }
+}
+#==#
+// var_export: ZEND_LONG_MIN has no literal, and a NUL byte is spliced in as an
+// expression in values, string keys and property names alike.
+class VeK { public $a = "x\0y"; }
+var_export([PHP_INT_MIN, "a\0b", "k\0" => "it's", "p\\q" => 1, 5 => PHP_INT_MIN]); echo "\n";
+var_export(new VeK); echo "\n";
+var_export("\0"); echo "\n";
+#==#
+// A diagnostic raised inside an arrow fn names the line of its `fn`, not the
+// line of the statement that built it.
+$t = [
+  1,
+  fn() => chr(300),
+  fn() => str_repeat("a", 2.5),
+  fn() => strlen(null),
+];
+foreach ($t as $f) { if ($f instanceof Closure) { $f(); } }
+#==#
+// gmp_* in the string-result model: rounding modes, bases, number theory and
+// bit functions, rendered the way the reference's GMP objects stringify.
+$s = fn($r) => is_array($r) ? implode(",", array_map("strval", $r)) : (string)$r;
+foreach ([
+  fn() => gmp_div_q(-7, 2, GMP_ROUND_PLUSINF), fn() => gmp_div_q(-7, 2, GMP_ROUND_MINUSINF), fn() => gmp_div_r(-7, 2), fn() => gmp_div_r(7, -2, GMP_ROUND_MINUSINF),
+  fn() => gmp_mod(-7, 2), fn() => gmp_div_qr(-7, -2, GMP_ROUND_PLUSINF), fn() => gmp_init("ff", 16), fn() => gmp_init("0777"), fn() => gmp_init("Zz", 62),
+  fn() => gmp_strval(255, -16), fn() => gmp_strval(3843, 62), fn() => gmp_gcdext(-12, 18), fn() => gmp_gcdext(0, 0), fn() => gmp_invert(3, -7), fn() => gmp_invert(2, 4),
+  fn() => gmp_sqrtrem(17), fn() => gmp_rootrem(-9, 3), fn() => gmp_jacobi(2, 15), fn() => gmp_kronecker(5, -8), fn() => gmp_kronecker(6, 4),
+  fn() => gmp_perfect_power(-8), fn() => gmp_perfect_power(-4), fn() => gmp_binomial(-3, 2), fn() => gmp_binomial(60, 30), fn() => gmp_nextprime(-100),
+  fn() => gmp_com(5), fn() => gmp_testbit(-8, 2), fn() => gmp_scan0(-8, 0), fn() => gmp_scan1(-8, 0), fn() => gmp_scan0(-1, 5), fn() => gmp_popcount(-1),
+  fn() => gmp_hamdist(-1, 3), fn() => gmp_intval("-99999999999999999999"), fn() => gmp_intval("-9223372036854775808"), fn() => gmp_prob_prime(-3),
+  fn() => gmp_add("12x", 1), fn() => gmp_add(1, "+3"), fn() => gmp_init("12", 1), fn() => gmp_strval(5, 1), fn() => gmp_div_q(5, 0), fn() => gmp_mod(5, 0),
+  fn() => gmp_div_q(5, 2, 9), fn() => gmp_powm(2, -1, 7), fn() => gmp_testbit(5, -1), fn() => gmp_sqrtrem(-1), fn() => gmp_binomial(5, -1),
+] as $f) {
+  try { var_dump($s($f())); } catch (Throwable $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+}
+#==#
+// getTrace() is the structured frame array (file/line/function/class/type/args,
+// absent file/line for a frame entered from internal code), getTraceAsString()
+// renders it, and the exception keeps it in a private `trace` property.
+class K {
+  function m($a, ...$r) { return new Exception("m"); }
+  static function s($x) { return (new K)->m($x, 2, 3); }
+  function viaClosure() { return (function($q) { return new RuntimeException("c"); })(7); }
+  function __call($n, $a) { return new LogicException($n); }
+}
+function g($o, $s = "a long string argument here", $f = 1.0, $n = null, $b = true) { return K::s([1, 2]); }
+$e = g(new stdClass);
+echo $e->getTraceAsString(), "\n";
+print_r(array_map(fn($f) => array_keys($f), $e->getTrace()));
+$c = (new K)->viaClosure();
+echo $c->getTraceAsString(), "\n";
+echo json_encode(array_map(fn($f) => [$f['function'], $f['class'] ?? null, $f['type'] ?? null, isset($f['file'])], $c->getTrace())), "\n";
+echo (new K)->undefinedThing(1)->getTraceAsString(), "\n";
+function cb($x) { return new DomainException("cb"); }
+$r = array_map('cb', [1]);
+echo $r[0]->getTraceAsString(), "\n";
+echo json_encode(array_map(fn($f) => array_keys($f), $r[0]->getTrace())), "\n";
+$ev = eval('return new Exception("ev");');
+echo $ev->getTraceAsString(), "\n";
+echo json_encode(array_map(fn($f) => array_keys($f), $ev->getTrace())), "\n";
+try { strlen(); } catch (ArgumentCountError $t) { echo $t->getTraceAsString(), "\n"; var_dump($t->getTrace()); }
+function typed(int $i) {} try { typed("x"); } catch (TypeError $t) { echo $t->getTraceAsString(), "\n"; }
+// The exception's own state, in the reference's declaration order and visibility.
+foreach ((array) new Exception("x") as $k => $v) { echo str_replace("\0", "~", $k), " "; }
+echo "\n";
+#==#
+// debug_backtrace / debug_print_backtrace: frames innermost first, the object
+// key under the default option, args dropped by DEBUG_BACKTRACE_IGNORE_ARGS,
+// the limit capping the list, and nothing at the top level.
+class D { function m($a) { return debug_backtrace(); } static function sm() { return debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS); } }
+function dbg() { return debug_backtrace(); }
+function outer() { return dbg(); }
+$d = (new D)->m([1]);
+var_dump(array_keys($d[0]), get_class($d[0]['object']), $d[0]['type'], $d[0]['args']);
+var_dump(array_keys(D::sm()[0]), count(outer()), count(debug_backtrace()), count(debug_backtrace(0, 1)));
+function pr($x) { debug_print_backtrace(); debug_print_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS); debug_print_backtrace(0, 1); }
+class P { function go() { pr("a long string argument", 1.5, [1]); } static function st() { (new P)->go(); } }
+P::st();
+(function () { pr(); })();
+array_map(function ($x) { pr($x); }, [1]);
+debug_print_backtrace();
+#==#
+// Since 8.3 the next append key after a negative integer key is that key plus
+// one (`[-3 => 'a', 'b']` holds -3 and -2); an array no integer key has touched
+// still starts at 0, and unsetting never lowers the next key.
+function k($a) { echo json_encode(array_keys($a)), "\n"; }
+k([-3 => 'a', 'b', 'c']);
+$a = ['x' => 1, -5 => 2]; $a[] = 3; k($a);
+$a = [-5 => 1] + [-4 => 2]; $a[] = 9; k($a);
+$a = [...[-3 => 'a'], ...['b']]; k($a);
+$a = array_fill(-3, 3, 0); k($a);
+$a = array_fill_keys([-3, -1], 0); $a[] = 1; k($a);
+$a = [-1 => 'x']; array_push($a, 'y'); k($a);
+$a = [-5 => 1, -4 => 2]; array_pop($a); $a[] = 1; k($a);
+$a = [-5 => 1, -4 => 2]; array_shift($a); $a[] = 1; k($a);
+$a = []; $a[-1] = 'x'; unset($a[-1]); $a[] = 'y'; k($a);
+$a = [PHP_INT_MIN => 1]; $a[] = 2; k($a);
+$a = (object) [-3 => 'a', 'b']; echo json_encode(array_keys((array) $a)), "\n";
+#==#
+// A bare variable is an expression statement that compiles to no opcode: an
+// undefined one raises nothing, while every other bare read still does.
+$undefined; echo "a\n";
+$undefined[0]; echo "b\n";
+$undefined->p; echo "c\n";
+(function () { $q; echo "d\n"; })();
+#==#
+// Parse errors that carry the reference's `expecting` list, the scanner's
+// bracket-nesting diagnostics, and the compile-time refusal of `break $x`.
+$cases = [
+  'f(1 2);', 'echo 1 2;', 'return 1 2;', '$x = [1 2];', 'function f($a $b) {}', 'foreach ($a as $b $c) {}',
+  'for ($i = 0 $i < 3; $i++) {}', 'class A { public $a $b; }', 'class A { 1 }', 'class A { int $a; }',
+  'f(1, 2));', '$x = [1, 2)];', 'unset($a $b);', 'empty($a $b);', 'if ($a $b) {}',
+  'while $a ($b) {}', 'function $z () {}', 'goto 1;', 'global 1;', 'do {} 1 while (1);', 'list($a) 1;',
+  'try {} catch (A B $c) {}', 'class A extends B C {}', 'enum E { case A case B; }', '$x = match($a) { 1 => 2 3 => 4 };',
+];
+foreach ($cases as $src) {
+  try { eval($src); } catch (ParseError $e) { echo $e->getMessage(), "\n"; } catch (Error $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+}
+#==#
+// `break` with a non-integer operand is a compile-time Fatal error, not a ParseError.
+while (1) { break $z; }
