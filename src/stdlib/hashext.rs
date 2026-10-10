@@ -19,11 +19,17 @@
 
 use crate::host::with_host;
 use crate::stdlib::common::{arg, int_arg, str_arg, throws};
+use crate::stdlib::hash::{digest_bytes, find, hmac, md5_bytes, sha1_bytes};
 use fusevm::Value;
 
-/// A raw-digest function (`data -> digest bytes`) paired with its HMAC block
-/// size. Named so the algorithm tables stay readable.
+/// The digest function paired with its HMAC block size.
 type HmacAlgo = (fn(&[u8]) -> Vec<u8>, usize);
+
+/// `(digest fn, HMAC block size)` for the cryptographic algorithms of
+/// `hash::ALGOS`; `None` for an unknown name or a plain checksum.
+fn hmac_algo(algo: &str) -> Option<HmacAlgo> {
+    find(algo).and_then(|a| a.block.map(|b| (a.digest, b)))
+}
 
 /// Dispatch a `hashext`-category PHP function by lowercased name.
 pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
@@ -84,7 +90,7 @@ fn hash_file(args: &[Value]) -> Result<Value, String> {
     let algo = str_arg(args, 0).to_ascii_lowercase();
     let path = str_arg(args, 1);
     let raw = bool_arg(args, 2);
-    if !is_supported_algo(&algo) {
+    if find(&algo).is_none() {
         // PHP 8 ValueError text (mirrors the core `hash()` wording).
         return Err(throws(
             "ValueError",
@@ -246,108 +252,7 @@ fn random_bytes(args: &[Value]) -> Result<Value, String> {
     Ok(wrap(out, true))
 }
 
-// ---- algorithm tables -------------------------------------------------------
-
-/// Whether `hash_file` supports a digest name (subset of PHP's `hash_algos`,
-/// limited to the crate-backed digests wired here).
-fn is_supported_algo(algo: &str) -> bool {
-    matches!(
-        algo,
-        "md5" | "sha1" | "sha256" | "sha384" | "sha512" | "crc32b"
-    )
-}
-
-/// Digest by algorithm name for `hash_file`; `None` for an unsupported name.
-fn digest_bytes(algo: &str, data: &[u8]) -> Option<Vec<u8>> {
-    Some(match algo {
-        "md5" => md5_bytes(data),
-        "sha1" => sha1_bytes(data),
-        "sha256" => sha256_bytes(data),
-        "sha384" => sha384_bytes(data),
-        "sha512" => sha512_bytes(data),
-        "crc32b" => crc32b_bytes(data),
-        _ => return None,
-    })
-}
-
-/// `(digest fn, HMAC block size)` for the HMAC/PBKDF2 algorithms; `None` for an
-/// unknown name. Block size is the algorithm's internal block size: 64 bytes for
-/// md5/sha1/sha256, 128 bytes for sha384/sha512.
-fn hmac_algo(algo: &str) -> Option<HmacAlgo> {
-    Some(match algo {
-        "md5" => (md5_bytes, 64),
-        "sha1" => (sha1_bytes, 64),
-        "sha256" => (sha256_bytes, 64),
-        "sha384" => (sha384_bytes, 128),
-        "sha512" => (sha512_bytes, 128),
-        _ => return None,
-    })
-}
-
-// ---- digest primitives (RustCrypto crates) ---------------------------------
-
-fn md5_bytes(data: &[u8]) -> Vec<u8> {
-    use md5::{Digest, Md5};
-    let mut h = Md5::new();
-    h.update(data);
-    h.finalize().to_vec()
-}
-
-fn sha1_bytes(data: &[u8]) -> Vec<u8> {
-    use sha1::{Digest, Sha1};
-    let mut h = Sha1::new();
-    h.update(data);
-    h.finalize().to_vec()
-}
-
-fn sha256_bytes(data: &[u8]) -> Vec<u8> {
-    use sha2::{Digest, Sha256};
-    let mut h = Sha256::new();
-    h.update(data);
-    h.finalize().to_vec()
-}
-
-fn sha384_bytes(data: &[u8]) -> Vec<u8> {
-    use sha2::{Digest, Sha384};
-    let mut h = Sha384::new();
-    h.update(data);
-    h.finalize().to_vec()
-}
-
-fn sha512_bytes(data: &[u8]) -> Vec<u8> {
-    use sha2::{Digest, Sha512};
-    let mut h = Sha512::new();
-    h.update(data);
-    h.finalize().to_vec()
-}
-
-/// CRC-32/ISO-HDLC (reflected, zlib) rendered big-endian — the value PHP's
-/// `hash('crc32b', …)` produces.
-fn crc32b_bytes(data: &[u8]) -> Vec<u8> {
-    let mut h = crc32fast::Hasher::new();
-    h.update(data);
-    h.finalize().to_be_bytes().to_vec()
-}
-
-// ---- HMAC / PBKDF2 ----------------------------------------------------------
-
-/// Generic HMAC per RFC 2104: H((K⊕opad) ‖ H((K⊕ipad) ‖ msg)). Layers over the
-/// crate digests above; duplicated from `src/stdlib/hash.rs` because that copy
-/// is private to its module.
-fn hmac(block_size: usize, f: fn(&[u8]) -> Vec<u8>, key: &[u8], msg: &[u8]) -> Vec<u8> {
-    let mut k = if key.len() > block_size {
-        f(key)
-    } else {
-        key.to_vec()
-    };
-    k.resize(block_size, 0);
-    let mut inner: Vec<u8> = k.iter().map(|b| b ^ 0x36).collect();
-    inner.extend_from_slice(msg);
-    let ih = f(&inner);
-    let mut outer: Vec<u8> = k.iter().map(|b| b ^ 0x5c).collect();
-    outer.extend_from_slice(&ih);
-    f(&outer)
-}
+// ---- PBKDF2 ------------------------------------------------------------------
 
 /// PBKDF2 (RFC 2898 §5.2) producing `dk_len` bytes of derived key using
 /// HMAC-`f`. Each block T_i = U_1 ⊕ U_2 ⊕ … ⊕ U_c with
