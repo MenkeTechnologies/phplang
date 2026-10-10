@@ -250,15 +250,15 @@ fn a_prefix_incdec_on_a_number_is_rejected_at_the_number() {
 #[test]
 fn a_postfix_incdec_on_a_non_variable_is_rejected_at_the_operator() {
     // php -r 'echo 2++;' → `unexpected token "++", expecting "," or ";"`: the
-    // operand is already parsed, so the operator is what the reference reports.
-    // The expecting clause is the documented omission (see the module header).
+    // operand is already parsed, so the operator is what the reference reports,
+    // with the list its `echo` state accepts.
     assert_eq!(
         parse_error("<?php echo 2++;"),
-        r#"syntax error, unexpected token "++" in Command line code on line 1"#
+        r#"syntax error, unexpected token "++", expecting "," or ";" in Command line code on line 1"#
     );
     assert_eq!(
         parse_error("<?php echo 2.5--;"),
-        r#"syntax error, unexpected token "--" in Command line code on line 1"#
+        r#"syntax error, unexpected token "--", expecting "," or ";" in Command line code on line 1"#
     );
 }
 

@@ -102,6 +102,10 @@ pub struct Spanned {
     /// syntax error (`unexpected integer "0x1f"`). `None` for every other token,
     /// whose spelling the token itself already carries.
     pub raw: Option<Box<str>>,
+    /// Whether whitespace or a comment separated this token from the one before
+    /// it. A qualified name is one token to the reference, so `A \ B` is three
+    /// and `A\B` is one; only this tells them apart.
+    pub space_before: bool,
 }
 
 /// The multi-character operators, longest first so `===` beats `==` beats `=`.
@@ -127,6 +131,9 @@ struct Lexer<'a> {
     pos: usize,
     line: u32,
     out: Vec<Spanned>,
+    /// Whitespace or a comment has been skipped since the last token — see
+    /// [`Spanned::space_before`].
+    gap: bool,
 }
 
 /// Render a lexer failure the way the CLI prints one: the message, the script it
@@ -146,6 +153,7 @@ pub fn lex(src: &str) -> Result<Vec<Spanned>, String> {
         pos: 0,
         line: 1,
         out: Vec::new(),
+        gap: false,
     };
     lx.run()?;
     Ok(lx.out)
@@ -195,8 +203,12 @@ impl<'a> Lexer<'a> {
         while self.pos < self.src.len() {
             let c = self.src[self.pos];
             match c {
-                b' ' | b'\t' | b'\r' => self.pos += 1,
+                b' ' | b'\t' | b'\r' => {
+                    self.gap = true;
+                    self.pos += 1;
+                }
                 b'\n' => {
+                    self.gap = true;
                     self.line += 1;
                     self.pos += 1;
                 }
@@ -211,7 +223,10 @@ impl<'a> Lexer<'a> {
                     self.push(Tok::Punct(";"));
                     return Ok(());
                 }
-                b'/' if self.peek(1) == Some(b'/') => self.skip_line_comment(),
+                b'/' if self.peek(1) == Some(b'/') => {
+                    self.gap = true;
+                    self.skip_line_comment()
+                }
                 // `#[` opens an ATTRIBUTE, not a comment. The two spellings share
                 // a leading `#`, and PHP 8 resolved the ambiguity in favour of the
                 // attribute: `#[Attr] class C {}` declares a class, it does not
@@ -222,8 +237,14 @@ impl<'a> Lexer<'a> {
                     self.push(Tok::Punct("#["));
                     self.advance(2);
                 }
-                b'#' => self.skip_line_comment(),
-                b'/' if self.peek(1) == Some(b'*') => self.skip_block_comment()?,
+                b'#' => {
+                    self.gap = true;
+                    self.skip_line_comment()
+                }
+                b'/' if self.peek(1) == Some(b'*') => {
+                    self.gap = true;
+                    self.skip_block_comment()?
+                }
                 b'$' => self.lex_variable(),
                 // Before the operator table, which would otherwise take `<<`
                 // and leave a stray `<` and an identifier. A `<<<` that does
@@ -770,6 +791,7 @@ impl<'a> Lexer<'a> {
                 pos: 0,
                 line: body_line,
                 out: Vec::new(),
+                gap: false,
             };
             let parts = sub.scan_interp(InterpEnd::EndOfInput)?;
             self.push(Tok::Interp(parts));
@@ -888,6 +910,7 @@ impl<'a> Lexer<'a> {
             tok,
             line: self.line,
             raw: None,
+            space_before: std::mem::take(&mut self.gap),
         });
     }
 
@@ -898,6 +921,7 @@ impl<'a> Lexer<'a> {
             tok,
             line: self.line,
             raw: Some(raw.into()),
+            space_before: std::mem::take(&mut self.gap),
         });
     }
 

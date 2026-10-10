@@ -4113,3 +4113,46 @@ Stack trace:
 #0 {main}
   thrown in Command line code on line 2
 
+#REC 191 exit=255 out=175 err=179
+
+Fatal error: Namespace declaration statement has to be the very first statement or after any declare call in the script in Command line code on line 4
+Stack trace:
+#0 {main}
+PHP Fatal error:  Namespace declaration statement has to be the very first statement or after any declare call in the script in Command line code on line 4
+Stack trace:
+#0 {main}
+
+#REC 192 exit=255 out=100 err=104
+
+Parse error: syntax error, unexpected identifier "B", expecting "{" in Command line code on line 1
+PHP Parse error:  syntax error, unexpected identifier "B", expecting "{" in Command line code on line 1
+
+#REC 193 exit=255 out=102 err=106
+
+Parse error: syntax error, unexpected token "[", expecting "," or ";" in Command line code on line 1
+PHP Parse error:  syntax error, unexpected token "[", expecting "," or ";" in Command line code on line 1
+
+#REC 194 exit=255 out=108 err=112
+
+Fatal error: Cannot use try without catch or finally in Command line code on line 1
+Stack trace:
+#0 {main}
+PHP Fatal error:  Cannot use try without catch or finally in Command line code on line 1
+Stack trace:
+#0 {main}
+
+#REC 195 exit=0 out=854 err=0
+syntax error, unexpected integer "1", expecting identifier or variable or "{" or "$"
+syntax error, unexpected integer "1", expecting "("
+syntax error, unexpected integer "2", expecting ";"
+syntax error, unexpected integer "1", expecting "::"
+syntax error, unexpected integer "1", expecting ")"
+syntax error, unexpected integer "1", expecting "abstract" or "final" or "readonly" or "class"
+syntax error, unexpected integer "1", expecting variable
+syntax error, unexpected integer "1", expecting variable or "&" or token "&"
+syntax error, unexpected integer "1", expecting identifier or fully qualified name or namespaced name
+syntax error, unexpected variable "$v", expecting "->" or "?->" or "["
+syntax error, unexpected token "catch"
+syntax error, unexpected token "\", expecting "," or ";"
+syntax error, unexpected identifier "C", expecting "," or ";"
+

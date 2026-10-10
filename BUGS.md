@@ -152,26 +152,13 @@ trusting it.
 
 ## A parse error does not always say what was expected
 
-```text
-$ php -r 'class A { function f() {} 1 }'
-PHP Parse error:  syntax error, unexpected integer "1", expecting "function"
-$ target/debug/php -r '… same …'
-Parse error: syntax error, unexpected integer "1"
-```
-
-The `, expecting …` tail is printed at the sites whose list was measured: a
-stray token after an argument, array element, parameter, `use` item, `echo`
-operand, `return`/`break`/`continue` operand, `global`/`static`/`const`/property
-declaration, a `for` header, a `catch` header, a missing `{`, `=>`, `=` or `(`,
-and the `unset`/`foreach` operand chain. The scanner-level bracket diagnostics
-(`Unmatched ')'`, `Unclosed '[' does not match ')'`) are exact. What remains is
-the long tail that lives in PHP's LALR tables, not in the grammar: a list appears
-only when the construct reduces its operand to a nonterminal before the
-punctuation (`f(1 2)`, `echo 1 2;`) and not after a bare `expr` (`if ($a $b)`),
-so each further site has to be measured, not derived. `parity-fuzz --mode
-parseerr` inserts a stray operand token into valid programs and reports the
-sites still missing — for instance a statement keyword where only `"function"`
-may start a class member, `list(…)` without its `=`, and the group-`use` forms.
+`parity-fuzz --mode parseerr` (a stray operand token inserted into valid
+programs) reports no divergence over 20000 cases. The `, expecting …` list is
+reproduced at the sites that fuzz reaches, qualified names are tokenised by
+whitespace as the reference does, and the scanner-level bracket diagnostics are
+exact. A site outside that generator's shapes may still lack its list; each one
+has to be measured, because the lists come from PHP's LALR tables rather than
+the grammar.
 
 ## `Array to string conversion` is not raised where an array is a KEY
 

@@ -2036,3 +2036,19 @@ enum E 1 { case A; }
 #==#
 $x = 1; $y = "a"; $o = new stdClass;
 var_dump([1] * $x, 1);
+#==#
+// Group use imports and namespace-relative names parse; a number literal is not
+// dereferenceable.
+use A\{B, C as D, function f, const K,};
+namespace A; function f() { return 5; } echo namespace\f(), "\n";
+#==#
+use A \ B ;
+#==#
+echo 1[0];
+#==#
+try { } echo 1;
+#==#
+$cases = ['$x = $a -> 1 m ( 1 );', '$x = array 1 ( 1 );', 'do { } while ( 1 ) 2 ;', 'static 1 $a = 1 ;', 'unset ( $a , 1 ) ;',
+  'abstract 1 class A { }', 'class A { public int 1 $a; }', '$f = function ( $a ) use ( 1 $b ) { };', 'use function 1 ;',
+  'foreach ( $a as $k => "s" $v ) { }', 'try { } 1 catch ( E $e ) { }', 'echo A \ B;', 'echo A\B C;'];
+foreach ($cases as $src) { try { eval($src); } catch (ParseError $e) { echo $e->getMessage(), "\n"; } }

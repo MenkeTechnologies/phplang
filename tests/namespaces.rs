@@ -156,3 +156,25 @@ fn a_qualified_call_is_still_rejected() {
         );
     }
 }
+
+#[test]
+fn group_use_declarations_parse_in_every_shape() {
+    // `use A\{B, C};`, mixed `function`/`const` members, aliases and a trailing
+    // comma are all accepted; the imports themselves stay discarded.
+    let src = r#"<?php
+        use A\{B, C};
+        use function A\{f, g};
+        use A\B\{const X, function y, Z as W,};
+        echo "ok";"#;
+    assert_eq!(run(src), "ok");
+}
+
+#[test]
+fn a_namespace_relative_name_resolves_like_the_bare_name() {
+    let src = r#"<?php
+        namespace A;
+        function f() { return 5; }
+        class K { const V = 7; }
+        echo namespace\f(), namespace\K::V;"#;
+    assert_eq!(run(src), "57");
+}

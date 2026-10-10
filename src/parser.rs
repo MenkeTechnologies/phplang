@@ -247,6 +247,8 @@ pub fn parse_meta(src: &str) -> Result<(Vec<Stmt>, ParseMeta), ParseFail> {
         only_declares_so_far: true,
         strict_types: false,
         coalesce_temps: 0,
+        ns_seen: false,
+        deferred_fatal: None,
         foreach_targets: Vec::new(),
         declare_warnings: Vec::new(),
         magic: MagicCtx::file_scope(),
@@ -261,6 +263,9 @@ pub fn parse_meta(src: &str) -> Result<(Vec<Stmt>, ParseMeta), ParseFail> {
             p.only_declares_so_far = false;
         }
         stmts.push(stmt);
+    }
+    if let Some(fatal) = p.deferred_fatal.take() {
+        return Err(p.classify(fatal));
     }
     let meta = ParseMeta {
         strict_types: p.strict_types,
@@ -301,6 +306,8 @@ fn resolve_interp_parts(parts: Vec<StrPart>) -> Result<Vec<InterpPart>, String> 
                     only_declares_so_far: false,
                     strict_types: false,
                     coalesce_temps: 0,
+                    ns_seen: false,
+                    deferred_fatal: None,
                     foreach_targets: Vec::new(),
                     declare_warnings: Vec::new(),
                     // An interpolation holds no declaration, so no magic
@@ -348,6 +355,11 @@ struct Parser {
     only_declares_so_far: bool,
     /// How many temporaries the `??=` desugaring has minted, for their names.
     coalesce_temps: usize,
+    /// Whether a namespace declaration has been parsed.
+    ns_seen: bool,
+    /// A compile-time fatal the grammar accepts, held until the whole file has
+    /// parsed so that a later syntax error takes precedence, as in the reference.
+    deferred_fatal: Option<String>,
     /// `(temporary, target)` pairs the `foreach` being parsed bound to targets that
     /// are not plain variables.
     foreach_targets: Vec<(String, Expr)>,
@@ -765,17 +777,6 @@ impl Parser {
         format!("{FATAL_MARK}{msg} in {file} on line {line}")
     }
 
-    /// Whether a run of class modifiers (`abstract`, `final`, `readonly`) that
-    /// ends in `class` starts here.
-    fn at_class_modifiers(&self) -> bool {
-        let mut i = self.pos;
-        let is_kw = |i: usize, kw: &str| matches!(self.toks.get(i).map(|s| &s.tok), Some(Tok::Ident(s)) if s.eq_ignore_ascii_case(kw));
-        while is_kw(i, "abstract") || is_kw(i, "final") || is_kw(i, "readonly") {
-            i += 1;
-        }
-        i > self.pos && is_kw(i, "class")
-    }
-
     /// Split a raised message back into the severity PHP prints it under.
     fn classify(&self, e: String) -> ParseFail {
         match e.strip_prefix(FATAL_MARK) {
@@ -933,6 +934,72 @@ impl Parser {
         Some(vis)
     }
 
+    /// Whether the `\` at the cursor continues a qualified name: nothing but the
+    /// name before it, and an identifier directly after it. `A \ B` is three
+    /// tokens to the reference and `A\B` is one, so the whitespace decides.
+    fn at_name_join(&self) -> bool {
+        matches!(self.toks.get(self.pos), Some(s) if s.tok == Tok::Punct("\\") && !s.space_before)
+            && matches!(
+                self.toks.get(self.pos + 1),
+                Some(s) if matches!(s.tok, Tok::Ident(_)) && !s.space_before
+            )
+    }
+
+    /// Whether the `\` at the cursor anchors a fully qualified name (`\A\B`): it
+    /// is directly followed by an identifier.
+    fn at_name_anchor(&self) -> bool {
+        matches!(self.toks.get(self.pos), Some(s) if s.tok == Tok::Punct("\\"))
+            && matches!(
+                self.toks.get(self.pos + 1),
+                Some(s) if matches!(s.tok, Tok::Ident(_)) && !s.space_before
+            )
+    }
+
+    /// The qualified name starting at token `idx`, spelled as the reference
+    /// quotes it in a syntax error — `A\B`, or `\A\B` when `idx` is the anchoring
+    /// `\` — or `None` when the token is not one.
+    fn qualified_name_at(&self, idx: usize) -> Option<(bool, String)> {
+        let mut i = idx;
+        let mut out = String::new();
+        let fully = matches!(self.toks.get(i), Some(s) if s.tok == Tok::Punct("\\"));
+        if fully {
+            out.push('\\');
+            i += 1;
+        }
+        let mut segments = 0;
+        loop {
+            match self.toks.get(i) {
+                Some(Spanned {
+                    tok: Tok::Ident(n),
+                    space_before: false,
+                    ..
+                }) if segments == 0 || out.ends_with('\\') => {
+                    out.push_str(n);
+                    segments += 1;
+                    i += 1;
+                }
+                Some(Spanned {
+                    tok: Tok::Ident(n), ..
+                }) if segments == 0 && !fully => {
+                    out.push_str(n);
+                    segments += 1;
+                    i += 1;
+                }
+                Some(Spanned {
+                    tok: Tok::Punct("\\"),
+                    space_before: false,
+                    ..
+                }) if segments > 0 && !out.ends_with('\\') => {
+                    out.push('\\');
+                    i += 1;
+                }
+                _ => break,
+            }
+        }
+        let qualified = if fully { segments > 0 } else { segments > 1 };
+        (qualified && !out.ends_with('\\')).then_some((fully, out))
+    }
+
     /// Whether `( void )` — the PHP 8.5 discard cast — starts at token `idx`.
     fn void_cast_at(&self, idx: usize) -> bool {
         matches!(self.toks.get(idx).map(|s| &s.tok), Some(Tok::Punct("(")))
@@ -964,6 +1031,16 @@ impl Parser {
             sp.raw.as_ref().map(|r| r.to_string()).unwrap_or(fallback)
         };
         let q = crate::lexer::quoted_token_text;
+        if matches!(sp.tok, Tok::Ident(_) | Tok::Punct("\\")) {
+            if let Some((fully, name)) = self.qualified_name_at(idx) {
+                let kind = if fully {
+                    "fully qualified name"
+                } else {
+                    "qualified name"
+                };
+                return format!("{kind} \"{}\"", q(&name));
+            }
+        }
         match &sp.tok {
             Tok::Int(n) => format!("integer \"{}\"", q(&raw(n.to_string()))),
             Tok::Float(f) => format!("floating-point number \"{}\"", q(&raw(f.to_string()))),
@@ -1011,7 +1088,7 @@ impl Parser {
     fn break_level(&mut self, kw: &str) -> Result<u32, String> {
         let level = match self.peek() {
             Some(Tok::Int(n)) => (*n).clamp(0, u32::MAX as i64) as u32,
-            Some(Tok::Float(_)) => 0,
+            Some(Tok::Float(_) | Tok::Str(_) | Tok::Interp(_)) => 0,
             None | Some(Tok::Punct(";")) => return Ok(1),
             _ => {
                 let line = self.line();
@@ -1143,6 +1220,9 @@ impl Parser {
                 self.pos += 1; // static
                 let mut decls = Vec::new();
                 loop {
+                    if !matches!(self.peek(), Some(Tok::Var(_))) {
+                        return Err(self.syntax_error_expecting("variable"));
+                    }
                     let name = self.expect_var()?;
                     let default = if self.eat_punct("=") {
                         Some(self.expression()?)
@@ -1178,7 +1258,9 @@ impl Parser {
             _ if self.at_kw("class")
                 || self.at_kw("interface")
                 || self.at_kw("trait")
-                || self.at_class_modifiers() =>
+                || self.at_kw("abstract")
+                || self.at_kw("final")
+                || (self.at_kw("readonly") && !self.nth_is_punct(1, "(")) =>
             {
                 self.class_stmt()?
             }
@@ -1376,7 +1458,7 @@ impl Parser {
         self.expect_closer("(")?;
         let cond = self.expression()?;
         self.expect_punct(")")?;
-        self.expect_punct(";")?;
+        self.expect_listing(";", "\";\"")?;
         Ok(StmtKind::DoWhile { cond, body })
     }
 
@@ -1553,6 +1635,15 @@ impl Parser {
         // `foreach ($a as $o->p)`, `as $arr['k']`, `as C::$s`: a write target that is
         // not a plain variable. The loop binds a temporary and assigns it to the
         // target before each pass of the body.
+        // A string literal can begin a dereferenceable variable (`'s'[0]`), so the
+        // reference accepts it here and only objects to what follows.
+        if matches!(self.peek(), Some(Tok::Str(_) | Tok::Interp(_))) {
+            self.pos += 1;
+            if !(self.at_punct("[") || self.at_punct("->") || self.at_punct("?->")) {
+                return Err(self.syntax_error_expecting("\"->\" or \"?->\" or \"[\""));
+            }
+            return Err(self.syntax_error_at(self.pos - 1));
+        }
         let var_chain = matches!(self.peek(), Some(Tok::Var(_)))
             && (self.nth_is_punct(1, "->")
                 || self.nth_is_punct(1, "?->")
@@ -1599,7 +1690,13 @@ impl Parser {
                 e => Member::Dyn(Box::new(e)),
             });
         }
-        self.member_name().map(Member::Name)
+        match self.next() {
+            Some(Tok::Ident(n)) => Ok(Member::Name(n)),
+            _ => Err(self.syntax_error_expecting_at(
+                self.pos - 1,
+                Some("identifier or variable or \"{\" or \"$\""),
+            )),
+        }
     }
 
     /// A property / method / constant name after `->` or `::` (a bare identifier).
@@ -1763,6 +1860,17 @@ impl Parser {
     /// Constants do not fold — see `primary`, where `Foo\BAR` resolves as the
     /// constant of that exact name.
     fn namespace_stmt(&mut self) -> Result<StmtKind, String> {
+        // The first namespace declaration must precede every statement but
+        // `declare`; later ones may follow code of the namespace before them.
+        if !self.only_declares_so_far && !self.ns_seen {
+            return Err(self.fatal_at(
+                self.line(),
+                "Namespace declaration statement has to be the very first statement or \
+                 after any declare call in the script"
+                    .to_string(),
+            ));
+        }
+        self.ns_seen = true;
         self.pos += 1; // namespace
         let named = matches!(self.peek(), Some(Tok::Ident(_))) || self.at_punct("\\");
         if named {
@@ -1773,7 +1881,8 @@ impl Parser {
                 Some(Tok::Ident(n)) => n,
                 _ => return Err(self.syntax_error_at(self.pos - 1)),
             };
-            while self.eat_punct("\\") {
+            while self.at_name_join() {
+                self.pos += 1;
                 if let Some(Tok::Ident(n)) = self.next() {
                     ns.push('\\');
                     ns.push_str(&n);
@@ -1797,10 +1906,44 @@ impl Parser {
     /// import is accepted and discarded (aliases via `as` are not remapped).
     fn use_import_stmt(&mut self) -> Result<StmtKind, String> {
         self.pos += 1; // use
-        self.eat_kw("function");
-        self.eat_kw("const");
+        let kinded = self.eat_kw("function") || self.eat_kw("const");
         loop {
+            if kinded && !matches!(self.peek(), Some(Tok::Ident(_))) && !self.at_punct("\\") {
+                return Err(self.syntax_error_expecting(
+                    "identifier or fully qualified name or namespaced name",
+                ));
+            }
             let _ = self.expect_type_name()?;
+            // `use A\B\{C, D as E, function f, const K};` — a group: the prefix
+            // ends in a separator that is followed by `{`.
+            if self.at_punct("\\") {
+                self.pos += 1;
+                self.expect_listing("{", "\"{\"")?;
+                let mut first = true;
+                loop {
+                    if self.at_punct("}") {
+                        if first {
+                            return Err(self.syntax_error_expecting(
+                                "identifier or namespaced name or \"function\" or \"const\"",
+                            ));
+                        }
+                        break;
+                    }
+                    first = false;
+                    if !self.eat_kw("function") {
+                        self.eat_kw("const");
+                    }
+                    let _ = self.expect_type_name()?;
+                    if self.eat_kw("as") {
+                        self.next();
+                    }
+                    if !self.eat_punct(",") {
+                        break;
+                    }
+                }
+                self.expect_closer("}")?;
+                break;
+            }
             if self.eat_kw("as") {
                 self.next(); // alias identifier — ignored
             }
@@ -1839,6 +1982,7 @@ impl Parser {
     /// `try { body } catch (T1 | T2 [$e]) { ... } ... [finally { ... }]` — at
     /// least one `catch` or a `finally` is required (PHP rule).
     fn try_stmt(&mut self) -> Result<StmtKind, String> {
+        let try_idx = self.pos;
         self.pos += 1; // try
         let body = self.block()?;
         let mut catches = Vec::new();
@@ -1868,8 +2012,13 @@ impl Parser {
         } else {
             None
         };
-        if catches.is_empty() && finally.is_none() {
-            return Err(self.syntax_error());
+        if catches.is_empty() && finally.is_none() && self.deferred_fatal.is_none() {
+            // A grammar-valid `try` with no handler is refused by the COMPILER, so a
+            // syntax error further on is still the one reported.
+            self.deferred_fatal = Some(self.fatal_at(
+                self.line_at(try_idx),
+                "Cannot use try without catch or finally".to_string(),
+            ));
         }
         Ok(StmtKind::Try {
             body,
@@ -1882,12 +2031,15 @@ impl Parser {
     /// `Ns\Name` segments are folded to the trailing bare name — the scaffold has
     /// no namespaces, and the built-in exception classes are unqualified.
     fn expect_type_name(&mut self) -> Result<String, String> {
-        self.eat_punct("\\");
+        if self.at_name_anchor() {
+            self.pos += 1;
+        }
         let mut name = match self.next() {
             Some(Tok::Ident(n)) => n,
             _ => return Err(self.syntax_error_at(self.pos - 1)),
         };
-        while self.eat_punct("\\") {
+        while self.at_name_join() {
+            self.pos += 1;
             if let Some(Tok::Ident(n)) = self.next() {
                 name = n;
             }
@@ -1911,12 +2063,14 @@ impl Parser {
     /// matters only for rendering, since no qualified name is ever a scalar and so
     /// no qualified name is ever enforced.
     fn qualified_type_name(&mut self) -> Result<String, String> {
-        self.eat_punct("\\");
+        if self.at_name_anchor() {
+            self.pos += 1;
+        }
         let mut name = match self.next() {
             Some(Tok::Ident(n)) => n,
             _ => return Err(self.syntax_error()),
         };
-        while self.at_punct("\\") && self.nth_starts_type_name(1) {
+        while self.at_name_join() {
             self.pos += 1;
             name = match self.next() {
                 Some(Tok::Ident(n)) => n,
@@ -2240,6 +2394,31 @@ impl Parser {
             Some(l) => self.expect_listing(")", l)?,
             None => self.expect_punct(")")?,
         }
+        Ok(args)
+    }
+
+    /// The operand list of `unset( … )`. A number cannot begin a variable, so one
+    /// is refused where it stands — with no list after the first operand, and
+    /// with `expecting ")"` after a comma, where the grammar's trailing comma
+    /// leaves only the closing parenthesis.
+    fn unset_arg_list(&mut self) -> Result<Vec<Expr>, String> {
+        let mut args = Vec::new();
+        if !self.at_punct(")") {
+            loop {
+                if matches!(self.peek(), Some(Tok::Int(_) | Tok::Float(_))) {
+                    return Err(if args.is_empty() {
+                        self.syntax_error()
+                    } else {
+                        self.syntax_error_expecting("\")\"")
+                    });
+                }
+                args.push(self.expression()?);
+                if !self.eat_punct(",") || self.at_punct(")") {
+                    break;
+                }
+            }
+        }
+        self.expect_listing(")", "\"->\" or \"?->\" or \"[\"")?;
         Ok(args)
     }
 
@@ -2665,7 +2844,7 @@ impl Parser {
                     // that starts with nothing recognisable it says `function`
                     // instead, which is not modelled, so no list is printed there.
                     let pname = if !matches!(self.peek(), Some(Tok::Var(_)))
-                        && self.after_member_modifier()
+                        && (ty.is_some() || self.after_member_modifier())
                     {
                         return Err(self.syntax_error_expecting("variable"));
                     } else {
@@ -2962,6 +3141,12 @@ impl Parser {
             // `$b = &$a` — a reference binding rather than a value copy.
             if compound.is_none() && self.at_punct("&") {
                 self.pos += 1;
+                if matches!(
+                    self.peek(),
+                    Some(Tok::Int(_) | Tok::Float(_) | Tok::Str(_) | Tok::Interp(_))
+                ) {
+                    return Err(self.syntax_error());
+                }
                 let rhs = self.assignment()?;
                 return Ok(Expr::RefAssign(Box::new(lhs), Box::new(rhs)));
             }
@@ -3314,6 +3499,15 @@ impl Parser {
 
     fn postfix(&mut self) -> Result<Expr, String> {
         let mut e = self.primary()?;
+        // A number literal is not dereferenceable (`1[0]`, `1.5->p`), so nothing
+        // may continue it; the token that follows is the caller's to refuse.
+        if matches!(
+            self.toks.get(self.pos.wrapping_sub(1)).map(|s| &s.tok),
+            Some(Tok::Int(_) | Tok::Float(_))
+        ) && matches!(e, Expr::Int(_) | Expr::Float(_))
+        {
+            return Ok(e);
+        }
         loop {
             if self.eat_punct("[") {
                 // `$a[]` (append) is only meaningful as an assignment target.
@@ -3518,7 +3712,9 @@ impl Parser {
     fn primary(&mut self) -> Result<Expr, String> {
         // A leading `\` is the global-namespace prefix. phplang has no namespaces,
         // so `\Exception` / `\strlen(…)` are the same as the bare name — skip it.
-        self.eat_punct("\\");
+        if self.at_name_anchor() {
+            self.pos += 1;
+        }
         match self.next() {
             Some(Tok::Int(n)) => Ok(Expr::Int(n)),
             Some(Tok::Float(f)) => Ok(Expr::Float(f)),
@@ -3548,7 +3744,7 @@ impl Parser {
             Some(Tok::Ident(kw)) if kw.eq_ignore_ascii_case("false") => Ok(Expr::Bool(false)),
             Some(Tok::Ident(kw)) if kw.eq_ignore_ascii_case("null") => Ok(Expr::Null),
             Some(Tok::Ident(kw)) if kw.eq_ignore_ascii_case("array") => {
-                self.expect_punct("(")?;
+                self.expect_closer("(")?;
                 self.array_literal(")", ArraySyntax::Long)
             }
             // `list($a, $b)` / `list('k' => $v)` — a destructuring language
@@ -3556,8 +3752,8 @@ impl Parser {
             // form, so both lower to the same `Expr::Array` and share the
             // compiler's assignment-target destructuring path. Only intercepted
             // when followed by `(`, so a bareword `list` still parses as a name.
-            Some(Tok::Ident(kw)) if kw.eq_ignore_ascii_case("list") && self.at_punct("(") => {
-                self.expect_punct("(")?;
+            Some(Tok::Ident(kw)) if kw.eq_ignore_ascii_case("list") => {
+                self.expect_closer("(")?;
                 let list = self.array_literal(")", ArraySyntax::List)?;
                 // `list(...)` is only a destructuring target: unless it is a
                 // nested element (`,` / `)` / `]` follows) it must meet its `=`.
@@ -3630,7 +3826,9 @@ impl Parser {
                         line,
                     });
                 }
-                self.eat_punct("\\"); // optional global-namespace prefix
+                if self.at_name_anchor() {
+                    self.pos += 1; // optional global-namespace prefix
+                }
                 if let Some(class) = self.new_dynamic_class()? {
                     let args = if self.eat_punct("(") {
                         self.arg_list()?
@@ -3654,9 +3852,7 @@ impl Parser {
             }
             // `match (subj) { ... }` — only when followed by `(`, so a plain
             // bareword `match` still parses as a name.
-            Some(Tok::Ident(kw)) if kw.eq_ignore_ascii_case("match") && self.at_punct("(") => {
-                self.match_expr()
-            }
+            Some(Tok::Ident(kw)) if kw.eq_ignore_ascii_case("match") => self.match_expr(),
             // `static function (…)` / `static fn (…)` — a closure that is NOT
             // bound to `$this`. The keyword only affects the binding, so the
             // closure itself is parsed by the arms below.
@@ -3697,6 +3893,10 @@ impl Parser {
                     other => other,
                 })
             }
+            // Any other `static` must be the `static::` scope: a name cannot follow.
+            Some(Tok::Ident(kw)) if kw.eq_ignore_ascii_case("static") && !self.at_punct("::") => {
+                Err(self.syntax_error_expecting("\"::\""))
+            }
             // An anonymous function `function (params) [use (vars)] { body }`.
             // (A *named* function is a statement, caught in `statement()`; only
             // the expression form — `function (` — reaches here.)
@@ -3712,6 +3912,16 @@ impl Parser {
                             // `use (&$v)` captures the enclosing variable itself
                             // rather than its value at creation time.
                             let by_ref = self.eat_punct("&");
+                            if !matches!(self.peek(), Some(Tok::Var(_))) {
+                                // The reference's list is a quirk of its tables: the
+                                // `&` appears once as a word and once as a token.
+                                let listing = if uses.is_empty() {
+                                    "variable or \"&\" or token \"&\""
+                                } else {
+                                    "\")\""
+                                };
+                                return Err(self.syntax_error_expecting(listing));
+                            }
                             let name = self.expect_var()?;
                             uses.push(Capture { name, by_ref });
                             if !self.eat_punct(",") {
@@ -3765,6 +3975,17 @@ impl Parser {
                 let name = magic_const_spelling(&kw).expect("guarded by the match arm above");
                 Ok(self.magic_const(name))
             }
+            // `namespace\name` — a name relative to the current namespace. The
+            // model is flat, so it is the name itself.
+            Some(Tok::Ident(kw)) if kw.eq_ignore_ascii_case("namespace") && self.at_name_join() => {
+                self.pos += 1;
+                self.primary()
+            }
+            // Any other `namespace` in an expression is the keyword, which no
+            // expression can begin with.
+            Some(Tok::Ident(kw)) if kw.eq_ignore_ascii_case("namespace") => {
+                Err(self.syntax_error_at(self.pos - 1))
+            }
             Some(Tok::Ident(name)) => {
                 // A `\`-qualified name — `Foo\BAR`, `A\B\C`. Any LEADING `\` was
                 // already eaten at the top of `primary`, which is what makes
@@ -3775,7 +3996,7 @@ impl Parser {
                 // is exactly what `define('Foo\BAR', …)` creates.
                 let mut qualified = name.clone();
                 let mut qualified_segments = 0usize;
-                while self.at_punct("\\") {
+                while self.at_name_join() {
                     let Some(Tok::Ident(seg)) = self.toks.get(self.pos + 1).map(|s| &s.tok) else {
                         break;
                     };
@@ -3811,12 +4032,18 @@ impl Parser {
                         // `)`, so the reference lists nothing for either's neighbours.
                         let listing = if name.eq_ignore_ascii_case("unset") {
                             Some("\"->\" or \"?->\" or \"[\"")
-                        } else if name.eq_ignore_ascii_case("empty") {
+                        } else if name.eq_ignore_ascii_case("empty")
+                            || name.eq_ignore_ascii_case("eval")
+                        {
                             None
                         } else {
                             Some("\")\"")
                         };
-                        self.arg_list_listing(listing)?
+                        if name.eq_ignore_ascii_case("unset") {
+                            self.unset_arg_list()?
+                        } else {
+                            self.arg_list_listing(listing)?
+                        }
                     };
                     // `eval()` is a construct too: it runs in the caller's scope.
                     if name.eq_ignore_ascii_case("eval") && args.len() == 1 {

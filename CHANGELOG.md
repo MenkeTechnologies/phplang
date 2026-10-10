@@ -89,6 +89,16 @@ language-feature sweep over PHP 8.2-8.5 additions, and a cross-reference of
   `unexpected token "enum"` is named where an enum cannot start.
 * **A first-class callable `f(...)` showed a `{closure}` frame** in every trace
   that passed through it.
+* **Parse errors: the `expecting` lists the fuzzer still found missing** —
+  after `array`, `match`, `list`, `static`, `->`/`?->`, a closure `use` list,
+  `do … while ()`, `unset()` operands, `enum E` names, `use function`, typed
+  property names and class modifiers — and `1[0]`/`1.5->p` (a number literal is
+  not dereferenceable), `$a = &1`, a `try` with no handler (a compile fatal held
+  until the whole file parses), `break 's'`.
+* **Qualified names follow whitespace** (`A \ B` is three tokens, `A\B` one),
+  with the reference's `qualified name "A\B"` / `fully qualified name "\B"`
+  wording. `use A\{B, C as D, function f, const K};` group imports and
+  `namespace\name` parse.
 * **`number_format(null)`** deprecates the parameter as `float`, not
   `int|float`. The pinned expectation in `tests/builtin_arity.rs` said
   `int|float`; the reference prints `float`.
