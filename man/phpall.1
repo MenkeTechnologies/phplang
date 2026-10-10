@@ -62,7 +62,7 @@ PHP source \[->] lexer \[->] parser (AST) \[->] lower to fusevm bytecode \[->] f
 .EE
 .PP
 There is no bespoke PHP VM or JIT; execution and codegen live entirely in fusevm,
-the shared engine behind zshrs, stryke, awkrs, elisp, ruby, arb, and pythonrs. A
+the shared engine every fusevm frontend runs on. A
 tracing Cranelift JIT compiles hot arithmetic loops.
 .SH 4. TOOLING
 .SS Language server (\-\-lsp)
