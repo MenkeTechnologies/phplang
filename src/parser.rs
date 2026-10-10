@@ -2355,6 +2355,15 @@ impl Parser {
                 return Err(self.bare_fatal_at(const_line, msg));
             }
             if self.eat_kw("const") {
+                // PHP 8.3 typed constant, `const int X = 1;`: a type is present
+                // unless the first name is directly followed by `=`.
+                let untyped = matches!(self.peek(), Some(Tok::Ident(_)))
+                    && matches!(
+                        self.toks.get(self.pos + 1).map(|s| &s.tok),
+                        Some(Tok::Punct("="))
+                    );
+                let const_ty = if untyped { None } else { self.type_hint()? };
+                let first_name_line = self.line();
                 loop {
                     const_lines.push(const_line);
                     let cname = match self.next() {
@@ -2368,7 +2377,19 @@ impl Parser {
                     if m_final {
                         final_consts.push(cname.clone());
                     }
-                    consts.push((cname, self.expression()?));
+                    let value = self.expression()?;
+                    if let Some(ty) = &const_ty {
+                        if let Some(msg) =
+                            const_type_error(ty, &name, parent.as_deref(), &cname, &value)
+                        {
+                            return Err(self.fatal_at(first_name_line, msg));
+                        }
+                    }
+                    let value = match &const_ty {
+                        Some(ty) => widen_int_literal(ty, value),
+                        None => value,
+                    };
+                    consts.push((cname, value));
                     if !self.eat_punct(",") {
                         break;
                     }
@@ -2424,6 +2445,7 @@ impl Parser {
             } else {
                 // Property declaration(s): an optional type precedes the $var, and
                 // applies to every name in a `public int $a, $b;` list.
+                let type_line = self.line();
                 let ty = self.type_hint()?;
                 loop {
                     let prop_line = self.line();
@@ -2441,6 +2463,17 @@ impl Parser {
                         Some(self.expression()?)
                     } else {
                         None
+                    };
+                    let default = match (&ty, default) {
+                        (Some(t), Some(d)) => {
+                            if let Some(msg) =
+                                prop_default_error(t, &name, parent.as_deref(), &pname, &d)
+                            {
+                                return Err(self.fatal_at(type_line, msg));
+                            }
+                            Some(widen_int_literal(t, d))
+                        }
+                        (_, d) => d,
                     };
                     props.push(PropDecl {
                         name: pname,
@@ -2993,6 +3026,30 @@ impl Parser {
                 if let Some(Tok::Var(_)) = self.peek() {
                     let prop = self.expect_var()?;
                     e = Expr::StaticProp(class, prop);
+                } else if self.eat_punct("{") {
+                    // PHP 8.3 dynamic class constant fetch, `Class::{$expr}`:
+                    // the constant's name is computed, which is exactly what
+                    // `constant("Class::NAME")` resolves.
+                    let name = self.expression()?;
+                    self.expect_punct("}")?;
+                    let class_name = match class {
+                        ClassRef::Name(c) => Expr::Str(c),
+                        ClassRef::Expr(ce) => Expr::Ternary(
+                            Box::new(Expr::Call("is_object".to_string(), vec![(*ce).clone()])),
+                            Box::new(Expr::Call("get_class".to_string(), vec![(*ce).clone()])),
+                            ce,
+                        ),
+                    };
+                    let qualified = Expr::Binary(
+                        BinOp::Concat,
+                        Box::new(Expr::Binary(
+                            BinOp::Concat,
+                            Box::new(class_name),
+                            Box::new(Expr::Str("::".to_string())),
+                        )),
+                        Box::new(name),
+                    );
+                    e = Expr::Call("constant".to_string(), vec![qualified]);
                 } else {
                     let member = self.member_name()?;
                     if self.eat_punct("(") {
@@ -3576,4 +3633,130 @@ impl Parser {
             arms,
         })
     }
+}
+
+/// The type name the reference prints for a literal initialiser, or `None` when
+/// the expression is not a plain literal and so cannot be judged at compile time.
+fn literal_given_type(e: &Expr) -> Option<&'static str> {
+    match e {
+        Expr::Null => Some("null"),
+        Expr::Bool(_) => Some("bool"),
+        Expr::Int(_) => Some("int"),
+        Expr::Float(_) => Some("float"),
+        Expr::Str(_) => Some("string"),
+        Expr::Interp(parts) if parts.iter().all(|p| matches!(p, InterpPart::Lit(_))) => {
+            Some("string")
+        }
+        Expr::Binary(BinOp::Concat, a, b)
+            if literal_given_type(a).is_some() && literal_given_type(b).is_some() =>
+        {
+            Some("string")
+        }
+        Expr::Array(..) => Some("array"),
+        Expr::Unary(UnOp::Neg | UnOp::Pos, x) => match literal_given_type(x)? {
+            t @ ("int" | "float") => Some(t),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Whether the declared type `ty` accepts a literal of kind `given` the way a
+/// constant or property initialiser is checked: strictly, apart from the
+/// `int` to `float` widening.
+fn type_accepts_literal(ty: &TypeHint, given: &str, value: &Expr) -> bool {
+    ty.parts.iter().any(|p| {
+        let p = p.to_ascii_lowercase();
+        match p.as_str() {
+            "mixed" => true,
+            "int" => given == "int",
+            "float" => matches!(given, "int" | "float"),
+            "string" => given == "string",
+            "bool" => given == "bool",
+            "true" => matches!(value, Expr::Bool(true)),
+            "false" => matches!(value, Expr::Bool(false)),
+            "null" => given == "null",
+            "array" => given == "array",
+            "iterable" => given == "array",
+            _ => false,
+        }
+    })
+}
+
+/// The compile-time fatal for a typed class constant whose literal initialiser
+/// the type refuses, or for a type no constant may have.
+fn const_type_error(
+    ty: &TypeHint,
+    class: &str,
+    parent: Option<&str>,
+    cname: &str,
+    value: &Expr,
+) -> Option<String> {
+    let declared = ty.declared(class, parent);
+    if let Some(bad) = ty.parts.iter().find(|p| {
+        matches!(
+            p.to_ascii_lowercase().as_str(),
+            "void" | "never" | "callable"
+        )
+    }) {
+        return Some(format!(
+            "Class constant {class}::{cname} cannot have type {}",
+            bad.to_ascii_lowercase()
+        ));
+    }
+    let given = literal_given_type(value)?;
+    if type_accepts_literal(ty, given, value) {
+        return None;
+    }
+    Some(format!(
+        "Cannot use {given} as value for class constant {class}::{cname} of type {declared}"
+    ))
+}
+
+/// An `int` literal initialiser becomes the `float` it is declared as — a
+/// `float` constant or property written `= 1` holds `1.0` — unless the type
+/// takes an `int` itself.
+fn widen_int_literal(ty: &TypeHint, value: Expr) -> Expr {
+    let takes = |n: &str| ty.parts.iter().any(|p| p.eq_ignore_ascii_case(n));
+    if !takes("float") || takes("int") || takes("mixed") {
+        return value;
+    }
+    match value {
+        Expr::Int(n) => Expr::Float(n as f64),
+        Expr::Unary(UnOp::Neg, inner) => match *inner {
+            Expr::Int(n) => Expr::Float(-(n as f64)),
+            other => Expr::Unary(UnOp::Neg, Box::new(other)),
+        },
+        other => other,
+    }
+}
+
+/// The compile-time fatal for a typed property whose literal default the type
+/// refuses — a `null` against a non-nullable type has a message of its own.
+fn prop_default_error(
+    ty: &TypeHint,
+    class: &str,
+    parent: Option<&str>,
+    pname: &str,
+    value: &Expr,
+) -> Option<String> {
+    let given = literal_given_type(value)?;
+    if type_accepts_literal(ty, given, value) {
+        return None;
+    }
+    let declared = ty.declared(class, parent);
+    if given == "null" {
+        let nullable = if declared.contains('|') || declared.starts_with('?') {
+            format!("{declared}|null")
+        } else {
+            format!("?{declared}")
+        };
+        return Some(format!(
+            "Default value for property of type {declared} may not be null. Use the nullable \
+             type {nullable} to allow null default value"
+        ));
+    }
+    Some(format!(
+        "Cannot use {given} as default value for property {class}::${pname} of type {declared}"
+    ))
 }

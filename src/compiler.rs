@@ -5022,11 +5022,15 @@ impl Compiler {
         let swap = matches!(
             op,
             BinOp::Mul | BinOp::BitOr | BinOp::BitAnd | BinOp::BitXor
-        ) && is_const_operand(l)
-            && is_definitely_runtime(r);
-        if swap {
+        ) && swaps_operands(l, r);
+        if swap && is_const_operand(l) {
             self.compile_expr(b, r)?;
             self.compile_expr(b, l)?;
+        } else if swap {
+            // Both sides run in source order; only the handler sees them swapped.
+            self.compile_expr(b, l)?;
+            self.compile_expr(b, r)?;
+            b.emit(Op::Swap, 0);
         } else {
             self.compile_expr(b, l)?;
             self.compile_expr(b, r)?;
@@ -6889,6 +6893,9 @@ fn is_const_operand(e: &Expr) -> bool {
         Expr::Interp(parts) => parts.iter().all(|p| matches!(p, InterpPart::Lit(_))),
         Expr::Unary(UnOp::Neg | UnOp::Pos, x) => is_const_operand(x),
         Expr::Binary(op, a, b) if is_foldable_arith(*op) => folds_without_diagnostic(*op, a, b),
+        // A literal array of constants is built while compiling, so it sits in
+        // an `IS_CONST` slot like any scalar literal.
+        Expr::Array(elems, _) => is_const_array(elems),
         _ => false,
     }
 }
@@ -6941,30 +6948,124 @@ fn literal_type_name(e: &Expr) -> Option<&'static str> {
     }
 }
 
-/// Whether `e` cannot be a compile-time constant under ANY folding rule, so a
-/// swap against it is certainly what the reference did.
-fn is_definitely_runtime(e: &Expr) -> bool {
+/// The reference's operand class for `e`, ordered the way its VM orders them
+/// (`IS_CONST` < `IS_TMP_VAR` < `IS_VAR` < `IS_CV`), or `None` when the answer
+/// depends on something this cannot see.
+///
+/// A commutative handler is specialised with the lower-ranked operand in the
+/// SECOND slot, so `swaps_operands` is a plain rank comparison. Measured
+/// against the oracle: a plain variable is a CV; a call, `new` or `include`
+/// leaves a VAR; a property/element read, a ternary, `??`, an assignment, a
+/// cast, `++`, an interpolated string or any arithmetic result is a TMP.
+fn operand_rank(e: &Expr) -> Option<u8> {
+    const CONST: u8 = 1;
+    const TMP: u8 = 2;
+    const VAR: u8 = 4;
+    const CV: u8 = 16;
+    if is_const_operand(e) {
+        return Some(CONST);
+    }
     match e {
-        Expr::Var(_)
-        | Expr::Index(..)
-        | Expr::Append(_)
+        Expr::Var(name) if name != "this" => Some(CV),
+        // A builtin the reference compiles to a dedicated opcode leaves a TMP; one
+        // it folds when every argument is literal is a constant, and which ones
+        // are which is version dependent, so an all-literal call is left
+        // unclassified.
+        Expr::Call(name, args) => {
+            let plain = name.trim_start_matches('\\').to_ascii_lowercase();
+            let opcode = matches!(
+                plain.as_str(),
+                "strlen"
+                    | "count"
+                    | "sizeof"
+                    | "in_array"
+                    | "gettype"
+                    | "array_slice"
+                    | "array_key_exists"
+                    | "array_keys"
+                    | "min"
+                    | "max"
+                    | "sprintf"
+                    | "str_contains"
+                    | "str_starts_with"
+                    | "str_ends_with"
+                    | "boolval"
+                    | "intval"
+                    | "floatval"
+                    | "doubleval"
+                    | "strval"
+                    | "__cast_array"
+                    | "__cast_object"
+                    | "is_null"
+                    | "is_bool"
+                    | "is_long"
+                    | "is_int"
+                    | "is_integer"
+                    | "is_float"
+                    | "is_double"
+                    | "is_string"
+                    | "is_array"
+                    | "is_object"
+                    | "is_resource"
+                    | "is_scalar"
+                    | "is_numeric"
+            );
+            let folds = matches!(plain.as_str(), "chr" | "ord" | "defined");
+            if (opcode || folds) && !args.is_empty() && args.iter().all(is_const_operand) {
+                None
+            } else if opcode {
+                Some(TMP)
+            } else {
+                Some(VAR)
+            }
+        }
+        Expr::CallValue(..)
+        | Expr::MethodCall(..)
+        | Expr::StaticCall(..)
+        | Expr::New(..)
+        | Expr::NewDyn(..)
+        | Expr::NewAnon { .. }
+        | Expr::Include(..)
+        | Expr::RefAssign(..) => Some(VAR),
+        // `1 | 2` folds; a fractional float operand deprecates, so it does not.
+        Expr::Binary(BinOp::BitOr | BinOp::BitAnd | BinOp::BitXor, a, b)
+            if is_const_operand(a)
+                && is_const_operand(b)
+                && !is_fractional_float(a)
+                && !is_fractional_float(b) =>
+        {
+            Some(CONST)
+        }
+        Expr::Index(..)
+        | Expr::PropGet(..)
+        | Expr::NullsafePropGet(..)
+        | Expr::StaticProp(..)
+        | Expr::Unary(..)
+        | Expr::Binary(..)
         | Expr::Assign(..)
         | Expr::IncDec { .. }
-        | Expr::RefAssign(..) => true,
-        // Arithmetic over constants that the reference would NOT fold, because
-        // folding it would have to emit the diagnostic at compile time.
-        Expr::Binary(op, a, b) if is_foldable_arith(*op) => {
-            is_const_operand(a) && is_const_operand(b) && !folds_without_diagnostic(*op, a, b)
-        }
-        // A bitwise operator over a float constant with a fractional part
-        // deprecates the lossy conversion, so the reference does not fold it.
-        Expr::Binary(BinOp::BitOr | BinOp::BitAnd | BinOp::BitXor, a, b) => {
-            is_const_operand(a)
-                && is_const_operand(b)
-                && (is_fractional_float(a) || is_fractional_float(b))
-        }
-        _ => false,
+        | Expr::Ternary(..)
+        | Expr::Elvis(..)
+        | Expr::Coalesce(..)
+        | Expr::Interp(_)
+        | Expr::Array(..)
+        | Expr::Closure { .. }
+        | Expr::ArrowFn { .. }
+        | Expr::Fcc { .. }
+        | Expr::Clone(_)
+        | Expr::Match { .. }
+        | Expr::InstanceOf(..)
+        | Expr::IssetOf(_)
+        | Expr::EmptyOf(_)
+        | Expr::Suppress(_) => Some(TMP),
+        _ => None,
     }
+}
+
+/// Whether a commutative operator reports its operands (and coerces them) in
+/// swapped order: the left operand ranks below the right one.
+fn swaps_operands(l: &Expr, r: &Expr) -> bool {
+    matches!((operand_rank(l), operand_rank(r)), (Some(a), Some(b)) if a < b)
 }
 
 /// The arithmetic operators whose constant folding this models. `Concat` and the

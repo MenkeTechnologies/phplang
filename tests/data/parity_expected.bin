@@ -3880,3 +3880,90 @@ PHP Fatal error:  'break' operator with non-integer operand is no longer support
 Stack trace:
 #0 {main}
 
+#REC 167 exit=0 out=496 err=0
+0 Unsupported operand types: int * array
+1 Unsupported operand types: int | array
+2 Unsupported operand types: int * array
+3 Unsupported operand types: int & array
+4 Unsupported operand types: array * int
+5 Unsupported operand types: array * array
+6 Unsupported operand types: int * array
+7 Unsupported operand types: array * int
+8 Unsupported operand types: array + int
+9 Unsupported operand types: array * int
+10 Unsupported operand types: array ^ int
+11 Unsupported operand types: array - int
+
+#REC 168 exit=255 out=216 err=154
+float(1)
+NULL
+string(1) "u"
+int(-1)
+int(2)
+float(3)
+float(-4)
+---
+
+Fatal error: Cannot use string as value for class constant B::X of type int in Command line code(8) : eval()'d code on line 1
+Stack trace:
+#0 {main}
+PHP Fatal error:  Cannot use string as value for class constant B::X of type int in Command line code(8) : eval()'d code on line 1
+Stack trace:
+#0 {main}
+
+#REC 169 exit=0 out=55 err=0
+12222,1
+enum(E::Two)
+Error: Undefined constant A::NOPE
+
+#REC 170 exit=0 out=217 err=0
+string(1) "x"
+string(1) "x"
+string(8) "héllo  "
+string(8) "  héllo"
+string(1) "c"
+string(1) "a"
+string(5) "hello"
+string(0) ""
+string(1) "x"
+mb_trim(): Argument #3 ($encoding) must be a valid encoding, "nope" given
+
+#REC 171 exit=0 out=442 err=130
+string(6) "wörld"
+string(7) "héllo "
+bool(false)
+string(3) "abc"
+string(3) "LLo"
+string(3) "hé"
+string(2) "/c"
+string(3) "a/b"
+string(2) "xc"
+string(10) "Hello W..."
+string(5) "Hello"
+string(12) "日本語…"
+
+Deprecated: mb_strimwidth(): passing a negative integer to argument #3 ($width) is deprecated in Command line code on line 5
+string(5) "lo Wo"
+string(4) "Wor~"
+string(1) "l"
+mb_strimwidth(): Argument #2 ($start) is out of range
+PHP Deprecated:  mb_strimwidth(): passing a negative integer to argument #3 ($width) is deprecated in Command line code on line 5
+
+#REC 172 exit=0 out=272 err=0
+string(15) "a&#233;&#26085;"
+string(7) "a&#xE9;"
+string(11) "&#98;&#99;c"
+string(16) "&#97;&#98;&#104;"
+string(8) "abc&#100"
+string(8) "a&#X62;c"
+string(16) "a&#+97;&# 97;a ;"
+string(2) "bc"
+mb_encode_numericentity(): Argument #2 ($map) must have a multiple of 4 elements
+
+#REC 173 exit=0 out=217 err=129
+
+Deprecated: number_format(): Passing null to parameter #1 ($num) of type float is deprecated in Command line code on line 3
+string(3) "0.0"
+number_format(): Argument #1 ($num) must be of type int|float, string given
+PHP Deprecated:  number_format(): Passing null to parameter #1 ($num) of type float is deprecated in Command line code on line 3
+

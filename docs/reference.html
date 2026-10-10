@@ -3427,77 +3427,137 @@ strtr(string $string, string $from, string $to): string</code></pre>
           <pre><code class="lang-php">echo mb_str_pad("é", 3, "-");   // =&gt; é--</code></pre>
         </article>
         <article class="doc-entry" id="doc-multibyte-strings-9">
-          <h3><a class="doc-anchor" href="#doc-multibyte-strings-9">#</a> <code>mb_ord</code></h3>
+          <h3><a class="doc-anchor" href="#doc-multibyte-strings-9">#</a> <code>mb_trim</code></h3>
+          <pre><code class="lang-php">mb_trim(string $string, ?string $characters = null, ?string $encoding = null): string</code></pre>
+          <p>Strips NUL and the Unicode `White_Space` code points (plus U+180E) from both ends, or every code point of `$characters`, which is a SET: there is no `a..z` range form as in `trim()`. An unknown `$encoding` throws `ValueError`.</p>
+          <pre><code class="lang-php">echo mb_trim("\u{3000}héllo\u{a0}");   // =&gt; héllo</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-multibyte-strings-10">
+          <h3><a class="doc-anchor" href="#doc-multibyte-strings-10">#</a> <code>mb_ltrim</code></h3>
+          <pre><code class="lang-php">mb_ltrim(string $string, ?string $characters = null, ?string $encoding = null): string</code></pre>
+          <p>`mb_trim()` applied to the start of the string only.</p>
+          <pre><code class="lang-php">echo mb_ltrim("xxhixx", "x");   // =&gt; hixx</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-multibyte-strings-11">
+          <h3><a class="doc-anchor" href="#doc-multibyte-strings-11">#</a> <code>mb_rtrim</code></h3>
+          <pre><code class="lang-php">mb_rtrim(string $string, ?string $characters = null, ?string $encoding = null): string</code></pre>
+          <p>`mb_trim()` applied to the end of the string only.</p>
+          <pre><code class="lang-php">echo mb_rtrim("xxhixx", "x");   // =&gt; xxhi</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-multibyte-strings-12">
+          <h3><a class="doc-anchor" href="#doc-multibyte-strings-12">#</a> <code>mb_strstr</code></h3>
+          <pre><code class="lang-php">mb_strstr(string $haystack, string $needle, bool $before_needle = false, ?string $encoding = null): string|false</code></pre>
+          <p>The part of the haystack from the first occurrence of the whole needle (or the part before it), compared by code point; `false` when absent. An empty needle matches at the start.</p>
+          <pre><code class="lang-php">echo mb_strstr("héllo wörld", "wö");   // =&gt; wörld</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-multibyte-strings-13">
+          <h3><a class="doc-anchor" href="#doc-multibyte-strings-13">#</a> <code>mb_stristr</code></h3>
+          <pre><code class="lang-php">mb_stristr(string $haystack, string $needle, bool $before_needle = false, ?string $encoding = null): string|false</code></pre>
+          <p>`mb_strstr()` with a case-insensitive comparison; the returned text keeps the haystack's own case.</p>
+          <pre><code class="lang-php">echo mb_stristr("héLLo", "ll");   // =&gt; LLo</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-multibyte-strings-14">
+          <h3><a class="doc-anchor" href="#doc-multibyte-strings-14">#</a> <code>mb_strrchr</code></h3>
+          <pre><code class="lang-php">mb_strrchr(string $haystack, string $needle, bool $before_needle = false, ?string $encoding = null): string|false</code></pre>
+          <p>`mb_strstr()` for the LAST occurrence of the needle.</p>
+          <pre><code class="lang-php">echo mb_strrchr("a/b/c", "/");   // =&gt; /c</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-multibyte-strings-15">
+          <h3><a class="doc-anchor" href="#doc-multibyte-strings-15">#</a> <code>mb_strrichr</code></h3>
+          <pre><code class="lang-php">mb_strrichr(string $haystack, string $needle, bool $before_needle = false, ?string $encoding = null): string|false</code></pre>
+          <p>`mb_strrchr()` with a case-insensitive comparison.</p>
+          <pre><code class="lang-php">echo mb_strrichr("aXbxc", "x");   // =&gt; xc</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-multibyte-strings-16">
+          <h3><a class="doc-anchor" href="#doc-multibyte-strings-16">#</a> <code>mb_strimwidth</code></h3>
+          <pre><code class="lang-php">mb_strimwidth(string $string, int $start, int $width, string $trim_marker = "", ?string $encoding = null): string</code></pre>
+          <p>Cuts the string from character `$start` so that it, with `$trim_marker` standing in for the removed tail, fits `$width` display columns (East Asian wide characters count 2). A negative `$start` counts columns from the end and a negative `$width` is relative to the string's width; either out of range throws `ValueError`.</p>
+          <pre><code class="lang-php">echo mb_strimwidth("Hello World", 0, 10, "...");   // =&gt; Hello W...</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-multibyte-strings-17">
+          <h3><a class="doc-anchor" href="#doc-multibyte-strings-17">#</a> <code>mb_encode_numericentity</code></h3>
+          <pre><code class="lang-php">mb_encode_numericentity(string $string, array $map, ?string $encoding = null, bool $hex = false): string</code></pre>
+          <p>Replaces each code point inside a `[start, end, offset, mask]` range of `$map` with `&amp;#N;` (`&amp;#xH;` when `$hex`), `N` being `(code point + offset) &amp; mask`. A map whose length is not a multiple of four throws `ValueError`.</p>
+          <pre><code class="lang-php">echo mb_encode_numericentity("é", [0x80, 0x10ffff, 0, 0xffffff]);   // =&gt; &amp;#233;</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-multibyte-strings-18">
+          <h3><a class="doc-anchor" href="#doc-multibyte-strings-18">#</a> <code>mb_decode_numericentity</code></h3>
+          <pre><code class="lang-php">mb_decode_numericentity(string $string, array $map, ?string $encoding = null): string</code></pre>
+          <p>The inverse of `mb_encode_numericentity()`: a decimal or lowercase-`x` hexadecimal entity whose value minus the offset lies in a range becomes that character. An entity outside every range, or an uppercase `&amp;#X`, is left as written.</p>
+          <pre><code class="lang-php">echo mb_decode_numericentity("&amp;#233;", [0x80, 0x10ffff, 0, 0xffffff]);   // =&gt; é</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-multibyte-strings-19">
+          <h3><a class="doc-anchor" href="#doc-multibyte-strings-19">#</a> <code>mb_ord</code></h3>
           <pre><code class="lang-php">mb_ord(string $string): int|false</code></pre>
           <p>The Unicode codepoint of the first character, or `false` for an empty string — the multibyte counterpart of `ord`, which reports a byte instead.</p>
           <pre><code class="lang-php">echo mb_ord("é");   // =&gt; 233</code></pre>
         </article>
-        <article class="doc-entry" id="doc-multibyte-strings-10">
-          <h3><a class="doc-anchor" href="#doc-multibyte-strings-10">#</a> <code>mb_chr</code></h3>
+        <article class="doc-entry" id="doc-multibyte-strings-20">
+          <h3><a class="doc-anchor" href="#doc-multibyte-strings-20">#</a> <code>mb_chr</code></h3>
           <pre><code class="lang-php">mb_chr(int $codepoint): string|false</code></pre>
           <p>The character for a codepoint, or `false` when it is negative, a surrogate, or above U+10FFFF.</p>
           <pre><code class="lang-php">echo mb_chr(233);   // =&gt; é</code></pre>
         </article>
-        <article class="doc-entry" id="doc-multibyte-strings-11">
-          <h3><a class="doc-anchor" href="#doc-multibyte-strings-11">#</a> <code>mb_lcfirst</code></h3>
+        <article class="doc-entry" id="doc-multibyte-strings-21">
+          <h3><a class="doc-anchor" href="#doc-multibyte-strings-21">#</a> <code>mb_lcfirst</code></h3>
           <pre><code class="lang-php">mb_lcfirst(string $string): string</code></pre>
           <p>Lowercases the first character with full Unicode folding and leaves the remainder untouched; the empty string maps to itself.</p>
           <pre><code class="lang-php">echo mb_lcfirst("École");   // =&gt; école</code></pre>
         </article>
-        <article class="doc-entry" id="doc-multibyte-strings-12">
-          <h3><a class="doc-anchor" href="#doc-multibyte-strings-12">#</a> <code>mb_ucfirst</code></h3>
+        <article class="doc-entry" id="doc-multibyte-strings-22">
+          <h3><a class="doc-anchor" href="#doc-multibyte-strings-22">#</a> <code>mb_ucfirst</code></h3>
           <pre><code class="lang-php">mb_ucfirst(string $string): string</code></pre>
           <p>Uppercases the first character with full Unicode folding, which may expand it to several codepoints.</p>
           <pre><code class="lang-php">echo mb_ucfirst("école");   // =&gt; École</code></pre>
         </article>
-        <article class="doc-entry" id="doc-multibyte-strings-13">
-          <h3><a class="doc-anchor" href="#doc-multibyte-strings-13">#</a> <code>mb_scrub</code></h3>
+        <article class="doc-entry" id="doc-multibyte-strings-23">
+          <h3><a class="doc-anchor" href="#doc-multibyte-strings-23">#</a> <code>mb_scrub</code></h3>
           <pre><code class="lang-php">mb_scrub(string $string): string</code></pre>
           <p>Returns the string verbatim. It is a genuine no-op here: a phplang string is always valid UTF-8, so there is never an ill-formed sequence to substitute.</p>
         </article>
-        <article class="doc-entry" id="doc-multibyte-strings-14">
-          <h3><a class="doc-anchor" href="#doc-multibyte-strings-14">#</a> <code>mb_strcut</code></h3>
+        <article class="doc-entry" id="doc-multibyte-strings-24">
+          <h3><a class="doc-anchor" href="#doc-multibyte-strings-24">#</a> <code>mb_strcut</code></h3>
           <pre><code class="lang-php">mb_strcut(string $string, int $start, ?int $length = null): string</code></pre>
           <p>A BYTE-offset substring that never splits a character: the offsets count bytes, then both endpoints are floored to the nearest UTF-8 boundary.</p>
           <pre><code class="lang-php">echo mb_strcut("héllo", 0, 2);   // =&gt; h</code></pre>
         </article>
-        <article class="doc-entry" id="doc-multibyte-strings-15">
-          <h3><a class="doc-anchor" href="#doc-multibyte-strings-15">#</a> <code>mb_split</code></h3>
+        <article class="doc-entry" id="doc-multibyte-strings-25">
+          <h3><a class="doc-anchor" href="#doc-multibyte-strings-25">#</a> <code>mb_split</code></h3>
           <pre><code class="lang-php">mb_split(string $pattern, string $string, int $limit = -1): array|false</code></pre>
           <p>Splits on a regular expression. A positive limit caps the piece count with the last piece holding the remainder. DIVERGENCE: the Rust `regex` crate replaces Oniguruma, so backreferences and lookaround are unsupported and an uncompilable pattern returns `false`.</p>
           <pre><code class="lang-php">print_r(mb_split("[,;]", "a,b;c"));   // =&gt; Array\n(\n    [0] =&gt; a\n    [1] =&gt; b\n    [2] =&gt; c\n)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-multibyte-strings-16">
-          <h3><a class="doc-anchor" href="#doc-multibyte-strings-16">#</a> <code>mb_convert_kana</code></h3>
+        <article class="doc-entry" id="doc-multibyte-strings-26">
+          <h3><a class="doc-anchor" href="#doc-multibyte-strings-26">#</a> <code>mb_convert_kana</code></h3>
           <pre><code class="lang-php">mb_convert_kana(string $string, string $mode = "KV"): string</code></pre>
           <p>Converts between fullwidth and halfwidth ASCII by codepoint arithmetic: `a`/`r`/`n` fold fullwidth to halfwidth for printables, letters, and digits, `A`/`R`/`N` do the reverse, and `s`/`S` map the ideographic space. DIVERGENCE: the kana modes `k K h H c C v V` are unimplemented, which includes the DEFAULT mode `"KV"` — calling it with no mode is a no-op.</p>
         </article>
-        <article class="doc-entry" id="doc-multibyte-strings-17">
-          <h3><a class="doc-anchor" href="#doc-multibyte-strings-17">#</a> <code>mb_strwidth</code></h3>
+        <article class="doc-entry" id="doc-multibyte-strings-27">
+          <h3><a class="doc-anchor" href="#doc-multibyte-strings-27">#</a> <code>mb_strwidth</code></h3>
           <pre><code class="lang-php">mb_strwidth(string $string): int</code></pre>
           <p>The display width, counting 2 for codepoints in the 23 East-Asian wide and fullwidth ranges ported from PHP's own table and 1 for everything else. DIVERGENCE: combining marks and zero-width characters count as 1, not 0.</p>
           <pre><code class="lang-php">echo mb_strwidth("ab");   // =&gt; 2</code></pre>
         </article>
-        <article class="doc-entry" id="doc-multibyte-strings-18">
-          <h3><a class="doc-anchor" href="#doc-multibyte-strings-18">#</a> <code>mb_convert_encoding</code></h3>
+        <article class="doc-entry" id="doc-multibyte-strings-28">
+          <h3><a class="doc-anchor" href="#doc-multibyte-strings-28">#</a> <code>mb_convert_encoding</code></h3>
           <pre><code class="lang-php">mb_convert_encoding(string $string, string $to_encoding): string</code></pre>
           <p>Maps unrepresentable characters to `?`: everything at or above U+0080 for `ASCII`, above U+00FF for `ISO-8859-1`/`Latin-1`. `UTF-8` returns the string unchanged; any OTHER target raises `ValueError: mb_convert_encoding(): Argument #2 ($to_encoding) must be a valid encoding, "…" given`. DIVERGENCE: `$from_encoding` is ignored, true single-byte output is impossible in a UTF-8 runtime, and the array form is unsupported.</p>
           <pre><code class="lang-php">echo mb_convert_encoding("héllo", "ASCII");   // =&gt; h?llo</code></pre>
         </article>
-        <article class="doc-entry" id="doc-multibyte-strings-19">
-          <h3><a class="doc-anchor" href="#doc-multibyte-strings-19">#</a> <code>mb_detect_encoding</code></h3>
+        <article class="doc-entry" id="doc-multibyte-strings-29">
+          <h3><a class="doc-anchor" href="#doc-multibyte-strings-29">#</a> <code>mb_detect_encoding</code></h3>
           <pre><code class="lang-php">mb_detect_encoding(string $string, array|string|null $encodings = null): string|false</code></pre>
           <p>The first candidate the string satisfies, where `ASCII` requires every byte below 0x80 and `UTF-8` always succeeds; any other candidate never matches and an exhausted list yields `false`. The default order is ASCII then UTF-8. DIVERGENCE: `$strict` is ignored, and real detection is impossible because strings are always valid UTF-8.</p>
           <pre><code class="lang-php">echo mb_detect_encoding("abc");   // =&gt; ASCII</code></pre>
         </article>
-        <article class="doc-entry" id="doc-multibyte-strings-20">
-          <h3><a class="doc-anchor" href="#doc-multibyte-strings-20">#</a> <code>mb_check_encoding</code></h3>
+        <article class="doc-entry" id="doc-multibyte-strings-30">
+          <h3><a class="doc-anchor" href="#doc-multibyte-strings-30">#</a> <code>mb_check_encoding</code></h3>
           <pre><code class="lang-php">mb_check_encoding(string $value = "", ?string $encoding = null): bool</code></pre>
           <p>Returns true unless the encoding normalizes to `ASCII`, in which case it checks that every byte is below 0x80. DIVERGENCE: a missing `$value` checks the empty string rather than all previous output, and the array form is unsupported.</p>
           <pre><code class="lang-php">var_dump(mb_check_encoding("héllo", "ASCII"));   // =&gt; bool(false)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-multibyte-strings-21">
-          <h3><a class="doc-anchor" href="#doc-multibyte-strings-21">#</a> <code>mb_internal_encoding</code></h3>
+        <article class="doc-entry" id="doc-multibyte-strings-31">
+          <h3><a class="doc-anchor" href="#doc-multibyte-strings-31">#</a> <code>mb_internal_encoding</code></h3>
           <pre><code class="lang-php">mb_internal_encoding(?string $encoding = null): string|bool</code></pre>
           <p>With no argument returns the stored encoding, defaulting to `UTF-8`; with one it stores the raw string and returns true. DIVERGENCE: the name is never validated, the stored value only affects `mb_check_encoding`, and the state is thread-local and NOT reset between evaluations on the same thread.</p>
           <pre><code class="lang-php">echo mb_internal_encoding();   // =&gt; UTF-8</code></pre>

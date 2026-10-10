@@ -210,10 +210,12 @@ fn an_unplaceable_name_is_reported_after_the_types() {
 fn null_in_a_union_that_offers_a_scalar_is_only_deprecated() {
     // `int|float` and `array|string` both have a member null coerces to, so the
     // reference deprecates and runs; a bare `array` has none and is a TypeError.
+    // `number_format`'s deprecation names only `float` (php 8.5.11), while its
+    // TypeError for a string still says `int|float`.
     let src = r#"<?php var_dump(number_format(null));"#;
     assert_eq!(
         eval_capture(src).expect("eval"),
-        "\nDeprecated: number_format(): Passing null to parameter #1 ($num) of type int|float \
+        "\nDeprecated: number_format(): Passing null to parameter #1 ($num) of type float \
          is deprecated in Command line code on line 1\nstring(1) \"0\"\n"
     );
 }

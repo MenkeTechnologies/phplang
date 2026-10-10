@@ -344,3 +344,91 @@ fn check_and_internal_encoding() {
         "bool(true)\nUTF-8"
     );
 }
+
+#[test]
+fn mb_trim_family_strips_unicode_whitespace_or_a_character_set() {
+    // Default set: NUL and Unicode White_Space (U+3000, U+00A0, U+2003 …).
+    assert_eq!(
+        run(r#"<?php var_dump(mb_trim("\u{3000}x\u{a0}\u{2003}"), mb_trim("\0 x \0"));"#),
+        "string(1) \"x\"\nstring(1) \"x\"\n"
+    );
+    assert_eq!(
+        run(r#"<?php var_dump(mb_ltrim("  héllo  "), mb_rtrim("  héllo  "));"#),
+        "string(8) \"héllo  \"\nstring(8) \"  héllo\"\n"
+    );
+    // The character list is a set of code points: `a-b` is three characters, not
+    // a range, and an empty list strips nothing.
+    assert_eq!(
+        run(
+            r#"<?php var_dump(mb_trim("abcba", "a-b"), mb_trim("éaé", "é"), mb_trim("hello", ""));"#
+        ),
+        "string(1) \"c\"\nstring(1) \"a\"\nstring(5) \"hello\"\n"
+    );
+    assert_eq!(
+        run(
+            r#"<?php try { mb_trim("a", "a", "nope"); } catch (ValueError $e) { echo $e->getMessage(); }"#
+        ),
+        "mb_trim(): Argument #3 ($encoding) must be a valid encoding, \"nope\" given"
+    );
+}
+
+#[test]
+fn mb_strstr_family_compares_by_code_point() {
+    assert_eq!(
+        run(
+            r#"<?php var_dump(mb_strstr("héllo wörld", "wö"), mb_strstr("héllo wörld", "wö", true), mb_strstr("abc", "z"));"#
+        ),
+        "string(6) \"wörld\"\nstring(7) \"héllo \"\nbool(false)\n"
+    );
+    assert_eq!(
+        run(
+            r#"<?php var_dump(mb_stristr("héLLo", "ll"), mb_strrchr("a/b/c", "/", true), mb_strrichr("aXbxc", "x"));"#
+        ),
+        "string(3) \"LLo\"\nstring(3) \"a/b\"\nstring(2) \"xc\"\n"
+    );
+}
+
+#[test]
+fn mb_strimwidth_counts_columns_and_validates_its_offsets() {
+    // Wide characters are two columns; the marker's own width comes off the budget.
+    assert_eq!(
+        run(
+            r#"<?php var_dump(mb_strimwidth("日本語テキスト", 0, 8, "…"), mb_strimwidth("Hello World", 0, 10, "..."));"#
+        ),
+        "string(12) \"日本語…\"\nstring(10) \"Hello W...\"\n"
+    );
+    // A negative width is deprecated in 8.5 and is relative to the string's width.
+    let out = run(r#"<?php var_dump(mb_strimwidth("Hello World", -2, -1, ""));"#);
+    assert!(out.ends_with("string(1) \"l\"\n"), "{out}");
+    assert!(out.contains("passing a negative integer to argument #3 ($width) is deprecated"));
+    assert_eq!(
+        run(
+            r#"<?php try { mb_strimwidth("abc", 10, 1); } catch (ValueError $e) { echo $e->getMessage(); }"#
+        ),
+        "mb_strimwidth(): Argument #2 ($start) is out of range"
+    );
+}
+
+#[test]
+fn numeric_entities_round_trip_through_a_conversion_map() {
+    assert_eq!(
+        run(
+            r#"<?php echo mb_encode_numericentity("aé日", [0x80, 0x10ffff, 0, 0xffffff]), "|", mb_encode_numericentity("aé", [0x80, 0xff, 0, 0xff], "UTF-8", true);"#
+        ),
+        "a&#233;&#26085;|a&#xE9;"
+    );
+    // The offset is added on the way out and subtracted on the way in; an entity
+    // outside every range, and an uppercase `&#X`, stay as written.
+    assert_eq!(
+        run(
+            r#"<?php echo mb_encode_numericentity("abc", [0x61, 0x62, 1, 0xff]), "|", mb_decode_numericentity("&#98;&#x61;&#X62;&#100", [0x61, 0x63, 1, 0xff]);"#
+        ),
+        "&#98;&#99;c|a&#x61;&#X62;c"
+    );
+    assert_eq!(
+        run(
+            r#"<?php try { mb_encode_numericentity("a", [1, 2, 3]); } catch (ValueError $e) { echo $e->getMessage(); }"#
+        ),
+        "mb_encode_numericentity(): Argument #2 ($map) must have a multiple of 4 elements"
+    );
+}

@@ -505,6 +505,38 @@ fn the_swap_decides_which_operand_warns_first() {
     );
 }
 
+/// The reference specialises a commutative handler with the lower-ranked operand
+/// (const < tmp < var < cv) in the second slot, so the swap is not limited to a
+/// scalar literal on the left: an array literal, a temporary or a call result
+/// against a plain variable swaps too, and a call against a call does not.
+#[test]
+fn the_swap_follows_operand_class_not_only_literals() {
+    let t = |expr: &str| {
+        run(&format!(
+            r#"<?php function f() {{ return [1]; }} function g() {{ return 2; }} $x = 2; $y = 3; $a = [1]; try {{ $r = {expr}; }} catch (TypeError $e) {{ echo $e->getMessage(); }}"#
+        ))
+    };
+    // literal array, temporary and call against a variable: swapped
+    assert_eq!(t("[1] * $x"), "Unsupported operand types: int * array");
+    assert_eq!(t("[$y] | $x"), "Unsupported operand types: int | array");
+    assert_eq!(t("f() * $x"), "Unsupported operand types: int * array");
+    assert_eq!(
+        t("($a + $a) & $x"),
+        "Unsupported operand types: int & array"
+    );
+    // variable against variable, and a variable on the left: source order
+    assert_eq!(t("$a * $x"), "Unsupported operand types: array * int");
+    assert_eq!(t("$a * f()"), "Unsupported operand types: array * array");
+    // a temporary against a call result: the call is the higher class, swapped
+    assert_eq!(t("[$y] * g()"), "Unsupported operand types: int * array");
+    // a call against a temporary, and `+`, which is never swapped
+    assert_eq!(
+        t("f() * ($x + 0)"),
+        "Unsupported operand types: array * int"
+    );
+    assert_eq!(t("[$y] + $x"), "Unsupported operand types: array + int");
+}
+
 // ── PHP_INT_MIN / -1: the four operations that overflow on it ────────────────
 
 /// `PHP_INT_MIN` divided by `-1` is the one case where the exact answer is one

@@ -1887,3 +1887,64 @@ foreach ($cases as $src) {
 #==#
 // `break` with a non-integer operand is a compile-time Fatal error, not a ParseError.
 while (1) { break $z; }
+#==#
+// The commutative handlers (`*`, `|`, `&`, `^`) are specialised with the
+// lower-ranked operand class (const < tmp < var < cv) in the SECOND slot, so the
+// operand order in an `Unsupported operand types` message follows the operand
+// classes, not just a literal on the left.
+function f() { return [1]; } function g() { return 2; }
+$x = 2; $y = 3; $a = [1];
+$cases = [
+  fn() => [1] * $x, fn() => [$y] | $x, fn() => f() * $x, fn() => ($a + $a) & $x,
+  fn() => $a * $x, fn() => $a * f(), fn() => [$y] * g(), fn() => f() * ($x + 0),
+  fn() => [$y] + $x, fn() => 1 * $a, fn() => $a ^ 1, fn() => [1] - $x,
+];
+foreach ($cases as $i => $c) {
+  try { $c(); } catch (TypeError $e) { echo $i, ' ', $e->getMessage(), "\n"; }
+}
+#==#
+// Typed class constants (8.3), their compile-time literal check, and the
+// float widening of an int literal.
+class A { const float F = 1; const ?int N = null; const int|string U = 'u'; const int X = -1, Y = 2; public float $p = 3; public ?float $q = -4; }
+var_dump(A::F, A::N, A::U, A::X, A::Y, (new A)->p, (new A)->q);
+foreach (['class B { const int X = "a"; }', 'class B { const int|string X = 1.5; }', 'class B { const void X = 1; }',
+          'class B { public int $x = "a"; }', 'class B { public int $x = null; }', 'class B { public iterable $x = 1; }',
+          'class B { const bool X = 1; }', 'class B { const self X = 1; }'] as $src) {
+  echo "---\n"; eval($src);
+}
+#==#
+// Dynamic class constant fetch (8.3): `Class::{expr}`, through a class name, an
+// object, an instance of a subclass and the scope keywords.
+class A { const X = 1; static function f($n) { return self::{$n}; } }
+class B extends A { const X = 2; function g($n) { return [static::{$n}, parent::{$n}]; } }
+enum E { case One; case Two; }
+$n = 'X'; $c = 'B'; $o = new B;
+echo A::f($n), B::{$n}, $c::{$n}, $o::{$n}, implode(',', $o->g($n)), "\n";
+$k = 'Two'; var_dump(E::{$k});
+try { echo A::{'NOPE'}; } catch (Error $e) { echo get_class($e), ': ', $e->getMessage(), "\n"; }
+#==#
+// mb_trim / mb_ltrim / mb_rtrim (8.4): default Unicode whitespace set, a
+// character SET (no ranges), and the encoding argument check.
+var_dump(mb_trim("\u{3000}x\u{a0}\u{2003}"), mb_trim("\0 x \0"), mb_ltrim("  h\u{e9}llo  "), mb_rtrim("  h\u{e9}llo  "));
+var_dump(mb_trim("abcba", "a-b"), mb_trim("\u{e9}a\u{e9}", "\u{e9}"), mb_trim("hello", ""), mb_trim(""), mb_trim("\u{85}x\u{2028}"));
+try { mb_trim("a", "a", "nope"); } catch (ValueError $e) { echo $e->getMessage(), "\n"; }
+#==#
+// mb_strstr / mb_stristr / mb_strrchr / mb_strrichr / mb_strimwidth.
+var_dump(mb_strstr("h\u{e9}llo w\u{f6}rld", "w\u{f6}"), mb_strstr("h\u{e9}llo w\u{f6}rld", "w\u{f6}", true), mb_strstr("abc", "z"), mb_strstr("abc", ""));
+var_dump(mb_stristr("h\u{e9}LLo", "ll"), mb_stristr("h\u{e9}LLo", "ll", true), mb_strrchr("a/b/c", "/"), mb_strrchr("a/b/c", "/", true), mb_strrichr("aXbxc", "x"));
+var_dump(mb_strimwidth("Hello World", 0, 10, "..."), mb_strimwidth("Hello", 0, 10, "..."), mb_strimwidth("\u{65e5}\u{672c}\u{8a9e}\u{30c6}\u{30ad}\u{30b9}\u{30c8}", 0, 8, "\u{2026}"));
+var_dump(mb_strimwidth("Hello World", 3, 5), mb_strimwidth("Hello World", -5, 4, "~"), mb_strimwidth("Hello World", -2, -1, ""));
+try { mb_strimwidth("abc", 10, 1); } catch (ValueError $e) { echo $e->getMessage(), "\n"; }
+#==#
+// mb_encode_numericentity / mb_decode_numericentity.
+var_dump(mb_encode_numericentity("a\u{e9}\u{65e5}", [0x80, 0x10ffff, 0, 0xffffff], "UTF-8"));
+var_dump(mb_encode_numericentity("a\u{e9}", [0x80, 0xff, 0, 0xff], "UTF-8", true));
+var_dump(mb_encode_numericentity("abc", [0x61, 0x62, 1, 0xff]), mb_encode_numericentity("abc", [0x61, 0x62, 0, 0xff, 0x63, 0x63, 5, 0xffff]));
+var_dump(mb_decode_numericentity("&#97;&#98;&#99;&#100", [0x61, 0x63, 0, 0xff]), mb_decode_numericentity("&#x61;&#X62;&#99;", [0x61, 0x63, 0, 0xff]));
+var_dump(mb_decode_numericentity("&#0000097;&#+97;&# 97;&#97 ;", [0x61, 0x63, 0, 0xff]), mb_decode_numericentity("&#97;&#98;", [0x61, 0x63, -1, 0xff]));
+try { mb_encode_numericentity("a", [1, 2, 3]); } catch (ValueError $e) { echo $e->getMessage(), "\n"; }
+#==#
+// A null passed to number_format's first parameter is deprecated as `float`,
+// while a non-numeric string is a TypeError naming `int|float`.
+var_dump(number_format(null, 1));
+try { number_format("a"); } catch (TypeError $e) { echo $e->getMessage(), "\n"; }

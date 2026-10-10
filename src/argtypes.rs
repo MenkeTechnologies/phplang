@@ -169,6 +169,14 @@ pub fn check_call(name: &str, args: &[Value], stop_at: u32) -> Result<(), String
                 .split('|')
                 .any(|m| matches!(m, "string" | "int" | "float" | "bool"));
             if scalar && !ty.starts_with('?') {
+                // `number_format` is the one `int|float` parameter whose null
+                // deprecation names only `float` (its TypeError still says
+                // `int|float`).
+                let ty = if name.eq_ignore_ascii_case("number_format") && argno == 1 {
+                    "float"
+                } else {
+                    ty
+                };
                 host::with_host(|h| {
                     h.deprecated(format!(
                         "{name}(): Passing null to parameter #{argno} (${pname}) of type {ty} is deprecated"
@@ -954,8 +962,25 @@ static PARAMS: &[(&str, Params)] = &[
         ],
     ),
     (
+        "mb_decode_numericentity",
+        &[
+            (1, "string", "string"),
+            (2, "map", "array"),
+            (3, "encoding", "?string"),
+        ],
+    ),
+    (
         "mb_detect_encoding",
         &[(1, "string", "string"), (3, "strict", "bool")],
+    ),
+    (
+        "mb_encode_numericentity",
+        &[
+            (1, "string", "string"),
+            (2, "map", "array"),
+            (3, "encoding", "?string"),
+            (4, "hex", "bool"),
+        ],
     ),
     ("mb_internal_encoding", &[(1, "encoding", "?string")]),
     (
@@ -963,8 +988,24 @@ static PARAMS: &[(&str, Params)] = &[
         &[(1, "string", "string"), (2, "encoding", "?string")],
     ),
     (
+        "mb_ltrim",
+        &[
+            (1, "string", "string"),
+            (2, "characters", "?string"),
+            (3, "encoding", "?string"),
+        ],
+    ),
+    (
         "mb_ord",
         &[(1, "string", "string"), (2, "encoding", "?string")],
+    ),
+    (
+        "mb_rtrim",
+        &[
+            (1, "string", "string"),
+            (2, "characters", "?string"),
+            (3, "encoding", "?string"),
+        ],
     ),
     (
         "mb_scrub",
@@ -1006,11 +1047,30 @@ static PARAMS: &[(&str, Params)] = &[
         ],
     ),
     (
+        "mb_strimwidth",
+        &[
+            (1, "string", "string"),
+            (2, "start", "int"),
+            (3, "width", "int"),
+            (4, "trim_marker", "string"),
+            (5, "encoding", "?string"),
+        ],
+    ),
+    (
         "mb_stripos",
         &[
             (1, "haystack", "string"),
             (2, "needle", "string"),
             (3, "offset", "int"),
+            (4, "encoding", "?string"),
+        ],
+    ),
+    (
+        "mb_stristr",
+        &[
+            (1, "haystack", "string"),
+            (2, "needle", "string"),
+            (3, "before_needle", "bool"),
             (4, "encoding", "?string"),
         ],
     ),
@@ -1024,6 +1084,24 @@ static PARAMS: &[(&str, Params)] = &[
             (1, "haystack", "string"),
             (2, "needle", "string"),
             (3, "offset", "int"),
+            (4, "encoding", "?string"),
+        ],
+    ),
+    (
+        "mb_strrchr",
+        &[
+            (1, "haystack", "string"),
+            (2, "needle", "string"),
+            (3, "before_needle", "bool"),
+            (4, "encoding", "?string"),
+        ],
+    ),
+    (
+        "mb_strrichr",
+        &[
+            (1, "haystack", "string"),
+            (2, "needle", "string"),
+            (3, "before_needle", "bool"),
             (4, "encoding", "?string"),
         ],
     ),
@@ -1042,6 +1120,15 @@ static PARAMS: &[(&str, Params)] = &[
             (1, "haystack", "string"),
             (2, "needle", "string"),
             (3, "offset", "int"),
+            (4, "encoding", "?string"),
+        ],
+    ),
+    (
+        "mb_strstr",
+        &[
+            (1, "haystack", "string"),
+            (2, "needle", "string"),
+            (3, "before_needle", "bool"),
             (4, "encoding", "?string"),
         ],
     ),
@@ -1071,6 +1158,14 @@ static PARAMS: &[(&str, Params)] = &[
         &[
             (1, "haystack", "string"),
             (2, "needle", "string"),
+            (3, "encoding", "?string"),
+        ],
+    ),
+    (
+        "mb_trim",
+        &[
+            (1, "string", "string"),
+            (2, "characters", "?string"),
             (3, "encoding", "?string"),
         ],
     ),

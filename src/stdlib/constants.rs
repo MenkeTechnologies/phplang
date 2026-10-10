@@ -42,7 +42,25 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
                 // `class_const` raises the reference's own two messages here:
                 // `Undefined constant C::K` (unquoted, unlike the bare-name
                 // form) and `Class "Nope" not found`.
-                return Some(crate::host::class_const(class, konst));
+                // `self`, `static` and `parent` name the calling scope's classes.
+                let resolved = with_host(|h| {
+                    let scope = h.magic_class();
+                    if scope.is_empty() {
+                        None
+                    } else if class.eq_ignore_ascii_case("self") {
+                        Some(scope)
+                    } else if class.eq_ignore_ascii_case("static") {
+                        Some(h.lsb_class(&scope))
+                    } else if class.eq_ignore_ascii_case("parent") {
+                        h.class_parent(&scope)
+                    } else {
+                        None
+                    }
+                });
+                return Some(crate::host::class_const(
+                    resolved.as_deref().unwrap_or(class),
+                    konst,
+                ));
             }
             Some(match with_host(|h| h.const_fetch(&cname)) {
                 Some(v) => Ok(v),

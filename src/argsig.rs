@@ -515,7 +515,7 @@ use Def::{Bool, EmptyArray, Float, Int, Null, Required, Str, Unknown};
 /// default in this generated table is a literal too.
 #[allow(clippy::approx_constant)]
 static SIGS: &[(&str, Sig)] = &[
-    // generated: 585 functions
+    // generated: 595 functions
     (
         "abs",
         Sig {
@@ -4037,6 +4037,18 @@ static SIGS: &[(&str, Sig)] = &[
         },
     ),
     (
+        "mb_decode_numericentity",
+        Sig {
+            req: 2,
+            params: &[
+                p("string", Required, "string"),
+                p("map", Required, "array"),
+                p("encoding", Null, "?string"),
+            ],
+            variadic: false,
+        },
+    ),
+    (
         "mb_detect_encoding",
         Sig {
             req: 1,
@@ -4044,6 +4056,19 @@ static SIGS: &[(&str, Sig)] = &[
                 p("string", Required, "string"),
                 p("encodings", Null, "array|string|null"),
                 p("strict", Bool(false), "bool"),
+            ],
+            variadic: false,
+        },
+    ),
+    (
+        "mb_encode_numericentity",
+        Sig {
+            req: 2,
+            params: &[
+                p("string", Required, "string"),
+                p("map", Required, "array"),
+                p("encoding", Null, "?string"),
+                p("hex", Bool(false), "bool"),
             ],
             variadic: false,
         },
@@ -4068,11 +4093,35 @@ static SIGS: &[(&str, Sig)] = &[
         },
     ),
     (
+        "mb_ltrim",
+        Sig {
+            req: 1,
+            params: &[
+                p("string", Required, "string"),
+                p("characters", Null, "?string"),
+                p("encoding", Null, "?string"),
+            ],
+            variadic: false,
+        },
+    ),
+    (
         "mb_ord",
         Sig {
             req: 1,
             params: &[
                 p("string", Required, "string"),
+                p("encoding", Null, "?string"),
+            ],
+            variadic: false,
+        },
+    ),
+    (
+        "mb_rtrim",
+        Sig {
+            req: 1,
+            params: &[
+                p("string", Required, "string"),
+                p("characters", Null, "?string"),
                 p("encoding", Null, "?string"),
             ],
             variadic: false,
@@ -4141,6 +4190,20 @@ static SIGS: &[(&str, Sig)] = &[
         },
     ),
     (
+        "mb_strimwidth",
+        Sig {
+            req: 3,
+            params: &[
+                p("string", Required, "string"),
+                p("start", Required, "int"),
+                p("width", Required, "int"),
+                p("trim_marker", Str(""), "string"),
+                p("encoding", Null, "?string"),
+            ],
+            variadic: false,
+        },
+    ),
+    (
         "mb_stripos",
         Sig {
             req: 2,
@@ -4148,6 +4211,19 @@ static SIGS: &[(&str, Sig)] = &[
                 p("haystack", Required, "string"),
                 p("needle", Required, "string"),
                 p("offset", Int(0), "int"),
+                p("encoding", Null, "?string"),
+            ],
+            variadic: false,
+        },
+    ),
+    (
+        "mb_stristr",
+        Sig {
+            req: 2,
+            params: &[
+                p("haystack", Required, "string"),
+                p("needle", Required, "string"),
+                p("before_needle", Bool(false), "bool"),
                 p("encoding", Null, "?string"),
             ],
             variadic: false,
@@ -4178,6 +4254,32 @@ static SIGS: &[(&str, Sig)] = &[
         },
     ),
     (
+        "mb_strrchr",
+        Sig {
+            req: 2,
+            params: &[
+                p("haystack", Required, "string"),
+                p("needle", Required, "string"),
+                p("before_needle", Bool(false), "bool"),
+                p("encoding", Null, "?string"),
+            ],
+            variadic: false,
+        },
+    ),
+    (
+        "mb_strrichr",
+        Sig {
+            req: 2,
+            params: &[
+                p("haystack", Required, "string"),
+                p("needle", Required, "string"),
+                p("before_needle", Bool(false), "bool"),
+                p("encoding", Null, "?string"),
+            ],
+            variadic: false,
+        },
+    ),
+    (
         "mb_strripos",
         Sig {
             req: 2,
@@ -4198,6 +4300,19 @@ static SIGS: &[(&str, Sig)] = &[
                 p("haystack", Required, "string"),
                 p("needle", Required, "string"),
                 p("offset", Int(0), "int"),
+                p("encoding", Null, "?string"),
+            ],
+            variadic: false,
+        },
+    ),
+    (
+        "mb_strstr",
+        Sig {
+            req: 2,
+            params: &[
+                p("haystack", Required, "string"),
+                p("needle", Required, "string"),
+                p("before_needle", Bool(false), "bool"),
                 p("encoding", Null, "?string"),
             ],
             variadic: false,
@@ -4256,6 +4371,18 @@ static SIGS: &[(&str, Sig)] = &[
             params: &[
                 p("haystack", Required, "string"),
                 p("needle", Required, "string"),
+                p("encoding", Null, "?string"),
+            ],
+            variadic: false,
+        },
+    ),
+    (
+        "mb_trim",
+        Sig {
+            req: 1,
+            params: &[
+                p("string", Required, "string"),
+                p("characters", Null, "?string"),
                 p("encoding", Null, "?string"),
             ],
             variadic: false,

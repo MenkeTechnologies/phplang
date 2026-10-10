@@ -26,6 +26,42 @@ comment above it.
 
 ---
 
+## Round 23 — differential sweep: operand classes, typed constants, mbstring
+
+Measured under `PHP 8.5.11 (cli)`. Found by a fresh `parity-fuzz` baseline, a
+language-feature sweep over PHP 8.2-8.5 additions, and a cross-reference of
+`get_defined_functions()` against `function_exists()`. Each fix has a block in
+`tests/data/parity_corpus.php`.
+
+* **Operand order of `*`, `|`, `&`, `^` follows operand classes.** The
+  reference specialises a commutative handler with the lower-ranked operand
+  (constant < temporary < call result < plain variable) in the second slot, so
+  `[1] * $x`, `f() * $x` and `[$y] * g()` report `int * array`, while `$a * f()`
+  and `f() * ($x + 0)` keep source order. Only a scalar literal on the left was
+  modelled before. Calls the reference folds or compiles to a dedicated opcode
+  are classified separately.
+* **Typed class constants (8.3).** `const int X = 1;`, `final public const
+  ?string S = null;` and typed constants in interfaces and enums parse; a
+  literal initialiser the type refuses is the compile-time `Cannot use string as
+  value for class constant A::X of type int`, `void`/`never`/`callable` are
+  refused, and an `int` literal under a `float` type holds `1.0`.
+* **Typed property defaults are checked at compile time.** `public int $x =
+  "a";` is `Cannot use string as default value for property A::$x of type int`,
+  and `public int $x = null;` is the reference's `may not be null` fatal with
+  the nullable spelling. `public float $x = 1;` holds a float.
+* **Dynamic class constant fetch (8.3)**, `A::{$name}`, `$obj::{$name}` and
+  `static::{$name}`. `constant("self::X")`, `"static::X"` and `"parent::X"`
+  resolve against the calling scope.
+* **`mb_trim`, `mb_ltrim`, `mb_rtrim` (8.4), `mb_strstr`, `mb_stristr`,
+  `mb_strrchr`, `mb_strrichr`, `mb_strimwidth`, `mb_encode_numericentity` and
+  `mb_decode_numericentity`** were missing. `mb_strimwidth` deprecates a
+  negative width (8.5).
+* **`number_format(null)`** deprecates the parameter as `float`, not
+  `int|float`. The pinned expectation in `tests/builtin_arity.rs` said
+  `int|float`; the reference prints `float`.
+
+---
+
 ## Round 22 — differential sweep: parse errors, traces, GMP, hashing, fnmatch
 
 Measured under `PHP 8.5.11 (cli) (built: Sep 22 2026 13:32:06) (NTS)`. Found by

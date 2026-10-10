@@ -3352,6 +3352,76 @@ fn gen_substrx(seed: u64) -> Vec<String> {
     ]
 }
 
+/// `mb_trim` family, `mb_strstr` family and `mb_strimwidth` over multibyte
+/// subjects: the default whitespace set, a character SET argument (no ranges),
+/// before-needle, case folding, and the start/width sign matrix.
+fn gen_mbx(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let subject = *r.pick(&[
+        "\"  h\u{e9}llo  \"",
+        "\"\u{3000}x\u{a0}\u{2003}\"",
+        "\"\\0 a \\0\"",
+        "\"xxh\u{e9}xx\"",
+        "\"\u{65e5}\u{672c}\u{8a9e}abc\"",
+        "\"Hello World\"",
+        "\"\"",
+        "\"a/b/c\"",
+        "\"h\u{c9}LLo\"",
+    ]);
+    let chars = *r.pick(&["null", "\"x\"", "\" \"", "\"\u{e9}h\"", "\"a-b\"", "\"\""]);
+    let needle = *r.pick(&[
+        "\"l\"",
+        "\"/\"",
+        "\"\u{e9}\"",
+        "\"LL\"",
+        "\"\"",
+        "\"zz\"",
+        "\"\u{672c}\"",
+    ]);
+    let before = *r.pick(&["true", "false"]);
+    let start = *r.pick(&["0", "1", "3", "-2", "-100", "100"]);
+    let width = *r.pick(&["0", "3", "5", "8", "-1", "-3", "100"]);
+    let marker = *r.pick(&["\"\"", "\"...\"", "\"\u{2026}\"", "\".\""]);
+    let map = *r.pick(&[
+        "[0x80, 0x10ffff, 0, 0xffffff]",
+        "[0x61, 0x62, 1, 0xff]",
+        "[0x61, 0x7a, 0x100, 0xff]",
+        "[0x61, 0x62, 0, 0xff, 0x6c, 0x6c, 5, 0xffff]",
+        "[0x80, 0xff, 0, 0xff]",
+        "[0, 0x7f, -1, 0xffff]",
+    ]);
+    let entities = *r.pick(&[
+        "\"&#233;&#26085;&#97;\"",
+        "\"&#x61;&#x62;&#X63;\"",
+        "\"&#98;x&#99 y&#100\"",
+        "\"&#0000097;&#+97;&# 97;\"",
+        "\"a&b&#;&#x;&#\"",
+        "\"&#108;&#113;&#107;\"",
+    ]);
+    let guard = |call: String| {
+        format!(
+            "try {{ var_dump({call}); }} \
+             catch (Throwable $e) {{ echo get_class($e), ': ', $e->getMessage(), \"\\n\"; }}"
+        )
+    };
+    vec![
+        guard(format!("mb_trim({subject}, {chars})")),
+        guard(format!("mb_ltrim({subject}, {chars})")),
+        guard(format!("mb_rtrim({subject}, {chars})")),
+        guard(format!("mb_strstr({subject}, {needle}, {before})")),
+        guard(format!("mb_stristr({subject}, {needle}, {before})")),
+        guard(format!("mb_strrchr({subject}, {needle}, {before})")),
+        guard(format!("mb_strrichr({subject}, {needle}, {before})")),
+        guard(format!(
+            "mb_strimwidth({subject}, {start}, {width}, {marker})"
+        )),
+        guard(format!(
+            "mb_encode_numericentity({subject}, {map}, 'UTF-8', {before})"
+        )),
+        guard(format!("mb_decode_numericentity({entities}, {map})")),
+    ]
+}
+
 /// The recursive array pair (`array_replace_recursive`, `array_walk_recursive`)
 /// and the `array_sum`/`array_product` fold. The fold's entries are chosen to
 /// straddle the three outcomes upstream distinguishes: a clean number, a
@@ -4576,6 +4646,10 @@ struct Mode {
 }
 
 const MODES: &[Mode] = &[
+    Mode {
+        name: "mbx",
+        gen: gen_mbx,
+    },
     Mode {
         name: "funcargs",
         gen: gen_funcargs,

@@ -54,6 +54,16 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         "mb_detect_encoding" => mb_detect_encoding(args),
         "mb_check_encoding" => Value::bool(mb_check_encoding(args)),
         "mb_internal_encoding" => mb_internal_encoding(args),
+        "mb_trim" => return Some(mb_trim(args, "mb_trim", true, true)),
+        "mb_ltrim" => return Some(mb_trim(args, "mb_ltrim", true, false)),
+        "mb_rtrim" => return Some(mb_trim(args, "mb_rtrim", false, true)),
+        "mb_strstr" => return Some(mb_strstr(args, "mb_strstr", false, false)),
+        "mb_stristr" => return Some(mb_strstr(args, "mb_stristr", true, false)),
+        "mb_strrchr" => return Some(mb_strstr(args, "mb_strrchr", false, true)),
+        "mb_strrichr" => return Some(mb_strstr(args, "mb_strrichr", true, true)),
+        "mb_strimwidth" => return Some(mb_strimwidth(args)),
+        "mb_encode_numericentity" => return Some(mb_encode_numericentity(args)),
+        "mb_decode_numericentity" => return Some(mb_decode_numericentity(args)),
         _ => return None,
     };
     Some(Ok(v))
@@ -691,4 +701,322 @@ fn normalize_encoding(name: &str) -> String {
         "ISO-8859-1" | "LATIN1" | "LATIN-1" | "ISO8859-1" => "ISO-8859-1".to_string(),
         other => other.to_string(),
     }
+}
+
+// ── trimming / sub-string extraction / width trimming ────────────────────────
+
+/// Every encoding name `mb_list_encodings()` reports for the reference build.
+/// Only used to refuse an unknown `$encoding` argument; the data itself is
+/// always treated as UTF-8 (see the module note).
+const KNOWN_ENCODINGS: &[&str] = &[
+    "BASE64",
+    "UUENCODE",
+    "HTML-ENTITIES",
+    "QUOTED-PRINTABLE",
+    "7BIT",
+    "8BIT",
+    "UCS-4",
+    "UCS-4BE",
+    "UCS-4LE",
+    "UCS-2",
+    "UCS-2BE",
+    "UCS-2LE",
+    "UTF-32",
+    "UTF-32BE",
+    "UTF-32LE",
+    "UTF-16",
+    "UTF-16BE",
+    "UTF-16LE",
+    "UTF-8",
+    "UTF-7",
+    "UTF7-IMAP",
+    "ASCII",
+    "EUC-JP",
+    "SJIS",
+    "EUCJP-WIN",
+    "EUC-JP-2004",
+    "SJIS-MOBILE#DOCOMO",
+    "SJIS-MOBILE#KDDI",
+    "SJIS-MOBILE#SOFTBANK",
+    "SJIS-MAC",
+    "SJIS-2004",
+    "UTF-8-MOBILE#DOCOMO",
+    "UTF-8-MOBILE#KDDI-A",
+    "UTF-8-MOBILE#KDDI-B",
+    "UTF-8-MOBILE#SOFTBANK",
+    "CP932",
+    "SJIS-WIN",
+    "CP51932",
+    "JIS",
+    "ISO-2022-JP",
+    "ISO-2022-JP-MS",
+    "GB18030",
+    "GB18030-2022",
+    "WINDOWS-1252",
+    "WINDOWS-1254",
+    "ISO-8859-1",
+    "ISO-8859-2",
+    "ISO-8859-3",
+    "ISO-8859-4",
+    "ISO-8859-5",
+    "ISO-8859-6",
+    "ISO-8859-7",
+    "ISO-8859-8",
+    "ISO-8859-9",
+    "ISO-8859-10",
+    "ISO-8859-13",
+    "ISO-8859-14",
+    "ISO-8859-15",
+    "ISO-8859-16",
+    "EUC-CN",
+    "CP936",
+    "HZ",
+    "EUC-TW",
+    "BIG-5",
+    "CP950",
+    "EUC-KR",
+    "UHC",
+    "ISO-2022-KR",
+    "WINDOWS-1251",
+    "CP866",
+    "KOI8-R",
+    "KOI8-U",
+    "ARMSCII-8",
+    "CP850",
+    "ISO-2022-JP-2004",
+    "ISO-2022-JP-MOBILE#KDDI",
+    "CP50220",
+    "CP50221",
+    "CP50222",
+];
+
+/// Refuse an `$encoding` argument (0-based index `at`) that names no encoding the
+/// reference knows, with its `ValueError`.
+fn check_encoding(fname: &str, args: &[Value], at: usize) -> Result<(), String> {
+    match args.get(at) {
+        None | Some(Value::Undef) => Ok(()),
+        Some(_) => {
+            let name = str_arg(args, at);
+            if KNOWN_ENCODINGS.contains(&name.to_ascii_uppercase().as_str()) {
+                Ok(())
+            } else {
+                Err(throws(
+                    "ValueError",
+                    format!(
+                        "{fname}(): Argument #{} ($encoding) must be a valid encoding, \"{name}\" given",
+                        at + 1
+                    ),
+                ))
+            }
+        }
+    }
+}
+
+/// The code points `mb_trim` strips when no character list is given: NUL and the
+/// Unicode `White_Space` set plus U+180E, as measured on the reference.
+fn is_default_trim_char(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x0000 | 0x0009..=0x000D | 0x0020 | 0x0085 | 0x00A0 | 0x1680 | 0x180E
+            | 0x2000..=0x200A | 0x2028 | 0x2029 | 0x202F | 0x205F | 0x3000
+    )
+}
+
+/// `mb_trim` / `mb_ltrim` / `mb_rtrim($string, $characters = null,
+/// $encoding = null)` (PHP 8.4). `$characters` is a SET of code points — there is
+/// no `..` range syntax as in `trim()`.
+fn mb_trim(args: &[Value], fname: &str, left: bool, right: bool) -> Result<Value, String> {
+    check_encoding(fname, args, 2)?;
+    let s = str_arg(args, 0);
+    let set: Option<Vec<char>> = match args.get(1) {
+        None | Some(Value::Undef) => None,
+        Some(_) => Some(str_arg(args, 1).chars().collect()),
+    };
+    let strip = |c: char| match &set {
+        None => is_default_trim_char(c),
+        Some(list) => list.contains(&c),
+    };
+    let mut out: &str = &s;
+    if left {
+        out = out.trim_start_matches(strip);
+    }
+    if right {
+        out = out.trim_end_matches(strip);
+    }
+    Ok(Value::str(out.to_string()))
+}
+
+/// `mb_strstr` / `mb_stristr` / `mb_strrchr` / `mb_strrichr($haystack, $needle,
+/// $before_needle = false, $encoding = null)`: the part of the haystack from (or
+/// before) the first / last occurrence of the whole needle, or `false`.
+fn mb_strstr(args: &[Value], fname: &str, ci: bool, last: bool) -> Result<Value, String> {
+    check_encoding(fname, args, 3)?;
+    let before = with_host(|h| h.is_truthy(&arg(args, 2)));
+    let hay: Vec<char> = str_arg(args, 0).chars().collect();
+    let (h_cmp, n_cmp) = ci_pair(args, ci);
+    let nlen = n_cmp.len();
+    if nlen > h_cmp.len() {
+        return Ok(Value::bool(false));
+    }
+    let matches_at = |i: usize| h_cmp[i..].starts_with(&n_cmp[..]);
+    let last_start = h_cmp.len() - nlen;
+    let found = if last {
+        (0..=last_start).rev().find(|&i| matches_at(i))
+    } else {
+        (0..=last_start).find(|&i| matches_at(i))
+    };
+    Ok(match found {
+        None => Value::bool(false),
+        Some(i) => {
+            let part: String = if before { &hay[..i] } else { &hay[i..] }.iter().collect();
+            Value::str(part)
+        }
+    })
+}
+
+/// `mb_strimwidth($string, $start, $width, $trim_marker = "", $encoding = null)`:
+/// the string from character `$start`, cut so that it (and the marker that
+/// replaces the cut part) fits in `$width` display columns.
+fn mb_strimwidth(args: &[Value]) -> Result<Value, String> {
+    check_encoding("mb_strimwidth", args, 4)?;
+    let chars: Vec<char> = str_arg(args, 0).chars().collect();
+    let mut start = int_arg(args, 1);
+    let mut width = int_arg(args, 2);
+    let marker = match args.get(3) {
+        None | Some(Value::Undef) => String::new(),
+        Some(_) => str_arg(args, 3),
+    };
+    let char_width = |c: char| mb_strwidth(&c.to_string()) as i64;
+    let total: i64 = chars.iter().map(|&c| char_width(c)).sum();
+    if start < 0 {
+        start += chars.len() as i64;
+    }
+    if start < 0 || start > chars.len() as i64 {
+        return Err(throws(
+            "ValueError",
+            "mb_strimwidth(): Argument #2 ($start) is out of range",
+        ));
+    }
+    if width < 0 {
+        with_host(|h| {
+            h.deprecated(
+                "mb_strimwidth(): passing a negative integer to argument #3 ($width) is deprecated",
+            )
+        });
+        let skipped: i64 = chars[..start as usize].iter().map(|&c| char_width(c)).sum();
+        width = total + width - skipped;
+    }
+    if width < 0 {
+        return Err(throws(
+            "ValueError",
+            "mb_strimwidth(): Argument #3 ($width) is out of range",
+        ));
+    }
+    let rest = &chars[start as usize..];
+    let rest_width: i64 = rest.iter().map(|&c| char_width(c)).sum();
+    if rest_width <= width {
+        return Ok(Value::str(rest.iter().collect::<String>()));
+    }
+    let marker_width = mb_strwidth(&marker) as i64;
+    let budget = (width - marker_width).max(0);
+    let mut out = String::new();
+    let mut used = 0;
+    for &c in rest {
+        let w = char_width(c);
+        if used + w > budget {
+            break;
+        }
+        used += w;
+        out.push(c);
+    }
+    out.push_str(&marker);
+    Ok(Value::str(out))
+}
+
+// ── numeric entities ─────────────────────────────────────────────────────────
+
+/// The `[start, end, offset, mask]` quadruples of a conversion map, or the
+/// reference's `ValueError` when the map's length is not a multiple of four.
+fn convmap(fname: &str, args: &[Value]) -> Result<Vec<[i64; 4]>, String> {
+    let pairs = with_host(|h| h.array_pairs(&arg(args, 1))).unwrap_or_default();
+    if pairs.len() % 4 != 0 {
+        return Err(throws(
+            "ValueError",
+            format!("{fname}(): Argument #2 ($map) must have a multiple of 4 elements"),
+        ));
+    }
+    let nums: Vec<i64> =
+        with_host(|h| pairs.iter().map(|(_, v)| h.to_number(v).to_int()).collect());
+    Ok(nums.chunks(4).map(|c| [c[0], c[1], c[2], c[3]]).collect())
+}
+
+/// `mb_encode_numericentity($string, $map, $encoding = null, $hex = false)`:
+/// every code point inside a map range becomes `&#N;` (or `&#xH;`) where `N` is
+/// `(code point + offset) & mask`.
+fn mb_encode_numericentity(args: &[Value]) -> Result<Value, String> {
+    let map = convmap("mb_encode_numericentity", args)?;
+    check_encoding("mb_encode_numericentity", args, 2)?;
+    let hex = with_host(|h| h.is_truthy(&arg(args, 3)));
+    let mut out = String::new();
+    for c in str_arg(args, 0).chars() {
+        let cp = c as i64;
+        match map.iter().find(|m| cp >= m[0] && cp <= m[1]) {
+            Some(m) => {
+                let n = ((cp + m[2]) & m[3]) as u64;
+                if hex {
+                    out.push_str(&format!("&#x{n:X};"));
+                } else {
+                    out.push_str(&format!("&#{n};"));
+                }
+            }
+            None => out.push(c),
+        }
+    }
+    Ok(Value::str(out))
+}
+
+/// `mb_decode_numericentity($string, $map, $encoding = null)`: the inverse. An
+/// entity is `&#` plus decimal digits, or `&#x` plus hex digits; its value minus
+/// the map offset must fall inside the range for it to become a character, and a
+/// terminating `;` is consumed only when the entity is decoded.
+fn mb_decode_numericentity(args: &[Value]) -> Result<Value, String> {
+    let map = convmap("mb_decode_numericentity", args)?;
+    check_encoding("mb_decode_numericentity", args, 2)?;
+    let s: Vec<char> = str_arg(args, 0).chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < s.len() {
+        if s[i] == '&' && s.get(i + 1) == Some(&'#') {
+            let hex = s.get(i + 2) == Some(&'x');
+            let radix = if hex { 16 } else { 10 };
+            let digits_at = i + 2 + usize::from(hex);
+            let digits: String = s[digits_at..]
+                .iter()
+                .take_while(|c| c.is_digit(radix))
+                .collect();
+            let max_digits = if hex { 8 } else { 10 };
+            if !digits.is_empty() && digits.len() <= max_digits {
+                if let Ok(n) = i64::from_str_radix(&digits, radix) {
+                    let end = digits_at + digits.len();
+                    let decoded = map
+                        .iter()
+                        .map(|m| (n - m[2], m))
+                        .find(|(v, m)| *v >= m[0] && *v <= m[1])
+                        .and_then(|(v, _)| u32::try_from(v).ok().and_then(char::from_u32));
+                    if let Some(c) = decoded {
+                        out.push(c);
+                        i = if s.get(end) == Some(&';') {
+                            end + 1
+                        } else {
+                            end
+                        };
+                        continue;
+                    }
+                }
+            }
+        }
+        out.push(s[i]);
+        i += 1;
+    }
+    Ok(Value::str(out))
 }

@@ -310,3 +310,72 @@ fn reading_this_with_no_object_bound_is_an_error() {
         thrown("Command line code(1): f()\n#1 {main}\n  thrown in Command line code on line 1")
     );
 }
+
+#[test]
+fn a_typed_constant_or_property_default_is_checked_at_compile_time() {
+    assert_eq!(
+        run_r(r#"echo 1; class A { const int X = "a"; }"#),
+        fatal("Cannot use string as value for class constant A::X of type int")
+    );
+    assert_eq!(
+        run_r("echo 1; class A { const int|string X = 1.5; }"),
+        fatal("Cannot use float as value for class constant A::X of type string|int")
+    );
+    assert_eq!(
+        run_r("echo 1; class A { const void X = 1; }"),
+        fatal("Class constant A::X cannot have type void")
+    );
+    assert_eq!(
+        run_r(r#"echo 1; class A { public int $x = "a"; }"#),
+        fatal("Cannot use string as default value for property A::$x of type int")
+    );
+    assert_eq!(
+        run_r("echo 1; class A { public int $x = null; }"),
+        fatal(
+            "Default value for property of type int may not be null. \
+             Use the nullable type ?int to allow null default value"
+        )
+    );
+    assert_eq!(
+        run_r("echo 1; class A { public iterable $x = 1; }"),
+        fatal("Cannot use int as default value for property A::$x of type Traversable|array")
+    );
+    // The fatal names the line of the first constant name, not of the keyword.
+    assert_eq!(
+        run_r("echo 1; class A {\n const int\n X = 1,\n Y = \"a\"; }"),
+        (
+            "\nFatal error: Cannot use string as value for class constant A::Y of type int \
+             in Command line code on line 3\nStack trace:\n#0 {main}\n"
+                .to_string(),
+            255
+        )
+    );
+}
+
+#[test]
+fn typed_constants_and_float_defaults_run() {
+    assert_eq!(
+        run_r(
+            "class A { const float F = 1; const ?int N = null; const int|string U = 'u'; \
+             const int X = -1, Y = 2; public float $p = 3; public ?float $q = -4; } \
+             $a = new A; var_dump(A::F, A::N, A::U, A::Y, $a->p, $a->q);"
+        ),
+        (
+            "float(1)\nNULL\nstring(1) \"u\"\nint(2)\nfloat(3)\nfloat(-4)\n".to_string(),
+            0
+        )
+    );
+}
+
+#[test]
+fn a_dynamic_class_constant_fetch_resolves_through_scope_keywords() {
+    assert_eq!(
+        run_r(
+            "class A { const X = 1; static function f($n) { return self::{$n}; } } \
+             class B extends A { const X = 2; function g($n) { return [static::{$n}, parent::{$n}]; } } \
+             $n = 'X'; $c = 'B'; $o = new B; \
+             echo A::f($n), B::{$n}, $c::{$n}, $o::{$n}, implode(',', $o->g($n));"
+        ),
+        ("1222".to_string() + "2,1", 0)
+    );
+}
