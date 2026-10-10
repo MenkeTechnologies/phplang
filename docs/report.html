@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="phplang — Engineering report. A compiled PHP runtime in Rust, hosted on the fusevm bytecode VM with a tracing Cranelift JIT over a PhpHost object heap. Architecture, value model, standard library, differential parity fuzzer, roadmap, and dependency posture. The first compiled standalone PHP runtime. MIT licensed.">
+  <meta name="description" content="phplang — Engineering report. A compiled PHP runtime in Rust, hosted on the fusevm bytecode VM with a tracing Cranelift JIT over a PhpHost object heap. Architecture, value model, standard library, differential parity fuzzer, roadmap, and dependency posture. MIT licensed.">
   <title>phplang &mdash; Engineering Report</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -54,7 +54,7 @@
             <span class="sep">/</span>
             <a href="https://github.com/MenkeTechnologies/phplang" target="_blank" rel="noopener noreferrer">GitHub</a>
           </nav>
-          <p class="docs-build-line">phplang v0.2.14 · PHP on fusevm · lex/parse → AST → bytecode → tracing Cranelift JIT · PhpHost object heap · first compiled standalone PHP runtime · MIT · in active development</p>
+          <p class="docs-build-line">phplang v0.2.14 · PHP on fusevm · lex/parse → AST → bytecode → tracing Cranelift JIT · PhpHost object heap · MIT · in active development</p>
         </div>
         <div class="tutorial-toolbar">
           <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
@@ -86,8 +86,8 @@
 
       <section class="tutorial-section">
         <h2>Summary</h2>
-        <p>Zend compiles PHP to its own opcodes and walks them in C. phplang takes a different path: it lexes and parses PHP to an AST, lowers that to <code>fusevm</code> bytecode, and runs it on a compiled VM with a tracing Cranelift JIT. Arithmetic lowers to native VM ops so the JIT can trace hot loops; PHP-specific behaviour is served by a <code>PhpHost</code> object heap through a numbered builtin-call protocol and a strict numeric hook. It joins <a href="https://github.com/MenkeTechnologies/fusevm">fusevm</a> alongside <code>zshrs</code>, <code>stryke</code>, <code>awkrs</code>, <code>pythonrs</code>, and <code>rubylang</code>, and reuses that shared bytecode VM and JIT rather than shipping its own.</p>
-        <p>To our knowledge it is the first compiled standalone PHP runtime. The binary is <code>php</code>. The current tree implements the two-mode lexer/parser, AST-to-bytecode lowering, scalars and casts, the full operator and comparison surface, ordered heap arrays, the control-flow constructs (including <code>match</code>), user functions with recursion, and a ~90-function standard library across strings, arrays, math, and type/util. Behaviour is checked against the reference <code>php</code> by a differential parity fuzzer. Classes, closures, references, exceptions, generators, bytecode caching, AOT, LSP, and DAP are planned — see the README for the honest ledger.</p>
+        <p>Zend compiles PHP to its own opcodes and walks them in C. phplang takes a different path: it lexes and parses PHP to an AST, lowers that to <code>fusevm</code> bytecode, and runs it on a compiled VM with a tracing Cranelift JIT. Arithmetic lowers to native VM ops so the JIT can trace hot loops; PHP-specific behaviour is served by a <code>PhpHost</code> object heap through a numbered builtin-call protocol and a strict numeric hook. It joins <a href="https://github.com/MenkeTechnologies/fusevm">fusevm</a> as a fusevm language host, and reuses that shared bytecode VM and JIT rather than shipping its own.</p>
+        <p>The binary is <code>php</code>. The current tree implements the two-mode lexer/parser, AST-to-bytecode lowering, scalars and casts, the full operator and comparison surface, ordered heap arrays, the control-flow constructs (including <code>match</code>), user functions with recursion, and a standard library across strings, arrays, math, and type/util. Behaviour is checked against the reference <code>php</code> by a differential parity fuzzer. Classes, closures, references, exceptions, generators, LSP, and DAP are implemented; persistent bytecode caching and AOT are not wired yet — see the README.</p>
       </section>
 
       <hr class="section-rule">
@@ -99,7 +99,7 @@
                                                         │
                                        PhpHost heap (arrays, builtins, CallBuiltin, numeric hook)</pre>
         <div class="feature-grid">
-          <div class="feature-card"><h4>Shared engine</h4><p>fusevm is pulled from crates.io with the <code>jit</code> feature. JIT and VM improvements land once and benefit zshrs, stryke, awkrs, pythonrs, rubylang, and phplang together.</p></div>
+          <div class="feature-card"><h4>Shared engine</h4><p>fusevm is pulled from crates.io with the <code>jit</code> feature. JIT and VM improvements land once and benefit every fusevm language host together.</p></div>
           <div class="feature-card"><h4>Native arithmetic</h4><p><code>+ - *</code> lower to native fusevm ops; a strict numeric hook (<code>src/builtins.rs</code>) supplies PHP coercion only for the non-numeric operand cases and <code>i64</code> overflow. <code>/ % **</code>, concatenation, and comparison lower to <code>CallBuiltin</code>.</p></div>
           <div class="feature-card"><h4>Two-mode lexer</h4><p>Inline HTML passes through verbatim; <code>&lt;?php … ?&gt;</code> and <code>&lt;?=</code> switch to code mode. Comment forms <code>#</code>, <code>//</code>, <code>/* */</code> and <code>$var</code> interpolation are handled at the lexer (<code>src/lexer.rs</code>).</p></div>
           <div class="feature-card"><h4>Ordered arrays</h4><p>PHP arrays are heap objects in <code>PhpHost</code> (<code>src/host.rs</code>) behind <code>Value::Obj(u32)</code> handles, backed by an <code>IndexMap</code> so insertion order is observable in <code>foreach</code>/<code>print_r</code>.</p></div>

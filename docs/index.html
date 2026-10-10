@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="phplang — PHP in Rust. A compiled PHP runtime: source lexed and parsed to an AST, lowered to fusevm bytecode, and run on the shared bytecode VM with a tracing Cranelift JIT over a PhpHost object heap. The first compiled standalone PHP runtime. The binary is php. MIT licensed.">
+  <meta name="description" content="phplang — PHP in Rust. A compiled PHP runtime: source lexed and parsed to an AST, lowered to fusevm bytecode, and run on the shared bytecode VM with a tracing Cranelift JIT over a PhpHost object heap. The binary is php. MIT licensed.">
   <title>phplang — Documentation</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -50,7 +50,7 @@
             <span class="sep">/</span>
             <a href="https://github.com/MenkeTechnologies/phplang" target="_blank" rel="noopener noreferrer">GitHub</a>
           </nav>
-          <p class="docs-build-line">phplang v0.2.14 · PHP on fusevm · lex/parse → AST → bytecode → tracing Cranelift JIT · PhpHost object heap · the first compiled standalone PHP runtime · binary <code>php</code> · a fusevm language host (with zshrs, stryke, awkrs, pythonrs, rubylang) · MIT · in active development</p>
+          <p class="docs-build-line">phplang v0.2.14 · PHP on fusevm · lex/parse → AST → bytecode → tracing Cranelift JIT · PhpHost object heap · binary <code>php</code> · a fusevm language host · MIT · in active development</p>
         </div>
         <div class="tutorial-toolbar">
           <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
@@ -72,12 +72,12 @@
 
     <main class="tutorial-main">
       <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>PHPLANG REFERENCE</h2>
-      <p class="tutorial-subtitle">A compiled PHP runtime written in Rust. Source is lexed and parsed to an AST, lowered to <code>fusevm</code> bytecode, and executed on the same language-agnostic VM + tracing Cranelift JIT that hosts <code>zshrs</code>, <code>stryke</code>, <code>awkrs</code>, <code>pythonrs</code>, and <code>rubylang</code>, over a <code>PhpHost</code> object heap. To our knowledge the first compiled standalone PHP runtime. The binary is <code>php</code>. <strong>In active development.</strong></p>
+      <p class="tutorial-subtitle">A compiled PHP runtime written in Rust. Source is lexed and parsed to an AST, lowered to <code>fusevm</code> bytecode, and executed on the same language-agnostic VM + tracing Cranelift JIT that hosts every fusevm language host, over a <code>PhpHost</code> object heap. The binary is <code>php</code>. <strong>In active development.</strong></p>
 
       <section class="tutorial-section">
         <h2>What it is</h2>
         <p><code>phplang</code> runs PHP programs as ordinary compiled bytecode: it lexes and parses the source in two modes (inline-HTML passthrough plus <code>&lt;?php … ?&gt;</code> code), lowers it to <code>fusevm</code> instructions, and lets the shared engine execute and JIT-compile them. There is no bespoke interpreter loop — arithmetic lowers to native fusevm ops so the tracing Cranelift JIT can compile hot loops, while PHP-specific behaviour (loose comparison, string↔number coercion, array semantics, the standard library) is served by the <code>PhpHost</code> object heap.</p>
-        <p>It is another language hosted on <a href="https://github.com/MenkeTechnologies/fusevm">fusevm</a>, the shared bytecode VM and Cranelift JIT behind <code>zshrs</code>, <code>stryke</code>, <code>awkrs</code>, <code>pythonrs</code>, and <code>rubylang</code>. phplang carries no VM or JIT of its own.</p>
+        <p>It is another language hosted on <a href="https://github.com/MenkeTechnologies/fusevm">fusevm</a>, the shared bytecode VM and Cranelift JIT behind every fusevm language host. phplang carries no VM or JIT of its own.</p>
       </section>
 
       <section class="tutorial-section">
@@ -178,7 +178,7 @@ cargo test</pre>
           <li><strong>Engineering report</strong> — <a href="report.html">report.html</a> (architecture, fusevm hosting, roadmap, dependency posture)</li>
           <li><strong>Source</strong> — <a href="https://github.com/MenkeTechnologies/phplang">github.com/MenkeTechnologies/phplang</a></li>
           <li><strong>Issues</strong> — <a href="https://github.com/MenkeTechnologies/phplang/issues">github.com/MenkeTechnologies/phplang/issues</a></li>
-          <li><strong>The shared VM</strong> — <a href="https://github.com/MenkeTechnologies/fusevm">fusevm</a> (also behind <code>zshrs</code>, <code>stryke</code>, <code>awkrs</code>, <code>pythonrs</code>, <code>rubylang</code>)</li>
+          <li><strong>The shared VM</strong> — <a href="https://github.com/MenkeTechnologies/fusevm">fusevm</a> (behind every fusevm language host)</li>
         </ul>
       </section>
     </main>

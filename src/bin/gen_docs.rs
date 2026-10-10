@@ -188,7 +188,7 @@ const HEAD: &str = r#"<!DOCTYPE html>
             <span class="sep">/</span>
             <a href="https://github.com/MenkeTechnologies/phplang" target="_blank" rel="noopener noreferrer">GitHub</a>
           </nav>
-          <p class="docs-build-line">phplang v__PHPLANG_VERSION__ · PHP on fusevm · lex/parse → AST → fusevm bytecode → Cranelift JIT · no bespoke VM · the first compiled standalone PHP runtime · MIT · in active development</p>
+          <p class="docs-build-line">phplang v__PHPLANG_VERSION__ · PHP on fusevm · lex/parse → AST → fusevm bytecode → Cranelift JIT · no bespoke VM · MIT · in active development</p>
         </div>
         <div class="tutorial-toolbar">
           <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
