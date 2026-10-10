@@ -9,9 +9,14 @@
 //!   * Any other integer is classified as its decimal-string representation.
 //!   * Any other value type yields `false`.
 //!
+//! A non-string argument additionally raises `Argument of type T will be
+//! interpreted as string in the future` (E_DEPRECATED, PHP 8.1+); the
+//! classification above is still what is returned.
+//!
 //! This mirrors PHP 8's `ext/ctype`, whose macros call the C `is*` functions on
 //! `unsigned char`, so only the ASCII range (< 0x80) can satisfy any class.
 
+use crate::host::with_host;
 use crate::stdlib::common::arg;
 use fusevm::Value;
 
@@ -57,9 +62,34 @@ fn c_punct(b: u8) -> bool {
     b.is_ascii_punctuation()
 }
 
+/// `zend_zval_type_name` spelling of a non-string argument, as the ctype
+/// deprecation prints it.
+fn zval_type_name(v: &Value) -> &'static str {
+    match v {
+        Value::Undef => "null",
+        Value::Bool(_) => "bool",
+        Value::Int(_) => "int",
+        Value::Float(_) => "float",
+        _ => match with_host(|h| h.type_name(v)) {
+            "array" => "array",
+            "object" => "object",
+            _ => "resource",
+        },
+    }
+}
+
 /// Apply `pred` under PHP `ctype` argument rules and return a PHP bool.
-fn classify(args: &[Value], pred: fn(u8) -> bool) -> Value {
-    let bytes: Vec<u8> = match arg(args, 0) {
+fn classify(name: &str, args: &[Value], pred: fn(u8) -> bool) -> Value {
+    let a = arg(args, 0);
+    if !matches!(a, Value::Str(_)) {
+        let ty = zval_type_name(&a);
+        with_host(|h| {
+            h.deprecated(format!(
+                "{name}(): Argument of type {ty} will be interpreted as string in the future"
+            ))
+        });
+    }
+    let bytes: Vec<u8> = match a {
         Value::Int(n) => {
             if (-128..=255).contains(&n) {
                 let code = if n < 0 { (n + 256) as u8 } else { n as u8 };
@@ -92,5 +122,5 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         "ctype_print" => c_print,
         _ => return None,
     };
-    Some(Ok(classify(args, pred)))
+    Some(Ok(classify(name, args, pred)))
 }

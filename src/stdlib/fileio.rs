@@ -49,8 +49,9 @@ fn php_basename(path: &str, suffix: &str) -> String {
 fn php_dirname_once(path: &str) -> String {
     let trimmed = path.trim_end_matches('/');
     if trimmed.is_empty() {
-        // All-slash input ("/", "//") → "/"; an empty string → ".".
-        return if path.is_empty() { "." } else { "/" }.to_string();
+        // All-slash input ("/", "//") → "/"; an empty string stays empty
+        // (zend_dirname returns early on a zero-length path).
+        return if path.is_empty() { "" } else { "/" }.to_string();
     }
     match trimmed.rfind('/') {
         Some(0) => "/".to_string(),
@@ -180,107 +181,188 @@ fn in_range(lo: char, hi: char, c: char, casefold: bool) -> bool {
     }
 }
 
-/// Match a single `char` against a `[...]` bracket expression at the head of
-/// `p` (`p[0] == '['`). Returns `(chars_consumed, matched)`, or `None` when the
-/// bracket is unterminated (in which case `[` is a literal character).
-fn match_bracket(p: &[char], c: char, casefold: bool) -> Option<(usize, bool)> {
-    let mut i = 1;
+/// `[:name:]` character classes of a bracket expression, tested without case
+/// folding (the reference's `[[:upper:]]` rejects `a` even under `FNM_CASEFOLD`).
+fn in_class(name: &str, c: char) -> Option<bool> {
+    Some(match name {
+        "alpha" => c.is_ascii_alphabetic(),
+        "digit" => c.is_ascii_digit(),
+        "alnum" => c.is_ascii_alphanumeric(),
+        "upper" => c.is_ascii_uppercase(),
+        "lower" => c.is_ascii_lowercase(),
+        "space" => matches!(c, ' ' | '\t' | '\n' | '\x0b' | '\x0c' | '\r'),
+        "blank" => matches!(c, ' ' | '\t'),
+        "punct" => c.is_ascii_punctuation(),
+        "print" => c == ' ' || c.is_ascii_graphic(),
+        "graph" => c.is_ascii_graphic(),
+        "cntrl" => c.is_ascii_control(),
+        "xdigit" => c.is_ascii_hexdigit(),
+        _ => return None,
+    })
+}
+
+/// Match `c` against the bracket expression whose body starts at `p[0]` (just
+/// past the `[`). Returns the index just past the closing `]` when the
+/// expression matched, `Ok(None)` when it did not, and `Err(())` when the
+/// bracket is unterminated, malformed or names an unknown class, which the
+/// reference answers with "no match" for the whole pattern. Port of the
+/// reference libc's `rangematch`.
+fn match_bracket(p: &[char], c: char, flags: i64) -> Result<Option<usize>, ()> {
+    let casefold = flags & FNM_CASEFOLD != 0;
+    let escapes = flags & FNM_NOESCAPE == 0;
+    let mut i = 0;
     let negate = matches!(p.get(i), Some('!') | Some('^'));
     if negate {
         i += 1;
     }
-    let mut matched = false;
-    let mut closed = false;
+    let mut ok = false;
     let mut first = true;
-    while i < p.len() {
-        if p[i] == ']' && !first {
-            i += 1;
-            closed = true;
+    loop {
+        let mut lo = *p.get(i).ok_or(())?;
+        i += 1;
+        if lo == ']' && !first {
             break;
         }
         first = false;
-        // `a-b` range, but a trailing `-` (before `]`) is a literal dash.
-        if i + 2 < p.len() && p[i + 1] == '-' && p[i + 2] != ']' {
-            if in_range(p[i], p[i + 2], c, casefold) {
-                matched = true;
+        if lo == '[' {
+            // `[:class:]`, and the single-character `[.x.]` / `[=x=]` forms.
+            if let Some(&kind @ (':' | '.' | '=')) = p.get(i) {
+                let end = (i + 1..p.len().saturating_sub(1))
+                    .find(|&j| p[j] == kind && p[j + 1] == ']')
+                    .ok_or(())?;
+                let body: String = p[i + 1..end].iter().collect();
+                if kind == ':' {
+                    ok |= in_class(&body, c).ok_or(())?;
+                    i = end + 2;
+                    continue;
+                }
+                let mut chars = body.chars();
+                match (chars.next(), chars.next()) {
+                    (Some(only), None) => lo = only,
+                    _ => return Err(()),
+                }
+                i = end + 2;
             }
-            i += 3;
-        } else {
-            if ch_eq(p[i], c, casefold) {
-                matched = true;
-            }
+        } else if lo == '\\' && escapes {
+            lo = *p.get(i).ok_or(())?;
             i += 1;
         }
+        if p.get(i) == Some(&'-') && p.get(i + 1).is_some_and(|&n| n != ']') {
+            let mut hi = p[i + 1];
+            i += 2;
+            if hi == '\\' && escapes {
+                hi = *p.get(i).ok_or(())?;
+                i += 1;
+            }
+            ok |= in_range(lo, hi, c, casefold);
+        } else {
+            ok |= ch_eq(lo, c, casefold);
+        }
     }
-    if !closed {
-        return None;
-    }
-    Some((i, if negate { !matched } else { matched }))
+    Ok((ok != negate).then_some(i))
 }
 
-/// Glob-style wildcard match (`*`, `?`, `[...]`) over full strings. Iterative
-/// with single-star backtracking; `*` matches any run including `/` (PHP's
-/// `fnmatch` without `FNM_PATHNAME`, and glob within one directory level).
-fn wildcard_match(pattern: &str, text: &str, casefold: bool) -> bool {
+/// The reference `fnmatch` (libc) over full strings: `*`, `?`, `[...]` and
+/// backslash escapes, honouring `FNM_NOESCAPE`, `FNM_PATHNAME`, `FNM_PERIOD` and
+/// `FNM_CASEFOLD`. Port of the reference libc's `fnmatch`; `start` is where the
+/// subject began, which is what "leading period" is measured against.
+fn fnmatch_from(
+    p: &[char],
+    mut pi: usize,
+    t: &[char],
+    mut ti: usize,
+    start: usize,
+    flags: i64,
+) -> bool {
+    let pathname = flags & FNM_PATHNAME != 0;
+    let period = flags & FNM_PERIOD != 0;
+    let casefold = flags & FNM_CASEFOLD != 0;
+    // A `.` at the subject's start (or after a `/` under FNM_PATHNAME) must be
+    // matched by a literal `.` in the pattern, never by a wildcard.
+    let leading_dot = |ti: usize| {
+        period && t.get(ti) == Some(&'.') && (ti == start || (pathname && t[ti - 1] == '/'))
+    };
+    loop {
+        let Some(&c) = p.get(pi) else {
+            return ti == t.len();
+        };
+        pi += 1;
+        match c {
+            '?' => match t.get(ti) {
+                None => return false,
+                Some('/') if pathname => return false,
+                Some(_) if leading_dot(ti) => return false,
+                Some(_) => ti += 1,
+            },
+            '*' => {
+                while p.get(pi) == Some(&'*') {
+                    pi += 1;
+                }
+                if leading_dot(ti) {
+                    return false;
+                }
+                match p.get(pi) {
+                    None => return !pathname || !t[ti..].contains(&'/'),
+                    Some('/') if pathname => match t[ti..].iter().position(|&ch| ch == '/') {
+                        Some(off) => {
+                            ti += off;
+                            continue;
+                        }
+                        None => return false,
+                    },
+                    Some(_) => {}
+                }
+                // Try every split point; the recursion no longer sees a
+                // leading period (`flags & ~FNM_PERIOD`).
+                let rest = flags & !FNM_PERIOD;
+                while ti < t.len() {
+                    if fnmatch_from(p, pi, t, ti, ti, rest) {
+                        return true;
+                    }
+                    if t[ti] == '/' && pathname {
+                        break;
+                    }
+                    ti += 1;
+                }
+                return false;
+            }
+            '[' => {
+                let Some(&ch) = t.get(ti) else { return false };
+                if (ch == '/' && pathname) || leading_dot(ti) {
+                    return false;
+                }
+                match match_bracket(&p[pi..], ch, flags) {
+                    Ok(Some(next)) => pi += next,
+                    _ => return false,
+                }
+                ti += 1;
+            }
+            _ => {
+                let mut lit = c;
+                if c == '\\' && flags & FNM_NOESCAPE == 0 {
+                    // A trailing backslash matches nothing.
+                    match p.get(pi) {
+                        Some(&esc) => {
+                            lit = esc;
+                            pi += 1;
+                        }
+                        None => return false,
+                    }
+                }
+                match t.get(ti) {
+                    Some(&ch) if ch_eq(lit, ch, casefold) => ti += 1,
+                    _ => return false,
+                }
+            }
+        }
+    }
+}
+
+/// `fnmatch($pattern, $text, $flags)`; `glob` matches one name with `flags = 0`.
+fn wildcard_match(pattern: &str, text: &str, flags: i64) -> bool {
     let p: Vec<char> = pattern.chars().collect();
     let t: Vec<char> = text.chars().collect();
-    let (mut pi, mut ti) = (0usize, 0usize);
-    let mut star: Option<(usize, usize)> = None;
-    while ti < t.len() {
-        let mut advanced = false;
-        if pi < p.len() {
-            match p[pi] {
-                '*' => {
-                    star = Some((pi, ti));
-                    pi += 1;
-                    continue;
-                }
-                '?' => {
-                    pi += 1;
-                    ti += 1;
-                    continue;
-                }
-                '[' => match match_bracket(&p[pi..], t[ti], casefold) {
-                    Some((consumed, true)) => {
-                        pi += consumed;
-                        ti += 1;
-                        advanced = true;
-                    }
-                    Some((_, false)) => {}
-                    None => {
-                        if ch_eq('[', t[ti], casefold) {
-                            pi += 1;
-                            ti += 1;
-                            advanced = true;
-                        }
-                    }
-                },
-                c => {
-                    if ch_eq(c, t[ti], casefold) {
-                        pi += 1;
-                        ti += 1;
-                        advanced = true;
-                    }
-                }
-            }
-        }
-        if advanced {
-            continue;
-        }
-        // Mismatch: backtrack to just past the last `*`, extending its match.
-        match star {
-            Some((sp, st)) => {
-                pi = sp + 1;
-                ti = st + 1;
-                star = Some((sp, st + 1));
-            }
-            None => return false,
-        }
-    }
-    while pi < p.len() && p[pi] == '*' {
-        pi += 1;
-    }
-    pi == p.len()
+    fnmatch_from(&p, 0, &t, 0, 0, flags)
 }
 
 // The `glob`/`fnmatch` flag bits, and the values the host seeds the matching
@@ -627,7 +709,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
                     if !pat_dot && name.starts_with('.') {
                         continue;
                     }
-                    if !wildcard_match(&name_pat, &name, false) {
+                    if !wildcard_match(&name_pat, &name, 0) {
                         continue;
                     }
                     let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
@@ -646,13 +728,16 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             }
             make_list(out.into_iter().map(Value::str).collect())
         }
-        // fnmatch(pattern, string, flags): FNM_CASEFOLD (0x10) honored; the other
-        // flags do not change single-string matching here.
+        // fnmatch(pattern, string, flags): the four FNM_* flags are all honoured.
         "fnmatch" => {
             let pattern = str_arg(args, 0);
             let subject = str_arg(args, 1);
-            let casefold = has_flag(&arg(args, 2), "CASEFOLD", FNM_CASEFOLD);
-            Value::bool(wildcard_match(&pattern, &subject, casefold))
+            let flags = if provided(args, 2) {
+                int_arg(args, 2)
+            } else {
+                0
+            };
+            Value::bool(wildcard_match(&pattern, &subject, flags))
         }
 
         // ── stat ───────────────────────────────────────────────────────────
@@ -717,10 +802,12 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             if provided(args, 1) {
                 pathinfo_component(&arg(args, 1), &dir, &base, ext, fname)
             } else {
-                let mut pairs: Vec<(Value, Value)> = vec![
-                    (Value::str("dirname"), Value::str(dir)),
-                    (Value::str("basename"), Value::str(base.clone())),
-                ];
+                // php_pathinfo adds "dirname" only when it is non-empty.
+                let mut pairs: Vec<(Value, Value)> = Vec::new();
+                if !dir.is_empty() {
+                    pairs.push((Value::str("dirname"), Value::str(dir)));
+                }
+                pairs.push((Value::str("basename"), Value::str(base.clone())));
                 if let Some(e) = ext {
                     pairs.push((Value::str("extension"), Value::str(e.to_string())));
                 }

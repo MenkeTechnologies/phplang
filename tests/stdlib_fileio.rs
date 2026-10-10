@@ -670,3 +670,31 @@ fn tempnam_bad_dir_falls_back_to_temp() {
     assert_eq!(run(&src), "1");
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+// ── fnmatch flag semantics (expected values read off reference php 8.5) ─────
+
+#[test]
+fn fnmatch_flags_period_pathname_noescape() {
+    let out = run(r#"<?php
+        $c = [
+            ['*', '.hid', FNM_PERIOD], ['?x', '.x', FNM_PERIOD], ['.*', '.a', FNM_PERIOD],
+            ['[.]a', '.a', FNM_PERIOD], ['\.a', '.a', FNM_PERIOD],
+            ['a/*', 'a/.b', FNM_PERIOD], ['a/*', 'a/.b', FNM_PERIOD | FNM_PATHNAME],
+            ['*', 'a/b', FNM_PATHNAME], ['a?b', 'a/b', FNM_PATHNAME], ['a[/]b', 'a/b', FNM_PATHNAME],
+            ['*/b', 'a/c/b', FNM_PATHNAME], ['*/b', 'a/c/b', 0],
+            ['\*', '*', 0], ['\*', '\\', FNM_NOESCAPE], ['a\\', 'a\\', 0],
+            ['[a', '[a', 0], ['[[:alpha:]]', 'a', 0], ['[[:upper:]]', 'a', FNM_CASEFOLD],
+            ['[z-a]', 'm', 0], ['[[nope', 'a', 0],
+        ];
+        foreach ($c as [$p, $s, $f]) echo (int)fnmatch($p, $s, $f);
+    "#);
+    assert_eq!(out, "00101100000111001000");
+}
+
+#[test]
+fn dirname_of_empty_string_is_empty_and_pathinfo_omits_dirname() {
+    assert_eq!(
+        run(r#"<?php var_dump(dirname(""), dirname("", 3), pathinfo(""), pathinfo("", PATHINFO_DIRNAME));"#),
+        "string(0) \"\"\nstring(0) \"\"\narray(2) {\n  [\"basename\"]=>\n  string(0) \"\"\n  [\"filename\"]=>\n  string(0) \"\"\n}\nstring(0) \"\"\n"
+    );
+}

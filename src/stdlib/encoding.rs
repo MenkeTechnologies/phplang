@@ -14,6 +14,17 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use fusevm::Value;
 
+/// The `ZEND_ACC_DEPRECATED` notice the reference raises when `utf8_encode` /
+/// `utf8_decode` is called (PHP 8.2).
+fn deprecated_function(name: &str) {
+    crate::host::with_host(|h| {
+        h.deprecated(format!(
+            "Function {name}() is deprecated since 8.2, visit the php.net documentation \
+             for various alternatives"
+        ))
+    });
+}
+
 /// Materialize a byte slice as a PHP string, one byte per Latin-1 `char`
 /// (matches the runtime's `chr`).
 fn bytes_to_str(bytes: &[u8]) -> String {
@@ -353,14 +364,18 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         // Deprecated Latin-1<->UTF-8 shims. In this UTF-8 runtime they operate on
         // the string's bytes: encode widens each byte to a code point, decode
         // narrows each code point back to a byte (>0xFF -> '?'). Exact for ASCII.
-        "utf8_encode" => Value::str(
-            str_arg(args, 0)
-                .as_bytes()
-                .iter()
-                .map(|&b| b as char)
-                .collect::<String>(),
-        ),
+        "utf8_encode" => {
+            deprecated_function("utf8_encode");
+            Value::str(
+                str_arg(args, 0)
+                    .as_bytes()
+                    .iter()
+                    .map(|&b| b as char)
+                    .collect::<String>(),
+            )
+        }
         "utf8_decode" => {
+            deprecated_function("utf8_decode");
             let s = str_arg(args, 0);
             let bytes: Vec<u8> = s
                 .chars()

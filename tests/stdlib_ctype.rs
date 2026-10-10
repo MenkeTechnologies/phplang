@@ -11,8 +11,13 @@ fn run(src: &str) -> String {
 }
 
 /// Convenience: wrap a boolean-returning PHP expression in a y/n ternary.
+/// The non-string arguments below each raise the 8.1 deprecation; it is pinned
+/// by `non_string_argument_is_deprecated` and silenced here so these tests
+/// compare classification alone.
 fn yn(expr: &str) -> String {
-    run(&format!("<?php echo ({expr}) ? \"y\" : \"n\";"))
+    run(&format!(
+        "<?php error_reporting(E_ALL & ~E_DEPRECATED); echo ({expr}) ? \"y\" : \"n\";"
+    ))
 }
 
 #[test]
@@ -122,4 +127,26 @@ fn non_string_non_int_is_false() {
     assert_eq!(yn("ctype_alpha(null)"), "n");
     assert_eq!(yn("ctype_alpha(true)"), "n");
     assert_eq!(yn("ctype_alpha([])"), "n");
+}
+
+#[test]
+fn non_string_argument_is_deprecated() {
+    // Reference php 8.5: one E_DEPRECATED per call, named for the argument's
+    // zend_zval_type_name, and the classification result is unchanged.
+    let out = run(
+        "<?php var_dump(ctype_digit(48)); var_dump(ctype_alpha(null)); \
+         var_dump(ctype_alnum(1.5)); var_dump(ctype_space([])); var_dump(ctype_upper(true));",
+    );
+    let expected = "\
+\nDeprecated: ctype_digit(): Argument of type int will be interpreted as string in the future in Command line code on line 1\n\
+bool(true)\n\
+\nDeprecated: ctype_alpha(): Argument of type null will be interpreted as string in the future in Command line code on line 1\n\
+bool(false)\n\
+\nDeprecated: ctype_alnum(): Argument of type float will be interpreted as string in the future in Command line code on line 1\n\
+bool(false)\n\
+\nDeprecated: ctype_space(): Argument of type array will be interpreted as string in the future in Command line code on line 1\n\
+bool(false)\n\
+\nDeprecated: ctype_upper(): Argument of type bool will be interpreted as string in the future in Command line code on line 1\n\
+bool(false)\n";
+    assert_eq!(out, expected);
 }

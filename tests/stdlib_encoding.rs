@@ -2,7 +2,7 @@
 //! cross-checked against reference `php` 8.5 and hard-coded here so the suite
 //! passes in headless CI without a `php` on PATH.
 //!
-//! SIX of them pin the RETURN VALUE only, because this engine does not raise the
+//! FOUR of them pin the RETURN VALUE only, because this engine does not raise the
 //! diagnostic the reference raises alongside it. Each was re-verified against
 //! `php 8.5.9`; they are listed so the omission is a recorded gap rather than an
 //! implied match:
@@ -13,8 +13,6 @@
 //!     hexadecimal string`.
 //!   * `convert_uudecode("")` and `convert_uudecode("M")` — `Warning:
 //!     convert_uudecode(): Argument #1 ($data) is not a valid uuencoded string`.
-//!   * `utf8_encode` and `utf8_decode` — `Deprecated: Function utf8_encode() is
-//!     deprecated since 8.2, …`.
 //!
 //! The values themselves (`false`, and the round-tripped ASCII) are exact.
 
@@ -205,12 +203,20 @@ fn convert_uudecode_invalid_returns_false() {
 
 #[test]
 fn utf8_shims_ascii_identity() {
+    // Both shims are `ZEND_ACC_DEPRECATED` since 8.2: the notice precedes the
+    // (unchanged) value.
+    let note = |f: &str| {
+        format!(
+            "\nDeprecated: Function {f}() is deprecated since 8.2, visit the php.net \
+             documentation for various alternatives in Command line code on line 1\n"
+        )
+    };
     assert_eq!(
         run(r#"<?php echo utf8_encode("plain ascii");"#),
-        "plain ascii"
+        note("utf8_encode") + "plain ascii"
     );
     assert_eq!(
         run(r#"<?php echo utf8_decode("plain ascii");"#),
-        "plain ascii"
+        note("utf8_decode") + "plain ascii"
     );
 }
