@@ -2452,6 +2452,22 @@ impl Compiler {
                         let msg = format!("Readonly property {class}::${} must have type", p.name);
                         return Err(self.compile_fatal(p.line, &msg));
                     }
+                    if let Some(set) = p.set_visibility {
+                        if p.ty.is_none() {
+                            let msg = format!(
+                                "Property with asymmetric visibility {class}::${} must have type",
+                                p.name
+                            );
+                            return Err(self.compile_fatal(p.line, &msg));
+                        }
+                        if vis_rank(p.visibility) > vis_rank(set) {
+                            let msg = format!(
+                                "Visibility of property {class}::${} must not be weaker than set visibility",
+                                p.name
+                            );
+                            return Err(self.compile_fatal(p.line, &msg));
+                        }
+                    }
                     if p.readonly && p.is_static {
                         let msg =
                             format!("Static property {class}::${} cannot be readonly", p.name);
@@ -2784,6 +2800,7 @@ impl Compiler {
         let mut static_prop_defaults: Vec<(String, Chunk)> = Vec::new();
         let mut methods: FxHashMap<String, FuncDef> = FxHashMap::default();
         let mut prop_vis: FxHashMap<String, Visibility> = FxHashMap::default();
+        let mut prop_set_vis: FxHashMap<String, Visibility> = FxHashMap::default();
         let mut readonly_props: FxHashSet<String> = FxHashSet::default();
         let mut uninit_props: FxHashMap<String, String> = FxHashMap::default();
         let mut prop_types: FxHashMap<String, TypeHint> = FxHashMap::default();
@@ -2799,6 +2816,7 @@ impl Compiler {
             &mut static_prop_defaults,
             &mut methods,
             &mut prop_vis,
+            &mut prop_set_vis,
             &mut readonly_props,
             &mut method_vis,
             &mut static_methods,
@@ -2859,7 +2877,12 @@ impl Compiler {
         for prop in &decl.props {
             let name = &prop.name;
             prop_vis.insert(name.clone(), prop.visibility);
-            if prop.is_final {
+            match prop.set_visibility {
+                Some(v) => prop_set_vis.insert(name.clone(), v),
+                None => prop_set_vis.remove(name),
+            };
+            // `private(set)` makes the property final, as `private` alone does not.
+            if prop.is_final || prop.set_visibility == Some(Visibility::Private) {
                 finals.props.insert(name.clone());
             } else {
                 finals.props.remove(name);
@@ -2939,6 +2962,17 @@ impl Compiler {
                     // A promoted parameter DECLARES the property, so the synthetic
                     // assignment below must not read as creating a dynamic one.
                     prop_vis.insert(p.name.clone(), p.promoted_vis);
+                    match p.promoted_set_vis {
+                        Some(v) => {
+                            prop_set_vis.insert(p.name.clone(), v);
+                            if v == Visibility::Private {
+                                finals.props.insert(p.name.clone());
+                            }
+                        }
+                        None => {
+                            prop_set_vis.remove(&p.name);
+                        }
+                    }
                     if let Some(ty) = &p.ty {
                         prop_types.insert(p.name.clone(), ty.clone());
                     }
@@ -3045,6 +3079,7 @@ impl Compiler {
                 static_prop_defaults,
                 methods,
                 prop_vis,
+                prop_set_vis,
                 readonly_props,
                 uninit_props,
                 prop_types,
@@ -3095,6 +3130,7 @@ impl Compiler {
         static_prop_defaults: &mut Vec<(String, Chunk)>,
         methods: &mut FxHashMap<String, FuncDef>,
         prop_vis: &mut FxHashMap<String, Visibility>,
+        prop_set_vis: &mut FxHashMap<String, Visibility>,
         readonly_props: &mut FxHashSet<String>,
         method_vis: &mut FxHashMap<String, Visibility>,
         static_methods: &mut FxHashSet<String>,
@@ -3143,6 +3179,9 @@ impl Compiler {
             static_prop_defaults.extend(tdef.static_prop_defaults.iter().cloned());
             for (n, v) in &tdef.prop_vis {
                 prop_vis.insert(n.clone(), *v);
+            }
+            for (n, v) in &tdef.prop_set_vis {
+                prop_set_vis.insert(n.clone(), *v);
             }
             // A property a trait declares readonly stays readonly in the class
             // that uses it — the trait is where it was declared.
@@ -3701,6 +3740,10 @@ impl Compiler {
                 b.emit(Op::LoadConst(idx), 0);
             }
             Expr::Interp(parts) => self.compile_interp(b, parts)?,
+            // `$GLOBALS` is a view of the global frame, not a variable of this one.
+            Expr::Var(name) if name == "GLOBALS" => {
+                b.emit(Op::CallBuiltin(ops::GLOBALS_ARRAY, 0), self.cur_line);
+            }
             Expr::Var(name) => self.emit_get_var(b, name),
             // `&` in a VALUE array (`$arr = [&$a]`) makes the element and `$a`
             // one slot; see `compile_array_with_refs`.
@@ -3758,6 +3801,10 @@ impl Compiler {
                     b.emit(Op::CallBuiltin(ops::MKARRAY, 0), self.cur_line);
                 }
             }
+            Expr::Index(recv, idx) if matches!(&**recv, Expr::Var(n) if n == "GLOBALS") => {
+                self.compile_expr(b, idx)?;
+                b.emit(Op::CallBuiltin(ops::GLOBALS_GET, 1), self.cur_line);
+            }
             Expr::Index(recv, idx) => {
                 self.compile_expr(b, recv)?;
                 self.compile_expr(b, idx)?;
@@ -3797,9 +3844,38 @@ impl Compiler {
                 }
             }
             Expr::Binary(op, l, r) => self.compile_binary(b, *op, l, r)?,
+            Expr::Assign(lhs, _, _) if matches!(&**lhs, Expr::Var(n) if n == "GLOBALS") => {
+                return Err(self.compile_fatal(
+                    self.cur_line,
+                    "$GLOBALS can only be modified using the $GLOBALS[$name] = $value syntax",
+                ));
+            }
+            Expr::Assign(lhs, op, rhs) if self.has_globals_root(lhs) => {
+                let Some(target) = self.rewrite_globals_target(b, lhs)? else {
+                    return Ok(());
+                };
+                self.compile_expr(b, &Expr::Assign(Box::new(target), *op, rhs.clone()))?
+            }
             Expr::Assign(lhs, op, rhs) => {
                 self.check_write_target(lhs)?;
                 self.compile_assign(b, lhs, *op, rhs)?
+            }
+            Expr::IncDec {
+                target,
+                inc,
+                prefix,
+            } if self.has_globals_root(target) => {
+                let Some(t) = self.rewrite_globals_target(b, target)? else {
+                    return Ok(());
+                };
+                self.compile_expr(
+                    b,
+                    &Expr::IncDec {
+                        target: Box::new(t),
+                        inc: *inc,
+                        prefix: *prefix,
+                    },
+                )?
             }
             Expr::IncDec {
                 target,
@@ -3865,6 +3941,17 @@ impl Compiler {
                         self.emit_byref_writeback_to(b, &targets, true)?;
                     }
                 }
+            }
+            // `clone($o, [...])`: the parser lowers the PHP 8.5 with-form to this
+            // internal call.
+            Expr::Call(name, args) if name == "__clone_with" => {
+                for arg in args {
+                    self.compile_expr(b, arg)?;
+                }
+                b.emit(
+                    Op::CallBuiltin(ops::CLONE_WITH, args.len() as u8),
+                    self.cur_line,
+                );
             }
             Expr::Call(name, args) => {
                 let has_spread = args.iter().any(|a| matches!(a, Expr::Spread(_)));
@@ -4395,6 +4482,10 @@ impl Compiler {
             // the answer cannot be recovered from a value the way it can for a
             // variable or an array element.
             Expr::IssetOf(inner) => match inner.as_ref() {
+                Expr::Index(recv, key) if matches!(&**recv, Expr::Var(n) if n == "GLOBALS") => {
+                    self.compile_expr(b, key)?;
+                    b.emit(Op::CallBuiltin(ops::GLOBALS_ISSET, 1), self.cur_line);
+                }
                 Expr::PropGet(recv, name) => {
                     self.compile_quiet(b, recv)?;
                     self.emit_member(b, name, self.cur_line)?;
@@ -4512,6 +4603,19 @@ impl Compiler {
                 b.emit(Op::CallBuiltin(ops::DYN_CLASS, 1), self.cur_line);
                 b.emit(Op::CallBuiltin(ops::INSTANCEOF, 2), 0);
             }
+            Expr::RefAssign(lhs, rhs)
+                if self.has_globals_root(lhs) || self.has_globals_root(rhs) =>
+            {
+                let lhs = match self.rewrite_globals_target(b, lhs)? {
+                    Some(t) => t,
+                    None => (**lhs).clone(),
+                };
+                let rhs = match self.rewrite_globals_target(b, rhs)? {
+                    Some(t) => t,
+                    None => (**rhs).clone(),
+                };
+                self.compile_ref_assign(b, &lhs, &rhs)?
+            }
             Expr::RefAssign(lhs, rhs) => self.compile_ref_assign(b, lhs, rhs)?,
             Expr::Yield { key, value } => {
                 // Leave the yielded value (and, for the keyed form, the key) on the
@@ -4581,6 +4685,13 @@ impl Compiler {
         let line = self.cur_line;
         match e {
             Expr::Quiet(inner) => self.compile_quiet(b, inner)?,
+            Expr::Var(name) if name == "GLOBALS" => {
+                b.emit(Op::CallBuiltin(ops::GLOBALS_ARRAY, 0), line);
+            }
+            Expr::Index(recv, key) if matches!(&**recv, Expr::Var(n) if n == "GLOBALS") => {
+                self.compile_expr(b, key)?;
+                b.emit(Op::CallBuiltin(ops::GLOBALS_GET_Q, 1), line);
+            }
             Expr::Var(name) => {
                 // A promoted local is written before it is ever read, so the
                 // quiet read and the loud one cannot differ for it.
@@ -4783,6 +4894,19 @@ impl Compiler {
     /// array element `$a[k1]..[kN]` (remove the deepest key).
     fn compile_unset_target(&mut self, b: &mut ChunkBuilder, t: &Expr) -> Result<(), String> {
         self.check_write_target(t)?;
+        if let Expr::Index(recv, key) = t {
+            if matches!(&**recv, Expr::Var(n) if n == "GLOBALS") {
+                self.compile_expr(b, key)?;
+                b.emit(Op::CallBuiltin(ops::GLOBALS_UNSET, 1), self.cur_line);
+                b.emit(Op::Pop, self.cur_line);
+                return Ok(());
+            }
+        }
+        if self.has_globals_root(t) {
+            if let Some(target) = self.rewrite_globals_target(b, t)? {
+                return self.compile_unset_target(b, &target);
+            }
+        }
         match t {
             Expr::Var(name) if name == "this" => {
                 return Err(self.compile_fatal(self.cur_line, "Cannot unset $this"));
@@ -5695,13 +5819,14 @@ impl Compiler {
             Ok(())
         })?;
         let param = Param {
-            name: "args".to_string(),
+            name: crate::host::FCC_PARAM.to_string(),
             line: self.cur_line,
             ty: None,
             default: None,
             variadic: true,
             promoted: false,
             promoted_vis: Visibility::Public,
+            promoted_set_vis: None,
             readonly: false,
             by_ref: false,
         };
@@ -5710,7 +5835,10 @@ impl Compiler {
         // through to the parameter it names.
         let body = Expr::Call(
             "call_user_func_array".to_string(),
-            vec![Expr::Var(tmp), Expr::Var("args".to_string())],
+            vec![
+                Expr::Var(tmp),
+                Expr::Var(crate::host::FCC_PARAM.to_string()),
+            ],
         );
         self.compile_expr(
             b,
@@ -5724,6 +5852,61 @@ impl Compiler {
                 line: self.cur_line,
             },
         )
+    }
+
+    /// Whether `e` is an lvalue chain hanging off `$GLOBALS[k]` — see
+    /// [`Compiler::rewrite_globals_target`].
+    fn has_globals_root(&self, e: &Expr) -> bool {
+        match e {
+            Expr::Index(base, _) => {
+                matches!(&**base, Expr::Var(n) if n == "GLOBALS") || self.has_globals_root(base)
+            }
+            Expr::Append(base) | Expr::PropGet(base, _) => self.has_globals_root(base),
+            _ => false,
+        }
+    }
+
+    /// The write half of `$GLOBALS` (PHP 8.1+): when `target` is a chain rooted at
+    /// `$GLOBALS[k]` — `$GLOBALS['a']`, `$GLOBALS['a'][] `, `$GLOBALS['a']->p` —
+    /// bind a fresh local to the global named `k` (creating it, as the write
+    /// would) and return the chain rewritten to hang off that local, so every
+    /// ordinary lvalue form works on it unchanged.
+    fn rewrite_globals_target(
+        &mut self,
+        b: &mut ChunkBuilder,
+        target: &Expr,
+    ) -> Result<Option<Expr>, String> {
+        fn root_key(e: &Expr) -> Option<&Expr> {
+            match e {
+                Expr::Index(base, key) => match &**base {
+                    Expr::Var(n) if n == "GLOBALS" => Some(key),
+                    other => root_key(other),
+                },
+                Expr::Append(base) | Expr::PropGet(base, _) => root_key(base),
+                _ => None,
+            }
+        }
+        fn replace(e: &Expr, tmp: &str) -> Expr {
+            match e {
+                Expr::Index(base, key) => match &**base {
+                    Expr::Var(n) if n == "GLOBALS" => Expr::Var(tmp.to_string()),
+                    other => Expr::Index(Box::new(replace(other, tmp)), key.clone()),
+                },
+                Expr::Append(base) => Expr::Append(Box::new(replace(base, tmp))),
+                Expr::PropGet(base, m) => Expr::PropGet(Box::new(replace(base, tmp)), m.clone()),
+                other => other.clone(),
+            }
+        }
+        let Some(key) = root_key(target) else {
+            return Ok(None);
+        };
+        let tmp = self.tmp_name("glob");
+        let ti = b.add_constant(Value::str(tmp.clone()));
+        b.emit(Op::LoadConst(ti), 0);
+        self.compile_expr(b, key)?;
+        b.emit(Op::CallBuiltin(ops::GLOBALS_BIND, 2), self.cur_line);
+        b.emit(Op::Pop, 0);
+        Ok(Some(replace(target, &tmp)))
     }
 
     /// Lower an anonymous function / arrow function to a closure-creating
@@ -7639,4 +7822,13 @@ struct OwnScope {
     outer_loops: Vec<bool>,
     gotos: Gotos,
     chunk: usize,
+}
+
+/// How restrictive a visibility is: public 0, protected 1, private 2.
+fn vis_rank(v: Visibility) -> u8 {
+    match v {
+        Visibility::Public => 0,
+        Visibility::Protected => 1,
+        Visibility::Private => 2,
+    }
 }

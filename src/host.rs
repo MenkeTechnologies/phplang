@@ -476,6 +476,27 @@ pub mod ops {
     /// generator, or an object implementing `Iterator` — rather than as an
     /// array of its elements.
     pub const IS_LAZY_ITER: u16 = 150;
+
+    /// `[object, properties] -> object`. `clone($o, [...])` (PHP 8.5): the copy,
+    /// then each entry of the array assigned to it from the calling scope.
+    pub const CLONE_WITH: u16 = 151;
+
+    /// `[] -> array`. `$GLOBALS` read as a whole: a copy of the global frame.
+    pub const GLOBALS_ARRAY: u16 = 152;
+    /// `[name] -> value`. `$GLOBALS[name]` read, with the `Undefined global
+    /// variable` warning for a name that is not bound.
+    pub const GLOBALS_GET: u16 = 153;
+    /// `[name] -> value`. The same read with no diagnostic: the operand of
+    /// `isset`, `empty` and `??`.
+    pub const GLOBALS_GET_Q: u16 = 154;
+    /// `[local, name] -> null`. Bind the running frame's variable `local` to the
+    /// global `name` by reference, creating it — the first step of every write
+    /// through `$GLOBALS[name]`.
+    pub const GLOBALS_BIND: u16 = 155;
+    /// `[name] -> null`. `unset($GLOBALS[name])`.
+    pub const GLOBALS_UNSET: u16 = 156;
+    /// `[name] -> bool`. `isset($GLOBALS[name])`.
+    pub const GLOBALS_ISSET: u16 = 157;
 }
 
 /// The capture name a `static` closure carries from its creation site.
@@ -663,6 +684,10 @@ pub struct ClassDef {
     /// static), by property name. Consulted (walking the parent chain) to enforce
     /// `private`/`protected` on external access.
     pub prop_vis: FxHashMap<String, Visibility>,
+    /// The write visibility of the asymmetric properties THIS class declares
+    /// (`public private(set) int $x`), by property name. A property absent here
+    /// is written under its read visibility.
+    pub prop_set_vis: FxHashMap<String, Visibility>,
     /// Properties THIS class declares `readonly` (a promoted constructor
     /// parameter counts as a declaration). Looked up along the parent chain, so
     /// the class named in `Cannot modify readonly property C::$p` is the one
@@ -1000,6 +1025,10 @@ struct Scope {
     transparent: bool,
 }
 
+/// The name of the variadic parameter of the closure a first-class callable
+/// expression (`f(...)`) lowers to, which marks its frame as transparent.
+pub const FCC_PARAM: &str = "__fcc_args";
+
 /// One running `include`/`require`/`eval`: the code it loaded executes on the
 /// frame at `depth` (an index into the scope stack), so a stack trace shows it
 /// as a frame of its own between that one and whatever it calls.
@@ -1225,6 +1254,10 @@ pub struct PhpHost {
     /// inside `__clone` so a copy can be given a fresh identity — the only
     /// place a second write to an initialized readonly property is legal.
     cloning: Option<u32>,
+    /// The copy a `clone($o, [...])` is currently initialising. Its readonly
+    /// properties may be written once more, from the declaring scope, whether or
+    /// not they already hold a value.
+    cloning_with: Option<u32>,
     /// Per object, the readonly properties that have already taken their one
     /// write. Kept beside the objects rather than in them because "written" is
     /// not a property of the stored value — a readonly property holding null
@@ -1586,6 +1619,7 @@ impl PhpHost {
             preg_error: 0,
             strtok_state: None,
             cloning: None,
+            cloning_with: None,
             readonly_init: FxHashMap::default(),
             unset_typed: FxHashMap::default(),
             magic_in_progress: Vec::new(),
@@ -3035,6 +3069,29 @@ impl PhpHost {
         self.scopes.pop();
     }
 
+    /// Push the `clone(...)` frame of the PHP 8.5 function form, keeping the
+    /// CALLER's class as the scope visibility is judged in — the frame itself
+    /// belongs to no class. Returns whether a class scope was pushed, for
+    /// [`PhpHost::leave_clone_frame`].
+    pub fn enter_clone_frame(&mut self, line: u32, args: Value) -> bool {
+        let ctx = self.current_class_ctx();
+        self.push_internal_frame("clone", line, args);
+        match ctx {
+            Some(c) => {
+                self.init_class_scope.push(c);
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub fn leave_clone_frame(&mut self, scoped: bool) {
+        if scoped {
+            self.init_class_scope.pop();
+        }
+        self.pop_internal_frame();
+    }
+
     /// Frame `idx`'s call arguments as the reference reports them, or `None` if
     /// that frame is not a call frame at all (the global scope has no `@args`).
     ///
@@ -3289,7 +3346,16 @@ impl PhpHost {
     /// distinction `Slot::Unset` exists for. `$this` and the compiler's own
     /// `@`-prefixed entries are not the user's variables and are left out.
     pub fn defined_vars(&self) -> Vec<(String, Value)> {
-        let Some(scope) = self.scopes.last() else {
+        let idx = self.scopes.len().saturating_sub(1);
+        if idx == 0 {
+            return self.global_vars_ordered();
+        }
+        self.frame_vars(idx)
+    }
+
+    /// The variables of frame `idx`, as [`PhpHost::defined_vars`] lists them.
+    fn frame_vars(&self, idx: usize) -> Vec<(String, Value)> {
+        let Some(scope) = self.scopes.get(idx) else {
             return Vec::new();
         };
         let mut by_slot: Vec<(u32, &String)> = scope
@@ -3654,6 +3720,91 @@ impl PhpHost {
             None => {
                 self.ref_cells.push(fallback);
                 self.ref_cells.len() - 1
+            }
+        }
+    }
+
+    /// The global frame's variables in the order the reference lists them: the
+    /// superglobals the CLI populates first, in its fixed order, then the script's
+    /// own variables in binding order.
+    fn global_vars_ordered(&self) -> Vec<(String, Value)> {
+        const FIXED: [&str; 7] = [
+            "argv", "argc", "_GET", "_POST", "_COOKIE", "_FILES", "_SERVER",
+        ];
+        let all = self.frame_vars(0);
+        let mut ordered: Vec<(String, Value)> = Vec::with_capacity(all.len());
+        for name in FIXED {
+            if let Some(pair) = all.iter().find(|(n, _)| n == name) {
+                ordered.push(pair.clone());
+            }
+        }
+        ordered.extend(
+            all.into_iter()
+                .filter(|(n, _)| !FIXED.contains(&n.as_str()) && !is_superglobal(n)),
+        );
+        ordered
+    }
+
+    /// The contents of `$GLOBALS`: the global frame's variables as an array, the
+    /// superglobals the CLI populates first in the reference's fixed order and
+    /// the script's own variables after them in binding order.
+    pub fn globals_array(&mut self) -> Value {
+        let ordered = self.global_vars_ordered();
+        let arr = self.new_array();
+        for (name, value) in ordered {
+            self.arr_set_key(&arr, &Value::str(name), value);
+        }
+        arr
+    }
+
+    /// The value of the global variable `name`, or `None` when it is not bound.
+    pub fn global_value(&self, name: &str) -> Option<Value> {
+        if name == "GLOBALS" {
+            return None;
+        }
+        let scope = self.scopes.first()?;
+        match scope.vars.get(name) {
+            Slot::Unset => None,
+            slot => Some(self.read_slot(slot)),
+        }
+    }
+
+    /// Bind the running frame's `local` to the global variable `name` by reference,
+    /// creating the global when it does not exist — the write half of
+    /// `$GLOBALS['name']`.
+    pub fn globals_bind(&mut self, local: &str, name: &str) {
+        const GLOBAL_FRAME: usize = 0;
+        let cur = self.scopes.len().saturating_sub(1);
+        let slot = match self.scopes.get(GLOBAL_FRAME).map(|s| s.vars.get(name)) {
+            Some(Slot::Ref(c)) => *c,
+            _ => {
+                let cur_val = self
+                    .scopes
+                    .get(GLOBAL_FRAME)
+                    .map(|s| s.vars.get(name).clone())
+                    .map(|s| self.read_slot(&s))
+                    .unwrap_or(Value::Undef);
+                self.ref_cells.push(cur_val);
+                let slot = self.ref_cells.len() - 1;
+                if let Some(scope) = self.scopes.get_mut(GLOBAL_FRAME) {
+                    let i = scope.vars.ensure_slot(name);
+                    scope.vars.put(i, Slot::Ref(slot));
+                }
+                slot
+            }
+        };
+        if let Some(scope) = self.scopes.get_mut(cur) {
+            let i = scope.vars.ensure_slot(local);
+            scope.vars.put(i, Slot::Ref(slot));
+        }
+    }
+
+    /// `unset($GLOBALS['name'])`: the global binding goes away; a local that
+    /// aliased it keeps the shared cell.
+    pub fn globals_unset(&mut self, name: &str) {
+        if let Some(scope) = self.scopes.first_mut() {
+            if let Some(i) = scope.vars.slot_of(name) {
+                scope.vars.put(i, Slot::Unset);
             }
         }
     }
@@ -4950,7 +5101,8 @@ impl PhpHost {
             }
         }
         let display = self.class_display_name(&owner);
-        if self.readonly_is_init(recv, name) {
+        let reinit = matches!((recv, self.cloning_with), (Value::Obj(id), Some(c)) if *id == c);
+        if self.readonly_is_init(recv, name) && !reinit {
             return Some(format!(
                 "Cannot modify readonly property {display}::${name}"
             ));
@@ -4969,6 +5121,58 @@ impl PhpHost {
         Some(format!(
             "Cannot modify protected(set) readonly property {display}::${name} from {from}"
         ))
+    }
+
+    /// Why a write to `$recv->name` is refused by an asymmetric write
+    /// visibility (`public private(set) int $x`), or `None` when the property has
+    /// none or the calling scope may write it. `verb` is `modify`, `indirectly
+    /// modify` or `unset`.
+    pub fn set_visibility_error(&self, recv: &Value, name: &str, verb: &str) -> Option<String> {
+        let Some(PhpObj::Object { class, .. }) = self.as_array(recv) else {
+            return None;
+        };
+        let decl = self
+            .class_chain(class)
+            .find(|d| d.prop_vis.contains_key(name))?;
+        self.set_visibility_refusal(decl, name, verb)
+    }
+
+    /// [`PhpHost::set_visibility_error`] for the class `decl` that declared the
+    /// property, which is also where a static property's rule is read from.
+    fn set_visibility_refusal(&self, decl: &ClassDef, name: &str, verb: &str) -> Option<String> {
+        let set = *decl.prop_set_vis.get(name)?;
+        let decl_lc = decl.name.to_ascii_lowercase();
+        let scope = self.current_class_ctx().map(|s| s.to_ascii_lowercase());
+        let allowed = match set {
+            Visibility::Public => true,
+            Visibility::Private => scope.as_deref() == Some(decl_lc.as_str()),
+            Visibility::Protected => scope
+                .as_deref()
+                .is_some_and(|s| self.class_is_a(s, &decl_lc) || self.class_is_a(&decl_lc, s)),
+        };
+        if allowed {
+            return None;
+        }
+        let word = match set {
+            Visibility::Public => "public",
+            Visibility::Protected => "protected",
+            Visibility::Private => "private",
+        };
+        let from = match &scope {
+            Some(s) => format!("scope {}", self.class_display_name(s)),
+            None => "global scope".to_string(),
+        };
+        Some(format!(
+            "Cannot {verb} {word}(set) property {}::${name} from {from}",
+            decl.name
+        ))
+    }
+
+    /// [`PhpHost::set_visibility_error`] for `Class::$name`.
+    pub fn static_set_visibility_error(&self, class: &str, name: &str) -> Option<String> {
+        let owner = self.resolve_static_owner(class, name)?;
+        let decl = self.classes.get(&owner)?;
+        self.set_visibility_refusal(decl, name, "modify")
     }
 
     /// Why `unset($recv->name)` is refused, or `None`. PHP allows unsetting a
@@ -8811,7 +9015,10 @@ fn invoke_with_locals(
             name: Some(frame.to_string()),
             static_class: h.lsb_take(),
             closure_site: h.closure_site_take(),
-            transparent: std::mem::take(&mut h.pending_transparent),
+            // The closure `f(...)` synthesizes forwards to its callee and is
+            // invisible in a trace: the reference calls the target directly.
+            transparent: std::mem::take(&mut h.pending_transparent)
+                || params.first().is_some_and(|p| p.name == FCC_PARAM),
             ..Scope::default()
         };
         let scope = Scope { file, ..scope };
@@ -9964,12 +10171,36 @@ fn in_clone_hook<T>(obj: &Value, body: impl FnOnce() -> Result<T, String>) -> Re
     r
 }
 
+/// Run `body` with `copy` marked as the object a `clone($o, [...])` is
+/// initialising: its readonly properties may be written once more.
+pub fn in_clone_with<T>(copy: &Value, body: impl FnOnce() -> T) -> T {
+    let Value::Obj(id) = copy else { return body() };
+    let prev = with_host(|h| h.cloning_with.replace(*id));
+    let r = body();
+    with_host(|h| h.cloning_with = prev);
+    r
+}
+
 /// `clone $o` — duplicate the object, then run `__clone()` on the copy.
 ///
 /// The hook runs on the NEW object with no arguments, and it may write
 /// properties the outside world can no longer touch (a `readonly` one included,
 /// which PHP allows precisely here so a clone can carry a fresh identity).
 pub fn clone_object(v: Value) -> Result<Value, String> {
+    // A Throwable is not clonable: the copy would share a trace with its source.
+    if with_host(|h| {
+        h.object_class(&v)
+            .is_some_and(|c| h.catch_matches(&c, "throwable"))
+    }) {
+        let class = with_host(|h| h.object_class(&v)).unwrap_or_default();
+        return Err(crate::builtins::throws_bare(
+            "Error",
+            format!(
+                "Trying to clone an uncloneable object of class {}",
+                display_class(&class)
+            ),
+        ));
+    }
     // An `enum` case is a SINGLETON: the reference refuses to duplicate one, by
     // the same message a generator gets, so `clone E::A` never produces a second
     // instance that `===` would tell apart from the case.
@@ -10332,6 +10563,9 @@ pub fn static_prop_set(class: &str, name: &str, val: Value) -> Result<Value, Str
         ));
     };
     if let Some(msg) = static_prop_denied(class, name) {
+        return Err(crate::builtins::throws_bare("Error", msg));
+    }
+    if let Some(msg) = with_host(|h| h.static_set_visibility_error(class, name)) {
         return Err(crate::builtins::throws_bare("Error", msg));
     }
     with_host(|h| h.set_static_stored(&key, val.clone()));
@@ -11312,6 +11546,49 @@ pub fn final_violation<'a>(
                     None,
                 ));
             }
+        }
+    }
+
+    // A redeclared asymmetric property may not narrow the write visibility its
+    // ancestor granted, and may not introduce one the ancestor never had.
+    let rank = |v: Visibility| match v {
+        Visibility::Public => 0,
+        Visibility::Protected => 1,
+        Visibility::Private => 2,
+    };
+    let word = |v: Visibility| match v {
+        Visibility::Public => "public",
+        Visibility::Protected => "protected",
+        Visibility::Private => "private",
+    };
+    for (name, vis) in &def.prop_vis {
+        let Some(anc) = chain.iter().find(|a| a.prop_vis.contains_key(name)) else {
+            continue;
+        };
+        let own_set = def.prop_set_vis.get(name).copied();
+        match anc.prop_set_vis.get(name).copied() {
+            Some(p) if rank(own_set.unwrap_or(*vis)) > rank(p) => {
+                return Some((
+                    format!(
+                        "Set access level of {}::${name} must be {}(set) (as in class {}) or weaker",
+                        display_class(&def.name),
+                        word(p),
+                        anc.name
+                    ),
+                    None,
+                ));
+            }
+            None if own_set.is_some_and(|s| rank(s) > 0) => {
+                return Some((
+                    format!(
+                        "Set access level of {}::${name} must be omitted (as in class {})",
+                        display_class(&def.name),
+                        anc.name
+                    ),
+                    None,
+                ));
+            }
+            _ => {}
         }
     }
 

@@ -216,6 +216,13 @@ pub const CORPUS: &[Entry] = &[
         "class C { public $n = 1; } $a = new C; $b = clone $a; $b->n = 2; echo $a->n, $b->n;   // => 12",
     ),
     (
+        "clone()",
+        "Keyword",
+        "clone(object $object, array $withProperties = [])",
+        "PHP 8.5 function form of `clone`: the copy is made and `__clone()` runs, then each entry of `$withProperties` is assigned to it from the CALLING scope, so visibility, `__set`, declared types and `private(set)` apply as they would to `$copy->name = $value`, while a `readonly` property may be written once more. Written with a single operand it is the ordinary `clone`, so `clone($a)->m()` still clones the result of `($a)->m()`. Argument unpacking is not supported. Failures carry a `clone(...)` frame: `clone(): Argument #2 ($withProperties) must be of type array`, `clone() expects at least 1 argument, 0 given`. An exception or enum case is refused as uncloneable.",
+        "$p = clone(new stdClass, [\"a\" => 1]); echo $p->a;   // => 1",
+    ),
+    (
         "class",
         "Keyword",
         "[abstract|final|readonly] class Name [extends Parent] [implements I, …] { members }",
@@ -660,10 +667,17 @@ pub const CORPUS: &[Entry] = &[
         "$m = 6; $m &= 3; echo $m;   // => 2",
     ),
     (
+        "|>",
+        "Operator",
+        "value |> callable",
+        "PHP 8.5 pipe: calls the callable on the right with the value on the left, left-associative. It binds tighter than the relational and equality operators and looser than `.`, shifts and arithmetic, so `1 + 2 |> f(...)` pipes the sum and `1 == 1 |> f(...)` compares against `f(1)`. An arrow function on the right must be parenthesized, and a first-class callable `f(...)` adds no frame of its own to a trace.",
+        "echo \"abc\" |> strtoupper(...) |> strrev(...);   // => CBA",
+    ),
+    (
         "??=",
         "Operator",
         "target ??= expr",
-        "Null-coalescing assignment: stores the right-hand value only when the target is null. It desugars to `target = (target ?? expr)`, so the target is read twice.",
+        "Null-coalescing assignment: stores the right-hand value only when the target is null. It desugars to `target ?? (target = expr)`, so a value that is already there is never rewritten — a readonly or `private(set)` property, `__set` and `offsetSet` are left alone — and a sub-expression of the target (`f()` in `$a[f()]`) is evaluated once.",
         "$a = null; $a ??= 5; echo $a;   // => 5",
     ),
     (
@@ -821,6 +835,13 @@ pub const CORPUS: &[Entry] = &[
         "$s = \"ab\"; echo \"v=$s\";   // => v=ab\necho \"{$s}\";      // => {ab}   (PHP 8 prints: ab)",
     ),
     // ══ Cast ════════════════════════════════════════════════════════════════
+    (
+        "(void)",
+        "Cast",
+        "(void) expr;",
+        "PHP 8.5 discard cast: evaluates the expression and explicitly ignores its value. It is a statement-level form — `echo (void) 1;`, `$x = (void) f();` and `return (void) 1;` are syntax errors naming the token `(void)`.",
+        "(void) print(\"a\");   // => a",
+    ),
     (
         "(int)",
         "Cast",
@@ -7251,7 +7272,7 @@ pub const CORPUS: &[Entry] = &[
         "get_defined_vars",
         "Runtime and diagnostics",
         "get_defined_vars(): array",
-        "The current frame's bound variables, in the order they were first bound. An unset name is absent; a name bound to `null` is present. `$this` and `$GLOBALS` are not included. PARTIAL DIVERGENCE at GLOBAL scope only: the reference lists the superglobals its `variables_order` actually populated, in ITS fixed order and ahead of the script's own variables, where this lists every superglobal the frame holds in binding order. Inside a function — where the answer is the user's own variables — it matches.",
+        "The current frame's bound variables, in the order they were first bound. An unset name is absent; a name bound to `null` is present. `$this` and `$GLOBALS` are not included. At global scope the populated superglobals come first in the reference's fixed order (`argv`, `argc`, `_GET`, `_POST`, `_COOKIE`, `_FILES`, `_SERVER`), then the script's own variables.",
         "function f($p) { $a = 1; unset($a); return get_defined_vars(); } print_r(f(7));   // => [p => 7]",
     ),
     (

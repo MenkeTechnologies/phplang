@@ -246,6 +246,8 @@ pub fn parse_meta(src: &str) -> Result<(Vec<Stmt>, ParseMeta), ParseFail> {
         top_level: true,
         only_declares_so_far: true,
         strict_types: false,
+        coalesce_temps: 0,
+        foreach_targets: Vec::new(),
         declare_warnings: Vec::new(),
         magic: MagicCtx::file_scope(),
     };
@@ -298,6 +300,8 @@ fn resolve_interp_parts(parts: Vec<StrPart>) -> Result<Vec<InterpPart>, String> 
                     top_level: false,
                     only_declares_so_far: false,
                     strict_types: false,
+                    coalesce_temps: 0,
+                    foreach_targets: Vec::new(),
                     declare_warnings: Vec::new(),
                     // An interpolation holds no declaration, so no magic
                     // constant it could contain would read anything but the
@@ -342,6 +346,11 @@ struct Parser {
     /// legal only while this holds: PHP requires it to be the very first statement
     /// but does NOT count a preceding `declare` of any directive against it.
     only_declares_so_far: bool,
+    /// How many temporaries the `??=` desugaring has minted, for their names.
+    coalesce_temps: usize,
+    /// `(temporary, target)` pairs the `foreach` being parsed bound to targets that
+    /// are not plain variables.
+    foreach_targets: Vec<(String, Expr)>,
     /// Whether `declare(strict_types=1)` was seen, i.e. whether this compilation
     /// unit runs in strict mode.
     strict_types: bool,
@@ -838,6 +847,109 @@ impl Parser {
         })
     }
 
+    /// The two halves of `$target ??= v`: the expression that READS the target and
+    /// the one that WRITES it. Every sub-expression of the target that is not a
+    /// plain variable or literal — `f()` in `$a[f()]`, the call in `g()->p` — is
+    /// evaluated once, into a temporary the read half assigns and the write half
+    /// reuses, as the reference evaluates the target once.
+    fn split_coalesce_target(&mut self, e: &Expr) -> (Expr, Expr) {
+        match e {
+            Expr::Index(base, key) => {
+                let (br, bw) = self.split_coalesce_target(base);
+                let (kr, kw) = self.hoist_once(key);
+                (
+                    Expr::Index(Box::new(br), Box::new(kr)),
+                    Expr::Index(Box::new(bw), Box::new(kw)),
+                )
+            }
+            Expr::PropGet(base, member) => {
+                let (br, bw) = self.split_coalesce_target(base);
+                let (mr, mw) = match member {
+                    Member::Dyn(inner) => {
+                        let (r, w) = self.hoist_once(inner);
+                        (Member::Dyn(Box::new(r)), Member::Dyn(Box::new(w)))
+                    }
+                    named => (named.clone(), named.clone()),
+                };
+                (
+                    Expr::PropGet(Box::new(br), mr),
+                    Expr::PropGet(Box::new(bw), mw),
+                )
+            }
+            other => self.hoist_once(other),
+        }
+    }
+
+    /// `(read, write)` halves of one sub-expression: itself twice when it is a
+    /// variable or a literal, otherwise an assignment to a fresh temporary and
+    /// that temporary.
+    fn hoist_once(&mut self, e: &Expr) -> (Expr, Expr) {
+        let simple = matches!(
+            e,
+            Expr::Var(_)
+                | Expr::Int(_)
+                | Expr::Float(_)
+                | Expr::Str(_)
+                | Expr::Bool(_)
+                | Expr::Null
+                | Expr::ConstFetch(_)
+                | Expr::StaticProp(..)
+        );
+        if simple {
+            return (e.clone(), e.clone());
+        }
+        self.coalesce_temps += 1;
+        let tmp = format!("@coalesce{}", self.coalesce_temps);
+        (
+            Expr::Assign(Box::new(Expr::Var(tmp.clone())), None, Box::new(e.clone())),
+            Expr::Var(tmp),
+        )
+    }
+
+    /// Consume a PHP 8.4 write-visibility modifier — `public(set)`,
+    /// `protected(set)` or `private(set)` — and return its visibility, leaving the
+    /// cursor untouched when the tokens at it are anything else.
+    fn eat_set_visibility(&mut self) -> Option<Visibility> {
+        let vis = match self.toks.get(self.pos).map(|s| &s.tok) {
+            Some(Tok::Ident(k)) if k.eq_ignore_ascii_case("public") => Visibility::Public,
+            Some(Tok::Ident(k)) if k.eq_ignore_ascii_case("protected") => Visibility::Protected,
+            Some(Tok::Ident(k)) if k.eq_ignore_ascii_case("private") => Visibility::Private,
+            _ => return None,
+        };
+        let is_set = matches!(
+            self.toks.get(self.pos + 1).map(|s| &s.tok),
+            Some(Tok::Punct("("))
+        ) && matches!(
+            self.toks.get(self.pos + 2).map(|s| &s.tok),
+            Some(Tok::Ident(k)) if k.eq_ignore_ascii_case("set")
+        ) && matches!(
+            self.toks.get(self.pos + 3).map(|s| &s.tok),
+            Some(Tok::Punct(")"))
+        );
+        if !is_set {
+            return None;
+        }
+        self.pos += 4;
+        Some(vis)
+    }
+
+    /// Whether `( void )` — the PHP 8.5 discard cast — starts at token `idx`.
+    fn void_cast_at(&self, idx: usize) -> bool {
+        matches!(self.toks.get(idx).map(|s| &s.tok), Some(Tok::Punct("(")))
+            && matches!(
+                self.toks.get(idx + 1).map(|s| &s.tok),
+                Some(Tok::Ident(k)) if k.eq_ignore_ascii_case("void")
+            )
+            && matches!(
+                self.toks.get(idx + 2).map(|s| &s.tok),
+                Some(Tok::Punct(")"))
+            )
+    }
+
+    fn at_void_cast(&self) -> bool {
+        self.void_cast_at(self.pos)
+    }
+
     /// How PHP names the token at the cursor inside a syntax error. Literals are
     /// echoed back in their source spelling and named by kind; a reserved word and
     /// every operator or delimiter are quoted as a bare `token "…"`.
@@ -845,6 +957,9 @@ impl Parser {
         let Some(sp) = self.toks.get(idx) else {
             return "end of file".to_string();
         };
+        if self.void_cast_at(idx) {
+            return "token \"(void)\"".to_string();
+        }
         let raw = |fallback: String| -> String {
             sp.raw.as_ref().map(|r| r.to_string()).unwrap_or(fallback)
         };
@@ -863,6 +978,19 @@ impl Parser {
                 }
             }
             Tok::Var(v) => format!("variable \"{}\"", q(&format!("${v}"))),
+            // `enum` is a token only where an enum declaration can start: before
+            // a name that is not `extends`/`implements`.
+            Tok::Ident(id)
+                if id.eq_ignore_ascii_case("enum")
+                    && matches!(
+                        self.toks.get(idx + 1).map(|s| &s.tok),
+                        Some(Tok::Ident(n))
+                            if !n.eq_ignore_ascii_case("extends")
+                                && !n.eq_ignore_ascii_case("implements")
+                    ) =>
+            {
+                "token \"enum\"".to_string()
+            }
             Tok::Ident(id) => match reserved_spelling(id) {
                 Some(kw) => format!("token \"{kw}\""),
                 None => format!("identifier \"{}\"", q(id)),
@@ -1054,24 +1182,26 @@ impl Parser {
             {
                 self.class_stmt()?
             }
-            // `enum Name [: type] { ... }`. `enum` is not a reserved keyword, so it
-            // is only treated as an enum declaration when followed by a name and a
-            // `{`, `:`, or `implements` — otherwise it stays a plain identifier.
+            // `enum Name [: type] { ... }`. `enum` is not a reserved keyword: the lexer
+            // makes it a token only before a name that is not `extends`/`implements`,
+            // and from there the grammar owns the rest — so `enum E 1 {` is an enum
+            // declaration with a syntax error, not an expression statement.
             _ if self.at_kw("enum")
                 && matches!(
                     self.toks.get(self.pos + 1).map(|s| &s.tok),
-                    Some(Tok::Ident(_))
-                )
-                && (self.nth_is_punct(2, "{")
-                    || self.nth_is_punct(2, ":")
-                    || matches!(self.toks.get(self.pos + 2).map(|s| &s.tok),
-                        Some(Tok::Ident(s)) if s.eq_ignore_ascii_case("implements"))) =>
+                    Some(Tok::Ident(n))
+                        if !n.eq_ignore_ascii_case("extends")
+                            && !n.eq_ignore_ascii_case("implements")
+                ) =>
             {
                 self.class_stmt()?
             }
             _ if self.at_kw("try") => self.try_stmt()?,
             _ if self.at_kw("return") => {
                 self.pos += 1;
+                if self.at_void_cast() {
+                    return Err(self.syntax_error_expecting("\";\""));
+                }
                 let e = if self.at_punct(";") {
                     None
                 } else {
@@ -1093,6 +1223,12 @@ impl Parser {
                 StmtKind::Continue(level)
             }
             _ => {
+                // PHP 8.5 `(void) expr;` — evaluate and explicitly discard. It is a
+                // statement-level form only; inside an expression it is a syntax
+                // error (see `tok_desc_at`).
+                if self.at_void_cast() {
+                    self.pos += 3;
+                }
                 let e = self.expression()?;
                 if matches!(e, Expr::Unset(_)) {
                     self.expect_listing(";", "\";\"")?;
@@ -1342,6 +1478,7 @@ impl Parser {
             return Err(self.syntax_error());
         }
         // A `&` before the value var marks by-reference iteration (writes back).
+        let outer_targets = std::mem::take(&mut self.foreach_targets);
         let ref1 = self.eat_punct("&");
         let first = self.foreach_target()?;
         let (key_var, val, by_ref) = if self.eat_punct("=>") {
@@ -1367,9 +1504,26 @@ impl Parser {
         } else {
             self.expect_punct(")")?;
         }
-        let (body, alt) = self.control_body(&["endforeach"])?;
+        let mut assigns = std::mem::replace(&mut self.foreach_targets, outer_targets);
+        let (mut body, alt) = self.control_body(&["endforeach"])?;
         if alt {
             self.expect_end_kw("endforeach")?;
+        }
+        if !assigns.is_empty() {
+            let line = self.line();
+            let mut prefixed: Vec<Stmt> = assigns
+                .drain(..)
+                .map(|(tmp, target)| Stmt {
+                    line,
+                    kind: StmtKind::Expr(Expr::Assign(
+                        Box::new(target),
+                        None,
+                        Box::new(Expr::Var(tmp)),
+                    )),
+                })
+                .collect();
+            prefixed.append(&mut body);
+            body = prefixed;
         }
         Ok(StmtKind::Foreach {
             arr,
@@ -1395,6 +1549,33 @@ impl Parser {
             return Ok(ForeachVal::Pattern(
                 self.array_literal(")", ArraySyntax::List)?,
             ));
+        }
+        // `foreach ($a as $o->p)`, `as $arr['k']`, `as C::$s`: a write target that is
+        // not a plain variable. The loop binds a temporary and assigns it to the
+        // target before each pass of the body.
+        let var_chain = matches!(self.peek(), Some(Tok::Var(_)))
+            && (self.nth_is_punct(1, "->")
+                || self.nth_is_punct(1, "?->")
+                || self.nth_is_punct(1, "[")
+                || self.nth_is_punct(1, "::"));
+        let static_prop = matches!(self.peek(), Some(Tok::Ident(_)))
+            && self.nth_is_punct(1, "::")
+            && matches!(
+                self.toks.get(self.pos + 2).map(|s| &s.tok),
+                Some(Tok::Var(_))
+            );
+        if var_chain || static_prop {
+            let target = self.postfix()?;
+            if !matches!(
+                target,
+                Expr::Index(..) | Expr::Append(_) | Expr::PropGet(..) | Expr::StaticProp(..)
+            ) {
+                return Err(self.syntax_error_at(self.pos - 1));
+            }
+            self.coalesce_temps += 1;
+            let tmp = format!("@foreach{}", self.coalesce_temps);
+            self.foreach_targets.push((tmp.clone(), target));
+            return Ok(ForeachVal::Var(tmp));
         }
         Ok(ForeachVal::Var(self.expect_var()?))
     }
@@ -1955,8 +2136,18 @@ impl Parser {
                 let mut readonly = false;
                 let mut by_ref = false;
                 let mut promoted_vis = Visibility::Public;
+                let mut promoted_set_vis: Option<Visibility> = None;
                 // Leading modifiers, which precede the type: `public int $x`.
-                while let Some(Tok::Ident(kw)) = self.peek() {
+                while matches!(self.peek(), Some(Tok::Ident(_))) {
+                    // `private(set)` and friends set the write visibility only.
+                    if let Some(v) = self.eat_set_visibility() {
+                        promoted = true;
+                        promoted_set_vis = Some(v);
+                        continue;
+                    }
+                    let Some(Tok::Ident(kw)) = self.peek() else {
+                        break;
+                    };
                     match kw.to_ascii_lowercase().as_str() {
                         "readonly" => {
                             promoted = true;
@@ -2003,6 +2194,7 @@ impl Parser {
                     variadic,
                     promoted,
                     promoted_vis,
+                    promoted_set_vis,
                     readonly,
                     by_ref,
                 });
@@ -2199,8 +2391,9 @@ impl Parser {
         } = kind;
         let mut parent = None;
         let mut implements = Vec::new();
-        // `extends`: one parent for a class; an interface may extend several.
-        if self.eat_kw("extends") {
+        // `extends`: one parent for a class; an interface may extend several. An
+        // enum has none, so the keyword is left for the `{` check to refuse.
+        if !is_enum && self.eat_kw("extends") {
             loop {
                 let n = self.expect_type_name()?;
                 if is_interface {
@@ -2285,14 +2478,18 @@ impl Parser {
             let mut is_static = false;
             let mut readonly = is_readonly_class;
             let mut visibility = Visibility::Public;
+            let mut set_visibility: Option<Visibility> = None;
             // Each modifier may be written once (the three visibilities count as
             // one); the reference rejects a repeat at the repeated word's line.
-            let (mut seen_vis, mut seen_readonly) = (false, false);
+            let (mut seen_vis, mut seen_set, mut seen_readonly) = (false, false, false);
             let member_start = self.pos;
             loop {
                 let line = self.line();
                 let (repeated, word) = if self.eat_kw("static") {
                     (std::mem::replace(&mut is_static, true), "static")
+                } else if let Some(v) = self.eat_set_visibility() {
+                    set_visibility = Some(v);
+                    (std::mem::replace(&mut seen_set, true), "access type")
                 } else if let Some(v) = [
                     ("public", Visibility::Public),
                     ("protected", Visibility::Protected),
@@ -2334,7 +2531,22 @@ impl Parser {
             if self.pos == member_start && !self.at_kw("const") && !self.at_kw("function") {
                 return Err(self.syntax_error_expecting("\"function\""));
             }
-            let misplaced = if self.at_kw("const") {
+            let set_word = |v: Visibility| match v {
+                Visibility::Public => "public(set)",
+                Visibility::Protected => "protected(set)",
+                Visibility::Private => "private(set)",
+            };
+            let misplaced = if self.at_kw("const") && set_visibility.is_some() {
+                set_visibility.map(|v| {
+                    format!(
+                        "Cannot use the {} modifier on a class constant",
+                        set_word(v)
+                    )
+                })
+            } else if self.at_kw("function") && set_visibility.is_some() {
+                set_visibility
+                    .map(|v| format!("Cannot use the {} modifier on a method", set_word(v)))
+            } else if self.at_kw("const") {
                 // A constant takes a visibility and `final`, nothing else.
                 [
                     (m_abstract, "abstract"),
@@ -2481,6 +2693,7 @@ impl Parser {
                         ty: ty.clone(),
                         is_static,
                         visibility,
+                        set_visibility,
                         readonly,
                         is_final: m_final,
                         line: prop_line,
@@ -2715,12 +2928,18 @@ impl Parser {
         let lhs = self.ternary()?;
         // `??=` — the lexer emits `? ? =`; ternary() leaves the `??` unconsumed
         // when a `=` follows (see its lookahead). Desugar `$x ??= v` to
-        // `$x = ($x ?? v)`.
+        // `$x ?? ($x = v)`: the write happens only when the read found null, so a
+        // readonly or `private(set)` property, `__set` and `offsetSet` are not
+        // touched for a value that is already there.
         if self.at_punct("?") && self.nth_is_punct(1, "?") && self.nth_is_punct(2, "=") {
             self.pos += 3;
+            if matches!(lhs, Expr::Append(_)) {
+                return Err(self.fatal_at(self.line(), "Cannot use [] for reading".to_string()));
+            }
             let rhs = self.assignment()?;
-            let coalesce = Expr::Coalesce(Box::new(lhs.clone()), Box::new(rhs));
-            return Ok(Expr::Assign(Box::new(lhs), None, Box::new(coalesce)));
+            let (read, target) = self.split_coalesce_target(&lhs);
+            let write = Expr::Assign(Box::new(target), None, Box::new(rhs));
+            return Ok(Expr::Coalesce(Box::new(read), Box::new(write)));
         }
         let op = match self.peek() {
             Some(Tok::Punct("=")) => Some(None),
@@ -2782,7 +3001,34 @@ impl Parser {
     /// Precedence-climbing binary parser. Higher `min_bp` binds tighter.
     fn binary(&mut self, min_bp: u8) -> Result<Expr, String> {
         let mut lhs = self.unary()?;
-        while let Some((op, lbp, rbp)) = self.peek_binop() {
+        loop {
+            // PHP 8.5 pipe: tighter than the relational operators, looser than
+            // `.`, left-associative. `a |> f` calls the callable `f` with `a`.
+            if self.at_punct("|>") {
+                if PIPE_BP.0 < min_bp {
+                    break;
+                }
+                self.pos += 1;
+                let arrow = self.at_kw("fn")
+                    || (self.at_kw("static")
+                        && matches!(
+                            self.toks.get(self.pos + 1).map(|s| &s.tok),
+                            Some(Tok::Ident(k)) if k.eq_ignore_ascii_case("fn")
+                        ));
+                if arrow {
+                    return Err(self.fatal_at(
+                        self.line(),
+                        "Arrow functions on the right hand side of |> must be parenthesized"
+                            .to_string(),
+                    ));
+                }
+                let callee = self.binary(PIPE_BP.1)?;
+                lhs = Expr::CallValue(Box::new(callee), vec![lhs]);
+                continue;
+            }
+            let Some((op, lbp, rbp)) = self.peek_binop() else {
+                break;
+            };
             if lbp < min_bp {
                 break;
             }
@@ -2839,16 +3085,20 @@ impl Parser {
             | BinOp::StrictNe
             | BinOp::Spaceship => (11, 12),
             BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => (13, 14),
-            BinOp::Concat => (15, 16),
-            BinOp::Shl | BinOp::Shr => (17, 18),
-            BinOp::Add | BinOp::Sub => (19, 20),
-            BinOp::Mul | BinOp::Div | BinOp::Mod => (21, 22),
-            BinOp::Pow => (24, 23),
+            BinOp::Concat => (17, 18),
+            BinOp::Shl | BinOp::Shr => (19, 20),
+            BinOp::Add | BinOp::Sub => (21, 22),
+            BinOp::Mul | BinOp::Div | BinOp::Mod => (23, 24),
+            BinOp::Pow => (26, 25),
         };
         Some((op, l, r))
     }
 
     fn unary(&mut self) -> Result<Expr, String> {
+        // `(void)` is one token to the reference and no expression begins with it.
+        if self.at_void_cast() {
+            return Err(self.syntax_error());
+        }
         // `include`/`require` and their `_once` forms are prefix operators that
         // take everything to their right at assignment precedence, so
         // `include "a" . ".php"` includes `a.php` — and, being expressions, they
@@ -2912,7 +3162,10 @@ impl Parser {
         // It is NOT a `return` — `clone $a instanceof C` tests the clone, so
         // the `instanceof` below still has to see it.
         let e = if self.eat_kw("clone") {
-            Expr::Clone(Box::new(self.postfix()?))
+            match self.clone_call()? {
+                Some(call) => call,
+                None => Expr::Clone(Box::new(self.postfix()?)),
+            }
         } else {
             self.power()?
         };
@@ -2925,6 +3178,102 @@ impl Parser {
             return Ok(Expr::InstanceOf(Box::new(e), cls));
         }
         Ok(e)
+    }
+
+    /// The PHP 8.5 function form of `clone`, after the keyword: `clone($o, [...])`,
+    /// `clone($o,)` or `clone(object: $o, withProperties: [...])`. It is the
+    /// function form only when the parenthesis holds a top-level comma or a named
+    /// argument — `clone($a)->m()` still clones the whole `($a)->m()` operand.
+    /// `None` leaves the cursor where it was.
+    fn clone_call(&mut self) -> Result<Option<Expr>, String> {
+        if !self.at_punct("(") {
+            return Ok(None);
+        }
+        let mut depth = 0usize;
+        let mut function_form = false;
+        let mut i = self.pos;
+        while let Some(sp) = self.toks.get(i) {
+            match &sp.tok {
+                Tok::Punct("(" | "[" | "{") => depth += 1,
+                Tok::Punct(")" | "]" | "}") => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                Tok::Punct(",") if depth == 1 => function_form = true,
+                Tok::Punct("...") if depth == 1 && i == self.pos + 1 => function_form = true,
+                Tok::Ident(_)
+                    if depth == 1
+                        && i == self.pos + 1
+                        && matches!(
+                            self.toks.get(i + 1).map(|s| &s.tok),
+                            Some(Tok::Punct(":"))
+                        ) =>
+                {
+                    function_form = true
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        if self.nth_is_punct(1, ")") {
+            function_form = true;
+        }
+        if !function_form {
+            return Ok(None);
+        }
+        self.pos += 1; // (
+        let args = self.arg_list()?;
+        let fail = |class: &str, msg: String| {
+            Expr::Throw(Box::new(Expr::New(class.to_string(), vec![Expr::Str(msg)])))
+        };
+        let mut slots: [Option<Expr>; 2] = [None, None];
+        let mut extra: Vec<Expr> = Vec::new();
+        let mut positional = 0usize;
+        for arg in args {
+            let slot = match arg {
+                Expr::NamedArg(name, value) => match name.as_str() {
+                    "object" => (0, *value),
+                    "withProperties" => (1, *value),
+                    other => {
+                        return Ok(Some(fail(
+                            "Error",
+                            format!("Unknown named parameter ${other}"),
+                        )))
+                    }
+                },
+                Expr::Spread(_) => {
+                    return Err(self.bare_fatal_at(
+                        self.line(),
+                        "Argument unpacking in clone() is not supported".to_string(),
+                    ))
+                }
+                value => {
+                    positional += 1;
+                    if positional > 2 {
+                        extra.push(value);
+                        continue;
+                    }
+                    (positional - 1, value)
+                }
+            };
+            slots[slot.0] = Some(slot.1);
+        }
+        let [object, with] = slots;
+        if object.is_none() && with.is_some() {
+            return Ok(Some(fail(
+                "ArgumentCountError",
+                "clone(): Argument #1 ($object) not passed".to_string(),
+            )));
+        }
+        // A single argument is a plain clone; every other count is checked at
+        // run time, where the failure carries a `clone(...)` frame.
+        let mut passed: Vec<Expr> = object.into_iter().chain(with).chain(extra).collect();
+        if passed.len() == 1 {
+            return Ok(Some(Expr::Clone(Box::new(passed.remove(0)))));
+        }
+        Ok(Some(Expr::Call("__clone_with".to_string(), passed)))
     }
 
     /// A prefix `++`/`--`, whose operand PHP's grammar requires to be a
@@ -3760,3 +4109,7 @@ fn prop_default_error(
         "Cannot use {given} as default value for property {class}::${pname} of type {declared}"
     ))
 }
+
+/// Binding powers of the `|>` pipe: between the relational operators (13, 14)
+/// and `.` (17, 18).
+const PIPE_BP: (u8, u8) = (15, 16);

@@ -109,6 +109,13 @@ pub fn install(vm: &mut VM) {
     reg!(vm, ops::DYN_CLASS, b_dyn_class);
     reg!(vm, ops::DYN_CLASS_CONST, b_dyn_class_const);
     reg!(vm, ops::CLONE, b_clone);
+    reg!(vm, ops::CLONE_WITH, b_clone_with);
+    reg!(vm, ops::GLOBALS_ARRAY, b_globals_array);
+    reg!(vm, ops::GLOBALS_GET, b_globals_get);
+    reg!(vm, ops::GLOBALS_GET_Q, b_globals_get_q);
+    reg!(vm, ops::GLOBALS_BIND, b_globals_bind);
+    reg!(vm, ops::GLOBALS_UNSET, b_globals_unset);
+    reg!(vm, ops::GLOBALS_ISSET, b_globals_isset);
     reg!(vm, ops::CONST_DECL, b_const_decl);
     reg!(vm, ops::PROP_GET_EMPTY, b_prop_get_empty);
     reg!(vm, ops::PROP_INCDEC, b_prop_incdec);
@@ -686,10 +693,23 @@ fn b_ref_slot_elem(vm: &mut VM, argc: u8) -> Value {
     Value::int(with_host(|h| h.elem_ref_slot(&name, &keys)) as i64)
 }
 
+/// Why a reference to `$recv->prop` cannot be taken or bound: an asymmetric write
+/// visibility the calling scope is outside of, or an initialized `readonly`
+/// property. Both are `indirectly modify` refusals.
+fn indirect_write_refusal(recv: &Value, prop: &str) -> Option<String> {
+    with_host(|h| {
+        h.set_visibility_error(recv, prop, "indirectly modify")
+            .or_else(|| h.readonly_indirect_error(recv, prop))
+    })
+}
+
 /// Stack `[recv, prop]` → the reference slot of `$recv->prop`.
 fn b_ref_slot_prop(vm: &mut VM, _: u8) -> Value {
     let prop = pop_name(vm);
     let recv = vm.pop();
+    if let Some(msg) = indirect_write_refusal(&recv, &prop) {
+        return throw_php(vm, "Error", &msg);
+    }
     Value::int(with_host(|h| h.prop_ref_slot_ensure(&recv, &prop)) as i64)
 }
 
@@ -735,6 +755,9 @@ fn b_ref_to_prop(vm: &mut VM, _: u8) -> Value {
     let slot = vm.pop().to_int() as usize;
     let prop = pop_name(vm);
     let recv = vm.pop();
+    if let Some(msg) = indirect_write_refusal(&recv, &prop) {
+        return throw_php(vm, "Error", &msg);
+    }
     with_host(|h| {
         h.bind_prop_to_slot(&recv, &prop, slot);
         h.ref_cell_value(slot)
@@ -829,6 +852,116 @@ fn b_clone(vm: &mut VM, _: u8) -> Value {
         Ok(copy) => bubbled(vm, copy),
         Err(e) => fail_or_throw(vm, e),
     }
+}
+
+/// `clone($o, [...])` — see `ops::CLONE_WITH`. Stack `[object, properties]`.
+///
+/// The clone and its `__clone` run first; the entries are then written in
+/// order as ordinary assignments in the CALLING scope, so visibility, `__set`
+/// and declared types apply as they would to `$copy->name = $value`, with the one
+/// difference that a readonly property may be written again.
+fn b_clone_with(vm: &mut VM, argc: u8) -> Value {
+    let args = pop_args(vm, argc as usize);
+    mark_frame_line(vm);
+    // Every failure below is raised from inside `clone(...)`, which the
+    // reference shows as a frame of its own.
+    let line = with_host(|h| h.cur_frame_line());
+    let shown = crate::stdlib::common::make_list(args.clone());
+    let scoped = with_host(|h| h.enter_clone_frame(line, shown));
+    let out = clone_with(vm, args);
+    with_host(|h| h.leave_clone_frame(scoped));
+    out
+}
+
+fn clone_with(vm: &mut VM, args: Vec<Value>) -> Value {
+    if args.is_empty() {
+        return throw_php(
+            vm,
+            "ArgumentCountError",
+            "clone() expects at least 1 argument, 0 given",
+        );
+    }
+    if args.len() > 2 {
+        return throw_php(
+            vm,
+            "ArgumentCountError",
+            &format!("clone() expects at most 2 arguments, {} given", args.len()),
+        );
+    }
+    let (obj, props) = (args[0].clone(), args[1].clone());
+    if !with_host(|h| h.is_array(&props)) {
+        let given = with_host(|h| h.type_name_for_error(&props));
+        return throw_php(
+            vm,
+            "TypeError",
+            &format!("clone(): Argument #2 ($withProperties) must be of type array, {given} given"),
+        );
+    }
+    let copy = match host::clone_object(obj) {
+        Ok(copy) => copy,
+        Err(e) => return fail_or_throw(vm, e),
+    };
+    if bubble_throw(vm) {
+        return Value::Undef;
+    }
+    let pairs = with_host(|h| h.array_pairs(&props)).unwrap_or_default();
+    for (key, value) in pairs {
+        let name = std::sync::Arc::new(with_host(|h| h.to_str(&key)));
+        host::in_clone_with(&copy, || prop_assign(vm, copy.clone(), name, value));
+        if bubble_throw(vm) {
+            return Value::Undef;
+        }
+    }
+    copy
+}
+
+// ── $GLOBALS ─────────────────────────────────────────────────────────────────
+
+/// `$GLOBALS` as a value — see `ops::GLOBALS_ARRAY`.
+fn b_globals_array(_: &mut VM, _: u8) -> Value {
+    with_host(|h| h.globals_array())
+}
+
+/// `$GLOBALS[name]` — see `ops::GLOBALS_GET`.
+fn b_globals_get(vm: &mut VM, _: u8) -> Value {
+    let name = pop_name(vm);
+    mark_frame_line(vm);
+    match with_host(|h| h.global_value(&name)) {
+        Some(v) => v,
+        None => {
+            mark_warn_site(vm);
+            with_host(|h| h.warn(format!("Undefined global variable ${name}")));
+            Value::Undef
+        }
+    }
+}
+
+/// `$GLOBALS[name]` with no diagnostic — see `ops::GLOBALS_GET_Q`.
+fn b_globals_get_q(vm: &mut VM, _: u8) -> Value {
+    let name = pop_name(vm);
+    with_host(|h| h.global_value(&name)).unwrap_or(Value::Undef)
+}
+
+/// Bind a local alias to a global — see `ops::GLOBALS_BIND`. Stack `[local, name]`.
+fn b_globals_bind(vm: &mut VM, _: u8) -> Value {
+    let name = pop_name(vm);
+    let local = pop_name(vm);
+    with_host(|h| h.globals_bind(&local, &name));
+    Value::Undef
+}
+
+/// `unset($GLOBALS[name])` — see `ops::GLOBALS_UNSET`.
+fn b_globals_unset(vm: &mut VM, _: u8) -> Value {
+    let name = pop_name(vm);
+    with_host(|h| h.globals_unset(&name));
+    Value::Undef
+}
+
+/// `isset($GLOBALS[name])` — see `ops::GLOBALS_ISSET`.
+fn b_globals_isset(vm: &mut VM, _: u8) -> Value {
+    let name = pop_name(vm);
+    let set = with_host(|h| h.global_value(&name)).is_some_and(|v| !matches!(v, Value::Undef));
+    Value::bool(set)
 }
 
 /// Normalize a `foreach` subject to an iterable array (objects are iterated).
@@ -2600,6 +2733,13 @@ fn b_prop_set(vm: &mut VM, _: u8) -> Value {
     let val = vm.pop();
     let name = pop_name(vm);
     let recv = vm.pop();
+    prop_assign(vm, recv, name, val)
+}
+
+/// `$recv->name = val` from PHP source: visibility, `__set`, the readonly rule and
+/// the declared type, as the assignment opcode applies them. Returns the assigned
+/// value, or `Undef` once the chunk has been halted with the error it raised.
+fn prop_assign(vm: &mut VM, recv: Value, name: std::sync::Arc<String>, val: Value) -> Value {
     if let Some(msg) = with_host(|h| h.prop_write_refusal(&recv, &name, "assign")) {
         return throw_php(vm, "Error", &msg);
     }
@@ -2628,13 +2768,18 @@ fn b_prop_set(vm: &mut VM, _: u8) -> Value {
     }
 }
 
-/// Screen a source-level write to `$recv->name` against the readonly rule.
+/// Screen a source-level write to `$recv->name` against the asymmetric write
+/// visibility and the readonly rule.
 ///
 /// `true` means the chunk has been halted with the `Error` PHP raises and the
 /// caller must not write. `false` means the write may go ahead — and, for the
 /// one write a readonly property is allowed, that it has now been taken, which
 /// is why this must be called by the writer and not by a read path.
 fn readonly_refused(vm: &mut VM, recv: &Value, name: &str) -> bool {
+    if let Some(msg) = with_host(|h| h.set_visibility_error(recv, name, "modify")) {
+        throw_php(vm, "Error", &msg);
+        return true;
+    }
     match with_host(|h| h.readonly_write_error(recv, name)) {
         Some(msg) => {
             throw_php(vm, "Error", &msg);
@@ -2737,6 +2882,9 @@ fn b_prop_unset(vm: &mut VM, _: u8) -> Value {
     let recv = vm.pop();
     match prop_plan!(vm, recv, name, "__unset") {
         PropAccess::Direct => {
+            if let Some(msg) = with_host(|h| h.set_visibility_error(&recv, &name, "unset")) {
+                return throw_php(vm, "Error", &msg);
+            }
             if let Some(msg) = with_host(|h| h.readonly_unset_error(&recv, &name)) {
                 return throw_php(vm, "Error", &msg);
             }
@@ -2848,6 +2996,9 @@ fn b_prop_ensure_array(vm: &mut VM, _: u8) -> Value {
     // A property out of reach still errors before anything is vivified; the
     // other outcomes all end in a write, which is what this op is for.
     if let PropAccess::Denied(msg) = prop_plan!(vm, recv, name, "__get") {
+        return throw_php(vm, "Error", &msg);
+    }
+    if let Some(msg) = with_host(|h| h.set_visibility_error(&recv, &name, "indirectly modify")) {
         return throw_php(vm, "Error", &msg);
     }
     // `$o->tags[] = x` never writes the property itself, so it is not the

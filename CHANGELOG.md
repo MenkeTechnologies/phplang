@@ -56,6 +56,39 @@ language-feature sweep over PHP 8.2-8.5 additions, and a cross-reference of
   `mb_strrchr`, `mb_strrichr`, `mb_strimwidth`, `mb_encode_numericentity` and
   `mb_decode_numericentity`** were missing. `mb_strimwidth` deprecates a
   negative width (8.5).
+* **PHP 8.5 `|>`, `(void)` and `clone($o, [...])`.** The pipe binds tighter
+  than the relational and equality operators and looser than `.`, shifts and
+  arithmetic; an unparenthesized arrow function on its right is the
+  compile-time fatal. `(void) expr;` is a statement-level discard and a
+  syntax error anywhere else, naming the token `(void)`. The function form of
+  `clone` takes a property array assigned from the calling scope (a readonly
+  property may be written once more), with the reference's argument checks and
+  a `clone(...)` frame. A `Throwable` is now refused as uncloneable.
+* **Asymmetric visibility (8.4)**: `public private(set) int $x`,
+  `protected(set)`, `public(set)`, on declared, static and promoted properties.
+  Writes, `++`, indirect writes (`$o->x[] = 1`, `&$o->x`) and `unset` are
+  refused from outside the set scope with `Cannot modify private(set) property
+  A::$x from global scope` (or `from scope B`); `private(set)` makes the
+  property final, and a redeclaration may not narrow the set visibility or
+  introduce one the parent lacks.
+* **`$GLOBALS` was an empty array.** Element reads, writes, `++`, `??=`,
+  `unset`, `isset`, `&` bindings and `foreach` targets now go to the global
+  frame from any scope; the whole variable reads as a copy in the reference's
+  order (`argv`, `argc`, `_GET`, … then the script's variables), which is also
+  the order `get_defined_vars()` uses at global scope. Assigning it whole is
+  the compile-time fatal.
+* **`$a ??= v` desugared to `$a = $a ?? v`**, writing even when the target held a
+  value: a readonly property raised, `__set`/`offsetSet` ran, and `f()` in
+  `$a[f()] ??= 1` ran twice. It is now `$a ?? ($a = v)` with the target's
+  sub-expressions evaluated once, and `$a[] ??= 1` is `Cannot use [] for
+  reading`.
+* **`foreach ($a as $o->p)`, `as $arr['k']`, `as C::$s`, `as $o->list[]`** were
+  parse errors.
+* **`enum E 1 {` and `enum E extends {`** are enum declarations with a syntax
+  error at the offending token, as the reference lexes `enum` before a name;
+  `unexpected token "enum"` is named where an enum cannot start.
+* **A first-class callable `f(...)` showed a `{closure}` frame** in every trace
+  that passed through it.
 * **`number_format(null)`** deprecates the parameter as `float`, not
   `int|float`. The pinned expectation in `tests/builtin_arity.rs` said
   `int|float`; the reference prints `float`.

@@ -1948,3 +1948,91 @@ try { mb_encode_numericentity("a", [1, 2, 3]); } catch (ValueError $e) { echo $e
 // while a non-numeric string is a TypeError naming `int|float`.
 var_dump(number_format(null, 1));
 try { number_format("a"); } catch (TypeError $e) { echo $e->getMessage(), "\n"; }
+#==#
+// PHP 8.5 pipe: binds tighter than the relational operators and looser than
+// `.`, calls a callable with the left operand, and refuses an unparenthesized
+// arrow function on the right.
+function f($x) { return $x + 1; }
+function z($x) { return "z"; }
+echo 1 |> f(...), 2 |> f(...) |> f(...), "abc" |> strtoupper(...) |> strrev(...), 1 + 2 |> (fn($x) => $x * 10), "\n";
+var_dump(1 == 1 |> z(...), 1 << 1 |> z(...), "a" . "b" |> z(...), true && 1 |> z(...), !1 |> z(...), 5 |> 'strval');
+function t($x) { throw new Exception("e$x"); }
+try { 3 |> t(...); } catch (Exception $e) { echo $e->getTraceAsString(), "\n"; }
+try { 2 |> 5; } catch (Error $e) { echo $e->getMessage(), "\n"; }
+#==#
+var_dump(1 |> fn($x) => $x);
+#==#
+// (void) discards a statement-level expression and is a syntax error elsewhere.
+(void) print("a"); echo "b"; (void) strlen("x"); ( void ) print "c"; echo "\n";
+#==#
+var_dump((void) 1);
+#==#
+function g(): void { return (void) 1; }
+#==#
+// clone with a property array: assigned from the calling scope, readonly
+// reinitialisable inside the class, refused from outside.
+class P { public function __construct(public readonly int $x = 0, public readonly int $y = 0) {}
+  public function withX(int $x): static { return clone($this, ["x" => $x]); } }
+$p = (new P(1, 2))->withX(9); echo $p->x, $p->y, "\n";
+$o = new stdClass; $o->a = 1; $c = clone($o, ["a" => 2, "b" => 3]); echo json_encode($c), json_encode($o), "\n";
+try { clone(new P(1), ["x" => 5]); } catch (Error $e) { echo $e->getMessage(), "\n", $e->getTraceAsString(), "\n"; }
+try { clone($o, 5); } catch (TypeError $e) { echo $e->getMessage(), "\n"; }
+try { clone(); } catch (ArgumentCountError $e) { echo $e->getMessage(), "\n"; }
+try { clone(new Exception("x")); } catch (Error $e) { echo $e->getMessage(), "\n"; }
+echo get_class(clone($o, withProperties: [])), "\n";
+#==#
+// Asymmetric visibility.
+class A { public private(set) int $x = 1; public protected(set) int $y = 2; function inc() { $this->x++; return $this->x; }
+  public function __construct(public private(set) int $p = 3) {} }
+class B extends A { function f() { $this->y = 5; $this->x = 2; } }
+$a = new A; echo $a->x, $a->inc(), $a->p, "\n";
+foreach ([fn() => $a->x = 2, fn() => $a->x++, fn() => $a->y = 9, fn() => $a->p = 1, function () use ($a) { unset($a->x); },
+          function () use ($a) { $r = &$a->x; }, fn() => (new B)->f()] as $c) {
+  try { $c(); } catch (Error $e) { echo $e->getMessage(), "\n"; }
+}
+var_dump($a);
+#==#
+class A { public private(set) $x = 1; }
+#==#
+class A { public int $x = 1; } class B extends A { public private(set) int $x = 5; }
+#==#
+class A { protected(set) int $x = 1; } class B extends A { private(set) int $x = 2; }
+#==#
+// $GLOBALS: element reads and writes from a function, references, unset, isset,
+// the copy semantics of the whole array and its order.
+$a = 1; $arr = [];
+function w() { $GLOBALS["gv"] = 2; $GLOBALS["arr"][] = 3; $GLOBALS["arr"]["k"] = 4; $GLOBALS["n"] ??= 5; $GLOBALS["n"] ??= 6;
+  $GLOBALS["a"]++; $GLOBALS["a"] += 10; $k = "dyn"; $GLOBALS[$k] = "v"; }
+w(); echo $gv, json_encode($arr), $n, $a, $dyn, "\n";
+function r() { $x = &$GLOBALS["a"]; $x = 9; unset($GLOBALS["gv"]);
+  return [isset($GLOBALS["gv"]), isset($GLOBALS["a"]), isset($GLOBALS["a"]["b"]), $GLOBALS["nope"] ?? "dflt", array_key_exists("a", $GLOBALS), isset($GLOBALS["GLOBALS"])]; }
+echo json_encode(r()), $a, "\n";
+function u() { return $GLOBALS["nope"]; } var_dump(u());
+function c() { $copy = $GLOBALS; $GLOBALS["a"] = 7; return $copy["a"]; } echo c(), $a, "\n";
+echo implode(",", array_keys($GLOBALS)), "\n";
+echo implode(",", array_keys(get_defined_vars())), "\n";
+#==#
+function g() { $GLOBALS = []; }
+#==#
+// ??= writes only when the target is null and evaluates it once; foreach may
+// assign to a property, element or static property.
+class A { public readonly int $x; function __construct() { $this->x = 1; } }
+$a = new A; $a->x ??= 5; echo $a->x, "\n";
+function f() { echo "f"; return "k"; }
+$m = []; $m[f()] ??= 1; $m[f()] ??= 2; echo json_encode($m), "\n";
+class M { function __get($n) { echo "get "; return 5; } function __set($n, $v) { echo "set "; } function __isset($n) { echo "isset "; return true; } }
+$o = new M; $o->p ??= 1; echo "done\n";
+$b = new stdClass; foreach ([1, 2] as $b->k) {} echo $b->k;
+foreach ([[1, 2]] as [$b->p, $b->q]) {} echo $b->p, $b->q;
+$arr = []; foreach (["x" => 1, "y" => 2] as $k => $arr["v"]) { echo $k, $arr["v"]; }
+class S { static $v; } foreach ([5, 6] as S::$v) { echo S::$v; }
+echo "\n";
+#==#
+$z = [1]; $z[] ??= 5;
+#==#
+enum E extends {}
+#==#
+enum E 1 { case A; }
+#==#
+$x = 1; $y = "a"; $o = new stdClass;
+var_dump([1] * $x, 1);

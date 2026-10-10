@@ -718,6 +718,9 @@ pub struct Param {
     /// The visibility a promoted parameter declares its property with
     /// (`public` when only `readonly` promoted it).
     pub promoted_vis: Visibility,
+    /// The write visibility a promoted parameter was given, as in
+    /// `public private(set) int $x` (PHP 8.4); `None` when it names none.
+    pub promoted_set_vis: Option<Visibility>,
     /// `readonly` on a promoted constructor parameter, which declares the
     /// property readonly exactly as a `readonly` member declaration would.
     pub readonly: bool,
@@ -747,6 +750,9 @@ pub struct PropDecl {
     pub ty: Option<TypeHint>,
     pub is_static: bool,
     pub visibility: Visibility,
+    /// The write visibility of an asymmetric declaration, `private(set)`,
+    /// `protected(set)` or `public(set)` (PHP 8.4); `None` when none is written.
+    pub set_visibility: Option<Visibility>,
     /// `readonly` — writable exactly once, from inside the declaring class or a
     /// subclass, and never again. See [`PhpHost::readonly_write_error`].
     ///
