@@ -55,7 +55,7 @@ instructions, and lets the shared engine execute and JIT\-compile them. Arithmet
 lowers to native fusevm ops; PHP object semantics \(em arrays, strings, and type
 coercion \(em are served by the
 .B PhpHost
-runtime on top of the VM. It is the first compiled standalone PHP runtime.
+runtime on top of the VM.
 .SH 3. ARCHITECTURE
 .EX
 PHP source \[->] lexer \[->] parser (AST) \[->] lower to fusevm bytecode \[->] fusevm VM + Cranelift JIT
