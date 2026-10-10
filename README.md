@@ -23,15 +23,10 @@
 frontend — a lexer/parser and compiler that lowers PHP to `fusevm::Chunk`
 bytecode running on fusevm's bytecode VM + tracing Cranelift JIT, over a
 `PhpHost` object heap. There is no bespoke interpreter loop: phplang is a pure
-front end; execution and codegen live in `fusevm` — the same engine behind
-[`zshrs`](https://github.com/MenkeTechnologies/zshrs),
-[`strykelang`](https://github.com/MenkeTechnologies/strykelang),
-[`awkrs`](https://github.com/MenkeTechnologies/awkrs),
-[`pythonrs`](https://github.com/MenkeTechnologies/pythonrs), and
-[`rubylang`](https://github.com/MenkeTechnologies/rubylang).
+front end; execution and codegen live in `fusevm` — the same engine every other fusevm
+frontend runs on.
 
-It is, to our knowledge, the first compiled standalone PHP runtime. The binary
-is `php`.
+The binary is `php`.
 
 ### [`Read the Docs`](https://menketechnologies.github.io/phplang/) &middot; [`Engineering Report`](https://menketechnologies.github.io/phplang/report.html) &middot; [`Builtin Reference`](https://menketechnologies.github.io/phplang/reference.html) &middot; [`fusevm`](https://github.com/MenkeTechnologies/fusevm)
 
@@ -625,7 +620,7 @@ against what it reports.
 
 Sampling the corpus is itself easy to get wrong. The mode is chosen from
 `seed >> 7`, so consecutive seeds share one — seeds `1..6000` reach only the
-first 47 of the 82 modes, and a survey over them will report every later mode's
+first 47 modes, and a survey over them will report every later mode's
 constructs as absent. Sample per mode instead:
 
 ```sh
@@ -652,8 +647,8 @@ cargo test
 ```
 
 phplang is a standalone crate (an explicit empty `[workspace]` stops cargo
-walking up to the meta parent). `fusevm` is pulled from crates.io with the `jit`
-feature.
+walking up to the meta parent). `fusevm` is pulled from crates.io with the `jit`,
+`jit-disk-cache`, `aot`, and `ffi` features.
 
 ## [0x07] DOCUMENTATION
 
