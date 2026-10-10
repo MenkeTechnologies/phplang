@@ -524,9 +524,11 @@ documented in-code:
   set, because that engine works over `&str`: `.` is one codepoint rather than
   one byte. This is visible only for a NON-ASCII subject, and only for a pattern
   the byte engine already refused.
-- A **syntax error** reproduces PHP's `unexpected <token>` text but not the
-  `, expecting "X" or "Y"` clause that often follows it: the expected set comes
-  out of PHP's generated LALR tables, not the grammar as written here.
+- A **syntax error** reproduces PHP's `unexpected <token>` text and the scanner's
+  bracket-nesting diagnostics, and prints the `, expecting "X" or "Y"` clause at
+  the sites where it was measured against the reference. The remaining sites'
+  expected sets come out of PHP's generated LALR tables, not the grammar as
+  written here, so they are omitted rather than guessed (see BUGS.md).
 - `var_dump`'s `#N` object number and `spl_object_id` agree with each other, but
   PHP reuses a freed object's number and phplang's arena never frees, so the two
   agree only until an object becomes unreachable.

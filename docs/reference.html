@@ -4003,7 +4003,7 @@ echo implode(",", array_keys($a));   // =&gt; a,b</code></pre>
         <article class="doc-entry" id="doc-arbitrary-precision-gmp-1">
           <h3><a class="doc-anchor" href="#doc-arbitrary-precision-gmp-1">#</a> <code>gmp_init</code></h3>
           <pre><code class="lang-php">gmp_init(string|int $num, int $base = 0): string</code></pre>
-          <p>Parses the operand and returns its decimal representation as a plain STRING, not a GMP object. DIVERGENCE: `$base` is accepted and ignored — the parser auto-detects a `0x`/`0b` prefix and otherwise assumes decimal, yielding `0` for anything unparseable.</p>
+          <p>Parses an int or an integer string (optionally signed, whitespace ignored) and returns its decimal representation as a plain STRING, not a GMP object. `$base` is 0 (auto-detect a `0x`, `0b`, `0o` or leading-`0` octal prefix) or 2 to 62; a string that is not an integer in that base throws `ValueError: gmp_init(): Argument #1 ($num) is not an integer string`. DIVERGENCE: the result is a string, not a `GMP` object.</p>
           <pre><code class="lang-php">echo gmp_init("0xff");   // =&gt; 255</code></pre>
         </article>
         <article class="doc-entry" id="doc-arbitrary-precision-gmp-2">
@@ -4027,35 +4027,35 @@ echo implode(",", array_keys($a));   // =&gt; a,b</code></pre>
         <article class="doc-entry" id="doc-arbitrary-precision-gmp-5">
           <h3><a class="doc-anchor" href="#doc-arbitrary-precision-gmp-5">#</a> <code>gmp_div_q</code></h3>
           <pre><code class="lang-php">gmp_div_q(string|int $num1, string|int $num2, int $rounding_mode = GMP_ROUND_ZERO): string</code></pre>
-          <p>Integer quotient truncated toward zero; a zero divisor throws `DivisionByZeroError: gmp_div_q(): Argument #2 ($num2) Division by zero`. DIVERGENCE: `$rounding_mode` is accepted and ignored — only truncation is implemented.</p>
+          <p>Integer quotient under `$rounding_mode`: `GMP_ROUND_ZERO` truncates, `GMP_ROUND_PLUSINF` rounds up, `GMP_ROUND_MINUSINF` down; any other mode is a `ValueError`. A zero divisor throws `DivisionByZeroError: gmp_div_q(): Argument #2 ($num2) Division by zero`.</p>
           <pre><code class="lang-php">echo gmp_div_q("10", "3");   // =&gt; 3</code></pre>
         </article>
         <article class="doc-entry" id="doc-arbitrary-precision-gmp-6">
           <h3><a class="doc-anchor" href="#doc-arbitrary-precision-gmp-6">#</a> <code>gmp_div</code></h3>
           <pre><code class="lang-php">gmp_div(string|int $num1, string|int $num2, int $rounding_mode = GMP_ROUND_ZERO): string</code></pre>
-          <p>Shares the `gmp_div_q` arm, so its zero-divisor message still reads `gmp_div_q(): Division by zero` and `$rounding_mode` is ignored.</p>
+          <p>Alias of `gmp_div_q`, including its error text.</p>
         </article>
         <article class="doc-entry" id="doc-arbitrary-precision-gmp-7">
           <h3><a class="doc-anchor" href="#doc-arbitrary-precision-gmp-7">#</a> <code>gmp_div_r</code></h3>
           <pre><code class="lang-php">gmp_div_r(string|int $num1, string|int $num2, int $rounding_mode = GMP_ROUND_ZERO): string</code></pre>
-          <p>DIVERGENCE: it shares the `gmp_mod` arm, so it returns the SIGN-OF-DIVISOR remainder — for a positive modulus the result lies in `[0, |m|)` — not the truncating remainder PHP's `gmp_div_r` gives for a negative dividend.</p>
+          <p>The remainder paired with `gmp_div_q` under the same `$rounding_mode`, so `q * d + r == n`; `GMP_ROUND_ZERO` gives the remainder with the sign of the dividend. A zero divisor throws `DivisionByZeroError: gmp_div_r(): Argument #2 ($num2) Division by zero`.</p>
         </article>
         <article class="doc-entry" id="doc-arbitrary-precision-gmp-8">
           <h3><a class="doc-anchor" href="#doc-arbitrary-precision-gmp-8">#</a> <code>gmp_mod</code></h3>
           <pre><code class="lang-php">gmp_mod(string|int $num1, string|int $num2): string</code></pre>
-          <p>A remainder whose sign follows the DIVISOR: the raw remainder has `|m|` added when it is negative, so a positive modulus always yields a result in `[0, |m|)`. A zero modulus throws `DivisionByZeroError: gmp_mod(): Argument #2 ($num2) Modulo by zero`.</p>
+          <p>The non-negative remainder: the result lies in `[0, |m|)` whatever the signs. A zero modulus throws `DivisionByZeroError: Modulo by zero`.</p>
           <pre><code class="lang-php">echo gmp_mod("-7", "3");   // =&gt; 2</code></pre>
         </article>
         <article class="doc-entry" id="doc-arbitrary-precision-gmp-9">
           <h3><a class="doc-anchor" href="#doc-arbitrary-precision-gmp-9">#</a> <code>gmp_pow</code></h3>
           <pre><code class="lang-php">gmp_pow(string|int $num, int $exponent): string</code></pre>
-          <p>Arbitrary-precision exponentiation. DIVERGENCE: a negative exponent returns `"0"` instead of raising PHP's `ValueError`, and the exponent is narrowed to 32 bits, so values at or above 2^32 wrap silently.</p>
+          <p>Arbitrary-precision exponentiation. A negative exponent throws `ValueError: gmp_pow(): Argument #2 ($exponent) must be greater than or equal to 0`; an exponent past `u32` is a fatal error.</p>
           <pre><code class="lang-php">echo gmp_pow("2", "64");   // =&gt; 18446744073709551616</code></pre>
         </article>
         <article class="doc-entry" id="doc-arbitrary-precision-gmp-10">
           <h3><a class="doc-anchor" href="#doc-arbitrary-precision-gmp-10">#</a> <code>gmp_powm</code></h3>
           <pre><code class="lang-php">gmp_powm(string|int $num, string|int $exponent, string|int $modulus): string</code></pre>
-          <p>Modular exponentiation at true arbitrary precision. A zero modulus throws `DivisionByZeroError: Modulo by zero` and a negative exponent raises `Negative exponent not supported`.</p>
+          <p>Modular exponentiation at true arbitrary precision, with a non-negative result. A zero modulus throws `DivisionByZeroError: Modulo by zero` and a negative exponent `ValueError: gmp_powm(): Argument #2 ($exponent) must be greater than or equal to 0`.</p>
           <pre><code class="lang-php">echo gmp_powm("4", "13", "497");   // =&gt; 445</code></pre>
         </article>
         <article class="doc-entry" id="doc-arbitrary-precision-gmp-11">
@@ -4115,19 +4115,19 @@ echo implode(",", array_keys($a));   // =&gt; a,b</code></pre>
         <article class="doc-entry" id="doc-arbitrary-precision-gmp-20">
           <h3><a class="doc-anchor" href="#doc-arbitrary-precision-gmp-20">#</a> <code>gmp_sqrt</code></h3>
           <pre><code class="lang-php">gmp_sqrt(string|int $num): string</code></pre>
-          <p>The integer (floor) square root. There is no negative-input guard, so behaviour for a negative operand is whatever the underlying big-integer library does.</p>
+          <p>The integer (floor) square root. A negative operand throws `ValueError: gmp_sqrt(): Argument #1 ($num) must be greater than or equal to 0`.</p>
           <pre><code class="lang-php">echo gmp_sqrt("17");   // =&gt; 4</code></pre>
         </article>
         <article class="doc-entry" id="doc-arbitrary-precision-gmp-21">
           <h3><a class="doc-anchor" href="#doc-arbitrary-precision-gmp-21">#</a> <code>gmp_root</code></h3>
           <pre><code class="lang-php">gmp_root(string|int $num, int $nth): string</code></pre>
-          <p>The integer (floor) nth root. `$nth` is clamped to at least 1, and `$nth == 2` takes the dedicated square-root path while every other value uses a binary search. `$nth` is narrowed to 32 bits.</p>
+          <p>The integer nth root, truncated toward zero. `$nth` below 1 throws `ValueError`, as does an even root of a negative number; an odd root of a negative number is the negated root of its magnitude.</p>
           <pre><code class="lang-php">echo gmp_root("27", 3);   // =&gt; 3</code></pre>
         </article>
         <article class="doc-entry" id="doc-arbitrary-precision-gmp-22">
           <h3><a class="doc-anchor" href="#doc-arbitrary-precision-gmp-22">#</a> <code>gmp_fact</code></h3>
           <pre><code class="lang-php">gmp_fact(int $num): string</code></pre>
-          <p>The factorial, computed as a plain iterative big-integer product. A negative argument is clamped to 0, returning `"1"`, rather than raising. The running time is linear in `$num`.</p>
+          <p>The factorial. A negative argument throws `ValueError: gmp_fact(): Argument #1 ($num) must be greater than or equal to 0`. The running time is linear in `$num`.</p>
           <pre><code class="lang-php">echo gmp_fact(20);   // =&gt; 2432902008176640000</code></pre>
         </article>
         <article class="doc-entry" id="doc-arbitrary-precision-gmp-23">
@@ -4139,19 +4139,19 @@ echo implode(",", array_keys($a));   // =&gt; a,b</code></pre>
         <article class="doc-entry" id="doc-arbitrary-precision-gmp-24">
           <h3><a class="doc-anchor" href="#doc-arbitrary-precision-gmp-24">#</a> <code>gmp_strval</code></h3>
           <pre><code class="lang-php">gmp_strval(string|int $num, int $base = 10): string</code></pre>
-          <p>Renders the value in the requested base. DIVERGENCE: only bases 16, 2, and 8 are special-cased — every other base, including PHP-supported ones such as 36, silently falls through to decimal instead of raising.</p>
+          <p>Renders the value in `$base`: 2 to 62 (digits `0-9a-zA-Z`, lower case up to 36) or -2 to -36 (upper case). Any other base throws `ValueError: gmp_strval(): Argument #2 ($base) must be between 2 and 62, or -2 and -36`.</p>
           <pre><code class="lang-php">echo gmp_strval("255", 16);   // =&gt; ff</code></pre>
         </article>
         <article class="doc-entry" id="doc-arbitrary-precision-gmp-25">
           <h3><a class="doc-anchor" href="#doc-arbitrary-precision-gmp-25">#</a> <code>gmp_intval</code></h3>
           <pre><code class="lang-php">gmp_intval(string|int $num): int</code></pre>
-          <p>Converts to a PHP int. DIVERGENCE: a value too large SATURATES to `PHP_INT_MAX` or `PHP_INT_MIN` rather than wrapping or truncating as PHP does.</p>
+          <p>Converts to a PHP int the way `mpz_get_si` does: the low 63 bits of the magnitude, carrying the sign, so an out-of-range value wraps rather than saturates.</p>
           <pre><code class="lang-php">echo gmp_intval("42");   // =&gt; 42</code></pre>
         </article>
         <article class="doc-entry" id="doc-arbitrary-precision-gmp-26">
           <h3><a class="doc-anchor" href="#doc-arbitrary-precision-gmp-26">#</a> <code>gmp_prob_prime</code></h3>
           <pre><code class="lang-php">gmp_prob_prime(string|int $num, int $repetitions = 10): int</code></pre>
-          <p>Returns 0 for composite, 1 for probably prime, and 2 for definitely prime. It trial-divides by odd divisors up to `min(sqrt(n), 100000)` — reporting 2 when that fully covers the root — then runs Miller-Rabin with the FIXED bases 2, 3, 5, 7, 11, 13, 17. DIVERGENCE: `$repetitions` is accepted and ignored, so the error bound is not tunable.</p>
+          <p>Returns 0 for composite, 1 for probably prime, and 2 for definitely prime, ignoring the sign. It trial-divides by odd divisors up to `min(sqrt(n), 100000)` — reporting 2 when that fully covers the root — then runs Miller-Rabin with the FIXED bases 2, 3, 5, 7, 11, 13, 17. DIVERGENCE: `$repetitions` is accepted and ignored, so the error bound is not tunable.</p>
           <pre><code class="lang-php">echo gmp_prob_prime("97");   // =&gt; 2</code></pre>
         </article>
         <article class="doc-entry" id="doc-arbitrary-precision-gmp-27">
@@ -4159,6 +4159,114 @@ echo implode(",", array_keys($a));   // =&gt; a,b</code></pre>
           <pre><code class="lang-php">gmp_perfect_square(string|int $num): bool</code></pre>
           <p>True when the value is non-negative and its integer square root squared equals it.</p>
           <pre><code class="lang-php">var_dump(gmp_perfect_square("16"));   // =&gt; bool(true)</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-arbitrary-precision-gmp-28">
+          <h3><a class="doc-anchor" href="#doc-arbitrary-precision-gmp-28">#</a> <code>gmp_div_qr</code></h3>
+          <pre><code class="lang-php">gmp_div_qr(string|int $num1, string|int $num2, int $rounding_mode = GMP_ROUND_ZERO): array</code></pre>
+          <p>Quotient and remainder as a two-element list, under the same `$rounding_mode` as `gmp_div_q`. A zero divisor throws `DivisionByZeroError`.</p>
+          <pre><code class="lang-php">echo implode(",", gmp_div_qr("7", "2"));   // =&gt; 3,1</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-arbitrary-precision-gmp-29">
+          <h3><a class="doc-anchor" href="#doc-arbitrary-precision-gmp-29">#</a> <code>gmp_divexact</code></h3>
+          <pre><code class="lang-php">gmp_divexact(string|int $num1, string|int $num2): string</code></pre>
+          <p>Quotient of a division known to be exact. A zero divisor throws `DivisionByZeroError`.</p>
+          <pre><code class="lang-php">echo gmp_divexact("12", "4");   // =&gt; 3</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-arbitrary-precision-gmp-30">
+          <h3><a class="doc-anchor" href="#doc-arbitrary-precision-gmp-30">#</a> <code>gmp_gcdext</code></h3>
+          <pre><code class="lang-php">gmp_gcdext(string|int $num1, string|int $num2): array</code></pre>
+          <p>Extended Euclid: an array with keys `g`, `s` and `t` such that `s*a + t*b == g`.</p>
+          <pre><code class="lang-php">echo implode(",", gmp_gcdext("12", "18"));   // =&gt; 6,-1,1</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-arbitrary-precision-gmp-31">
+          <h3><a class="doc-anchor" href="#doc-arbitrary-precision-gmp-31">#</a> <code>gmp_invert</code></h3>
+          <pre><code class="lang-php">gmp_invert(string|int $num1, string|int $num2): string|false</code></pre>
+          <p>The modular inverse, or `false` when none exists. A zero modulus throws `DivisionByZeroError`.</p>
+          <pre><code class="lang-php">echo gmp_invert("3", "7");   // =&gt; 5</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-arbitrary-precision-gmp-32">
+          <h3><a class="doc-anchor" href="#doc-arbitrary-precision-gmp-32">#</a> <code>gmp_com</code></h3>
+          <pre><code class="lang-php">gmp_com(string|int $num): string</code></pre>
+          <p>The one's complement, `-n - 1`.</p>
+          <pre><code class="lang-php">echo gmp_com("5");   // =&gt; -6</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-arbitrary-precision-gmp-33">
+          <h3><a class="doc-anchor" href="#doc-arbitrary-precision-gmp-33">#</a> <code>gmp_sqrtrem</code></h3>
+          <pre><code class="lang-php">gmp_sqrtrem(string|int $num): array</code></pre>
+          <p>The floor square root and the remainder as a two-element list. A negative operand throws `ValueError`.</p>
+          <pre><code class="lang-php">echo implode(",", gmp_sqrtrem("17"));   // =&gt; 4,1</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-arbitrary-precision-gmp-34">
+          <h3><a class="doc-anchor" href="#doc-arbitrary-precision-gmp-34">#</a> <code>gmp_rootrem</code></h3>
+          <pre><code class="lang-php">gmp_rootrem(string|int $num, int $nth): array</code></pre>
+          <p>The integer nth root and the remainder as a two-element list, with the argument checks of `gmp_root`.</p>
+          <pre><code class="lang-php">echo implode(",", gmp_rootrem("30", 3));   // =&gt; 3,3</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-arbitrary-precision-gmp-35">
+          <h3><a class="doc-anchor" href="#doc-arbitrary-precision-gmp-35">#</a> <code>gmp_binomial</code></h3>
+          <pre><code class="lang-php">gmp_binomial(string|int $n, int $k): string</code></pre>
+          <p>The binomial coefficient C(n, k); a negative `$k` throws `ValueError`.</p>
+          <pre><code class="lang-php">echo gmp_binomial(10, 3);   // =&gt; 120</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-arbitrary-precision-gmp-36">
+          <h3><a class="doc-anchor" href="#doc-arbitrary-precision-gmp-36">#</a> <code>gmp_nextprime</code></h3>
+          <pre><code class="lang-php">gmp_nextprime(string|int $num): string</code></pre>
+          <p>The smallest prime strictly greater than the operand, found with `gmp_prob_prime`.</p>
+          <pre><code class="lang-php">echo gmp_nextprime("100");   // =&gt; 101</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-arbitrary-precision-gmp-37">
+          <h3><a class="doc-anchor" href="#doc-arbitrary-precision-gmp-37">#</a> <code>gmp_perfect_power</code></h3>
+          <pre><code class="lang-php">gmp_perfect_power(string|int $num): bool</code></pre>
+          <p>True when the value is `r^k` for some `k &gt;= 2` (an odd `k` when negative); 0, 1 and -1 count.</p>
+          <pre><code class="lang-php">var_dump(gmp_perfect_power("27"));   // =&gt; bool(true)</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-arbitrary-precision-gmp-38">
+          <h3><a class="doc-anchor" href="#doc-arbitrary-precision-gmp-38">#</a> <code>gmp_jacobi</code></h3>
+          <pre><code class="lang-php">gmp_jacobi(string|int $num1, string|int $num2): int</code></pre>
+          <p>The Jacobi symbol, computed as the Kronecker symbol.</p>
+          <pre><code class="lang-php">echo gmp_jacobi("3", "7");   // =&gt; -1</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-arbitrary-precision-gmp-39">
+          <h3><a class="doc-anchor" href="#doc-arbitrary-precision-gmp-39">#</a> <code>gmp_legendre</code></h3>
+          <pre><code class="lang-php">gmp_legendre(string|int $num1, string|int $num2): int</code></pre>
+          <p>The Legendre symbol, computed as the Kronecker symbol.</p>
+          <pre><code class="lang-php">echo gmp_legendre("3", "7");   // =&gt; -1</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-arbitrary-precision-gmp-40">
+          <h3><a class="doc-anchor" href="#doc-arbitrary-precision-gmp-40">#</a> <code>gmp_kronecker</code></h3>
+          <pre><code class="lang-php">gmp_kronecker(string|int $num1, string|int $num2): int</code></pre>
+          <p>The Kronecker symbol.</p>
+          <pre><code class="lang-php">echo gmp_kronecker("3", "7");   // =&gt; -1</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-arbitrary-precision-gmp-41">
+          <h3><a class="doc-anchor" href="#doc-arbitrary-precision-gmp-41">#</a> <code>gmp_popcount</code></h3>
+          <pre><code class="lang-php">gmp_popcount(string|int $num): int</code></pre>
+          <p>The number of one bits; `-1` for a negative operand, which has infinitely many.</p>
+          <pre><code class="lang-php">echo gmp_popcount("255");   // =&gt; 8</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-arbitrary-precision-gmp-42">
+          <h3><a class="doc-anchor" href="#doc-arbitrary-precision-gmp-42">#</a> <code>gmp_hamdist</code></h3>
+          <pre><code class="lang-php">gmp_hamdist(string|int $num1, string|int $num2): int</code></pre>
+          <p>The Hamming distance of two values; `-1` when their signs differ.</p>
+          <pre><code class="lang-php">echo gmp_hamdist("5", "3");   // =&gt; 2</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-arbitrary-precision-gmp-43">
+          <h3><a class="doc-anchor" href="#doc-arbitrary-precision-gmp-43">#</a> <code>gmp_testbit</code></h3>
+          <pre><code class="lang-php">gmp_testbit(string|int $num, int $index): bool</code></pre>
+          <p>Whether bit `$index` is set (two's complement for a negative operand). A negative index throws `ValueError`.</p>
+          <pre><code class="lang-php">var_dump(gmp_testbit("5", 2));   // =&gt; bool(true)</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-arbitrary-precision-gmp-44">
+          <h3><a class="doc-anchor" href="#doc-arbitrary-precision-gmp-44">#</a> <code>gmp_scan0</code></h3>
+          <pre><code class="lang-php">gmp_scan0(string|int $num1, int $start): int</code></pre>
+          <p>The index of the first clear bit at or above `$start`; `-1` when there is none.</p>
+          <pre><code class="lang-php">echo gmp_scan0("7", 0);   // =&gt; 3</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-arbitrary-precision-gmp-45">
+          <h3><a class="doc-anchor" href="#doc-arbitrary-precision-gmp-45">#</a> <code>gmp_scan1</code></h3>
+          <pre><code class="lang-php">gmp_scan1(string|int $num1, int $start): int</code></pre>
+          <p>The index of the first set bit at or above `$start`; `-1` when there is none.</p>
+          <pre><code class="lang-php">echo gmp_scan1("8", 0);   // =&gt; 3</code></pre>
         </article>
       </section>
 
@@ -4422,13 +4530,13 @@ echo implode(",", array_keys($a));   // =&gt; a,b</code></pre>
         <article class="doc-entry" id="doc-encoding-8">
           <h3><a class="doc-anchor" href="#doc-encoding-8">#</a> <code>utf8_encode</code></h3>
           <pre><code class="lang-php">utf8_encode(string $string): string</code></pre>
-          <p>The deprecated Latin-1 to UTF-8 shim: each BYTE is widened to the codepoint of the same value. Exact for ASCII; already-multibyte input is widened byte by byte into mojibake, which is what real PHP does to the same byte sequence.</p>
+          <p>The deprecated Latin-1 to UTF-8 shim (`Deprecated: Function utf8_encode() is deprecated since 8.2` on every call): each BYTE is widened to the codepoint of the same value. Exact for ASCII; already-multibyte input is widened byte by byte into mojibake, which is what real PHP does to the same byte sequence.</p>
           <pre><code class="lang-php">echo utf8_encode("abc");   // =&gt; abc</code></pre>
         </article>
         <article class="doc-entry" id="doc-encoding-9">
           <h3><a class="doc-anchor" href="#doc-encoding-9">#</a> <code>utf8_decode</code></h3>
           <pre><code class="lang-php">utf8_decode(string $string): string</code></pre>
-          <p>The deprecated UTF-8 to Latin-1 shim: each codepoint at or below U+00FF is narrowed to one byte and anything above becomes `?`. DIVERGENCE: the byte string is then re-widened one Latin-1 character per byte, so a Latin-1-representable argument round-trips to ITSELF rather than shrinking — `utf8_decode("é")` is still `"é"` and `strlen()` of it is still 2. Only codepoints above U+00FF actually change.</p>
+          <p>The deprecated UTF-8 to Latin-1 shim (`Deprecated: Function utf8_decode() is deprecated since 8.2` on every call): each codepoint at or below U+00FF is narrowed to one byte and anything above becomes `?`. DIVERGENCE: the byte string is then re-widened one Latin-1 character per byte, so a Latin-1-representable argument round-trips to ITSELF rather than shrinking — `utf8_decode("é")` is still `"é"` and `strlen()` of it is still 2. Only codepoints above U+00FF actually change.</p>
           <pre><code class="lang-php">echo utf8_decode("héllo"), "|", utf8_decode("€");   // =&gt; héllo|?</code></pre>
         </article>
       </section>
@@ -4502,20 +4610,20 @@ echo implode(",", array_keys($a));   // =&gt; a,b</code></pre>
         <article class="doc-entry" id="doc-hashing-4">
           <h3><a class="doc-anchor" href="#doc-hashing-4">#</a> <code>hash</code></h3>
           <pre><code class="lang-php">hash(string $algo, string $data, bool $binary = false): string</code></pre>
-          <p>Digests the data with one of exactly six algorithms: `md5`, `sha1`, `sha256`, `sha512`, `crc32b`, `crc32`. DIVERGENCE: `sha384` is NOT accepted here even though `hash_hmac`, `hash_file`, and `hash_pbkdf2` accept it. An unknown name throws `ValueError: hash(): Argument #1 ($algo) must be a valid hashing algorithm`. PHP 8.1's `$options` array does not exist.</p>
+          <p>Digests the data with `md4`, `md5`, `sha1`, `sha224`, `sha256`, `sha384`, `sha512/224`, `sha512/256`, `sha512`, `sha3-224`, `sha3-256`, `sha3-384`, `sha3-512`, `adler32`, `crc32`, `crc32b`, `crc32c`, `fnv132`, `fnv1a32`, `fnv164`, `fnv1a64` or `joaat`. DIVERGENCE: the reference's other algorithms (`md2`, `ripemd*`, `whirlpool`, `tiger*`, `snefru*`, `gost*`, `haval*`, `murmur3*`, `xxh*`) are not implemented and throw as unknown. An unknown name throws `ValueError: hash(): Argument #1 ($algo) must be a valid hashing algorithm`. PHP 8.1's `$options` array does not exist.</p>
           <pre><code class="lang-php">echo hash("sha256", "");   // =&gt; e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855</code></pre>
         </article>
         <article class="doc-entry" id="doc-hashing-5">
           <h3><a class="doc-anchor" href="#doc-hashing-5">#</a> <code>hash_hmac</code></h3>
           <pre><code class="lang-php">hash_hmac(string $algo, string $data, string $key, bool $binary = false): string</code></pre>
-          <p>RFC 2104 HMAC over the same digests, with the block size paired per algorithm. Exactly five names are accepted — `md5`, `sha1`, `sha256`, `sha384`, `sha512` — so the CRC variants `hash()` allows are rejected. An unknown name throws `ValueError: hash_hmac(): Argument #1 ($algo) must be a valid cryptographic hashing algorithm`. `$key` is `#[\SensitiveParameter]`, so a backtrace prints it as `Object(SensitiveParameterValue)` rather than the key itself.</p>
+          <p>RFC 2104 HMAC over the cryptographic digests of `hash()`, with the block size paired per algorithm; the checksums (`adler32`, `crc32*`, `fnv*`, `joaat`) are rejected. An unknown or non-cryptographic name throws `ValueError: hash_hmac(): Argument #1 ($algo) must be a valid cryptographic hashing algorithm`. `$key` is `#[\SensitiveParameter]`, so a backtrace prints it as `Object(SensitiveParameterValue)` rather than the key itself.</p>
           <pre><code class="lang-php">echo strlen(hash_hmac("sha256", "m", "k"));   // =&gt; 64</code></pre>
         </article>
         <article class="doc-entry" id="doc-hashing-6">
           <h3><a class="doc-anchor" href="#doc-hashing-6">#</a> <code>hash_algos</code></h3>
           <pre><code class="lang-php">hash_algos(): array</code></pre>
-          <p>The fixed six-element list `md5, sha1, sha256, sha512, crc32, crc32b`. DIVERGENCE: it is an accurate roster only for `hash()` — it omits `sha384`, which `hash_hmac`, `hash_file`, `hash_hmac_file`, and `hash_pbkdf2` all accept.</p>
-          <pre><code class="lang-php">echo count(hash_algos());   // =&gt; 6</code></pre>
+          <p>The implemented algorithms, in the reference's relative order. DIVERGENCE: the reference lists more (see `hash`), so the count differs.</p>
+          <pre><code class="lang-php">echo in_array("sha3-256", hash_algos()) ? "yes" : "no";   // =&gt; yes</code></pre>
         </article>
       </section>
 
@@ -4534,12 +4642,12 @@ echo implode(",", array_keys($a));   // =&gt; a,b</code></pre>
         <article class="doc-entry" id="doc-hashing-files-and-key-derivation-3">
           <h3><a class="doc-anchor" href="#doc-hashing-files-and-key-derivation-3">#</a> <code>hash_file</code></h3>
           <pre><code class="lang-php">hash_file(string $algo, string $filename, bool $binary = false): string|false</code></pre>
-          <p>Validates the algorithm BEFORE touching the filesystem, matching PHP. Six names are accepted: `md5`, `sha1`, `sha256`, `sha384`, `sha512`, `crc32b` — a set that is neither a subset nor a superset of what `hash()` takes, since it adds `sha384` and drops the non-reflected `crc32`. An unreadable file returns `false`.</p>
+          <p>Validates the algorithm BEFORE touching the filesystem, matching PHP. It accepts every algorithm `hash()` does. An unreadable file returns `false`.</p>
         </article>
         <article class="doc-entry" id="doc-hashing-files-and-key-derivation-4">
           <h3><a class="doc-anchor" href="#doc-hashing-files-and-key-derivation-4">#</a> <code>hash_hmac_file</code></h3>
           <pre><code class="lang-php">hash_hmac_file(string $algo, string $filename, string $key, bool $binary = false): string|false</code></pre>
-          <p>HMACs the file's raw bytes under the key. The same five names as `hash_hmac` are accepted, validated before the read; an unreadable file returns `false`.</p>
+          <p>HMACs the file's raw bytes under the key. It accepts the same algorithms as `hash_hmac`, validated before the read; an unreadable file returns `false`.</p>
         </article>
         <article class="doc-entry" id="doc-hashing-files-and-key-derivation-5">
           <h3><a class="doc-anchor" href="#doc-hashing-files-and-key-derivation-5">#</a> <code>hash_equals</code></h3>
@@ -5082,13 +5190,13 @@ echo count(file("/tmp/php_ref.txt", FILE_IGNORE_NEW_LINES));   // =&gt; 2</code>
         <article class="doc-entry" id="doc-filesystem-27">
           <h3><a class="doc-anchor" href="#doc-filesystem-27">#</a> <code>glob</code></h3>
           <pre><code class="lang-php">glob(string $pattern, int $flags = 0): array</code></pre>
-          <p>A hand-rolled matcher, NOT libc `glob(3)`. The pattern splits at its LAST `/`: everything before is a literal directory, so wildcards never expand across directory levels. Supported: `*`, `?`, and `[…]` with `a-z` ranges and `!`/`^` negation. NOT supported: `{a,b}` brace expansion and backslash escaping. `GLOB_ONLYDIR`, `GLOB_MARK`, and `GLOB_NOSORT` are honoured. Dotfiles are skipped unless the name pattern itself starts with `.`. DIVERGENCE: it never returns `false` — an unreadable directory yields an empty array.</p>
+          <p>The pattern splits at its LAST `/`: everything before is a literal directory, so wildcards never expand across directory levels. The name part is matched with the same rules as `fnmatch` (`*`, `?`, `[…]`, `[:class:]`, backslash escapes). NOT supported: `{a,b}` brace expansion. `GLOB_ONLYDIR`, `GLOB_MARK`, and `GLOB_NOSORT` are honoured. Dotfiles are skipped unless the name pattern itself starts with `.`. DIVERGENCE: it never returns `false` — an unreadable directory yields an empty array.</p>
           <pre><code class="lang-php">file_put_contents("/tmp/php_ref_g.txt", ""); echo count(glob("/tmp/php_ref_g.*"));   // =&gt; 1</code></pre>
         </article>
         <article class="doc-entry" id="doc-filesystem-28">
           <h3><a class="doc-anchor" href="#doc-filesystem-28">#</a> <code>fnmatch</code></h3>
           <pre><code class="lang-php">fnmatch(string $pattern, string $filename, int $flags = 0): bool</code></pre>
-          <p>Runs the same hand-rolled matcher over the whole string. Only `FNM_CASEFOLD` is honoured, and its folding is ASCII-only. DIVERGENCE: `FNM_PATHNAME` is ignored so `*` and `?` cross `/`, `FNM_PERIOD` is ignored so `*` matches a leading dot, and backslash escaping does not exist.</p>
+          <p>A port of the reference libc matcher over the whole string: `*`, `?`, `[…]` ranges, `!`/`^` negation, `[:class:]` names and backslash escapes. `FNM_NOESCAPE`, `FNM_PATHNAME`, `FNM_PERIOD` and `FNM_CASEFOLD` are all honoured (case folding is ASCII-only). An unterminated bracket or a trailing backslash matches nothing.</p>
           <pre><code class="lang-php">var_dump(fnmatch("*.txt", "a.txt"));   // =&gt; bool(true)</code></pre>
         </article>
         <article class="doc-entry" id="doc-filesystem-29">
@@ -5100,13 +5208,13 @@ echo count(file("/tmp/php_ref.txt", FILE_IGNORE_NEW_LINES));   // =&gt; 2</code>
         <article class="doc-entry" id="doc-filesystem-30">
           <h3><a class="doc-anchor" href="#doc-filesystem-30">#</a> <code>dirname</code></h3>
           <pre><code class="lang-php">dirname(string $path, int $levels = 1): string</code></pre>
-          <p>Applies the one-level dirname `$levels` times. DIVERGENCE: a `$levels` of 0 or negative is clamped to 1 rather than raising `ValueError`. An all-slash path yields `/`, and a path with no `/` yields `.`.</p>
+          <p>Applies the one-level dirname `$levels` times. DIVERGENCE: a `$levels` of 0 or negative is clamped to 1 rather than raising `ValueError`. An all-slash path yields `/`, a path with no `/` yields `.`, and the empty string stays empty.</p>
           <pre><code class="lang-php">echo dirname("/a/b/c.txt"), "|", dirname("/a/b/c.txt", 2);   // =&gt; /a/b|/a</code></pre>
         </article>
         <article class="doc-entry" id="doc-filesystem-31">
           <h3><a class="doc-anchor" href="#doc-filesystem-31">#</a> <code>pathinfo</code></h3>
           <pre><code class="lang-php">pathinfo(string $path, int $flags = PATHINFO_ALL): array|string</code></pre>
-          <p>Splits the basename at the LAST `.`, matching PHP's own `php_pathinfo`, so `.htaccess` gives extension `htaccess` and an empty filename. With no second argument it returns a map whose `extension` key is OMITTED ENTIRELY when the basename has no dot. With a selector it returns one string, or `""` when that piece is absent. No filesystem access.</p>
+          <p>Splits the basename at the LAST `.`, matching PHP's own `php_pathinfo`, so `.htaccess` gives extension `htaccess` and an empty filename. With no second argument it returns a map whose `dirname` key is omitted when the directory part is empty and whose `extension` key is OMITTED ENTIRELY when the basename has no dot. With a selector it returns one string, or `""` when that piece is absent. No filesystem access.</p>
           <pre><code class="lang-php">echo pathinfo("/a/b.txt", PATHINFO_EXTENSION);   // =&gt; txt</code></pre>
         </article>
         <article class="doc-entry" id="doc-filesystem-32">
@@ -5921,119 +6029,124 @@ var_dump(is_subclass_of(new B, "A"), is_subclass_of(new A, "A"));   // =&gt; boo
       <section class="tutorial-section" id="ch-runtime-and-diagnostics">
         <h2>Runtime and diagnostics</h2>
         <article class="doc-entry" id="doc-runtime-and-diagnostics-1">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-1">#</a> <code>__phplang_throwable_string</code></h3>
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-1">#</a> <code>__phplang_trace_string</code></h3>
+          <pre><code class="lang-php">__phplang_trace_string(array $trace): string</code></pre>
+          <p>Internal helper behind the prelude's `Exception::getTraceAsString` and `Error::getTraceAsString`; a phplang extension with no PHP counterpart. Renders the structured frame array `getTrace()` returns as `#N file(line): Class-&gt;f(args)` lines closed by `#N {main}`; a frame without `file` reads `[internal function]`.</p>
+        </article>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-2">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-2">#</a> <code>__phplang_throwable_string</code></h3>
           <pre><code class="lang-php">__phplang_throwable_string(Throwable $e): string</code></pre>
           <p>Internal helper behind the prelude's `Exception::__toString` and `Error::__toString`; a phplang extension with no PHP counterpart. Renders `Class: message in file:line` plus `Stack trace:` and the object's `getTraceAsString()` (`#0 {main}` when empty), omitting `: message` when the message is empty. The `previous` chain is walked and joined with `Next `, so the innermost exception reads first. A user function's argument `TypeError` / `ArgumentCountError` gains ` and defined`. A non-throwable argument yields an empty string.</p>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-2">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-2">#</a> <code>__phplang_spl_offset</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-3">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-3">#</a> <code>__phplang_spl_offset</code></h3>
           <pre><code class="lang-php">__phplang_spl_offset(mixed $offset): int</code></pre>
           <p>Internal helper behind the prelude's `SplFixedArray` offsets; a phplang extension with no PHP counterpart. A port of `spl_offset_convert_to_ulong`: an int passes, a canonical integer string converts, a bool is 0/1, and a float takes the cast's `not representable` warning and the `loses precision` deprecation at the user's call site. Any other offset raises `TypeError: Cannot access offset of type &lt;type&gt; on SplFixedArray`.</p>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-3">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-3">#</a> <code>__phplang_warn</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-4">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-4">#</a> <code>__phplang_warn</code></h3>
           <pre><code class="lang-php">__phplang_warn(string $message): null</code></pre>
           <p>Internal helper for the prelude; a phplang extension with no PHP counterpart. Raises an `E_WARNING` with the message at the line of the innermost frame running user code, where the reference — whose method is internal — reports it (`CachingIterator::offsetGet()`'s `Undefined array key`).</p>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-4">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-4">#</a> <code>__phplang_method_owner</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-5">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-5">#</a> <code>__phplang_method_owner</code></h3>
           <pre><code class="lang-php">__phplang_method_owner(object $object, string $method): ?string</code></pre>
           <p>Internal helper for the prelude; a phplang extension with no PHP counterpart. The lowercased name of the class declaring the method `$object` runs for `$method`, or null. `RecursiveIteratorIterator` uses it to tell a subclass's hook (`beginChildren()`, `callHasChildren()`, …) from the inherited no-op, which `spl_recursive_it_it_construct` likewise leaves uncalled.</p>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-5">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-5">#</a> <code>__phplang_try_call</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-6">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-6">#</a> <code>__phplang_try_call</code></h3>
           <pre><code class="lang-php">__phplang_try_call(Closure $fn): array</code></pre>
           <p>Internal helper for the prelude, which cannot hold a `try` block: runs the closure and answers `[true, $result]`, or `[false, $exception]` with the exception it threw taken off the stack. A phplang extension with no PHP counterpart.</p>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-6">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-6">#</a> <code>assert</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-7">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-7">#</a> <code>assert</code></h3>
           <pre><code class="lang-php">assert(mixed $assertion, mixed $description = null): bool</code></pre>
           <p>Evaluates the assertion for truthiness and RETURNS it. DIVERGENCE: this inverts PHP 8's contract — PHP always returns true and throws `AssertionError` on failure, whereas here `assert(false)` simply returns false and throws nothing. `$description` is never read.</p>
           <pre><code class="lang-php">var_dump(assert(1 === 1), assert(false));   // =&gt; bool(true) bool(false)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-7">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-7">#</a> <code>assert_options</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-8">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-8">#</a> <code>assert_options</code></h3>
           <pre><code class="lang-php">assert_options(int $option, mixed $value = null): int</code></pre>
           <p>DIVERGENCE: a stub that always returns 0 and stores nothing. No argument is read.</p>
           <pre><code class="lang-php">echo assert_options(1);   // =&gt; 0</code></pre>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-8">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-8">#</a> <code>trigger_error</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-9">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-9">#</a> <code>trigger_error</code></h3>
           <pre><code class="lang-php">trigger_error(string $message, int $error_level = E_USER_NOTICE): bool</code></pre>
           <p>Prints `"&lt;label&gt;: &lt;message&gt;"` to STDERR and returns true. The label is `Fatal error` for `E_USER_ERROR`, `Warning` for `E_USER_WARNING`, `Deprecated` for `E_USER_DEPRECATED`, and `Notice` for everything else. DIVERGENCE: `E_USER_ERROR` does NOT halt — execution continues with the next statement.</p>
           <pre><code class="lang-php">trigger_error("careful", E_USER_WARNING); echo "still running";   // =&gt; still running</code></pre>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-9">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-9">#</a> <code>user_error</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-10">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-10">#</a> <code>user_error</code></h3>
           <pre><code class="lang-php">user_error(string $message, int $error_level = E_USER_NOTICE): bool</code></pre>
           <p>The alias of `trigger_error`, sharing its match arm and its non-halting `E_USER_ERROR` behaviour.</p>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-10">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-10">#</a> <code>error_log</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-11">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-11">#</a> <code>error_log</code></h3>
           <pre><code class="lang-php">error_log(string $message, int $message_type = 0, string $destination = ""): bool</code></pre>
           <p>With `$message_type` 3 AND a destination it really appends the raw message bytes to that file — no timestamp and no trailing newline are added. Every other combination writes the message to stderr and returns true. The email and SAPI-logger message types are not implemented.</p>
           <pre><code class="lang-php">error_log("note", 3, "/tmp/php_ref_log.txt"); echo file_get_contents("/tmp/php_ref_log.txt");   // =&gt; note</code></pre>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-11">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-11">#</a> <code>debug_backtrace</code></h3>
-          <pre><code class="lang-php">debug_backtrace(int $options = 0, int $limit = 0): array</code></pre>
-          <p>DIVERGENCE: a stub that always returns an empty array. No call stack is captured, so neither argument has any effect.</p>
-          <pre><code class="lang-php">echo count(debug_backtrace());   // =&gt; 0</code></pre>
-        </article>
         <article class="doc-entry" id="doc-runtime-and-diagnostics-12">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-12">#</a> <code>debug_print_backtrace</code></h3>
-          <pre><code class="lang-php">debug_print_backtrace(int $options = 0, int $limit = 0): null</code></pre>
-          <p>DIVERGENCE: a stub that prints nothing and returns null.</p>
-          <pre><code class="lang-php">var_dump(debug_print_backtrace());   // =&gt; NULL</code></pre>
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-12">#</a> <code>debug_backtrace</code></h3>
+          <pre><code class="lang-php">debug_backtrace(int $options = DEBUG_BACKTRACE_PROVIDE_OBJECT, int $limit = 0): array</code></pre>
+          <p>The call stack as a list of frames, innermost first, each an array with `file` and `line` of the call (absent when internal code made it), `function`, and for a method `class`, `object` (unless `$options` lacks `DEBUG_BACKTRACE_PROVIDE_OBJECT`) and `type` (`-&gt;` or `::`), then `args` (unless `DEBUG_BACKTRACE_IGNORE_ARGS`). An `include`/`require`/`eval` frame is one more entry, with `args` before `function`. `$limit` caps the list. The global scope is not a frame, so top-level code gets an empty array.</p>
+          <pre><code class="lang-php">function f() { return count(debug_backtrace()); } echo f();   // =&gt; 1</code></pre>
         </article>
         <article class="doc-entry" id="doc-runtime-and-diagnostics-13">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-13">#</a> <code>set_error_handler</code></h3>
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-13">#</a> <code>debug_print_backtrace</code></h3>
+          <pre><code class="lang-php">debug_print_backtrace(int $options = 0, int $limit = 0): null</code></pre>
+          <p>Prints the frames of `debug_backtrace()` the way `getTraceAsString()` does — `#0 file(line): f(args)` — without the closing `{main}` line. `DEBUG_BACKTRACE_IGNORE_ARGS` drops the argument lists and `$limit` caps the frame count.</p>
+          <pre><code class="lang-php">function f() { debug_print_backtrace(); } f();   // =&gt; #0 Command line code(1): f()</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-14">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-14">#</a> <code>set_error_handler</code></h3>
           <pre><code class="lang-php">set_error_handler(?callable $callback, int $error_levels = E_ALL): null</code></pre>
           <p>Pushes the handler (null pushes "none") with the levels it takes and returns the handler it replaces. A warning, notice or deprecation of a level it takes is handed to it as `($errno, $errstr, $errfile, $errline)` instead of being displayed — even under `@`, where `error_reporting()` reads 4437 inside it; returning `false` displays it after all. A diagnostic the handler raises itself takes the default path. `trigger_error(…, E_USER_ERROR)` reaches it too, and is fatal only when it returns `false`. DIVERGENCE: the handler runs at the next builtin boundary after the diagnostic, so one raised in the middle of a library call that goes on to print runs after that output.</p>
           <pre><code class="lang-php">set_error_handler(function ($n, $s) { echo "caught: $s\n"; return true; });
 echo $undefined;   // =&gt; caught: Undefined variable $undefined</code></pre>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-14">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-14">#</a> <code>set_exception_handler</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-15">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-15">#</a> <code>set_exception_handler</code></h3>
           <pre><code class="lang-php">set_exception_handler(?callable $callback): null</code></pre>
           <p>Pushes the handler (null pushes "none") and returns the one it replaces. An exception that reaches the top of a FILE or STDIN script is handed to it instead of the fatal, and the run then ends normally (status 0); one the handler throws is the uncaught one. Under `php -r` it is never called, as in the reference, whose `zend_eval_string` reports the exception itself.</p>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-15">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-15">#</a> <code>restore_error_handler</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-16">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-16">#</a> <code>restore_error_handler</code></h3>
           <pre><code class="lang-php">restore_error_handler(): bool</code></pre>
           <p>Pops the handler stack back to the previous `set_error_handler`; always returns true.</p>
           <pre><code class="lang-php">var_dump(restore_error_handler());   // =&gt; bool(true)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-16">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-16">#</a> <code>restore_exception_handler</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-17">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-17">#</a> <code>restore_exception_handler</code></h3>
           <pre><code class="lang-php">restore_exception_handler(): bool</code></pre>
           <p>Pops the handler stack back to the previous `set_exception_handler`; always returns true.</p>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-17">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-17">#</a> <code>register_shutdown_function</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-18">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-18">#</a> <code>register_shutdown_function</code></h3>
           <pre><code class="lang-php">register_shutdown_function(callable $callback, mixed ...$args): null</code></pre>
           <p>Queues the callback with its arguments. At request end the queue runs in order (one registered during the run is run too), after an `exit` and after any displayed fatal error, before the destructors; an exception one lets escape is reported uncaught and ends the sweep.</p>
           <pre><code class="lang-php">register_shutdown_function(fn($w) =&gt; print("bye $w\n"), "now");   // prints at exit: bye now</code></pre>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-18">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-18">#</a> <code>spl_autoload_register</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-19">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-19">#</a> <code>spl_autoload_register</code></h3>
           <pre><code class="lang-php">spl_autoload_register(?callable $callback = null, bool $throw = true, bool $prepend = false): bool</code></pre>
           <p>DIVERGENCE: a no-op returning true. There is no autoload chain and no `include`, so every class must be declared in the source that uses it.</p>
           <pre><code class="lang-php">var_dump(spl_autoload_register(fn($c) =&gt; null));   // =&gt; bool(true)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-19">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-19">#</a> <code>spl_autoload_unregister</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-20">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-20">#</a> <code>spl_autoload_unregister</code></h3>
           <pre><code class="lang-php">spl_autoload_unregister(callable $callback): bool</code></pre>
           <p>DIVERGENCE: a no-op returning true.</p>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-20">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-20">#</a> <code>get_defined_vars</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-21">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-21">#</a> <code>get_defined_vars</code></h3>
           <pre><code class="lang-php">get_defined_vars(): array</code></pre>
           <p>The current frame's bound variables, in the order they were first bound. An unset name is absent; a name bound to `null` is present. `$this` and `$GLOBALS` are not included. PARTIAL DIVERGENCE at GLOBAL scope only: the reference lists the superglobals its `variables_order` actually populated, in ITS fixed order and ahead of the script's own variables, where this lists every superglobal the frame holds in binding order. Inside a function — where the answer is the user's own variables — it matches.</p>
           <pre><code class="lang-php">function f($p) { $a = 1; unset($a); return get_defined_vars(); } print_r(f(7));   // =&gt; [p =&gt; 7]</code></pre>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-21">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-21">#</a> <code>class_alias</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-22">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-22">#</a> <code>class_alias</code></h3>
           <pre><code class="lang-php">class_alias(string $class, string $alias, bool $autoload = true): bool</code></pre>
           <p>DIVERGENCE: it reports whether `$class` exists and REGISTERS NOTHING — `$alias` is never read. A true return is therefore misleading: instantiating the alias afterwards still fails.</p>
           <pre><code class="lang-php">class C {} var_dump(class_alias("C", "D"), class_exists("D"));   // =&gt; bool(true) bool(false)</code></pre>
