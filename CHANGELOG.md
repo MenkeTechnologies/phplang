@@ -26,6 +26,35 @@ comment above it.
 
 ---
 
+## Round 24 — hand-probed stdlib and object-model sweep
+
+Measured under `PHP 8.5.11 (cli)`. Found by probe programs over strings,
+arrays, classes, closures, generators, exceptions, SPL and serialization diffed
+against the reference. Each fix is pinned by a test recorded from the reference.
+
+* **`str_ireplace` shares `str_replace`'s body.** An array `$subject` is mapped
+  element by element with its keys kept (it was string-cast to `"Array"`), and
+  the by-reference `$count` is written (the variable stayed undefined).
+* **Objects order as `zend_std_compare_objects` orders them.** Same class, then
+  the declared properties in slot order; a different class, a slot set on one
+  side only, or two enum cases are uncomparable; an object outranks an array.
+  Every object pair compared equal before, so `sort`, `max`, `<` and `<=>` over
+  objects were no-ops. `>` and `>=` now compare with the operands swapped, as
+  the reference compiles them, so two uncomparable arrays are false under `>`.
+* **`array_unique` honours `$flags`.** Any flag but `SORT_STRING` sorts with
+  `zend_sort` and drops adjacent equals, keeping the earlier element; the enum
+  grouping of `SORT_REGULAR` is ported. `SORT_STRING` warns `Array to string
+  conversion` for an array element.
+* **`property_exists`** finds static properties and promoted constructor
+  parameters on a class name, does not find an ancestor's private property, and
+  on an instance checks the calling scope; a leading `\` is dropped.
+* **`__sleep` and `__wakeup`.** `serialize` writes only the properties
+  `__sleep` names, looked up bare, as an own-class private and as a protected,
+  with the reference's three warnings and `N;` for a non-array answer.
+  `unserialize` runs `__wakeup` with the delayed `__unserialize` calls, and an
+  `O:` object starts from its class defaults instead of only the payload's
+  properties.
+
 ## Round 23 — differential sweep: operand classes, typed constants, mbstring
 
 Measured under `PHP 8.5.11 (cli)`. Found by a fresh `parity-fuzz` baseline, a
