@@ -5179,14 +5179,14 @@ pub const CORPUS: &[Entry] = &[
         "serialize",
         "Types and serialization",
         "serialize(mixed $value): string",
-        "Emits PHP's serialization format using `serialize_precision=-1` float rules: `a:` for arrays, `O:` for objects (with the engine's NUL-mangled visibility keys), `E:` for enum cases. DIVERGENCE: a structure that contains ITSELF is written as `N;` at the repeat, where the reference emits an `r:`/`R:` back-reference — the output stays finite and valid but no longer round-trips a cycle.",
+        "Emits PHP's serialization format using `serialize_precision=-1` float rules: `a:` for arrays, `O:` for objects (with the engine's NUL-mangled visibility keys), `E:` for enum cases. An object's `__serialize` answer replaces its properties; failing that, `__sleep` names the ones written, with the reference's warnings for a name that does not exist or repeats. DIVERGENCE: a structure that contains ITSELF is written as `N;` at the repeat, where the reference emits an `r:`/`R:` back-reference — the output stays finite and valid but no longer round-trips a cycle.",
         "echo serialize([1, \"a\"]);   // => a:2:{i:0;i:1;i:1;s:1:\"a\";}",
     ),
     (
         "unserialize",
         "Types and serialization",
         "unserialize(string $data): mixed",
-        "Parses the `N b i d s a` tags and returns `false` on malformed input, trailing bytes, or a negative array count. DIVERGENCE: object (`O:`/`C:`/`E:`) and reference (`R:`/`r:`) records are unsupported, an oversized `i:` saturates rather than failing, and the `$options` argument is not read.",
+        "Parses the `N b i d s a O E` tags and returns `false` on malformed input, trailing bytes, or a negative array count; an oversized `i:` saturates with the reference's warning. An `O:` object starts from its class defaults without running the constructor, then `__unserialize` or `__wakeup` runs once the whole payload has parsed, in the order the objects were finished; an unknown class becomes `__PHP_Incomplete_Class`. DIVERGENCE: `C:` and reference (`R:`/`r:`) records are unsupported, and the `$options` argument is not read.",
         "print_r(unserialize('a:1:{i:0;i:5;}'));   // => Array\\n(\\n    [0] => 5\\n)",
     ),
     // ══ Regular expressions (stdlib::preg) ══════════════════════════════════

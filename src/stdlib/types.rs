@@ -67,12 +67,20 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         // ── serialization ───────────────────────────────────────────────────
         "serialize" => {
             let a = arg(args, 0);
-            // `__serialize` is PHP code: every answer is collected before the
-            // render, and a non-array one is the reference's `TypeError`.
+            // The serialize call's own line, which a `__sleep` body overwrites;
+            // its warnings are raised against it.
+            let line = crate::host::warn_line();
+            // `__serialize` (or, failing it, `__sleep`) is PHP code: every
+            // answer is collected before the render, and a non-array
+            // `__serialize` answer is the reference's `TypeError`.
             let answers = crate::host::collect_object_hooks(
                 std::slice::from_ref(&a),
-                "__serialize",
-                &|class, r| {
+                &["__serialize", "__sleep"],
+                &|obj, class, method, r| {
+                    if method == "__sleep" {
+                        crate::host::set_warn_line(line);
+                        return Some(with_host(|h| sleep_props(h, obj, class, &r)));
+                    }
                     if with_host(|h| h.is_array(&r)) {
                         return Some(r);
                     }
@@ -110,14 +118,19 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             }
             let mut deferred = Vec::new();
             let result = php_unserialize(bytes, &mut deferred);
-            // `__unserialize` runs once the whole payload has parsed, in the
-            // order the objects were created, as the reference's delayed calls
-            // do — and not at all when the payload was malformed.
+            // `__unserialize` and `__wakeup` run once the whole payload has
+            // parsed, in the order their objects were finished, as the
+            // reference's delayed calls do — and not at all when the payload
+            // was malformed.
             if !matches!(result, Unser::Failed(..)) {
                 for (obj, data) in deferred {
                     let class = with_host(|h| h.object_class(&obj)).unwrap_or_default();
-                    let _ =
-                        crate::host::call_method(&class, "__unserialize", Some(obj), vec![data]);
+                    let _ = match data {
+                        Some(data) => {
+                            crate::host::call_method(&class, "__unserialize", Some(obj), vec![data])
+                        }
+                        None => crate::host::call_method(&class, "__wakeup", Some(obj), Vec::new()),
+                    };
                     if crate::host::unwinding() {
                         return Some(Ok(Value::Undef));
                     }
@@ -289,6 +302,11 @@ fn php_serialize_object(
         _ => None,
     };
     if let Some(data) = answer {
+        // A `__sleep` that answered a non-array: the reference has already
+        // counted the element, so it writes a null in its place.
+        if !h.is_array(data) {
+            return "N;".to_string();
+        }
         let pairs = h.array_pairs(data).unwrap_or_default();
         let mut out = format!("O:{}:\"{class}\":{}:{{", class.len(), pairs.len());
         for (k, val) in pairs {
@@ -301,16 +319,82 @@ fn php_serialize_object(
     let props = h.object_props(v);
     let mut out = format!("O:{}:\"{class}\":{}:{{", class.len(), props.len());
     for (name, val) in props {
-        let key = match h.prop_visibility(&class, &name) {
-            Some((_, crate::ast::Visibility::Protected)) => format!("\0*\0{name}"),
-            Some((declaring, crate::ast::Visibility::Private)) => format!("\0{declaring}\0{name}"),
-            _ => name,
-        };
+        let key = mangled_prop_key(h, &class, &name);
         out.push_str(&format!("s:{}:\"{key}\";", key.len()));
         out.push_str(&php_serialize_seen(h, &val, seen));
     }
     out.push('}');
     out
+}
+
+/// The property table `serialize` writes for an object whose class has
+/// `__sleep` and no `__serialize`: `php_var_serialize_get_sleep_props`
+/// (`ext/standard/var.c`) over the names `__sleep` answered.
+///
+/// Each name is looked up among the instance's properties as written, then as a
+/// private of the object's OWN class (`"\0Class\0name"`), then as a protected
+/// (`"\0*\0name"`) — so an ancestor's private property is never found. An
+/// uninitialized typed property is found and left out without a word; a name
+/// found twice is kept once with a warning; a name not found warns. A non-string
+/// name warns and is still looked up by its string form. A non-array answer
+/// warns and comes back as null, which the render writes as `N;`.
+fn sleep_props(h: &mut crate::host::PhpHost, obj: &Value, class: &str, names: &Value) -> Value {
+    let class_name = crate::host::display_class(class);
+    let not_names = format!(
+        "serialize(): {class_name}::__sleep() should return an array only containing the names of \
+         instance-variables to serialize"
+    );
+    if !h.is_array(names) {
+        h.warn(not_names);
+        return Value::Undef;
+    }
+    let props: Vec<(String, Value)> = h
+        .object_props(obj)
+        .into_iter()
+        .map(|(name, val)| (mangled_prop_key(h, class, &name), val))
+        .collect();
+    let out = h.new_array();
+    let mut added: Vec<String> = Vec::new();
+    for (_, name_v) in h.array_pairs(names).unwrap_or_default() {
+        if !matches!(name_v, Value::Str(_)) {
+            h.warn(not_names.clone());
+        }
+        let name = h.to_str_diag(&name_v);
+        let declared_key = mangled_prop_key(h, class, &name);
+        let uninit = h.uninit_read_error(obj, &name).is_some();
+        let candidates = [name.clone(), format!("\0{class_name}\0{name}"), format!("\0*\0{name}")];
+        let found = candidates.iter().find_map(|key| {
+            if let Some((_, val)) = props.iter().find(|(k, _)| k == key) {
+                return Some(Some((key.clone(), val.clone())));
+            }
+            (uninit && *key == declared_key).then_some(None)
+        });
+        match found {
+            Some(Some((key, val))) => {
+                if added.contains(&key) {
+                    h.warn(format!("serialize(): \"{name}\" is returned from __sleep() multiple times"));
+                } else {
+                    h.arr_set_key(&out, &Value::str(key.clone()), val);
+                    added.push(key);
+                }
+            }
+            Some(None) => {}
+            None => h.warn(format!(
+                "serialize(): \"{name}\" returned as member variable from __sleep() but does not exist"
+            )),
+        }
+    }
+    out
+}
+
+/// A property's key in the engine's property table: bare when public or
+/// dynamic, `"\0*\0name"` when protected, `"\0Declaring\0name"` when private.
+fn mangled_prop_key(h: &crate::host::PhpHost, class: &str, name: &str) -> String {
+    match h.prop_visibility(class, name) {
+        Some((_, crate::ast::Visibility::Protected)) => format!("\0*\0{name}"),
+        Some((declaring, crate::ast::Visibility::Private)) => format!("\0{declaring}\0{name}"),
+        _ => name.to_string(),
+    }
 }
 
 /// Format a float at `serialize_precision = -1` — the shortest digit string that
@@ -395,7 +479,7 @@ enum Unser {
 
 /// Parse a PHP serialization payload. Byte-oriented so string lengths are
 /// binary-safe.
-fn php_unserialize(b: &[u8], deferred: &mut Vec<(Value, Value)>) -> Unser {
+fn php_unserialize(b: &[u8], deferred: &mut Vec<(Value, Option<Value>)>) -> Unser {
     let mut p = Parser {
         b,
         deferred,
@@ -418,9 +502,10 @@ fn php_unserialize(b: &[u8], deferred: &mut Vec<(Value, Value)>) -> Unser {
 
 struct Parser<'a> {
     b: &'a [u8],
-    /// `(object, data)` for each object of a class with `__unserialize`, in
-    /// creation order, for the caller to hand its data once parsing ends.
-    deferred: &'a mut Vec<(Value, Value)>,
+    /// The delayed calls, in the order their objects were finished:
+    /// `(object, Some(data))` for a class with `__unserialize`, to be handed its
+    /// data, and `(object, None)` for one with only `__wakeup`.
+    deferred: &'a mut Vec<(Value, Option<Value>)>,
     pos: usize,
     /// Where the reference would report the parse as having failed. Written by
     /// the FIRST branch to fail, which is the innermost one — a bad element deep
@@ -652,7 +737,7 @@ impl<'a> Parser<'a> {
                     }
                     self.close_container()?;
                     self.deferred
-                        .push((obj.clone(), super::common::make_map(pairs)));
+                        .push((obj.clone(), Some(super::common::make_map(pairs))));
                     return Some(obj);
                 }
                 let mut props: Vec<(String, Value)> = Vec::with_capacity(count as usize);
@@ -686,7 +771,25 @@ impl<'a> Parser<'a> {
                 } else {
                     "__PHP_Incomplete_Class".to_string()
                 };
-                Some(with_host(|h| h.new_object_bare(&target, props)))
+                let wakes = known && with_host(|h| h.class_has_method(&target, "__wakeup"));
+                // A known class starts from its declared defaults, without its
+                // constructor, as `object_init_ex` does: a property the payload
+                // does not carry keeps its default, and one it does takes its
+                // declared slot.
+                let allocated = if known { crate::host::alloc_object(&target).ok() } else { None };
+                let obj = match allocated {
+                    Some(obj) => with_host(|h| {
+                        for (name, val) in props {
+                            h.prop_set(&obj, &name, val);
+                        }
+                        obj
+                    }),
+                    None => with_host(|h| h.new_object_bare(&target, props)),
+                };
+                if wakes {
+                    self.deferred.push((obj.clone(), None));
+                }
+                Some(obj)
             }
             // `E:<len>:"Class:CASE";` — an enum case, resolved back to the
             // singleton rather than rebuilt as a new object.

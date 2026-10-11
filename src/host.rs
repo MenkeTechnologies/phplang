@@ -12458,25 +12458,29 @@ impl PhpHost {
     }
 }
 
-/// Answer a magic method — `__debugInfo`, `__serialize` — for every object
-/// reachable from `roots` whose class defines it, keyed by object handle.
+/// Answer a magic method — `__debugInfo`, `__serialize`/`__sleep` — for every
+/// object reachable from `roots` whose class defines one of `methods`, keyed by
+/// object handle. The first of `methods` the class has is the one called, so
+/// `["__serialize", "__sleep"]` gives `__serialize` priority as the reference
+/// does.
 ///
 /// A renderer that consults such a method (`var_dump`, `print_r`,
 /// `serialize`) runs inside a host borrow and cannot call PHP code, so the
 /// reachable values are walked first, depth-first in render order, and each
-/// object's answer is collected here. `answer` shapes what the method returned
-/// into the array the renderer will use, or answers `None` having left an
-/// exception pending. The walk descends into an answer rather than into the
-/// object's own properties, as the render will. `None` when a method threw.
+/// object's answer is collected here. `answer(object, class, method, result)`
+/// shapes what the method returned into the value the renderer will use, or
+/// answers `None` having left an exception pending. The walk descends into an
+/// answer rather than into the object's own properties, as the render will.
+/// `None` when a method threw.
 pub fn collect_object_hooks(
     roots: &[Value],
-    method: &str,
-    answer: &dyn Fn(&str, Value) -> Option<Value>,
+    methods: &[&str],
+    answer: &dyn Fn(&Value, &str, &str, Value) -> Option<Value>,
 ) -> Option<FxHashMap<u32, Value>> {
     fn walk(
         v: &Value,
-        method: &str,
-        answer: &dyn Fn(&str, Value) -> Option<Value>,
+        methods: &[&str],
+        answer: &dyn Fn(&Value, &str, &str, Value) -> Option<Value>,
         map: &mut FxHashMap<u32, Value>,
         seen: &mut FxHashSet<u32>,
     ) -> bool {
@@ -12484,14 +12488,18 @@ pub fn collect_object_hooks(
         if !seen.insert(*id) {
             return true;
         }
-        let class = with_host(|h| h.object_class(v).filter(|c| h.class_has_method(c, method)));
-        let target = match class {
-            Some(class) => {
+        let hook = with_host(|h| {
+            let class = h.object_class(v)?;
+            let method = methods.iter().find(|m| h.class_has_method(&class, m))?;
+            Some((class, *method))
+        });
+        let target = match hook {
+            Some((class, method)) => {
                 let r = call_method(&class, method, Some(v.clone()), Vec::new());
                 if unwinding() {
                     return false;
                 }
-                let Some(arr) = answer(&class, r.unwrap_or(Value::Undef)) else {
+                let Some(arr) = answer(v, &class, method, r.unwrap_or(Value::Undef)) else {
                     return false;
                 };
                 map.insert(*id, arr.clone());
@@ -12513,13 +12521,13 @@ pub fn collect_object_hooks(
                     .collect()
             }
         });
-        children.iter().all(|c| walk(c, method, answer, map, seen))
+        children.iter().all(|c| walk(c, methods, answer, map, seen))
     }
     let mut map = FxHashMap::default();
     let mut seen = FxHashSet::default();
     roots
         .iter()
-        .all(|r| walk(r, method, answer, &mut map, &mut seen))
+        .all(|r| walk(r, methods, answer, &mut map, &mut seen))
         .then_some(map)
 }
 

@@ -6441,7 +6441,7 @@ fn php_print_r(h: &host::PhpHost, v: &Value, depth: usize, seen: &mut host::Visi
 /// handle for the renderer to read. `None` when a `__debugInfo` threw — the
 /// exception is left pending and nothing is rendered.
 fn with_debug_info<T>(roots: &[Value], render: impl FnOnce(&mut host::PhpHost) -> T) -> Option<T> {
-    let map = host::collect_object_hooks(roots, "__debugInfo", &|class, r| {
+    let map = host::collect_object_hooks(roots, &["__debugInfo"], &|_, class, _, r| {
         Some(with_host(|h| {
             if h.is_array(&r) {
                 return r;

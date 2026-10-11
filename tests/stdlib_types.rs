@@ -420,3 +420,22 @@ fn var_export_spells_int_min_and_nul_bytes_like_the_reference() {
          \\K::__set_state(array(\n   'a' => 'x' . \"\\0\" . 'y',\n))"
     );
 }
+
+/// `__sleep` names the properties `serialize` writes: each is looked up bare,
+/// then as a private of the object's own class, then as a protected, so an
+/// ancestor's private is "not existing"; an uninitialized typed property is
+/// skipped silently and a repeated name warns once. `unserialize` starts from
+/// the class defaults (`$keep` is not in the payload) and runs `__wakeup` in the
+/// order the objects were finished. Recorded from the reference.
+#[test]
+fn sleep_selects_properties_and_wakeup_runs_after_parse() {
+    let src = r#"<?php class P { private $pp = 1; protected $pr = 2; } class C extends P { public $a = 1; private $c = 3; public int $t; public $keep = 'k'; function __sleep() { return ['c', 'a', 'pr', 't', 'pp', 'a']; } function __wakeup() { echo "wake{$this->a} "; } }
+echo str_replace("\0", "~", $s = serialize(new C)), "|"; $o = unserialize($s); echo $o->keep, "|";
+class W { function __construct(public $n) {} function __wakeup() { echo "W{$this->n} "; } } unserialize(serialize([new W(1), [new W(2)], new W(3)]));"#;
+    assert_eq!(
+        run(src),
+        "\nWarning: serialize(): \"pp\" returned as member variable from __sleep() but does not exist in Command line code on line 2\n\
+         \nWarning: serialize(): \"a\" is returned from __sleep() multiple times in Command line code on line 2\n\
+         O:1:\"C\":3:{s:4:\"~C~c\";i:3;s:1:\"a\";i:1;s:5:\"~*~pr\";i:2;}|wake1 k|W1 W2 W3 "
+    );
+}
