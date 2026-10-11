@@ -163,12 +163,15 @@ the grammar.
 ## `Array to string conversion` is not raised where an array is a KEY
 
 ```text
-$ php -r 'var_dump(array_unique([1, "1", [1]]));'
-PHP Warning:  Array to string conversion
-… (the array is otherwise identical)
+$ php -r '$a = [[1], "b"]; sort($a, SORT_STRING); echo count(array_intersect([[1]], [[1]]));'
+Warning: Array to string conversion      (once for sort, twice for array_intersect)
+1
 $ target/debug/php -r '… same …'
-… no warning
+1
 ```
+
+`array_diff` is the same. `array_unique` used to be this entry's example; it now
+converts with the conversion's diagnostics and warns as the reference does.
 
 The value is right and the warning is missing. The warning IS raised for the
 ordinary coercions — `"x" . [1]`, `"val: $a"`, `(string)[1]` all agree with the

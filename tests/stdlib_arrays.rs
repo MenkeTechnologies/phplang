@@ -834,3 +834,23 @@ fn shuffle_and_array_rand_follow_the_seeded_generator() {
         "10,1,9,4,3,7,8,2,5,6\n[2,1,3]\n[0,2,3,4,5,6,9]\"r\"[30,66,72]\n"
     );
 }
+
+/// `array_unique` honours `$flags`. `SORT_STRING`, the default, keys on the
+/// string form and so warns for an array element; every other flag sorts with
+/// `zend_sort` under that flag's comparison and drops each element equal to the
+/// last one kept, so the survivors of a non-transitive mix (`SORT_REGULAR` over
+/// numeric strings, words, `0`, `""`, `null` and `false`) are the ones that
+/// algorithm leaves. Enum cases group by identity. Expectations recorded from
+/// the reference running this program.
+#[test]
+fn array_unique_compares_under_its_flags() {
+    let src = r#"<?php enum E { case A; case B; }
+echo json_encode(array_unique(["10", "1e1", 10.0, "abc", 0, "", null, false], SORT_REGULAR)),
+    json_encode(array_unique(["b" => "A", "a" => "a", "c" => "B", "d" => "b"], SORT_STRING | SORT_FLAG_CASE)),
+    count(array_unique([E::A, 1, E::B, E::A, E::B], SORT_REGULAR));
+echo json_encode(array_unique([1, "1", [1]]));"#;
+    assert_eq!(
+        run(src),
+        "{\"0\":\"10\",\"3\":\"abc\",\"4\":0,\"5\":\"\"}{\"b\":\"A\",\"c\":\"B\"}3\nWarning: Array to string conversion in Command line code on line 5\n{\"0\":1,\"2\":[1]}"
+    );
+}

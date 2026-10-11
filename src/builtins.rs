@@ -4710,7 +4710,7 @@ pub fn call_library(name: &str, args: &[Value]) -> Result<Value, String> {
         "array_sum" => with_host(|h| php_array_fold(h, &arg(args, 0), false)),
         "array_product" => with_host(|h| php_array_fold(h, &arg(args, 0), true)),
         "array_flip" => with_host(|h| php_array_flip(h, &arg(args, 0))),
-        "array_unique" => with_host(|h| php_array_unique(h, &arg(args, 0))),
+        "array_unique" => with_host(|h| php_array_unique(h, args)),
         "array_key_exists" | "key_exists" => with_host(|h| php_array_key_exists(h, args)),
         "array_search" => with_host(|h| php_array_search(h, args)),
         // The sort family takes an optional `SORT_*` flags argument in position 1.
@@ -7445,13 +7445,63 @@ fn php_array_flip(h: &mut host::PhpHost, arr: &Value) -> Value {
     out
 }
 
-fn php_array_unique(h: &mut host::PhpHost, arr: &Value) -> Value {
-    let pairs = h.array_pairs(arr).unwrap_or_default();
+/// `PHP_FUNCTION(array_unique)` (`ext/standard/array.c`).
+///
+/// `SORT_STRING`, the default, keeps the first element of each string form,
+/// converting with the conversion's own diagnostics (an array element warns
+/// `Array to string conversion`). Every other flag sorts `(element, position)`
+/// pairs with `zend_sort` under the flag's comparison, then walks the sorted run
+/// dropping each element equal to the last one kept, keeping whichever of the
+/// two came first in the input. Equality here is the comparison's answer, so
+/// `SORT_REGULAR` dedupes `"10"` against `1e1` and an object against an
+/// equal-property instance of its class.
+fn php_array_unique(h: &mut host::PhpHost, args: &[Value]) -> Value {
+    const SORT_STRING: i64 = 2;
+    let pairs = h.array_pairs(&arg(args, 0)).unwrap_or_default();
+    let flags = match args.get(1) {
+        Some(v) if !matches!(v, Value::Undef) => v.to_int(),
+        _ => SORT_STRING,
+    };
     let out = h.new_array();
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for (k, v) in pairs {
-        // PHP's default SORT_STRING comparison: dedupe by string form.
-        if seen.insert(h.to_str(&v)) {
+    if flags == SORT_STRING {
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for (k, v) in pairs {
+            if seen.insert(h.to_str_diag(&v)) {
+                h.arr_set_key(&out, &k, v);
+            }
+        }
+        return out;
+    }
+    let cmp = |h: &host::PhpHost, a: &Value, b: &Value| -> i32 {
+        let ord = sort_flag_compare(h, a, b, flags);
+        // `php_array_data_compare_unstable_i`'s enum arm: two enum cases are
+        // uncomparable, so they are grouped by identity instead, and an enum
+        // case sorts before anything else.
+        if ord != 1 || flags & !8 != 0 || h.enum_case_of(b).is_none() {
+            return ord;
+        }
+        match (a, b) {
+            (Value::Obj(x), Value::Obj(y)) if h.enum_case_of(a).is_some() => sign(x.cmp(y)) as i32,
+            _ => -1,
+        }
+    };
+    let mut order: Vec<usize> = (0..pairs.len()).collect();
+    crate::stdlib::zsort::zend_sort(&mut order, &mut |&i, &j| cmp(h, &pairs[i].1, &pairs[j].1));
+    let mut keep = vec![true; pairs.len()];
+    let mut last = order.first().copied();
+    for &cur in order.iter().skip(1) {
+        let Some(kept) = last else { break };
+        if cmp(h, &pairs[kept].1, &pairs[cur].1) != 0 {
+            last = Some(cur);
+        } else if kept > cur {
+            keep[kept] = false;
+            last = Some(cur);
+        } else {
+            keep[cur] = false;
+        }
+    }
+    for ((k, v), kept) in pairs.into_iter().zip(keep) {
+        if kept {
             h.arr_set_key(&out, &k, v);
         }
     }

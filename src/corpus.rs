@@ -3258,8 +3258,8 @@ pub const CORPUS: &[Entry] = &[
     (
         "array_unique",
         "Core library — arrays",
-        "array_unique(array $array): array",
-        "Keeps the first occurrence of each distinct value, preserving keys. DIVERGENCE: the `$flags` argument is not read, so the comparison mode is fixed.",
+        "array_unique(array $array, int $flags = SORT_STRING): array",
+        "Keeps the first occurrence of each distinct value, preserving keys. `SORT_STRING` (the default) compares string forms; any other `$flags` sorts under that comparison and drops each element equal to the last one kept, as the reference does.",
         "echo implode(\",\", array_unique([1, 1, 2]));   // => 1,2",
     ),
     (
