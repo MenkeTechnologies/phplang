@@ -4386,7 +4386,8 @@ pub fn call_library(name: &str, args: &[Value]) -> Result<Value, String> {
         "wordwrap" => with_host(|h| php_wordwrap(h, args))?,
         "substr" => with_host(|h| Value::str(php_substr(&h.to_str(&arg(args, 0)), args))),
         "strpos" => with_host(|h| php_strpos(h, args))?,
-        "str_replace" => with_host(|h| php_str_replace(h, args)),
+        "str_replace" => with_host(|h| php_str_replace(h, args, false)),
+        "str_ireplace" => with_host(|h| php_str_replace(h, args, true)),
         // The `(array)` / `(object)` casts, which have no PHP-callable spelling.
         "__cast_array" => with_host(|h| php_cast_array(h, &arg(args, 0))),
         "__cast_object" => php_cast_object(&arg(args, 0))?,
@@ -5175,7 +5176,11 @@ fn php_cast_object(v: &Value) -> Result<Value, String> {
     Ok(obj)
 }
 
-fn php_str_replace(h: &mut host::PhpHost, args: &[Value]) -> Value {
+/// `str_replace` and, with `ci`, `str_ireplace` — one body, as in the
+/// reference's `php_str_replace_common(…, case_sensitivity)`: an array
+/// `$subject` is replaced element by element with its keys kept, and `$count`
+/// receives the total number of replacements.
+fn php_str_replace(h: &mut host::PhpHost, args: &[Value], ci: bool) -> Value {
     let search = arg(args, 0);
     let replace = arg(args, 1);
     let subject = arg(args, 2);
@@ -5206,23 +5211,28 @@ fn php_str_replace(h: &mut host::PhpHost, args: &[Value]) -> Value {
     let result = if h.is_array(&subject) {
         let out = h.new_array();
         for (k, v) in h.array_pairs(&subject).unwrap_or_default() {
-            let s = replace_all_pairs(&h.to_str(&v), &pairs, &mut count);
+            let s = replace_all_pairs(&h.to_str(&v), &pairs, ci, &mut count);
             h.arr_set_key(&out, &k, Value::str(s));
         }
         out
     } else {
-        Value::str(replace_all_pairs(&h.to_str(&subject), &pairs, &mut count))
+        Value::str(replace_all_pairs(&h.to_str(&subject), &pairs, ci, &mut count))
     };
     h.byref_out_put(3, Value::int(count as i64));
     result
 }
 
 /// Apply each `(search, replace)` pair in order to `subject`, accumulating the
-/// number of replacements. An empty needle matches nothing, as in PHP.
-fn replace_all_pairs(subject: &str, pairs: &[(String, String)], count: &mut usize) -> String {
+/// number of replacements. An empty needle matches nothing, as in PHP. `ci`
+/// matches ASCII case-insensitively, as `str_ireplace` does.
+fn replace_all_pairs(subject: &str, pairs: &[(String, String)], ci: bool, count: &mut usize) -> String {
     let mut cur = subject.to_string();
     for (needle, rep) in pairs {
         if needle.is_empty() {
+            continue;
+        }
+        if ci {
+            cur = crate::stdlib::strings::ci_replace(&cur, needle, rep, count);
             continue;
         }
         *count += cur.matches(needle.as_str()).count();

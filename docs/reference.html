@@ -3281,8 +3281,8 @@ strtr(string $string, string $from, string $to): string</code></pre>
         </article>
         <article class="doc-entry" id="doc-strings-21">
           <h3><a class="doc-anchor" href="#doc-strings-21">#</a> <code>str_ireplace</code></h3>
-          <pre><code class="lang-php">str_ireplace(array|string $search, array|string $replace, string $subject): string</code></pre>
-          <p>ASCII-case-insensitive `str_replace`. An array `$search` is applied in sequence, index-matched against an array `$replace` (missing entries become `""`) or with one scalar for all. DIVERGENCE: an array `$subject` is string-cast rather than mapped, and there is no `$count` out-parameter.</p>
+          <pre><code class="lang-php">str_ireplace(array|string $search, array|string $replace, string|array $subject, &amp;$count = null): string|array</code></pre>
+          <p>ASCII-case-insensitive `str_replace`. An array `$search` is applied in sequence, index-matched against an array `$replace` (missing entries become `""`) or with one scalar for all. An array `$subject` is processed element-wise with its keys kept, and the by-reference `$count` receives the number of replacements.</p>
           <pre><code class="lang-php">echo str_ireplace("WORLD", "there", "Hello world");   // =&gt; Hello there</code></pre>
         </article>
         <article class="doc-entry" id="doc-strings-22">

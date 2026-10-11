@@ -1,6 +1,6 @@
 //! Standard-library functions with a by-reference OUT parameter: `preg_match`'s
 //! `$matches`, `parse_str`'s result array, `similar_text`'s percentage and
-//! `str_replace`'s count. Each publishes its value at the parameter's position
+//! `str_replace`'s and `str_ireplace`'s count. Each publishes its value at the parameter's position
 //! and the call site stores it into the caller's variable — the same path a user
 //! function's `&$x` parameter takes — so the variable need not exist beforehand.
 //!
@@ -60,6 +60,16 @@ fn similar_text_reports_its_percentage() {
 fn str_replace_reports_its_replacement_count() {
     let src = r#"<?php $r = str_replace("a", "b", "banana", $cnt); echo $r, "|", $cnt;"#;
     assert_eq!(run(src), "bbnbnb|3");
+}
+
+#[test]
+fn str_ireplace_counts_and_keeps_an_array_subject_keyed() {
+    // `str_ireplace` shares `str_replace`'s body: each needle runs over the
+    // previous needle's output, an array subject keeps its keys, and `$count`
+    // is the total over every element.
+    let src = r#"<?php $r = str_ireplace(["A", "n"], ["o", "N"], ["k" => "BaNana", "Ana"], $cnt);
+        echo json_encode($r), "|", $cnt;"#;
+    assert_eq!(run(src), r#"{"k":"BoNoNo","0":"oNo"}|8"#);
 }
 
 #[test]

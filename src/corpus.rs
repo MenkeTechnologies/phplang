@@ -3816,8 +3816,8 @@ pub const CORPUS: &[Entry] = &[
     (
         "str_ireplace",
         "Strings",
-        "str_ireplace(array|string $search, array|string $replace, string $subject): string",
-        "ASCII-case-insensitive `str_replace`. An array `$search` is applied in sequence, index-matched against an array `$replace` (missing entries become `\"\"`) or with one scalar for all. DIVERGENCE: an array `$subject` is string-cast rather than mapped, and there is no `$count` out-parameter.",
+        "str_ireplace(array|string $search, array|string $replace, string|array $subject, &$count = null): string|array",
+        "ASCII-case-insensitive `str_replace`. An array `$search` is applied in sequence, index-matched against an array `$replace` (missing entries become `\"\"`) or with one scalar for all. An array `$subject` is processed element-wise with its keys kept, and the by-reference `$count` receives the number of replacements.",
         "echo str_ireplace(\"WORLD\", \"there\", \"Hello world\");   // => Hello there",
     ),
     (

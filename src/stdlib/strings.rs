@@ -36,7 +36,6 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         "strrpos" => return Some(strrpos(args, false)),
         "strripos" => return Some(strrpos(args, true)),
         "strncasecmp" => return Some(strncasecmp(args)),
-        "str_ireplace" => str_ireplace(args),
         "nl2br" => Value::str(nl2br(&str_arg(args, 0))),
         "chunk_split" => return Some(chunk_split(args)),
         "quotemeta" => Value::str(quotemeta(&str_arg(args, 0))),
@@ -576,50 +575,6 @@ fn substr_replace(args: &[Value]) -> Result<Value, String> {
         out.push((key, Value::str(substr_splice(&s, &replace, f, l))));
     }
     Ok(make_map(out))
-}
-
-/// `str_ireplace($search, $replace, $subject)`: case-insensitive `str_replace`.
-/// Supports array `$search` (with array or scalar `$replace`); scalar `$subject`.
-fn str_ireplace(args: &[Value]) -> Value {
-    let subject = str_arg(args, 2);
-    let search_v = arg(args, 0);
-    let replace_v = arg(args, 1);
-    if with_host(|h| h.is_array(&search_v)) {
-        let searches = with_host(|h| h.array_pairs(&search_v).unwrap_or_default());
-        let replaces = if with_host(|h| h.is_array(&replace_v)) {
-            with_host(|h| {
-                h.array_pairs(&replace_v)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|(_, v)| h.to_str(&v))
-                    .collect::<Vec<_>>()
-            })
-        } else {
-            Vec::new()
-        };
-        let scalar_replace = with_host(|h| {
-            if h.is_array(&replace_v) {
-                String::new()
-            } else {
-                h.to_str(&replace_v)
-            }
-        });
-        let mut cur = subject;
-        for (idx, (_, sv)) in searches.into_iter().enumerate() {
-            let s = with_host(|h| h.to_str(&sv));
-            let r = if replaces.is_empty() {
-                scalar_replace.clone()
-            } else {
-                replaces.get(idx).cloned().unwrap_or_default()
-            };
-            cur = ci_replace(&cur, &s, &r);
-        }
-        Value::str(cur)
-    } else {
-        let s = with_host(|h| h.to_str(&search_v));
-        let r = with_host(|h| h.to_str(&replace_v));
-        Value::str(ci_replace(&subject, &s, &r))
-    }
 }
 
 // ── escaping / encoding ──────────────────────────────────────────────────────
@@ -1955,14 +1910,16 @@ fn ci_find_bytes(hb: &[u8], nb: &[u8]) -> Option<usize> {
     (0..=hb.len() - nb.len()).find(|&i| hb[i..i + nb.len()].eq_ignore_ascii_case(nb))
 }
 
-/// ASCII case-insensitive replace-all (non-overlapping, left to right).
-fn ci_replace(subject: &str, search: &str, replace: &str) -> String {
+/// ASCII case-insensitive replace-all (non-overlapping, left to right): the
+/// `str_ireplace` pass for one needle, adding its matches to `count`.
+pub(crate) fn ci_replace(subject: &str, search: &str, replace: &str, count: &mut usize) -> String {
     if search.is_empty() {
         return subject.to_string();
     }
     let mut out = String::with_capacity(subject.len());
     let mut rest = subject;
     while let Some(pos) = ci_find(rest, search) {
+        *count += 1;
         out.push_str(&rest[..pos]);
         out.push_str(replace);
         rest = &rest[pos + search.len()..];

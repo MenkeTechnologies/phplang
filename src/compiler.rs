@@ -1031,6 +1031,7 @@ impl Compiler {
             ("parse_str", &[1]),
             ("similar_text", &[2]),
             ("str_replace", &[3]),
+            ("str_ireplace", &[3]),
             ("settype", &[0]),
         ];
         for (name, positions) in BYREF_BUILTINS {
