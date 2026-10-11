@@ -3512,25 +3512,31 @@ fn b_strict_ne(vm: &mut VM, _: u8) -> Value {
 }
 
 fn b_lt(vm: &mut VM, _: u8) -> Value {
-    cmp_bool(vm, |o| o < 0)
+    cmp_bool(vm, false, |o| o < 0)
 }
 fn b_gt(vm: &mut VM, _: u8) -> Value {
-    cmp_bool(vm, |o| o > 0)
+    cmp_bool(vm, true, |o| o < 0)
 }
 fn b_le(vm: &mut VM, _: u8) -> Value {
-    cmp_bool(vm, |o| o <= 0)
+    cmp_bool(vm, false, |o| o <= 0)
 }
 fn b_ge(vm: &mut VM, _: u8) -> Value {
-    cmp_bool(vm, |o| o >= 0)
+    cmp_bool(vm, true, |o| o <= 0)
 }
 
-fn cmp_bool(vm: &mut VM, f: impl Fn(i32) -> bool) -> Value {
+/// A relational operator over `zend_compare`. `swap` is how the reference
+/// compiles `>` and `>=`: as `<` and `<=` with the operands exchanged
+/// (`zend_compile_greater`), which is not the same as testing `> 0` — an
+/// UNCOMPARABLE pair reports 1 in both orders, so `$a > $b` and `$b > $a` are
+/// both false for two objects of different classes.
+fn cmp_bool(vm: &mut VM, swap: bool, f: impl Fn(i32) -> bool) -> Value {
     let b = vm.pop();
     let a = vm.pop();
     let (a, b) = cast_for_compare(&a, &b).unwrap_or((a, b));
     if is_unordered(&a, &b) {
         return Value::bool(false);
     }
+    let (a, b) = if swap { (b, a) } else { (a, b) };
     Value::bool(f(with_host(|h| php_compare(h, &a, &b))))
 }
 
@@ -3707,10 +3713,17 @@ fn php_compare(h: &host::PhpHost, a: &Value, b: &Value) -> i32 {
         (Bool(_) | Undef, _) | (_, Bool(_) | Undef) => {
             i32::from(h.is_truthy(a)) - i32::from(h.is_truthy(b))
         }
-        // 3. Two arrays compare by size, then element-wise.
-        (Obj(_), Obj(_)) => {
-            crate::stdlib::datefn::compare_dates(h, a, b).unwrap_or_else(|| compare_arrays(h, a, b))
-        }
+        // 3. Two arrays compare by size, then element-wise; two objects by
+        //    class, then property by property. An object against an array is
+        //    the greater: `zend_std_compare_objects` cannot cast it to array.
+        (Obj(_), Obj(_)) => crate::stdlib::datefn::compare_dates(h, a, b).unwrap_or_else(|| {
+            match (h.is_object_value(a), h.is_object_value(b)) {
+                (true, true) => compare_objects(h, a, b),
+                (true, false) => 1,
+                (false, true) => -1,
+                (false, false) => compare_arrays(h, a, b),
+            }
+        }),
         // 4. An array outranks every non-array, non-bool, non-null operand.
         (Obj(_), _) => 1,
         (_, Obj(_)) => -1,
@@ -3757,16 +3770,84 @@ fn compare_arrays(h: &host::PhpHost, a: &Value, b: &Value) -> i32 {
     let (Some(pa), Some(pb)) = (h.array_pairs(a), h.array_pairs(b)) else {
         return 0;
     };
+    compare_tables(h, &pa, &pb, |ka, kb| strict_eq(h, ka, kb))
+}
+
+/// `zend_hash_compare(ht1, ht2, …, ordered = 0)` over two key/value tables:
+/// the body [`compare_arrays`] and the property-table path of
+/// [`compare_objects`] share.
+fn compare_tables<K>(
+    h: &host::PhpHost,
+    pa: &[(K, Value)],
+    pb: &[(K, Value)],
+    same_key: impl Fn(&K, &K) -> bool,
+) -> i32 {
     if pa.len() != pb.len() {
         return if pa.len() < pb.len() { -1 } else { 1 };
     }
-    for (ka, va) in &pa {
-        let Some((_, vb)) = pb.iter().find(|(kb, _)| strict_eq(h, ka, kb)) else {
+    for (ka, va) in pa {
+        let Some((_, vb)) = pb.iter().find(|(kb, _)| same_key(ka, kb)) else {
             return 1;
         };
         let ord = php_compare(h, va, vb);
         if ord != 0 {
             return ord;
+        }
+    }
+    0
+}
+
+/// `zend_std_compare_objects` (`Zend/zend_object_handlers.c`) for two objects:
+/// the same instance is equal; instances of different classes are
+/// UNCOMPARABLE, which the engine reports as 1 whichever side is asked. Two
+/// instances of one class compare their declared properties in slot order (an
+/// unset or uninitialized slot on one side only is uncomparable) unless either
+/// holds a dynamic property, when the two property tables compare as arrays do.
+///
+/// A closure has its own handler, `zend_closure_compare`: only two
+/// first-class-callable closures can be equal. An enum case has
+/// `zend_objects_not_comparable`.
+fn compare_objects(h: &host::PhpHost, a: &Value, b: &Value) -> i32 {
+    const UNCOMPARABLE: i32 = 1;
+    if matches!((a, b), (Value::Obj(x), Value::Obj(y)) if x == y) {
+        return 0;
+    }
+    let (Some(ca), Some(cb)) = (h.instance_class(a), h.instance_class(b)) else {
+        return UNCOMPARABLE;
+    };
+    if !ca.eq_ignore_ascii_case(&cb) {
+        return UNCOMPARABLE;
+    }
+    if h.is_closure(a) {
+        let both_fake = h.closure_is_fake(a) && h.closure_is_fake(b);
+        return if both_fake { 0 } else { UNCOMPARABLE };
+    }
+    if h.is_enum_class(&ca) {
+        return UNCOMPARABLE;
+    }
+    let (pa, pb) = (h.object_props(a), h.object_props(b));
+    if pa.iter().chain(&pb).any(|(name, _)| !h.prop_is_declared(&ca, name)) {
+        return compare_tables(h, &pa, &pb, |x, y| x == y);
+    }
+    // The slot order: the declarations with an initializer, then the promoted
+    // constructor parameters, which `declared_prop_order` does not list.
+    let mut declared = h.declared_prop_order(&ca);
+    for (name, _) in pa.iter().chain(&pb) {
+        if !declared.contains(name) {
+            declared.push(name.clone());
+        }
+    }
+    let slot = |p: &[(String, Value)], name: &str| p.iter().find(|(n, _)| n == name).map(|(_, v)| v.clone());
+    for name in &declared {
+        match (slot(&pa, name), slot(&pb, name)) {
+            (Some(va), Some(vb)) => {
+                let ord = php_compare(h, &va, &vb);
+                if ord != 0 {
+                    return ord;
+                }
+            }
+            (None, None) => {}
+            _ => return UNCOMPARABLE,
         }
     }
     0
@@ -3938,7 +4019,7 @@ pub fn numeric_hook_sited(call: NumericCall<'_>, lines: &[u32]) -> Result<Value,
     // truthiness. fusevm only asks about the pairs it will not answer itself —
     // an `Int`/`Int` pair never reaches here — so this is PHP's own comparison
     // over exactly the operands the native path declined.
-    if let Some(want) = relational(op) {
+    if let Some((swap, want)) = relational(op) {
         // An object with `__toString` compared against a string is cast first,
         // as `zend_compare` does — the same rule `b_loose_eq` and `b_spaceship`
         // apply, and the four relational operators reach it through here rather
@@ -3954,6 +4035,7 @@ pub fn numeric_hook_sited(call: NumericCall<'_>, lines: &[u32]) -> Result<Value,
         if is_unordered(a, b) {
             return Ok(Value::bool(false));
         }
+        let (a, b) = if swap { (b, a) } else { (a, b) };
         let ord = with_host(|h| php_compare(h, a, b));
         return Ok(Value::bool(want(ord)));
     }
@@ -3974,14 +4056,16 @@ pub fn numeric_hook_sited(call: NumericCall<'_>, lines: &[u32]) -> Result<Value,
     Ok(arith(op, an, bn))
 }
 
-/// The test a relational [`NumOp`] applies to a three-way comparison, or `None`
-/// for an op that is arithmetic rather than relational.
-fn relational(op: NumOp) -> Option<fn(i32) -> bool> {
+/// Whether a relational [`NumOp`] exchanges its operands, and the test it then
+/// applies to the three-way comparison; `None` for an op that is arithmetic
+/// rather than relational. `>` and `>=` are `<` and `<=` swapped, as
+/// [`cmp_bool`] explains.
+fn relational(op: NumOp) -> Option<(bool, fn(i32) -> bool)> {
     Some(match op {
-        NumOp::Lt => |o: i32| o < 0,
-        NumOp::Gt => |o: i32| o > 0,
-        NumOp::Le => |o: i32| o <= 0,
-        NumOp::Ge => |o: i32| o >= 0,
+        NumOp::Lt => (false, |o: i32| o < 0),
+        NumOp::Gt => (true, |o: i32| o < 0),
+        NumOp::Le => (false, |o: i32| o <= 0),
+        NumOp::Ge => (true, |o: i32| o <= 0),
         _ => return None,
     })
 }

@@ -4235,6 +4235,16 @@ impl PhpHost {
     }
 
     /// Whether the closure was declared `static` (`ZEND_ACC_STATIC`).
+    /// Whether `v` is a closure built by first-class callable syntax
+    /// (`strlen(...)`) — the reference's `ZEND_ACC_FAKE_CLOSURE`, which the
+    /// lowering marks with its [`FCC_PARAM`] variadic.
+    pub fn closure_is_fake(&self, v: &Value) -> bool {
+        matches!(
+            self.as_array(v),
+            Some(PhpObj::Closure { params, .. }) if params.first().is_some_and(|p| p.name == FCC_PARAM)
+        )
+    }
+
     fn closure_is_static(&self, v: &Value) -> bool {
         matches!(
             self.as_array(v),
@@ -4886,7 +4896,7 @@ impl PhpHost {
     /// Whether `class` or any ancestor declares a property called `name`.
     /// A declaration with no initializer still counts, so `prop_vis` — which every
     /// declaration writes — is the authority, not the defaults list.
-    fn prop_is_declared(&self, class: &str, name: &str) -> bool {
+    pub(crate) fn prop_is_declared(&self, class: &str, name: &str) -> bool {
         self.class_chain(class).any(|d| {
             d.prop_vis.contains_key(name) || d.prop_defaults.iter().any(|(p, _)| p == name)
         })
@@ -5513,7 +5523,7 @@ impl PhpHost {
     /// The instance properties `class` declares, parent's first, in the slot
     /// order a new instance lays them out in. Empty for an unknown class
     /// (`stdClass`), whose every property is dynamic.
-    fn declared_prop_order(&self, class: &str) -> Vec<String> {
+    pub(crate) fn declared_prop_order(&self, class: &str) -> Vec<String> {
         let mut chain: Vec<&ClassDef> = Vec::new();
         let mut cur = Some(class.to_ascii_lowercase());
         while let Some(c) = cur {

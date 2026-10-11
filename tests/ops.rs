@@ -640,3 +640,21 @@ fn concatenation_binds_looser_than_additive_and_shift() {
         "string(2) \"a3\"\nstring(2) \"a5\"\nstring(2) \"x4\"\nstring(2) \"33\"\nbool(true)\nstring(2) \"-1\"\n"
     );
 }
+
+/// Two objects order as `zend_std_compare_objects` orders them: same class,
+/// then the declared properties in slot order; a slot set on one side only, a
+/// different class, or two enum cases are UNCOMPARABLE — 1 whichever side is
+/// asked, so `<` and `>` are both false — and an object outranks an array.
+/// `>`/`>=` are the swapped `<`/`<=`, which is what makes two uncomparable
+/// arrays false under `>` as well. `sort` and `max` take the same comparison.
+/// Expectations recorded from the reference running this program.
+#[test]
+fn objects_order_by_class_then_declared_properties() {
+    let src = r#"<?php class P { function __construct(public $x, public $y = 0) {} } class Q { public $x = 1; } enum E { case A; case B; }
+$d = new P(1); unset($d->y);
+echo new P(1, 5) <=> new P(2, 0), new P(1, 1) <=> new P(1, 1), $d <=> new P(1), new P(1) <=> $d, "|";
+echo new P(1) <=> new Q, new Q <=> new P(1), (int)(new P(1) < new Q), (int)(new P(1) > new Q), (int)(new Q >= new P(1)), "|";
+echo [] <=> new stdClass, new stdClass <=> [1], E::A <=> E::B, E::B <=> E::A, (int)(["a" => 1] > ["b" => 1]), "|";
+$s = [new P(3), new P(1), new P(2, 9), new P(2, 1)]; sort($s); echo json_encode(array_column($s, 'y', 'x')), max(new P(1), new P(5))->x;"#;
+    assert_eq!(run(src), r#"-1011|11000|-11110|{"1":0,"2":9,"3":0}5"#);
+}
