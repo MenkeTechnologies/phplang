@@ -7106,7 +7106,7 @@ pub const CORPUS: &[Entry] = &[
         "property_exists",
         "Reflection",
         "property_exists(object|string $object_or_class, string $property): bool",
-        "Checks the declared instance properties, walking parents, and — for an OBJECT subject — the live property list too. The name is compared case-SENSITIVELY. DIVERGENCE: static properties are never found, and a promoted constructor property is found on an instance but NOT on the class name, because promotion compiles to an assignment rather than a declaration.",
+        "Checks the class's declarations, walking parents — instance and static properties and promoted constructor parameters, but not a private property an ancestor declared — and, for an OBJECT subject, a property present on the instance and reachable from the calling scope. The name is compared case-SENSITIVELY.",
         "class C { public $a; } var_dump(property_exists(\"C\", \"a\"));   // => bool(true)",
     ),
     (

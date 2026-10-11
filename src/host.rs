@@ -4578,19 +4578,34 @@ impl PhpHost {
             .any(|m| m.eq_ignore_ascii_case(method))
     }
 
-    /// Whether `class` (or an ancestor) declares the property `name`.
-    pub fn class_has_prop(&self, class: &str, name: &str) -> bool {
-        let mut cur = Some(class.to_ascii_lowercase());
-        while let Some(c) = cur {
-            let Some(def) = self.classes.get(&c) else {
-                break;
-            };
-            if def.prop_defaults.iter().any(|(n, _)| n == name) {
+    /// `ZEND_FUNCTION(property_exists)` (`Zend/zend_builtin_functions.c`) for
+    /// an object or a class name.
+    ///
+    /// The class's `properties_info` answers first: any declaration along the
+    /// chain — instance or static, a promoted constructor parameter included —
+    /// except a `private` one an ANCESTOR declared. Failing that, an object is
+    /// asked `has_property(ZEND_PROPERTY_EXISTS)`: the property is on the
+    /// instance and reachable from the calling scope, which is how a dynamic
+    /// property counts and how an ancestor's private one counts from inside
+    /// that ancestor.
+    pub fn property_exists(&self, target: &Value, name: &str) -> bool {
+        let is_obj = self.is_object(target);
+        let class = if is_obj {
+            self.object_class(target).unwrap_or_default()
+        } else {
+            // `zend_lookup_class` drops one leading backslash.
+            let written = self.to_str(target);
+            written.strip_prefix('\\').map_or_else(|| written.clone(), str::to_string)
+        };
+        let decl = self.resolve_prop_vis(&class, name);
+        if let Some((declaring, vis)) = &decl {
+            if *vis != Visibility::Private || declaring.eq_ignore_ascii_case(&class) {
                 return true;
             }
-            cur = def.parent.as_ref().map(|p| p.to_ascii_lowercase());
         }
-        false
+        is_obj
+            && self.object_props(target).iter().any(|(n, _)| n == name)
+            && decl.is_none_or(|(declaring, vis)| self.visibility_allows(vis, &declaring))
     }
 
     /// How `print_r` and `serialize` decorate a property name that is not public:

@@ -110,6 +110,17 @@ fn property_exists_declared_and_dynamic() {
     );
 }
 
+/// A promoted constructor parameter and a static property are declarations;
+/// a private one an ancestor declared is not one of the subclass's, and on an
+/// instance it counts only from inside that ancestor. A leading `\` on the class
+/// name is dropped. Expectations recorded from the reference.
+#[test]
+fn property_exists_follows_properties_info_then_scope() {
+    let src = r#"<?php class C { public static $s; private $p = 1; private static $ps; function __construct(protected int $q = 1) {} function t($o) { return property_exists($o, "p"); } } class D extends C {} $d = new D;
+foreach ([property_exists("D", "q"), property_exists($d, "q"), property_exists("C", "s"), property_exists("C", "ps"), property_exists("D", "ps"), property_exists("D", "p"), property_exists($d, "p"), $d->t($d), $d->t("D"), property_exists("\\C", "s")] as $b) echo $b ? "y" : "n";"#;
+    assert_eq!(run(src), "yyyynnnyny");
+}
+
 #[test]
 fn get_class_returns_original_casing() {
     let src = r#"<?php

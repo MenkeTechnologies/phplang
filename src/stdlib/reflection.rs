@@ -3,7 +3,7 @@
 //!
 //! These mirror PHP 8's class/object introspection builtins on top of the host
 //! reflection helpers (`class_exists`, `class_parent`, `is_a_class`,
-//! `class_method_names`, `class_has_method`, `class_has_prop`, `object_props`,
+//! `class_method_names`, `class_has_method`, `property_exists`, `object_props`,
 //! `object_class`). The runtime has no interfaces, traits, or enums, so
 //! There is no calling-scope context available here, so the no-argument form of
 //! `get_parent_class` (which PHP resolves to the current class) is unsupported
@@ -81,22 +81,12 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
                 Value::bool(h.class_has_method(&class, &method))
             })
         }
-        // `property_exists($object_or_class, $property)`. For an object, dynamic
-        // (runtime-added) properties count in addition to declared ones.
+        // `property_exists($object_or_class, $property)`: see
+        // `PhpHost::property_exists` for which declarations count.
         "property_exists" => {
             let a = arg(args, 0);
             let prop = str_arg(args, 1);
-            with_host(|h| {
-                if h.is_object(&a) {
-                    let class = h.object_class(&a).unwrap_or_default();
-                    let declared = h.class_has_prop(&class, &prop);
-                    let dynamic = h.object_props(&a).iter().any(|(n, _)| *n == prop);
-                    Value::bool(declared || dynamic)
-                } else {
-                    let class = h.to_str(&a);
-                    Value::bool(h.class_has_prop(&class, &prop))
-                }
-            })
+            with_host(|h| Value::bool(h.property_exists(&a, &prop)))
         }
 
         // ── class identity ──────────────────────────────────────────────────
