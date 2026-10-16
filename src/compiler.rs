@@ -5710,13 +5710,13 @@ impl Compiler {
             if keys.is_empty() {
                 // Single-level `$a[] = rhs` keeps the compact ARR_APPEND lowering.
                 self.compile_rhs(b, rhs)?;
-                b.emit(Op::CallBuiltin(ops::ARR_APPEND, 2), 0);
+                b.emit(Op::CallBuiltin(ops::ARR_APPEND, 2), self.cur_line);
             } else {
                 for k in &keys {
                     self.compile_expr(b, k)?;
                 }
                 self.compile_rhs(b, rhs)?;
-                b.emit(Op::CallBuiltin(ops::APPEND_PATH, (keys.len() + 2) as u8), 0);
+                b.emit(Op::CallBuiltin(ops::APPEND_PATH, (keys.len() + 2) as u8), self.cur_line);
             }
         } else if keys.len() == 1 && op.is_none() {
             // Fast path for the common single-level `$a[k] = rhs`.
@@ -5750,7 +5750,7 @@ impl Compiler {
                     self.compile_expr(b, k)?;
                 }
                 self.compile_rhs(b, rhs)?;
-                b.emit(Op::CallBuiltin(ops::SET_PATH, (keys.len() + 2) as u8), 0);
+                b.emit(Op::CallBuiltin(ops::SET_PATH, (keys.len() + 2) as u8), self.cur_line);
             }
             Some(cop) => {
                 // Evaluate each key once into a temporary, then `set = get op rhs`.

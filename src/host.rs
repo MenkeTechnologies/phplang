@@ -653,6 +653,14 @@ pub struct ClosureCall {
     pub site: Option<DeclSite>,
 }
 
+/// Why a value cannot take an array write as it stands; see
+/// [`PhpHost::write_container_issue`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContainerIssue {
+    Scalar,
+    FalseToArray,
+}
+
 /// A compiled class: its parent (for single-inheritance resolution), constant and
 /// property-default initializers (each an expression chunk that leaves its value
 /// on the stack), and its methods keyed by lowercase name. `self::`/`parent::`
@@ -6247,6 +6255,27 @@ impl PhpHost {
             cur = self.index_get(&cur, key);
         }
         cur
+    }
+
+    /// What stops `$name[k1]..[kN]` being used as a write target: the first
+    /// container along the path (the variable itself, then each `keys` prefix)
+    /// that holds a scalar. `Scalar` is an `Error` in the reference; `false` is
+    /// still converted to an array, with a deprecation. An unset/null slot, an
+    /// array, a string and an object are all left to the ordinary write path.
+    pub fn write_container_issue(&self, name: &str, keys: &[Value]) -> Option<ContainerIssue> {
+        let mut cur = self.get_var(name);
+        for i in 0..=keys.len() {
+            match cur {
+                Value::Int(_) | Value::Float(_) | Value::Bool(true) => {
+                    return Some(ContainerIssue::Scalar)
+                }
+                Value::Bool(false) => return Some(ContainerIssue::FalseToArray),
+                _ => {}
+            }
+            let Some(key) = keys.get(i) else { break };
+            cur = self.index_get(&cur, key);
+        }
+        None
     }
 
     /// `index_get_path` for the read half of a read-modify-write — `$a[k] += 1`,

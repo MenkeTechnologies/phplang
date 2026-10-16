@@ -144,3 +144,41 @@ echo implode(",", class_implements("X")), "|", implode(",", class_implements("Y"
         "D,A,C,B|D,A,C,B,Countable,Stringable|B,C,A|Stringable"
     );
 }
+
+/// An array write into an int, float or `true` is an `Error` — it must not
+/// replace the scalar with an array — while `false` is converted with a
+/// deprecation that names the write's own line.
+///
+/// ```text
+/// $ php -r '$i = 5; try { $i[0] = 1; } catch (Error $e) { echo $e->getMessage(); }'
+/// Cannot use a scalar value as an array
+/// ```
+#[test]
+fn array_write_into_a_scalar_is_an_error_and_false_is_deprecated() {
+    let msg = "Cannot use a scalar value as an array\n";
+    for stmt in [
+        "$v = 5; $v[0] = 1;",
+        "$v = 5; $v[] = 1;",
+        "$v = 1.5; $v['a']['b'] = 1;",
+        "$v = true; $v[0] .= 'a';",
+        "$v = 3; $v[0]++;",
+        "$v = 3; $v[0] += 1;",
+        "$v = ['p' => 5]; $v['p'][] = 1;",
+        "$v = 5; $v[0][1] = 1;",
+    ] {
+        let src = format!("<?php try {{ {stmt} }} catch (Error $e) {{ echo $e->getMessage(), \"\\n\"; }}");
+        assert_eq!(run(&src), msg, "statement: {stmt}");
+    }
+    // The scalar is left alone, not clobbered by an array.
+    assert_eq!(
+        run("<?php $v = 5; try { $v[0] = 1; } catch (Error $e) {} var_dump($v);"),
+        "int(5)\n"
+    );
+    let out = run("<?php\n$b = false;\n$b[] = 1;\nvar_dump($b);");
+    assert!(
+        out.starts_with("\nDeprecated: Automatic conversion of false to array is deprecated in ")
+            && out.contains(" on line 3\n")
+            && out.ends_with("array(1) {\n  [0]=>\n  int(1)\n}\n"),
+        "{out}"
+    );
+}

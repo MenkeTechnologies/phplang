@@ -2379,6 +2379,26 @@ fn b_index_isset(vm: &mut VM, _: u8) -> Value {
     })
 }
 
+/// Refuse an array write whose target container holds a scalar, as the reference
+/// does: `Error: Cannot use a scalar value as an array` for an int, float or
+/// `true`, and a deprecation (the write then proceeds) for `false`. `keys` are the
+/// keys leading to the container being written into. `Some` is the value the
+/// calling op returns after the throw.
+fn guard_array_write(vm: &mut VM, name: &str, keys: &[Value]) -> Option<Value> {
+    match with_host(|h| h.write_container_issue(name, keys))? {
+        host::ContainerIssue::Scalar => {
+            Some(throw_php(vm, "Error", "Cannot use a scalar value as an array"))
+        }
+        host::ContainerIssue::FalseToArray => {
+            mark_warn_site(vm);
+            with_host(|h| {
+                h.deprecated("Automatic conversion of false to array is deprecated");
+            });
+            None
+        }
+    }
+}
+
 fn b_index_set(vm: &mut VM, _: u8) -> Value {
     let val = vm.pop();
     let key = vm.pop();
@@ -2393,6 +2413,9 @@ fn b_index_set(vm: &mut VM, _: u8) -> Value {
     }
     if let Some(e) = bad_offset_type(&recv, &key, "on array") {
         return fail_or_throw(vm, e);
+    }
+    if let Some(thrown) = guard_array_write(vm, &name, &[]) {
+        return thrown;
     }
     // The write can warn (`String offset cast occurred`) or throw, and both name
     // this line, so the current op's line has to be recorded first.
@@ -2419,6 +2442,9 @@ fn b_arr_append(vm: &mut VM, _: u8) -> Value {
         }
         return bubbled(vm, val);
     }
+    if let Some(thrown) = guard_array_write(vm, &name, &[]) {
+        return thrown;
+    }
     if let Err(e) = with_host(|h| h.append_var(&name, val.clone())) {
         return fail_or_throw(vm, throws_bare("Error", e));
     }
@@ -2430,6 +2456,9 @@ fn b_set_path(vm: &mut VM, argc: u8) -> Value {
     let val = vm.pop();
     let keys = pop_args(vm, argc as usize - 2);
     let name = pop_name(vm);
+    if let Some(thrown) = guard_array_write(vm, &name, &keys[..keys.len() - 1]) {
+        return thrown;
+    }
     with_host(|h| h.index_set_path(&name, &keys, val.clone()));
     val
 }
@@ -2439,6 +2468,9 @@ fn b_append_path(vm: &mut VM, argc: u8) -> Value {
     let val = vm.pop();
     let keys = pop_args(vm, argc as usize - 2);
     let name = pop_name(vm);
+    if let Some(thrown) = guard_array_write(vm, &name, &keys) {
+        return thrown;
+    }
     with_host(|h| h.append_path(&name, &keys, val.clone()));
     val
 }
@@ -2448,6 +2480,14 @@ fn b_append_path(vm: &mut VM, argc: u8) -> Value {
 fn b_get_path(vm: &mut VM, argc: u8) -> Value {
     let keys = pop_args(vm, argc as usize - 1);
     let name = pop_name(vm);
+    // The read half of a compound assignment fetches in write mode, so a scalar
+    // container is refused before anything is read; `false` is deprecated by the
+    // write half.
+    if with_host(|h| h.write_container_issue(&name, &keys[..keys.len() - 1]))
+        == Some(host::ContainerIssue::Scalar)
+    {
+        return throw_php(vm, "Error", "Cannot use a scalar value as an array");
+    }
     mark_warn_site(vm);
     with_host(|h| h.index_get_path_warn(&name, &keys))
 }
@@ -2462,6 +2502,9 @@ fn b_incdec_path(vm: &mut VM, argc: u8) -> Value {
     let name = pop_name(vm);
     let inc = code & 1 != 0;
     let prefix = code & 2 != 0;
+    if let Some(thrown) = guard_array_write(vm, &name, &keys[..keys.len() - 1]) {
+        return thrown;
+    }
     mark_warn_site(vm);
     let old = with_host(|h| h.index_get_path_warn(&name, &keys));
     if incdec_refused(vm, &old, inc) {
