@@ -8141,6 +8141,16 @@ pub fn to_str_ext(v: &Value) -> String {
             .filter(|c| h.class_has_method(c, "__tostring"))
     });
     let Some(class) = class else {
+        // An object with no `__toString` has no string form: the reference
+        // throws `Error` (`zend_std_cast_object_tostring`) rather than
+        // yielding `Array`.
+        if let Some(class) = with_host(|h| h.instance_class(v)) {
+            let msg = format!("Object of class {class} could not be converted to string");
+            if let Ok(exc) = new_object("Error", vec![Value::str(msg)]) {
+                set_pending_throw(exc);
+            }
+            return String::new();
+        }
         return with_host(|h| h.to_str_diag(v));
     };
     match call_method(&class, "__toString", Some(v.clone()), Vec::new()) {

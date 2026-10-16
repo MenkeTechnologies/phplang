@@ -860,7 +860,7 @@ pub const CORPUS: &[Entry] = &[
         "(string)",
         "Cast",
         "(string) expr",
-        "Casts to string by desugaring to `strval`. DIVERGENCE: an object stringifies to `Array` because `__toString` is not consulted.",
+        "Casts to string by desugaring to `strval`. An object calls its `__toString`; one without it throws `Error` (message: `Object of class X could not be converted to string`).",
         "echo (string) 123;   // => 123",
     ),
     (
@@ -903,8 +903,8 @@ pub const CORPUS: &[Entry] = &[
         "__toString",
         "Magic method",
         "public function __toString(): string",
-        "Declared by the prelude `Exception` and `Error` classes and callable like any other method. DIVERGENCE: the runtime never invokes it implicitly — `echo $obj`, `(string) $obj`, and interpolation all produce `Array`, so it must be called explicitly.",
-        "class C { function __toString() { return \"S\"; } }\n$o = new C; echo $o->__toString(), \"|\", $o;   // => S|Array",
+        "Declared by the prelude `Exception` and `Error` classes and callable like any other method. Invoked implicitly by `echo`, `(string)`, `.` and interpolation; an object without it throws `Error` on conversion.",
+        "class C { function __toString() { return \"S\"; } }\n$o = new C; echo $o->__toString(), \"|\", $o;   // => S|S",
     ),
     (
         "__get",
@@ -3611,7 +3611,7 @@ pub const CORPUS: &[Entry] = &[
         "strval",
         "Core library — types and output",
         "strval(mixed $value): string",
-        "The string value. DIVERGENCE: an object stringifies to `Array` because `__toString` is never consulted.",
+        "The string value. An object calls its `__toString`; one without it throws `Error`.",
         "echo strval(42);   // => 42",
     ),
     (

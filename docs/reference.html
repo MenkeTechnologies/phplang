@@ -820,7 +820,7 @@ echo "{$s}";      // =&gt; {ab}   (PHP 8 prints: ab)</code></pre>
         <article class="doc-entry" id="doc-cast-4">
           <h3><a class="doc-anchor" href="#doc-cast-4">#</a> <code>(string)</code></h3>
           <pre><code class="lang-php">(string) expr</code></pre>
-          <p>Casts to string by desugaring to `strval`. DIVERGENCE: an object stringifies to `Array` because `__toString` is not consulted.</p>
+          <p>Casts to string by desugaring to `strval`. An object calls its `__toString`; one without it throws `Error` (message: `Object of class X could not be converted to string`).</p>
           <pre><code class="lang-php">echo (string) 123;   // =&gt; 123</code></pre>
         </article>
         <article class="doc-entry" id="doc-cast-5">
@@ -860,9 +860,9 @@ echo (new Twice)(21);   // =&gt; 42</code></pre>
         <article class="doc-entry" id="doc-magic-method-4">
           <h3><a class="doc-anchor" href="#doc-magic-method-4">#</a> <code>__toString</code></h3>
           <pre><code class="lang-php">public function __toString(): string</code></pre>
-          <p>Declared by the prelude `Exception` and `Error` classes and callable like any other method. DIVERGENCE: the runtime never invokes it implicitly — `echo $obj`, `(string) $obj`, and interpolation all produce `Array`, so it must be called explicitly.</p>
+          <p>Declared by the prelude `Exception` and `Error` classes and callable like any other method. Invoked implicitly by `echo`, `(string)`, `.` and interpolation; an object without it throws `Error` on conversion.</p>
           <pre><code class="lang-php">class C { function __toString() { return "S"; } }
-$o = new C; echo $o-&gt;__toString(), "|", $o;   // =&gt; S|Array</code></pre>
+$o = new C; echo $o-&gt;__toString(), "|", $o;   // =&gt; S|S</code></pre>
         </article>
         <article class="doc-entry" id="doc-magic-method-5">
           <h3><a class="doc-anchor" href="#doc-magic-method-5">#</a> <code>__get</code></h3>
@@ -2798,8 +2798,8 @@ $h = new H; $h-&gt;insert(3); $h-&gt;insert(9); echo $h-&gt;extract();   // =&gt
         </article>
         <article class="doc-entry" id="doc-core-library-arrays-17">
           <h3><a class="doc-anchor" href="#doc-core-library-arrays-17">#</a> <code>array_unique</code></h3>
-          <pre><code class="lang-php">array_unique(array $array): array</code></pre>
-          <p>Keeps the first occurrence of each distinct value, preserving keys. DIVERGENCE: the `$flags` argument is not read, so the comparison mode is fixed.</p>
+          <pre><code class="lang-php">array_unique(array $array, int $flags = SORT_STRING): array</code></pre>
+          <p>Keeps the first occurrence of each distinct value, preserving keys. `SORT_STRING` (the default) compares string forms; any other `$flags` sorts under that comparison and drops each element equal to the last one kept, as the reference does.</p>
           <pre><code class="lang-php">echo implode(",", array_unique([1, 1, 2]));   // =&gt; 1,2</code></pre>
         </article>
         <article class="doc-entry" id="doc-core-library-arrays-18">
@@ -3104,7 +3104,7 @@ min(array $values): mixed</code></pre>
         <article class="doc-entry" id="doc-core-library-types-and-output-17">
           <h3><a class="doc-anchor" href="#doc-core-library-types-and-output-17">#</a> <code>strval</code></h3>
           <pre><code class="lang-php">strval(mixed $value): string</code></pre>
-          <p>The string value. DIVERGENCE: an object stringifies to `Array` because `__toString` is never consulted.</p>
+          <p>The string value. An object calls its `__toString`; one without it throws `Error`.</p>
           <pre><code class="lang-php">echo strval(42);   // =&gt; 42</code></pre>
         </article>
         <article class="doc-entry" id="doc-core-library-types-and-output-18">
@@ -4453,13 +4453,13 @@ echo implode(",", array_keys($a));   // =&gt; a,b</code></pre>
         <article class="doc-entry" id="doc-types-and-serialization-6">
           <h3><a class="doc-anchor" href="#doc-types-and-serialization-6">#</a> <code>serialize</code></h3>
           <pre><code class="lang-php">serialize(mixed $value): string</code></pre>
-          <p>Emits PHP's serialization format using `serialize_precision=-1` float rules: `a:` for arrays, `O:` for objects (with the engine's NUL-mangled visibility keys), `E:` for enum cases. DIVERGENCE: a structure that contains ITSELF is written as `N;` at the repeat, where the reference emits an `r:`/`R:` back-reference — the output stays finite and valid but no longer round-trips a cycle.</p>
+          <p>Emits PHP's serialization format using `serialize_precision=-1` float rules: `a:` for arrays, `O:` for objects (with the engine's NUL-mangled visibility keys), `E:` for enum cases. An object's `__serialize` answer replaces its properties; failing that, `__sleep` names the ones written, with the reference's warnings for a name that does not exist or repeats. DIVERGENCE: a structure that contains ITSELF is written as `N;` at the repeat, where the reference emits an `r:`/`R:` back-reference — the output stays finite and valid but no longer round-trips a cycle.</p>
           <pre><code class="lang-php">echo serialize([1, "a"]);   // =&gt; a:2:{i:0;i:1;i:1;s:1:"a";}</code></pre>
         </article>
         <article class="doc-entry" id="doc-types-and-serialization-7">
           <h3><a class="doc-anchor" href="#doc-types-and-serialization-7">#</a> <code>unserialize</code></h3>
           <pre><code class="lang-php">unserialize(string $data): mixed</code></pre>
-          <p>Parses the `N b i d s a` tags and returns `false` on malformed input, trailing bytes, or a negative array count. DIVERGENCE: object (`O:`/`C:`/`E:`) and reference (`R:`/`r:`) records are unsupported, an oversized `i:` saturates rather than failing, and the `$options` argument is not read.</p>
+          <p>Parses the `N b i d s a O E` tags and returns `false` on malformed input, trailing bytes, or a negative array count; an oversized `i:` saturates with the reference's warning. An `O:` object starts from its class defaults without running the constructor, then `__unserialize` or `__wakeup` runs once the whole payload has parsed, in the order the objects were finished; an unknown class becomes `__PHP_Incomplete_Class`. DIVERGENCE: `C:` and reference (`R:`/`r:`) records are unsupported, and the `$options` argument is not read.</p>
           <pre><code class="lang-php">print_r(unserialize('a:1:{i:0;i:5;}'));   // =&gt; Array\n(\n    [0] =&gt; 5\n)</code></pre>
         </article>
       </section>
@@ -6086,7 +6086,7 @@ echo implode(",", $a), "|", implode(",", $b);   // =&gt; 1,2,3|a,b,c</code></pre
         <article class="doc-entry" id="doc-reflection-16">
           <h3><a class="doc-anchor" href="#doc-reflection-16">#</a> <code>property_exists</code></h3>
           <pre><code class="lang-php">property_exists(object|string $object_or_class, string $property): bool</code></pre>
-          <p>Checks the declared instance properties, walking parents, and — for an OBJECT subject — the live property list too. The name is compared case-SENSITIVELY. DIVERGENCE: static properties are never found, and a promoted constructor property is found on an instance but NOT on the class name, because promotion compiles to an assignment rather than a declaration.</p>
+          <p>Checks the class's declarations, walking parents — instance and static properties and promoted constructor parameters, but not a private property an ancestor declared — and, for an OBJECT subject, a property present on the instance and reachable from the calling scope. The name is compared case-SENSITIVELY.</p>
           <pre><code class="lang-php">class C { public $a; } var_dump(property_exists("C", "a"));   // =&gt; bool(true)</code></pre>
         </article>
         <article class="doc-entry" id="doc-reflection-17">

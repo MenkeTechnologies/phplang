@@ -1618,6 +1618,9 @@ fn b_echo(vm: &mut VM, argc: u8) -> Value {
         // Conversion first, *outside* the host borrow: an object with
         // `__toString` runs PHP code to produce its string.
         let s = host::to_str_ext(a);
+        if host::unwinding() {
+            return Value::Undef;
+        }
         // `Array to string conversion` reaches a user handler before the text.
         if host::drain_error_handlers() {
             vm.ip = vm.chunk.ops.len();
@@ -1764,6 +1767,9 @@ fn b_concat(vm: &mut VM, _: u8) -> Value {
     // Both conversions happen outside the host borrow so an operand with
     // `__toString` can run it. String interpolation lowers to this op too.
     let (a, b) = (host::to_str_ext(&a), host::to_str_ext(&b));
+    if host::unwinding() {
+        return Value::Undef;
+    }
     Value::str(format!("{a}{b}"))
 }
 
