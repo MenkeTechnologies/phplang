@@ -26,6 +26,32 @@ comment above it.
 
 ---
 
+## Round 25 — differential sweep: conversions, strict mode, class linking
+
+Measured under `PHP 8.5.11 (cli)`. Each fix is pinned by a test in
+`tests/parity_round25.rs` recorded from the reference.
+
+* **An object without `__toString` has no string form.** `echo`, `.`,
+  interpolation, `(string)`, `strval` and `implode` throw `Error: Object of
+  class X could not be converted to string` instead of yielding `Array`.
+* **`declare(strict_types=1)` reaches library calls.** A library function
+  called from the source checks its scalar parameters strictly (int widens to
+  float, nothing else converts, `__toString` objects and `null` are refused).
+  A function reached through a callback or `call_user_func` still coerces.
+* **`get_class_vars`** returns the declared defaults the calling scope can see
+  (own declarations first, typed-without-default as `null`, statics at their
+  declared default, `name`/`value` for an enum) and throws `TypeError` for an
+  unknown class. **`class_implements`** orders a user class's list as
+  `zend_do_implement_interfaces` does and includes the automatic `Stringable`.
+* **An array write into an int, float or `true` throws `Error: Cannot use a
+  scalar value as an array`**, for `=`, `[]=`, compound assignment and `++` at
+  any depth; `false` is converted with the `Automatic conversion of false to
+  array is deprecated` notice, at the write's own line.
+* **Attributes parse on closures and arrow functions**, `static` or not.
+* **A concrete class that leaves an abstract method unimplemented is a
+  link-time fatal**, naming up to three methods (`Class B contains N abstract
+  methods …`; the enum and anonymous-class wordings differ).
+
 ## Round 24 — hand-probed stdlib and object-model sweep
 
 Measured under `PHP 8.5.11 (cli)`. Found by probe programs over strings,
