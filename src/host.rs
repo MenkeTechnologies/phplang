@@ -758,6 +758,10 @@ pub struct ClassDef {
     /// reported at its line, and the reference checks the parent's methods in
     /// the order the parent declared them.
     pub method_sites: Vec<(String, u32)>,
+    /// Methods THIS class declares without a body: every method of an interface
+    /// and the `abstract` ones of an abstract class. A trait's are not recorded.
+    /// By lowercased name.
+    pub abstract_methods: FxHashSet<String>,
 }
 
 /// One compiled `catch (T1 | T2 [$var]) { body }` clause of a `try`.
@@ -11790,7 +11794,94 @@ pub fn final_violation<'a>(
             }
         }
     }
-    None
+    abstract_violation(def, &find, &chain)
+}
+
+/// `zend_verify_abstract_class`: the reference refuses to link a concrete class
+/// that still has an abstract method — one it inherits from an abstract parent,
+/// or one an interface it implements declares. `chain` is `def`'s parents,
+/// nearest first. The names listed are the first three in the order the
+/// reference reports them; any more are elided with `...`.
+fn abstract_violation<'a>(
+    def: &ClassDef,
+    find: &impl Fn(&str) -> Option<&'a ClassDef>,
+    chain: &[&ClassDef],
+) -> Option<(String, Option<u32>)> {
+    if def.is_abstract || def.is_interface || def.is_trait {
+        return None;
+    }
+    // The nearest declaration of a name decides whether it is still abstract.
+    let mut decided: FxHashSet<String> = FxHashSet::default();
+    let mut missing: Vec<String> = Vec::new();
+    for anc in std::iter::once(def).chain(chain.iter().copied()) {
+        for (spelled, _) in &anc.method_sites {
+            let key = spelled.to_ascii_lowercase();
+            if decided.insert(key.clone()) && anc.abstract_methods.contains(&key) {
+                missing.push(format!("{}::{spelled}", display_class(&anc.name)));
+            }
+        }
+    }
+    // Interface methods nothing above declared: the interfaces in the order the
+    // class and then its ancestors name them, each followed by its own parents.
+    let mut visited: Vec<String> = Vec::new();
+    let mut pending: Vec<String> = std::iter::once(def)
+        .chain(chain.iter().copied())
+        .flat_map(|c| c.interfaces.iter().map(|i| i.to_ascii_lowercase()))
+        .rev()
+        .collect();
+    while let Some(iface) = pending.pop() {
+        if visited.contains(&iface) {
+            continue;
+        }
+        visited.push(iface.clone());
+        // Implemented by the engine itself.
+        if matches!(iface.as_str(), "stringable" | "unitenum" | "backedenum") {
+            continue;
+        }
+        if let Some(d) = find(&iface) {
+            for (spelled, _) in &d.method_sites {
+                if decided.insert(spelled.to_ascii_lowercase()) {
+                    missing.push(format!("{}::{spelled}", display_class(&d.name)));
+                }
+            }
+            pending.extend(d.interfaces.iter().rev().map(|i| i.to_ascii_lowercase()));
+        } else if let Some((spelled, ..)) = builtin_type(&iface) {
+            for m in builtin_type_methods(&iface) {
+                if decided.insert(m.to_ascii_lowercase()) {
+                    missing.push(format!("{spelled}::{m}"));
+                }
+            }
+            pending.extend(
+                builtin_type_parents(&iface)
+                    .iter()
+                    .rev()
+                    .map(|p| p.to_ascii_lowercase()),
+            );
+        }
+    }
+    if missing.is_empty() {
+        return None;
+    }
+    let n = missing.len();
+    let plural = if n == 1 { "" } else { "s" };
+    let mut listed = missing.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+    if n > 3 {
+        listed.push_str(", ...");
+    }
+    let name = display_class(&def.name);
+    // An enum and an anonymous class can never be declared abstract, so the
+    // reference drops the advice to do so.
+    let msg = if def.is_enum {
+        format!("Enum {name} must implement {n} abstract method{plural} ({listed})")
+    } else if def.name.contains('\0') {
+        format!("Class {name} must implement {n} abstract method{plural} ({listed})")
+    } else {
+        format!(
+            "Class {name} contains {n} abstract method{plural} and must therefore be declared \
+             abstract or implement the remaining method{plural} ({listed})"
+        )
+    };
+    Some((msg, None))
 }
 
 /// The type name PHP prints in `Unsupported operand types: X op Y`.

@@ -23,6 +23,7 @@ struct Finals {
     consts: FxHashSet<String>,
     props: FxHashSet<String>,
     method_sites: Vec<(String, u32)>,
+    abstract_methods: FxHashSet<String>,
 }
 
 /// Why a declaration the compiler could read cannot be LINKED, and in which of
@@ -2940,6 +2941,9 @@ impl Compiler {
                 .method_sites
                 .retain(|(n, _)| !n.eq_ignore_ascii_case(&m.name));
             finals.method_sites.push((m.name.clone(), m.line));
+            if m.is_abstract || decl.is_interface {
+                finals.abstract_methods.insert(m.name.to_ascii_lowercase());
+            }
             if m.is_final {
                 finals.methods.insert(m.name.to_ascii_lowercase());
             } else {
@@ -3101,6 +3105,7 @@ impl Compiler {
                 final_consts: finals.consts,
                 final_props: finals.props,
                 method_sites: finals.method_sites,
+                abstract_methods: finals.abstract_methods,
             },
         ));
 

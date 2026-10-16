@@ -198,3 +198,65 @@ $h = #[A] static fn() => 3; $i = #[A] function() { return 4; }; echo $f(), $g(),
         "1234"
     );
 }
+
+/// What a program that dies at link time wrote, or its error text.
+fn run_fatal(src: &str) -> String {
+    match eval_capture(src) {
+        Ok(out) => out,
+        Err(e) => e,
+    }
+}
+
+/// A concrete class must implement every abstract method it inherits or an
+/// interface declares; the fatal lists the first three and elides the rest.
+///
+/// ```text
+/// $ php -r 'interface I { function f(); function g(); } class B implements I { function f(){} }'
+/// PHP Fatal error:  Class B contains 1 abstract method and must therefore be declared abstract or implement the remaining method (I::g) in Command line code on line 1
+/// ```
+#[test]
+fn unimplemented_abstract_methods_are_a_link_time_fatal() {
+    let cases = [
+        (
+            "interface I { function f(); function g(); } class B implements I { function f(){} }",
+            "Class B contains 1 abstract method and must therefore be declared abstract or implement the remaining method (I::g)",
+        ),
+        (
+            "abstract class A { abstract function a(); abstract function b(); abstract function c(); abstract function d(); } class B extends A { }",
+            "Class B contains 4 abstract methods and must therefore be declared abstract or implement the remaining methods (A::a, A::b, A::c, ...)",
+        ),
+        (
+            "class B implements IteratorAggregate, ArrayAccess {}",
+            "Class B contains 5 abstract methods and must therefore be declared abstract or implement the remaining methods (IteratorAggregate::getIterator, ArrayAccess::offsetExists, ArrayAccess::offsetGet, ...)",
+        ),
+        (
+            "enum E implements JsonSerializable { case A; }",
+            "Enum E must implement 1 abstract method (JsonSerializable::jsonSerialize)",
+        ),
+        (
+            "new class implements Countable {};",
+            "Class Countable@anonymous must implement 1 abstract method (Countable::count)",
+        ),
+    ];
+    for (src, want) in cases {
+        let out = run_fatal(&format!("<?php {src}"));
+        assert!(out.contains(want), "{src}\n  wanted: {want}\n  got: {out}");
+    }
+}
+
+/// Everything that DOES satisfy the contract still links: a parent's concrete
+/// method, a trait's, an abstract intermediate class, an engine interface.
+#[test]
+fn satisfied_contracts_still_link() {
+    assert_eq!(
+        run_fatal(
+            "<?php interface I { function a(); } class A { function a() {} } class B extends A implements I {}
+abstract class M implements Countable {} class C extends M { function count(): int { return 1; } }
+trait T { function count(): int { return 2; } } class D implements Countable { use T; }
+class E extends Exception {} class F extends ArrayIterator {}
+$o = new class implements Countable { function count(): int { return 3; } };
+echo count(new C), count(new D), count($o);"
+        ),
+        "123"
+    );
+}
