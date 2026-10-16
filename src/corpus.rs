@@ -7064,8 +7064,8 @@ pub const CORPUS: &[Entry] = &[
         "get_class_vars",
         "Reflection",
         "get_class_vars(string $class): array",
-        "DIVERGENCE: a stub — an EMPTY array for any declared class, and `false` for an undeclared one where the reference raises `TypeError: get_class_vars(): Argument #1 ($class) must be a valid class name, <name> given`. Property defaults are stored as compiled chunks with no evaluator reachable from this module, so no names or values are reported.",
-        "class C { public $a = 1; } print_r(get_class_vars(\"C\"));   // => Array\\n(\\n)",
+        "The declared default of each property the calling scope can see: the class's own declarations first, then inherited ones, a typed property without a default as `null`, then statics at their declared default (not their current value). An enum reports `name` (and `value` when backed). An undeclared class raises `TypeError: get_class_vars(): Argument #1 ($class) must be a valid class name, <name> given`.",
+        "class C { public $a = 1; } print_r(get_class_vars(\"C\"));   // => Array\\n(\\n    [a] => 1\\n)",
     ),
     (
         "get_declared_classes",

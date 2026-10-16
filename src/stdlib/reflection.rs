@@ -9,10 +9,7 @@
 //! `get_parent_class` (which PHP resolves to the current class) is unsupported
 //! and reported as `false`.
 //!
-//! Two PHP enumerators are limited by what the host exposes. `get_declared_classes`
-//! and `get_class_vars` cannot reach the private class table / property-default
-//! chunks, so they degrade gracefully (empty array; `false` for an unknown class)
-//! rather than fabricate data. `get_defined_constants` has no reachable constants
+//! `get_defined_constants` has no reachable constants
 //! iterator at all — the table exposes only single-name accessors — so it is not
 //! handled by this module (a call falls through as an undefined function).
 
@@ -279,24 +276,21 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
                 None => Value::bool(false),
             })
         }
-        // `get_class_vars($class_name)`: PHP returns the default property values
-        // of a class as an associative array, or `false` for an unknown class.
-        // The property-default initializers are stored as compiled expression
-        // chunks that only the (private) host instantiation path can evaluate;
-        // no public host accessor exposes them, and instantiating to read them
-        // back would run the constructor (wrong: defaults are the pre-construct
-        // values). So a declared class yields an empty array here (documented
-        // limitation) while an unknown class still returns `false`, keeping the
-        // existence semantics correct.
+        // `get_class_vars($class)`: the default instance properties, then the
+        // statics at their current value, limited to what the calling scope can
+        // see. An unknown class is a `TypeError`.
         "get_class_vars" => {
             let name = str_arg(args, 0);
-            with_host(|h| {
-                if h.class_exists(&name) {
-                    h.new_array()
-                } else {
-                    Value::bool(false)
+            match crate::host::class_vars(&name) {
+                Ok(Some(arr)) => arr,
+                Ok(None) => {
+                    return Some(Err(throws(
+                        "TypeError",
+                        format!("get_class_vars(): Argument #1 ($class) must be a valid class name, {name} given"),
+                    )))
                 }
-            })
+                Err(e) => return Some(Err(e)),
+            }
         }
         // `get_declared_classes()`: the names of every declared class (lowercased,
         // as the host stores them), via the host enumerator.

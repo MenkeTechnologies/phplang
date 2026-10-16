@@ -4376,42 +4376,48 @@ impl PhpHost {
         }
     }
 
-    /// Every interface `class` implements, transitively, nearest first, in
-    /// declared spelling. For `class_implements`.
+    /// Every interface `class` implements, in declared spelling and in the order
+    /// the reference lays out `ce->interfaces` (`zend_do_implement_interfaces`):
+    /// the parent's list, then the interfaces the class names itself — with
+    /// `Stringable` appended when it declares `__toString` — then each of those
+    /// interfaces' own parents, last to first. For `class_implements`.
     pub fn class_interface_names(&self, class: &str) -> Vec<String> {
-        let mut out: Vec<String> = Vec::new();
-        // Breadth-first over the parent chain and each class's interface list,
-        // so a class reports the interfaces its ancestors implement too.
-        let mut queue = vec![class.to_ascii_lowercase()];
-        let mut seen: Vec<String> = Vec::new();
-        while let Some(c) = queue.pop() {
-            if seen.contains(&c) || seen.len() > 1000 {
-                continue;
+        self.interface_list(&class.to_ascii_lowercase(), 0)
+    }
+
+    fn interface_list(&self, c: &str, depth: usize) -> Vec<String> {
+        let Some(def) = self.classes.get(c) else {
+            // An engine type: its ancestry is the built-in table's, and every
+            // ancestor there is an interface.
+            return builtin_type_parents(c).iter().map(|p| (*p).to_string()).collect();
+        };
+        if depth > 64 {
+            return Vec::new();
+        }
+        let mut out = match &def.parent {
+            Some(p) => self.interface_list(&p.to_ascii_lowercase(), depth + 1),
+            None => Vec::new(),
+        };
+        let mut declared: Vec<String> = def.interfaces.iter().map(|i| i.to_ascii_lowercase()).collect();
+        if def.methods.contains_key("__tostring") && !declared.iter().any(|d| d == "stringable") {
+            declared.push("stringable".to_string());
+        }
+        let spell = |lower: &str| {
+            self.classes.get(lower).map(|d| d.name.clone()).unwrap_or_else(|| {
+                builtin_type(lower).map_or_else(|| lower.to_string(), |(n, ..)| (*n).to_string())
+            })
+        };
+        let push = |out: &mut Vec<String>, name: String| {
+            if !out.iter().any(|o| o.eq_ignore_ascii_case(&name)) {
+                out.push(name);
             }
-            seen.push(c.clone());
-            let Some(def) = self.classes.get(&c) else {
-                // An engine type: its ancestry is the built-in table's, and
-                // every ancestor there is an interface.
-                for p in builtin_type_parents(&c) {
-                    if !out.iter().any(|o| o.eq_ignore_ascii_case(p)) {
-                        out.push((*p).to_string());
-                    }
-                }
-                continue;
-            };
-            if let Some(p) = &def.parent {
-                queue.push(p.to_ascii_lowercase());
-            }
-            for i in &def.interfaces {
-                let spelled = self
-                    .classes
-                    .get(&i.to_ascii_lowercase())
-                    .map(|d| d.name.clone())
-                    .unwrap_or_else(|| i.clone());
-                if !out.contains(&spelled) {
-                    out.push(spelled);
-                }
-                queue.push(i.to_ascii_lowercase());
+        };
+        for d in &declared {
+            push(&mut out, spell(d));
+        }
+        for d in &declared {
+            for inherited in self.interface_list(d, depth + 1).into_iter().rev() {
+                push(&mut out, inherited);
             }
         }
         out
@@ -5686,6 +5692,26 @@ impl PhpHost {
             cur = def.parent.as_ref().map(|p| p.to_ascii_lowercase());
         }
         None
+    }
+
+    /// The names of the properties `class` declares or inherits, in the order
+    /// `zend_do_inheritance` leaves its property table: a class's own
+    /// declarations first, then those it inherits and does not redeclare, in the
+    /// parent's own order. `statics` picks the static table or the instance one.
+    fn property_names_inheritance_order(&self, class: &str, statics: bool) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let mut cur = Some(class.to_ascii_lowercase());
+        while let Some(c) = cur {
+            let Some(def) = self.classes.get(&c) else { break };
+            let own = if statics { &def.static_prop_defaults } else { &def.prop_defaults };
+            for (name, _) in own {
+                if !out.contains(name) {
+                    out.push(name.clone());
+                }
+            }
+            cur = def.parent.as_ref().map(|p| p.to_ascii_lowercase());
+        }
+        out
     }
 
     /// The stored value of a static property, by storage key (`None` = not yet
@@ -10587,6 +10613,57 @@ pub fn static_prop_get_quiet(class: &str, name: &str) -> Result<Value, String> {
         return Ok(Value::Undef);
     }
     static_prop_get(class, name)
+}
+
+/// `get_class_vars`: the default instance properties, then the static ones at
+/// their current value, that the calling scope can see. A typed property with
+/// no default reads as null here, as in the reference. `None` for an unknown
+/// class.
+pub fn class_vars(class: &str) -> Result<Option<Value>, String> {
+    let cl = class.to_ascii_lowercase();
+    let Some(defaults) = with_host(|h| h.class_prop_default_chunks(&cl)) else {
+        return Ok(None);
+    };
+    let defaults: FxHashMap<String, _> = defaults.into_iter().collect();
+    let arr = with_host(|h| h.new_array());
+    if with_host(|h| h.is_enum_class(&cl)) {
+        let backed = with_host(|h| {
+            h.classes
+                .get(&cl)
+                .is_some_and(|d| d.enum_cases.iter().any(|(_, c)| c.is_some()))
+        });
+        with_host(|h| h.arr_set_key(&arr, &Value::str("name"), Value::Undef));
+        if backed {
+            with_host(|h| h.arr_set_key(&arr, &Value::str("value"), Value::Undef));
+        }
+    }
+    for name in with_host(|h| h.property_names_inheritance_order(&cl, false)) {
+        let visible = with_host(|h| {
+            h.resolve_prop_vis(&cl, &name)
+                .is_none_or(|(decl, vis)| h.visibility_allows(vis, &decl))
+        });
+        let Some((declaring, chunk, uninit)) = defaults.get(&name).cloned() else {
+            continue;
+        };
+        if !visible {
+            continue;
+        }
+        let v = if uninit { Value::Undef } else { run_in_class_scope(&declaring, chunk)? };
+        with_host(|h| h.arr_set_key(&arr, &Value::str(name), v));
+    }
+    // Statics are reported at their DECLARED default, not their current value.
+    for name in with_host(|h| h.property_names_inheritance_order(&cl, true)) {
+        if static_prop_denied(class, &name).is_some() {
+            continue;
+        }
+        let Some((key, chunk)) = with_host(|h| h.resolve_static_key(class, &name)) else {
+            continue;
+        };
+        let declaring = key.split_once("::").map_or(key.as_str(), |(c, _)| c).to_string();
+        let v = run_in_class_scope(&declaring, chunk)?;
+        with_host(|h| h.arr_set_key(&arr, &Value::str(name), v));
+    }
+    Ok(Some(arr))
 }
 
 /// `Class::$prop = val` — write the per-class static cell, initializing lazily.

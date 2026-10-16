@@ -433,16 +433,17 @@ fn class_uses_empty_for_valid_false_for_unknown() {
     assert_eq!(run(src), "0\nWarning: class_uses(): Class Ghost does not exist and could not be loaded in Command line code on line 4\nF");
 }
 
-// ── EXPAND: get_class_vars (false for unknown; empty for declared) ────────────
+// ── get_class_vars: TypeError for an unknown class, defaults for a declared one ──
 #[test]
-fn get_class_vars_unknown_false_declared_empty() {
+fn get_class_vars_unknown_throws_declared_lists_defaults() {
     let src = r#"<?php
         class C { public $x = 1; }
-        echo get_class_vars("Ghost") === false ? "F" : "?";
-        echo is_array(get_class_vars("C")) ? "A" : "?";"#;
-    // Property-default values are not reachable without a host accessor
-    // (documented), so a declared class yields an empty array.
-    assert_eq!(run(src), "FA");
+        try { get_class_vars("Ghost"); } catch (TypeError $e) { echo $e->getMessage(), "|"; }
+        echo json_encode(get_class_vars("C"));"#;
+    assert_eq!(
+        run(src),
+        "get_class_vars(): Argument #1 ($class) must be a valid class name, Ghost given|{\"x\":1}"
+    );
 }
 
 // ── EXPAND: get_declared_classes (best-effort array) ─────────────────────────

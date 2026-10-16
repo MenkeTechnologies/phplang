@@ -6050,8 +6050,8 @@ echo implode(",", $a), "|", implode(",", $b);   // =&gt; 1,2,3|a,b,c</code></pre
         <article class="doc-entry" id="doc-reflection-10">
           <h3><a class="doc-anchor" href="#doc-reflection-10">#</a> <code>get_class_vars</code></h3>
           <pre><code class="lang-php">get_class_vars(string $class): array</code></pre>
-          <p>DIVERGENCE: a stub — an EMPTY array for any declared class, and `false` for an undeclared one where the reference raises `TypeError: get_class_vars(): Argument #1 ($class) must be a valid class name, &lt;name&gt; given`. Property defaults are stored as compiled chunks with no evaluator reachable from this module, so no names or values are reported.</p>
-          <pre><code class="lang-php">class C { public $a = 1; } print_r(get_class_vars("C"));   // =&gt; Array\n(\n)</code></pre>
+          <p>The declared default of each property the calling scope can see: the class's own declarations first, then inherited ones, a typed property without a default as `null`, then statics at their declared default (not their current value). An enum reports `name` (and `value` when backed). An undeclared class raises `TypeError: get_class_vars(): Argument #1 ($class) must be a valid class name, &lt;name&gt; given`.</p>
+          <pre><code class="lang-php">class C { public $a = 1; } print_r(get_class_vars("C"));   // =&gt; Array\n(\n    [a] =&gt; 1\n)</code></pre>
         </article>
         <article class="doc-entry" id="doc-reflection-11">
           <h3><a class="doc-anchor" href="#doc-reflection-11">#</a> <code>get_declared_classes</code></h3>

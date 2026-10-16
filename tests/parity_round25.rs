@@ -88,3 +88,59 @@ try {{ var_dump({call}); }} catch (TypeError $e) {{ echo $e->getMessage(), \"\\n
 fn coercive_mode_still_coerces_library_calls() {
     assert_eq!(run("<?php var_dump(strlen(5), str_repeat('a', '3'));"), "int(1)\nstring(3) \"aaa\"\n");
 }
+
+/// `get_class_vars`: the declared defaults the calling scope can see — the
+/// class's own declarations ahead of the inherited ones, a typed property with
+/// no default as null, then statics at their declared default.
+///
+/// ```text
+/// $ php -r 'class P { public $p=1; protected $pp=2; private $pv=3; public static $ps=4; public int $pt; }
+///           class Q extends P { public $q=2; public $p=9; protected $qq=1; static function in() { return get_class_vars("Q"); } }
+///           echo json_encode(get_class_vars("Q")), json_encode(Q::in());'
+/// {"q":2,"p":9,"pt":null,"ps":4}{"q":2,"p":9,"qq":1,"pp":2,"pt":null,"ps":4}
+/// ```
+#[test]
+fn get_class_vars_reports_defaults_visible_from_scope() {
+    let src = r#"<?php
+class P { public $p=1; protected $pp=2; private $pv=3; public static $ps=4; public int $pt; }
+class Q extends P { public $q=2; public $p=9; protected $qq=1; public static $qs;
+  static function in() { return get_class_vars("Q"); } }
+Q::$ps = 40;
+echo json_encode(get_class_vars("Q")), "\n", json_encode(Q::in()), "\n";
+enum E: int { case A = 1; }
+echo json_encode(get_class_vars("E")), "\n";
+try { get_class_vars("Nope"); } catch (TypeError $e) { echo $e->getMessage(), "\n"; }"#;
+    assert_eq!(
+        run(src),
+        concat!(
+            "{\"q\":2,\"p\":9,\"pt\":null,\"qs\":null,\"ps\":4}\n",
+            "{\"q\":2,\"p\":9,\"qq\":1,\"pp\":2,\"pt\":null,\"qs\":null,\"ps\":4}\n",
+            "{\"name\":null,\"value\":null}\n",
+            "get_class_vars(): Argument #1 ($class) must be a valid class name, Nope given\n",
+        )
+    );
+}
+
+/// `class_implements` on a user class: the parent's list, the interfaces named
+/// in the class, an automatic `Stringable` for a `__toString`, then the named
+/// interfaces' own parents last to first.
+///
+/// ```text
+/// $ php -r 'interface A{} interface B extends A{} interface C{} interface D extends B, C{}
+///           class X implements D {}
+///           class Y extends X implements Countable { function count():int{return 0;} function __toString(){return "";} }
+///           echo implode(",", class_implements("X")), "|", implode(",", class_implements("Y"));'
+/// D,A,C,B|D,A,C,B,Countable,Stringable
+/// ```
+#[test]
+fn class_implements_orders_like_the_reference_and_adds_stringable() {
+    assert_eq!(
+        run(r#"<?php interface A{} interface B extends A{} interface C{} interface D extends B, C{}
+class X implements D {}
+class Y extends X implements Countable { function count():int{return 0;} function __toString(){return "";} }
+class G { function __toString() { return ""; } }
+echo implode(",", class_implements("X")), "|", implode(",", class_implements("Y")), "|",
+     implode(",", class_implements("D")), "|", implode(",", class_implements("G"));"#),
+        "D,A,C,B|D,A,C,B,Countable,Stringable|B,C,A|Stringable"
+    );
+}
