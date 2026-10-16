@@ -3850,6 +3850,14 @@ impl Parser {
                 };
                 Ok(Expr::New(class, args))
             }
+            // An attributed closure — `#[Attr] fn () => …`, `#[Attr] static function () {}`.
+            // Attributes carry no runtime meaning here, so they are read and dropped
+            // and the closure parsed as if they were absent.
+            Some(Tok::Punct("#[")) => {
+                self.pos -= 1;
+                self.attributes()?;
+                self.primary()
+            }
             // `match (subj) { ... }` — only when followed by `(`, so a plain
             // bareword `match` still parses as a name.
             Some(Tok::Ident(kw)) if kw.eq_ignore_ascii_case("match") => self.match_expr(),

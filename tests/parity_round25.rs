@@ -182,3 +182,19 @@ fn array_write_into_a_scalar_is_an_error_and_false_is_deprecated() {
         "{out}"
     );
 }
+
+/// Attributes may precede a closure or an arrow function, `static` or not. They
+/// used to be a parse error at the `#[`.
+///
+/// ```text
+/// $ php -r '$f = #[Pure] fn() => 1; $g = #[A, B(1)] static function() { return 2; }; echo $f(), $g();'
+/// 12
+/// ```
+#[test]
+fn attributes_may_precede_closures() {
+    assert_eq!(
+        run("<?php $f = #[Pure] fn() => 1; $g = #[A, B(1)] static function() { return 2; };
+$h = #[A] static fn() => 3; $i = #[A] function() { return 4; }; echo $f(), $g(), $h(), $i();"),
+        "1234"
+    );
+}
