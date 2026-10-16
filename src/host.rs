@@ -8357,7 +8357,7 @@ fn call_library_throwing(name: &str, args: Vec<Value>, how: Dispatch) -> Result<
     let checked = if nocheck {
         Ok(())
     } else {
-        crate::argsig::check_args(name, &args)
+        crate::argsig::check_args(name, &args, how == Dispatch::Compiled && with_host(|h| h.strict_types()))
     };
     if let Err(e) = checked {
         return if opcode {

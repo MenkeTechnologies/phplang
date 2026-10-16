@@ -408,7 +408,7 @@ pub fn zpp_head_len(name: &str) -> usize {
 /// (`zpp_fixed`), and only then `does not accept unknown named parameters`.
 pub fn refuse_unplaced(name: &str, args: &[Value]) -> String {
     let Some(sig) = sig_of(name) else {
-        return check_args(name, args)
+        return check_args(name, args, false)
             .err()
             .unwrap_or_else(|| unknown_named_for_variadic(name));
     };
@@ -421,7 +421,7 @@ pub fn refuse_unplaced(name: &str, args: &[Value]) -> String {
         .as_ref()
         .err()
         .map_or(u32::MAX, |(argno, _)| *argno);
-    crate::argtypes::check_call(name, head, stop_at)
+    crate::argtypes::check_call(name, head, stop_at, false)
         .and(callable.map_err(|(_, e)| e))
         .err()
         .unwrap_or_else(|| unknown_named_for_variadic(name))
@@ -436,7 +436,7 @@ pub fn refuse_unplaced(name: &str, args: &[Value]) -> String {
 /// POSITION rather than run one after the other —
 /// `array_map("nofunc", "notarray")` reports the callback in #1, not the string
 /// in #2.
-pub fn check_args(name: &str, args: &[Value]) -> Result<(), String> {
+pub fn check_args(name: &str, args: &[Value], strict: bool) -> Result<(), String> {
     // One table lookup for the whole call: the count check and the callable
     // check both read the same signature, and this is the hot path every
     // builtin call goes down.
@@ -448,21 +448,21 @@ pub fn check_args(name: &str, args: &[Value]) -> Result<(), String> {
             .unwrap_or(0)
     });
     let Some(sig) = sig_of(name) else {
-        return crate::argtypes::check_call(name, args, u32::MAX);
+        return crate::argtypes::check_call(name, args, u32::MAX, strict);
     };
     if level == 1 {
-        return crate::argtypes::check_call(name, args, u32::MAX);
+        return crate::argtypes::check_call(name, args, u32::MAX, strict);
     }
     check_argc_of(name, sig, args.len())?;
     if level == 2 {
-        return crate::argtypes::check_call(name, args, u32::MAX);
+        return crate::argtypes::check_call(name, args, u32::MAX, strict);
     }
     let callable = check_callable(name, sig, args);
     let stop_at = callable
         .as_ref()
         .err()
         .map_or(u32::MAX, |(argno, _)| *argno);
-    crate::argtypes::check_call(name, args, stop_at)?;
+    crate::argtypes::check_call(name, args, stop_at, strict)?;
     callable.map_err(|(_, e)| e)
 }
 

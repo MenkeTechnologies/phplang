@@ -54,3 +54,37 @@ fn to_string_still_converts() {
         "s|xs"
     );
 }
+
+/// Under `declare(strict_types=1)` a library function's scalar parameter takes
+/// exactly its own type (int widens to float): no string/float/int coercion, no
+/// `__toString`, and `null` is a `TypeError` rather than a deprecation.
+///
+/// ```text
+/// $ php -r 'declare(strict_types=1); try { strlen(5); } catch (TypeError $e) { echo $e->getMessage(); }'
+/// strlen(): Argument #1 ($string) must be of type string, int given
+/// ```
+#[test]
+fn strict_types_applies_to_library_calls() {
+    let probe = |call: &str| {
+        run(&format!(
+            "<?php declare(strict_types=1); class S {{ function __toString() {{ return 'x'; }} }}
+try {{ var_dump({call}); }} catch (TypeError $e) {{ echo $e->getMessage(), \"\\n\"; }}"
+        ))
+    };
+    assert_eq!(probe("strlen(5)"), "strlen(): Argument #1 ($string) must be of type string, int given\n");
+    assert_eq!(probe("strlen(new S)"), "strlen(): Argument #1 ($string) must be of type string, S given\n");
+    assert_eq!(probe("str_repeat('a', '3')"), "str_repeat(): Argument #2 ($times) must be of type int, string given\n");
+    assert_eq!(probe("intdiv(1.0, 1)"), "intdiv(): Argument #1 ($num1) must be of type int, float given\n");
+    assert_eq!(probe("round('1.5')"), "round(): Argument #1 ($num) must be of type int|float, string given\n");
+    assert_eq!(probe("strtoupper(null)"), "strtoupper(): Argument #1 ($string) must be of type string, null given\n");
+    // Accepted as-is, including the int -> float widening.
+    assert_eq!(probe("strlen('abc')"), "int(3)\n");
+    assert_eq!(probe("sqrt(4)"), "float(2)\n");
+    assert_eq!(probe("str_repeat('ab', 2)"), "string(4) \"abab\"\n");
+}
+
+/// Without the declaration the same calls coerce, as before.
+#[test]
+fn coercive_mode_still_coerces_library_calls() {
+    assert_eq!(run("<?php var_dump(strlen(5), str_repeat('a', '3'));"), "int(1)\nstring(3) \"aaa\"\n");
+}

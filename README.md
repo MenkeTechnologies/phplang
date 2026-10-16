@@ -490,6 +490,9 @@ documented in-code:
   file or `eval()`'d code is ignored. Upstream reads the mode from the file
   containing the CALL, so a strict included file calling into a non-strict one
   still checks strictly there; phplang does not.
+- Under `declare(strict_types=1)` a library function called directly from the
+  source checks its scalar parameters strictly; one reached through a callback or
+  `call_user_func` is checked coercively.
 - A callback invoked BY a library function (`array_map`, `usort`) is checked in
   whatever mode the program declared. Upstream treats an internal caller as
   having no strict-mode file and so coerces, while `call_user_func` forwards the

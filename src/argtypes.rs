@@ -30,7 +30,8 @@ use std::borrow::Cow;
 type Params = &'static [(u32, &'static str, &'static str)];
 
 /// Whether `v` satisfies the declared type `ty` under PHP 8's COERCIVE mode —
-/// the default, and the only one this table is consulted in.
+/// the default. With `strict` (a call written in the source under
+/// `declare(strict_types=1)`) a scalar parameter takes exactly its own type.
 ///
 /// The rules are the reference's, probed per type rather than assumed:
 ///
@@ -72,17 +73,28 @@ fn deprecate_lossy_long(h: &mut PhpHost, v: &Value) {
     }
 }
 
-fn satisfies(h: &PhpHost, ty: &str, v: &Value) -> bool {
+fn satisfies(h: &PhpHost, ty: &str, v: &Value, strict: bool) -> bool {
     // A union is satisfied by any member. `?T` is `T` plus null, and null never
     // reaches here.
     if let Some(rest) = ty.strip_prefix('?') {
-        return satisfies(h, rest, v);
+        return satisfies(h, rest, v, strict);
     }
     if ty.contains('|') {
-        return ty.split('|').any(|m| satisfies(h, m, v));
+        return ty.split('|').any(|m| satisfies(h, m, v, strict));
     }
     let is_array = matches!(v, Value::Obj(_)) && h.is_array(v);
     let is_object = matches!(v, Value::Obj(_)) && !is_array;
+    if strict {
+        // `zend_parse_arg_*_strict`: a scalar parameter takes exactly its own
+        // type, with int widening to float as the one conversion.
+        match ty {
+            "string" => return matches!(v, Value::Str(_)),
+            "int" => return matches!(v, Value::Int(_)),
+            "float" => return matches!(v, Value::Int(_) | Value::Float(_)),
+            "bool" => return matches!(v, Value::Bool(_)),
+            _ => {}
+        }
+    }
     match ty {
         "array" => is_array,
         "object" => is_object,
@@ -142,7 +154,7 @@ fn params_of(name: &str) -> Option<Params> {
 /// and merely deprecated, so it is reported here as a diagnostic rather than as
 /// an error — but a `null` in an `array` parameter is a plain type failure and
 /// falls through to the message below.
-pub fn check_call(name: &str, args: &[Value], stop_at: u32) -> Result<(), String> {
+pub fn check_call(name: &str, args: &[Value], stop_at: u32, strict: bool) -> Result<(), String> {
     let Some(params) = params_of(name) else {
         return Ok(());
     };
@@ -168,7 +180,7 @@ pub fn check_call(name: &str, args: &[Value], stop_at: u32) -> Result<(), String
                 .trim_start_matches('?')
                 .split('|')
                 .any(|m| matches!(m, "string" | "int" | "float" | "bool"));
-            if scalar && !ty.starts_with('?') {
+            if scalar && !strict && !ty.starts_with('?') {
                 // `number_format` is the one `int|float` parameter whose null
                 // deprecation names only `float` (its TypeError still says
                 // `int|float`).
@@ -183,11 +195,11 @@ pub fn check_call(name: &str, args: &[Value], stop_at: u32) -> Result<(), String
                     ))
                 });
             }
-            if scalar || ty.starts_with('?') {
+            if (scalar && !strict) || ty.starts_with('?') {
                 continue;
             }
-        } else if host::with_host(|h| satisfies(h, ty, v)) {
-            if ty.trim_start_matches('?') == "int" {
+        } else if host::with_host(|h| satisfies(h, ty, v, strict)) {
+            if !strict && ty.trim_start_matches('?') == "int" {
                 host::with_host(|h| deprecate_lossy_long(h, v));
             }
             // `PHP_Z_PARAM_STREAM` fetches the stream while parsing, so a
@@ -277,7 +289,7 @@ pub fn trace_args<'a>(name: &str, args: &'a [Value]) -> Cow<'a, [Value]> {
                 {
                     break;
                 }
-            } else if !satisfies(h, ty, v) {
+            } else if !satisfies(h, ty, v, false) {
                 break;
             }
             let converted = match bare {
