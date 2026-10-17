@@ -5245,6 +5245,48 @@ fn intval_base(s: &str, base: i64) -> i64 {
     }
 }
 
+/// The array wrapped by an `ArrayObject` / `ArrayIterator` (or subclass),
+/// held in the prelude's private `storage` slot.
+fn spl_array_storage(h: &host::PhpHost, v: &Value) -> Option<Value> {
+    h.object_props_mangled(v)
+        .into_iter()
+        .find(|(n, _)| n == "\0ArrayObject\0storage" || n == "\0ArrayIterator\0storage")
+        .map(|(_, st)| st)
+}
+
+/// Prelude slots of the SPL classes whose state the reference keeps out of the
+/// property table: `(array)` and `var_export` never show them.
+const SPL_HIDDEN_SLOTS: [&str; 4] = [
+    "\0SplDoublyLinkedList\0",
+    "\0SplObjectStorage\0",
+    "\0SplHeap\0",
+    "\0SplPriorityQueue\0",
+];
+
+/// What `(array)` and `var_export` see of an SPL prelude object, when that
+/// differs from its raw properties: the wrapped array of an `ArrayObject`,
+/// `ArrayIterator` or `SplFixedArray`, or the properties left once the
+/// prelude's internal slots are dropped. `None` for any other object.
+fn spl_view(h: &host::PhpHost, v: &Value) -> Option<Vec<(Value, Value)>> {
+    if let Some(st) = spl_array_storage(h, v) {
+        return h.array_pairs(&st);
+    }
+    let props = h.object_props_mangled(v);
+    if let Some((_, el)) = props.iter().find(|(n, _)| n == "\0SplFixedArray\0__elements") {
+        return h.array_pairs(el);
+    }
+    props
+        .iter()
+        .any(|(n, _)| SPL_HIDDEN_SLOTS.iter().any(|s| n.starts_with(s)))
+        .then(|| {
+            props
+                .into_iter()
+                .filter(|(n, _)| !SPL_HIDDEN_SLOTS.iter().any(|s| n.starts_with(s)))
+                .map(|(n, val)| (Value::str(n), val))
+                .collect()
+        })
+}
+
 fn php_cast_array(h: &mut host::PhpHost, v: &Value) -> Value {
     if h.is_array(v) {
         return v.clone();
@@ -5254,6 +5296,15 @@ fn php_cast_array(h: &mut host::PhpHost, v: &Value) -> Value {
         return out;
     }
     if h.is_object(v) {
+        // `(array)` on an ArrayObject / ArrayIterator yields the wrapped array
+        // itself (spl_array_get_properties), not the object's own properties.
+        // The prelude keeps it in the private `storage` slot of those classes.
+        if let Some(pairs) = spl_view(h, v) {
+            for (k, val) in pairs {
+                h.arr_set_key(&out, &k, val);
+            }
+            return out;
+        }
         // Non-public property names are mangled with NUL separators, as PHP's
         // cast does — see `PhpHost::object_props_mangled`.
         for (name, val) in h.object_props_mangled(v) {
@@ -7898,6 +7949,14 @@ fn var_export_item(
     }
 }
 
+/// A `var_export` array key: an integer bare, a string quoted and escaped.
+fn var_export_key(h: &host::PhpHost, k: &Value) -> String {
+    match k {
+        Value::Int(i) => i.to_string(),
+        _ => format!("'{}'", h.to_str(k).replace('\\', "\\\\").replace('\'', "\\'")),
+    }
+}
+
 /// `var_export` of an object. The reference emits code that would rebuild it:
 /// `\Class::__set_state(array( ... ))` for a declared class, the `(object)` cast
 /// of an array for a `stdClass`, and the case constant itself for an `enum`.
@@ -7922,10 +7981,21 @@ fn php_var_export_object(
     } else {
         format!("\\{class}::__set_state(array(\n")
     };
-    for (name, val) in h.object_props(v) {
+    let pairs: Vec<(String, Value)> = match spl_view(h, v) {
+        Some(view) => view
+            .into_iter()
+            .map(|(k, val)| (var_export_key(h, &k), val))
+            .collect(),
+        None => h
+            .object_props(v)
+            .into_iter()
+            .map(|(n, val)| (format!("'{}'", n.replace('\\', "\\\\").replace('\'', "\\'")), val))
+            .collect(),
+    };
+    for (name, val) in pairs {
         out.push_str(&format!(
-            "{inner}'{}' => {},\n",
-            name.replace('\\', "\\\\").replace('\'', "\\'"),
+            "{inner}{} => {},\n",
+            name,
             var_export_item(h, &val, depth + 1, seen)
         ));
     }
@@ -8099,6 +8169,15 @@ fn json_prepare_seen(v: &Value, prep: &mut JsonPrep) -> Result<Value, i64> {
         return out;
     }
     let mut out = Vec::new();
+    if let Some(st) = with_host(|h| spl_array_storage(h, v)) {
+        // ArrayObject / ArrayIterator encode as their wrapped array.
+        for (k, val) in with_host(|h| h.array_pairs(&st).unwrap_or_default()) {
+            let name = with_host(|h| h.to_str(&k));
+            out.push((name, json_prepare_seen(&val, prep)?));
+        }
+        prep.seen.leave();
+        return Ok(with_host(|h| h.new_transient_object(out)));
+    }
     for (name, val) in with_host(|h| h.object_props(v)) {
         if with_host(|h| h.prop_visibility(&class, &name)).is_some() {
             continue;

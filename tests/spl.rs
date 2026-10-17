@@ -227,3 +227,36 @@ foreach ([fn() => $it->count(1), fn() => (new DateTime)->modify(), fn() => (new 
          DateTime::setDate() expects exactly 3 arguments, 2 given\n"
     );
 }
+
+#[test]
+fn array_object_cast_json_export_show_the_wrapped_array() {
+    let src = r#"<?php $o = new ArrayObject(['a' => 1, 5 => [2]]);
+        echo json_encode($o), "|", json_encode((array) new ArrayIterator([1, 2])), "|";
+        var_export(new ArrayObject([7, 'k' => 'v'])); echo "|", count((array) $o);"#;
+    assert_eq!(
+        run(src),
+        "{\"a\":1,\"5\":[2]}|[1,2]|\\ArrayObject::__set_state(array(\n   0 => 7,\n   'k' => 'v',\n))|2"
+    );
+}
+
+#[test]
+fn spl_internal_state_is_not_a_property() {
+    let src = r#"<?php $s = new SplStack; $s->push(1); $h = new SplMinHeap; $h->insert(3);
+        $f = SplFixedArray::fromArray([4, 5]);
+        echo count((array) $s), count((array) $h), count((array) new SplObjectStorage), "|",
+            implode(",", (array) $f);"#;
+    assert_eq!(run(src), "000|4,5");
+}
+
+#[test]
+fn array_object_serializes_as_reference_quadruple() {
+    let src = r#"<?php class Sub extends ArrayObject { public $p = 1; }
+        $s = serialize(new Sub([1]));
+        $o = unserialize($s);
+        echo $s, "|", $o->p, count($o), "|", serialize(new ArrayObject([2]));"#;
+    assert_eq!(
+        run(src),
+        "O:3:\"Sub\":4:{i:0;i:0;i:1;a:1:{i:0;i:1;}i:2;a:1:{s:1:\"p\";i:1;}i:3;N;}|11|\
+         O:11:\"ArrayObject\":4:{i:0;i:0;i:1;a:1:{i:0;i:2;}i:2;a:0:{}i:3;N;}"
+    );
+}

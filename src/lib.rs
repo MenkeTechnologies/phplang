@@ -561,6 +561,8 @@ class ArrayObject implements IteratorAggregate, ArrayAccess, Countable {
     public function getFlags(): int { return 0; }
     public function setFlags(int $flags): void {}
     public function getIteratorClass(): string { return ArrayIterator::class; }
+    public function __serialize(): array { return [0, $this->storage, array_diff_key(get_object_vars($this), ['storage' => 1]), null]; }
+    public function __unserialize(array $data): void { $this->storage = $data[1]; foreach ($data[2] ?? [] as $k => $v) { $this->$k = $v; } }
     public function asort(int $flags = SORT_REGULAR): bool { return asort($this->storage, $flags); }
     public function ksort(int $flags = SORT_REGULAR): bool { return ksort($this->storage, $flags); }
     public function uasort(callable $callback): bool { return uasort($this->storage, $callback); }
@@ -641,6 +643,8 @@ class ArrayIterator implements SeekableIterator, ArrayAccess, Countable {
     public function getArrayCopy(): array { return $this->storage; }
     public function getFlags(): int { return self::$__flags[spl_object_id($this)] ?? 0; }
     public function setFlags(int $flags): void { self::$__flags[spl_object_id($this)] = $flags & ~0xFFFF0000; }
+    public function __serialize(): array { return [self::$__flags[spl_object_id($this)] ?? 0, $this->storage, array_diff_key(get_object_vars($this), ['storage' => 1]), null]; }
+    public function __unserialize(array $data): void { $this->storage = $data[1]; foreach ($data[2] ?? [] as $k => $v) { $this->$k = $v; } self::$__flags[spl_object_id($this)] = $data[0]; }
     public function asort(int $flags = SORT_REGULAR): bool { return asort($this->storage, $flags); }
     public function ksort(int $flags = SORT_REGULAR): bool { return ksort($this->storage, $flags); }
     public function uasort(callable $callback): bool { return uasort($this->storage, $callback); }

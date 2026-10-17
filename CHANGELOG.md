@@ -26,6 +26,17 @@ comment above it.
 
 ---
 
+## SPL object state in casts and exports
+
+`(array)`, `json_encode` and `var_export` of an `ArrayObject` or `ArrayIterator` now
+show the wrapped array; `SplFixedArray` shows its elements; `SplDoublyLinkedList`,
+`SplObjectStorage`, `SplHeap` and `SplPriorityQueue` show no internal slots.
+`serialize` of `ArrayObject` and `ArrayIterator` writes the reference's
+`[flags, storage, members, iteratorClass]` quadruple and `unserialize` restores it,
+subclass properties included.
+
+---
+
 ## Round 25 — differential sweep: conversions, strict mode, class linking
 
 Measured under `PHP 8.5.11 (cli)`. Each fix is pinned by a test in
