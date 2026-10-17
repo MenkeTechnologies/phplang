@@ -551,3 +551,11 @@ fn html_decoders_differ_in_reach() {
         "<b>é & 'q'</b>"
     );
 }
+
+#[test]
+fn width_and_padding_count_bytes_not_characters() {
+    // "é" is two bytes: a width-5 field and a length-5 pad add three fill bytes.
+    let src = r#"<?php echo sprintf("[%5s][%-5s]", "é", "é"), str_pad("é", 5, "*"),
+        "|", str_pad("é", 5, "*", STR_PAD_LEFT), "|", wordwrap("é é é", 5, "\n", true);"#;
+    assert_eq!(run(src), "[   é][é   ]é***|***é|é é\né");
+}

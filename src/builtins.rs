@@ -6421,7 +6421,7 @@ fn pad_field(body: String, s: &FmtSpec, is_num: bool) -> String {
     if s.conv == 'c' {
         return body;
     }
-    let len = body.chars().count();
+    let len = body.len();
     if len >= s.width {
         return body;
     }
@@ -6480,7 +6480,7 @@ fn php_wordwrap(h: &host::PhpHost, args: &[Value]) -> Result<Value, String> {
         let mut cur = 0usize; // chars on the current output line
         let mut first = true;
         for word in line.split(' ') {
-            let wlen = word.chars().count();
+            let wlen = word.len();
             if !first {
                 if cur + 1 + wlen <= width {
                     out.push(' ');
@@ -6979,7 +6979,7 @@ fn php_str_pad(h: &host::PhpHost, args: &[Value]) -> Result<String, String> {
     };
     // STR_PAD_RIGHT=1 (default), STR_PAD_LEFT=0, STR_PAD_BOTH=2.
     let ty = args.get(3).map(crate::host::long_of).unwrap_or(1);
-    let cur = s.chars().count() as i64;
+    let cur = s.len() as i64;
     if target <= cur {
         return Ok(s);
     }

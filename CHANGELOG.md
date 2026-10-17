@@ -26,6 +26,14 @@ comment above it.
 
 ---
 
+## Byte widths in padding
+
+`sprintf` field widths, `str_pad` and `wordwrap` measure a string in bytes, as the
+reference does, so a multibyte value gets fewer fill characters than its
+character count would give.
+
+---
+
 ## SPL object state in casts and exports
 
 `(array)`, `json_encode` and `var_export` of an `ArrayObject` or `ArrayIterator` now
