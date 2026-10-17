@@ -92,6 +92,10 @@ php script.php              # run a file
 php -r 'echo 1 + 1;'        # run a one-liner (no <?php tag needed)
 php < script.php            # run a script on stdin
 php -a                      # interactive REPL (persistent state per line)
+php -d NAME=VALUE f.php    # set an ini entry before the script is read (repeatable)
+php --lsp                   # language server over stdio
+php --dap                   # debug adapter over stdio
+php --dump-tokens f.php     # print the lexer token stream (also --dump-ast, --disasm)
 php --dump-bytecode f.php   # print the lowered fusevm bytecode
 php --tiers f.php           # run it, then report which fusevm tiers took it
 ```
