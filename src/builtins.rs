@@ -2386,9 +2386,11 @@ fn b_index_isset(vm: &mut VM, _: u8) -> Value {
 /// calling op returns after the throw.
 fn guard_array_write(vm: &mut VM, name: &str, keys: &[Value]) -> Option<Value> {
     match with_host(|h| h.write_container_issue(name, keys))? {
-        host::ContainerIssue::Scalar => {
-            Some(throw_php(vm, "Error", "Cannot use a scalar value as an array"))
-        }
+        host::ContainerIssue::Scalar => Some(throw_php(
+            vm,
+            "Error",
+            "Cannot use a scalar value as an array",
+        )),
         host::ContainerIssue::FalseToArray => {
             mark_warn_site(vm);
             with_host(|h| {
@@ -3765,14 +3767,16 @@ fn php_compare(h: &host::PhpHost, a: &Value, b: &Value) -> i32 {
         // 3. Two arrays compare by size, then element-wise; two objects by
         //    class, then property by property. An object against an array is
         //    the greater: `zend_std_compare_objects` cannot cast it to array.
-        (Obj(_), Obj(_)) => crate::stdlib::datefn::compare_dates(h, a, b).unwrap_or_else(|| {
-            match (h.is_object_value(a), h.is_object_value(b)) {
-                (true, true) => compare_objects(h, a, b),
-                (true, false) => 1,
-                (false, true) => -1,
-                (false, false) => compare_arrays(h, a, b),
-            }
-        }),
+        (Obj(_), Obj(_)) => {
+            crate::stdlib::datefn::compare_dates(h, a, b).unwrap_or_else(|| {
+                match (h.is_object_value(a), h.is_object_value(b)) {
+                    (true, true) => compare_objects(h, a, b),
+                    (true, false) => 1,
+                    (false, true) => -1,
+                    (false, false) => compare_arrays(h, a, b),
+                }
+            })
+        }
         // 4. An array outranks every non-array, non-bool, non-null operand.
         (Obj(_), _) => 1,
         (_, Obj(_)) => -1,
@@ -3875,7 +3879,11 @@ fn compare_objects(h: &host::PhpHost, a: &Value, b: &Value) -> i32 {
         return UNCOMPARABLE;
     }
     let (pa, pb) = (h.object_props(a), h.object_props(b));
-    if pa.iter().chain(&pb).any(|(name, _)| !h.prop_is_declared(&ca, name)) {
+    if pa
+        .iter()
+        .chain(&pb)
+        .any(|(name, _)| !h.prop_is_declared(&ca, name))
+    {
         return compare_tables(h, &pa, &pb, |x, y| x == y);
     }
     // The slot order: the declarations with an initializer, then the promoted
@@ -3886,7 +3894,9 @@ fn compare_objects(h: &host::PhpHost, a: &Value, b: &Value) -> i32 {
             declared.push(name.clone());
         }
     }
-    let slot = |p: &[(String, Value)], name: &str| p.iter().find(|(n, _)| n == name).map(|(_, v)| v.clone());
+    let slot = |p: &[(String, Value)], name: &str| {
+        p.iter().find(|(n, _)| n == name).map(|(_, v)| v.clone())
+    };
     for name in &declared {
         match (slot(&pa, name), slot(&pb, name)) {
             (Some(va), Some(vb)) => {
@@ -5349,7 +5359,12 @@ fn php_str_replace(h: &mut host::PhpHost, args: &[Value], ci: bool) -> Value {
         }
         out
     } else {
-        Value::str(replace_all_pairs(&h.to_str(&subject), &pairs, ci, &mut count))
+        Value::str(replace_all_pairs(
+            &h.to_str(&subject),
+            &pairs,
+            ci,
+            &mut count,
+        ))
     };
     h.byref_out_put(3, Value::int(count as i64));
     result
@@ -5358,7 +5373,12 @@ fn php_str_replace(h: &mut host::PhpHost, args: &[Value], ci: bool) -> Value {
 /// Apply each `(search, replace)` pair in order to `subject`, accumulating the
 /// number of replacements. An empty needle matches nothing, as in PHP. `ci`
 /// matches ASCII case-insensitively, as `str_ireplace` does.
-fn replace_all_pairs(subject: &str, pairs: &[(String, String)], ci: bool, count: &mut usize) -> String {
+fn replace_all_pairs(
+    subject: &str,
+    pairs: &[(String, String)],
+    ci: bool,
+    count: &mut usize,
+) -> String {
     let mut cur = subject.to_string();
     for (needle, rep) in pairs {
         if needle.is_empty() {

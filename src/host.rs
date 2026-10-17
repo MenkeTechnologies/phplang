@@ -4401,7 +4401,10 @@ impl PhpHost {
         let Some(def) = self.classes.get(c) else {
             // An engine type: its ancestry is the built-in table's, and every
             // ancestor there is an interface.
-            return builtin_type_parents(c).iter().map(|p| (*p).to_string()).collect();
+            return builtin_type_parents(c)
+                .iter()
+                .map(|p| (*p).to_string())
+                .collect();
         };
         if depth > 64 {
             return Vec::new();
@@ -4410,14 +4413,22 @@ impl PhpHost {
             Some(p) => self.interface_list(&p.to_ascii_lowercase(), depth + 1),
             None => Vec::new(),
         };
-        let mut declared: Vec<String> = def.interfaces.iter().map(|i| i.to_ascii_lowercase()).collect();
+        let mut declared: Vec<String> = def
+            .interfaces
+            .iter()
+            .map(|i| i.to_ascii_lowercase())
+            .collect();
         if def.methods.contains_key("__tostring") && !declared.iter().any(|d| d == "stringable") {
             declared.push("stringable".to_string());
         }
         let spell = |lower: &str| {
-            self.classes.get(lower).map(|d| d.name.clone()).unwrap_or_else(|| {
-                builtin_type(lower).map_or_else(|| lower.to_string(), |(n, ..)| (*n).to_string())
-            })
+            self.classes
+                .get(lower)
+                .map(|d| d.name.clone())
+                .unwrap_or_else(|| {
+                    builtin_type(lower)
+                        .map_or_else(|| lower.to_string(), |(n, ..)| (*n).to_string())
+                })
         };
         let push = |out: &mut Vec<String>, name: String| {
             if !out.iter().any(|o| o.eq_ignore_ascii_case(&name)) {
@@ -4613,7 +4624,9 @@ impl PhpHost {
         } else {
             // `zend_lookup_class` drops one leading backslash.
             let written = self.to_str(target);
-            written.strip_prefix('\\').map_or_else(|| written.clone(), str::to_string)
+            written
+                .strip_prefix('\\')
+                .map_or_else(|| written.clone(), str::to_string)
         };
         let decl = self.resolve_prop_vis(&class, name);
         if let Some((declaring, vis)) = &decl {
@@ -5714,8 +5727,14 @@ impl PhpHost {
         let mut out: Vec<String> = Vec::new();
         let mut cur = Some(class.to_ascii_lowercase());
         while let Some(c) = cur {
-            let Some(def) = self.classes.get(&c) else { break };
-            let own = if statics { &def.static_prop_defaults } else { &def.prop_defaults };
+            let Some(def) = self.classes.get(&c) else {
+                break;
+            };
+            let own = if statics {
+                &def.static_prop_defaults
+            } else {
+                &def.prop_defaults
+            };
             for (name, _) in own {
                 if !out.contains(name) {
                     out.push(name.clone());
@@ -8416,7 +8435,11 @@ fn call_library_throwing(name: &str, args: Vec<Value>, how: Dispatch) -> Result<
     let checked = if nocheck {
         Ok(())
     } else {
-        crate::argsig::check_args(name, &args, how == Dispatch::Compiled && with_host(|h| h.strict_types()))
+        crate::argsig::check_args(
+            name,
+            &args,
+            how == Dispatch::Compiled && with_host(|h| h.strict_types()),
+        )
     };
     if let Err(e) = checked {
         return if opcode {
@@ -10681,7 +10704,11 @@ pub fn class_vars(class: &str) -> Result<Option<Value>, String> {
         if !visible {
             continue;
         }
-        let v = if uninit { Value::Undef } else { run_in_class_scope(&declaring, chunk)? };
+        let v = if uninit {
+            Value::Undef
+        } else {
+            run_in_class_scope(&declaring, chunk)?
+        };
         with_host(|h| h.arr_set_key(&arr, &Value::str(name), v));
     }
     // Statics are reported at their DECLARED default, not their current value.
@@ -10692,7 +10719,10 @@ pub fn class_vars(class: &str) -> Result<Option<Value>, String> {
         let Some((key, chunk)) = with_host(|h| h.resolve_static_key(class, &name)) else {
             continue;
         };
-        let declaring = key.split_once("::").map_or(key.as_str(), |(c, _)| c).to_string();
+        let declaring = key
+            .split_once("::")
+            .map_or(key.as_str(), |(c, _)| c)
+            .to_string();
         let v = run_in_class_scope(&declaring, chunk)?;
         with_host(|h| h.arr_set_key(&arr, &Value::str(name), v));
     }
@@ -11864,7 +11894,12 @@ fn abstract_violation<'a>(
     }
     let n = missing.len();
     let plural = if n == 1 { "" } else { "s" };
-    let mut listed = missing.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+    let mut listed = missing
+        .iter()
+        .take(3)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
     if n > 3 {
         listed.push_str(", ...");
     }

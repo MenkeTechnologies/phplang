@@ -362,7 +362,11 @@ fn sleep_props(h: &mut crate::host::PhpHost, obj: &Value, class: &str, names: &V
         let name = h.to_str_diag(&name_v);
         let declared_key = mangled_prop_key(h, class, &name);
         let uninit = h.uninit_read_error(obj, &name).is_some();
-        let candidates = [name.clone(), format!("\0{class_name}\0{name}"), format!("\0*\0{name}")];
+        let candidates = [
+            name.clone(),
+            format!("\0{class_name}\0{name}"),
+            format!("\0*\0{name}"),
+        ];
         let found = candidates.iter().find_map(|key| {
             if let Some((_, val)) = props.iter().find(|(k, _)| k == key) {
                 return Some(Some((key.clone(), val.clone())));
@@ -776,7 +780,11 @@ impl<'a> Parser<'a> {
                 // constructor, as `object_init_ex` does: a property the payload
                 // does not carry keeps its default, and one it does takes its
                 // declared slot.
-                let allocated = if known { crate::host::alloc_object(&target).ok() } else { None };
+                let allocated = if known {
+                    crate::host::alloc_object(&target).ok()
+                } else {
+                    None
+                };
                 let obj = match allocated {
                     Some(obj) => with_host(|h| {
                         for (name, val) in props {

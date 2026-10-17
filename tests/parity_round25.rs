@@ -50,7 +50,9 @@ try { echo "v: $o->p->q"; } catch (Error $e) { echo $e->getMessage(); }"#),
 #[test]
 fn to_string_still_converts() {
     assert_eq!(
-        run(r#"<?php class S { function __toString() { return "s"; } } echo new S, "|", "x" . new S;"#),
+        run(
+            r#"<?php class S { function __toString() { return "s"; } } echo new S, "|", "x" . new S;"#
+        ),
         "s|xs"
     );
 }
@@ -71,12 +73,30 @@ fn strict_types_applies_to_library_calls() {
 try {{ var_dump({call}); }} catch (TypeError $e) {{ echo $e->getMessage(), \"\\n\"; }}"
         ))
     };
-    assert_eq!(probe("strlen(5)"), "strlen(): Argument #1 ($string) must be of type string, int given\n");
-    assert_eq!(probe("strlen(new S)"), "strlen(): Argument #1 ($string) must be of type string, S given\n");
-    assert_eq!(probe("str_repeat('a', '3')"), "str_repeat(): Argument #2 ($times) must be of type int, string given\n");
-    assert_eq!(probe("intdiv(1.0, 1)"), "intdiv(): Argument #1 ($num1) must be of type int, float given\n");
-    assert_eq!(probe("round('1.5')"), "round(): Argument #1 ($num) must be of type int|float, string given\n");
-    assert_eq!(probe("strtoupper(null)"), "strtoupper(): Argument #1 ($string) must be of type string, null given\n");
+    assert_eq!(
+        probe("strlen(5)"),
+        "strlen(): Argument #1 ($string) must be of type string, int given\n"
+    );
+    assert_eq!(
+        probe("strlen(new S)"),
+        "strlen(): Argument #1 ($string) must be of type string, S given\n"
+    );
+    assert_eq!(
+        probe("str_repeat('a', '3')"),
+        "str_repeat(): Argument #2 ($times) must be of type int, string given\n"
+    );
+    assert_eq!(
+        probe("intdiv(1.0, 1)"),
+        "intdiv(): Argument #1 ($num1) must be of type int, float given\n"
+    );
+    assert_eq!(
+        probe("round('1.5')"),
+        "round(): Argument #1 ($num) must be of type int|float, string given\n"
+    );
+    assert_eq!(
+        probe("strtoupper(null)"),
+        "strtoupper(): Argument #1 ($string) must be of type string, null given\n"
+    );
     // Accepted as-is, including the int -> float widening.
     assert_eq!(probe("strlen('abc')"), "int(3)\n");
     assert_eq!(probe("sqrt(4)"), "float(2)\n");
@@ -86,7 +106,10 @@ try {{ var_dump({call}); }} catch (TypeError $e) {{ echo $e->getMessage(), \"\\n
 /// Without the declaration the same calls coerce, as before.
 #[test]
 fn coercive_mode_still_coerces_library_calls() {
-    assert_eq!(run("<?php var_dump(strlen(5), str_repeat('a', '3'));"), "int(1)\nstring(3) \"aaa\"\n");
+    assert_eq!(
+        run("<?php var_dump(strlen(5), str_repeat('a', '3'));"),
+        "int(1)\nstring(3) \"aaa\"\n"
+    );
 }
 
 /// `get_class_vars`: the declared defaults the calling scope can see — the
@@ -135,12 +158,14 @@ try { get_class_vars("Nope"); } catch (TypeError $e) { echo $e->getMessage(), "\
 #[test]
 fn class_implements_orders_like_the_reference_and_adds_stringable() {
     assert_eq!(
-        run(r#"<?php interface A{} interface B extends A{} interface C{} interface D extends B, C{}
+        run(
+            r#"<?php interface A{} interface B extends A{} interface C{} interface D extends B, C{}
 class X implements D {}
 class Y extends X implements Countable { function count():int{return 0;} function __toString(){return "";} }
 class G { function __toString() { return ""; } }
 echo implode(",", class_implements("X")), "|", implode(",", class_implements("Y")), "|",
-     implode(",", class_implements("D")), "|", implode(",", class_implements("G"));"#),
+     implode(",", class_implements("D")), "|", implode(",", class_implements("G"));"#
+        ),
         "D,A,C,B|D,A,C,B,Countable,Stringable|B,C,A|Stringable"
     );
 }
@@ -166,7 +191,9 @@ fn array_write_into_a_scalar_is_an_error_and_false_is_deprecated() {
         "$v = ['p' => 5]; $v['p'][] = 1;",
         "$v = 5; $v[0][1] = 1;",
     ] {
-        let src = format!("<?php try {{ {stmt} }} catch (Error $e) {{ echo $e->getMessage(), \"\\n\"; }}");
+        let src = format!(
+            "<?php try {{ {stmt} }} catch (Error $e) {{ echo $e->getMessage(), \"\\n\"; }}"
+        );
         assert_eq!(run(&src), msg, "statement: {stmt}");
     }
     // The scalar is left alone, not clobbered by an array.
@@ -193,8 +220,10 @@ fn array_write_into_a_scalar_is_an_error_and_false_is_deprecated() {
 #[test]
 fn attributes_may_precede_closures() {
     assert_eq!(
-        run("<?php $f = #[Pure] fn() => 1; $g = #[A, B(1)] static function() { return 2; };
-$h = #[A] static fn() => 3; $i = #[A] function() { return 4; }; echo $f(), $g(), $h(), $i();"),
+        run(
+            "<?php $f = #[Pure] fn() => 1; $g = #[A, B(1)] static function() { return 2; };
+$h = #[A] static fn() => 3; $i = #[A] function() { return 4; }; echo $f(), $g(), $h(), $i();"
+        ),
         "1234"
     );
 }
