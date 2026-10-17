@@ -4115,11 +4115,14 @@ pub fn numeric_hook_sited(call: NumericCall<'_>, lines: &[u32]) -> Result<Value,
     Ok(arith(op, an, bn))
 }
 
+/// Whether the operands are swapped, and the test applied to the three-way comparison.
+type Relation = (bool, fn(i32) -> bool);
+
 /// Whether a relational [`NumOp`] exchanges its operands, and the test it then
 /// applies to the three-way comparison; `None` for an op that is arithmetic
 /// rather than relational. `>` and `>=` are `<` and `<=` swapped, as
 /// [`cmp_bool`] explains.
-fn relational(op: NumOp) -> Option<(bool, fn(i32) -> bool)> {
+fn relational(op: NumOp) -> Option<Relation> {
     Some(match op {
         NumOp::Lt => (false, |o: i32| o < 0),
         NumOp::Gt => (true, |o: i32| o < 0),
@@ -5272,7 +5275,10 @@ fn spl_view(h: &host::PhpHost, v: &Value) -> Option<Vec<(Value, Value)>> {
         return h.array_pairs(&st);
     }
     let props = h.object_props_mangled(v);
-    if let Some((_, el)) = props.iter().find(|(n, _)| n == "\0SplFixedArray\0__elements") {
+    if let Some((_, el)) = props
+        .iter()
+        .find(|(n, _)| n == "\0SplFixedArray\0__elements")
+    {
         return h.array_pairs(el);
     }
     props
@@ -7953,7 +7959,10 @@ fn var_export_item(
 fn var_export_key(h: &host::PhpHost, k: &Value) -> String {
     match k {
         Value::Int(i) => i.to_string(),
-        _ => format!("'{}'", h.to_str(k).replace('\\', "\\\\").replace('\'', "\\'")),
+        _ => format!(
+            "'{}'",
+            h.to_str(k).replace('\\', "\\\\").replace('\'', "\\'")
+        ),
     }
 }
 
@@ -7989,7 +7998,12 @@ fn php_var_export_object(
         None => h
             .object_props(v)
             .into_iter()
-            .map(|(n, val)| (format!("'{}'", n.replace('\\', "\\\\").replace('\'', "\\'")), val))
+            .map(|(n, val)| {
+                (
+                    format!("'{}'", n.replace('\\', "\\\\").replace('\'', "\\'")),
+                    val,
+                )
+            })
             .collect(),
     };
     for (name, val) in pairs {

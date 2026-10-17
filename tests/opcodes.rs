@@ -136,7 +136,7 @@ fn lex(src: &str) -> Vec<Tok> {
                 // `repeat().take()` rather than `repeat_n`: the latter is stable
                 // only from 1.82 and this crate declares `rust-version = "1.80"`.
                 let close: String = std::iter::once('"')
-                    .chain(std::iter::repeat('#').take(hashes))
+                    .chain(std::iter::repeat_n('#', hashes))
                     .collect();
                 let rest: String = b[start..].iter().collect();
                 let end = rest.find(&close).map(|k| start + rest[..k].chars().count());

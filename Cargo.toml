@@ -2,7 +2,7 @@
 name = "phplang"
 version = "0.2.14"
 edition = "2021"
-rust-version = "1.80"
+rust-version = "1.82"
 description = "PHP as a fusevm frontend: lexer, parser, and compiler to fusevm::Chunk on a PhpHost heap — the first compiled standalone PHP runtime"
 license = "MIT"
 authors = ["MenkeTechnologies <linux.dev25.com>"]

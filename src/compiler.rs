@@ -6256,7 +6256,7 @@ impl Compiler {
         let call_at = spine
             .iter()
             .position(|l| matches!(l, Expr::MethodCall(..) | Expr::NullsafeMethodCall(..)));
-        let quiet_at = |i: usize| quiet && call_at.map_or(true, |c| i < c);
+        let quiet_at = |i: usize| quiet && call_at.is_none_or(|c| i < c);
         if quiet_at(spine.len()) {
             self.compile_quiet(b, base)?;
         } else {
@@ -7107,7 +7107,7 @@ fn is_const_array(elems: &[ArrayElem]) -> bool {
     };
     elems
         .iter()
-        .all(|e| !e.by_ref && e.key.as_ref().map_or(true, is_const_operand) && is_const(&e.value))
+        .all(|e| !e.by_ref && e.key.as_ref().is_none_or(is_const_operand) && is_const(&e.value))
 }
 
 /// The type name of the first scalar a CONSTANT array literal unpacks with

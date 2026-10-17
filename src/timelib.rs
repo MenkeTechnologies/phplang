@@ -1511,7 +1511,7 @@ fn longest_match(buf: &[u8], pos: usize) -> (Rule, usize) {
             }
             let Some(hm) = state.get_match() else { break };
             let (end, pid) = (hm.offset(), hm.pattern().as_usize());
-            if end > pos && best.map_or(true, |(be, bp)| end > be || (end == be && pid < bp)) {
+            if end > pos && best.is_none_or(|(be, bp)| end > be || (end == be && pid < bp)) {
                 best = Some((end, pid));
             }
         }
@@ -3503,7 +3503,7 @@ fn iso_longest(buf: &[u8], pos: usize) -> (IsoRule, usize) {
         {
             let Some(hm) = state.get_match() else { break };
             let (end, pid) = (hm.offset(), hm.pattern().as_usize());
-            if end > pos && best.map_or(true, |(be, bp)| end > be || (end == be && pid < bp)) {
+            if end > pos && best.is_none_or(|(be, bp)| end > be || (end == be && pid < bp)) {
                 best = Some((end, pid));
             }
         }
