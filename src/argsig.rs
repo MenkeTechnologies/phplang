@@ -515,7 +515,7 @@ use Def::{Bool, EmptyArray, Float, Int, Null, Required, Str, Unknown};
 /// default in this generated table is a literal too.
 #[allow(clippy::approx_constant)]
 static SIGS: &[(&str, Sig)] = &[
-    // generated: 595 functions
+    // generated: 601 functions
     (
         "abs",
         Sig {
@@ -3287,6 +3287,14 @@ static SIGS: &[(&str, Sig)] = &[
         },
     ),
     (
+        "hash_copy",
+        Sig {
+            req: 1,
+            params: &[p("context", Required, "HashContext")],
+            variadic: false,
+        },
+    ),
+    (
         "hash_equals",
         Sig {
             req: 2,
@@ -3306,6 +3314,17 @@ static SIGS: &[(&str, Sig)] = &[
                 p("filename", Required, "string"),
                 p("binary", Bool(false), "bool"),
                 p("options", EmptyArray, "array"),
+            ],
+            variadic: false,
+        },
+    ),
+    (
+        "hash_final",
+        Sig {
+            req: 1,
+            params: &[
+                p("context", Required, "HashContext"),
+                p("binary", Bool(false), "bool"),
             ],
             variadic: false,
         },
@@ -3337,6 +3356,19 @@ static SIGS: &[(&str, Sig)] = &[
         },
     ),
     (
+        "hash_init",
+        Sig {
+            req: 1,
+            params: &[
+                p("algo", Required, "string"),
+                p("flags", Int(0), "int"),
+                p("key", Str(""), "string"),
+                p("options", EmptyArray, "array"),
+            ],
+            variadic: false,
+        },
+    ),
+    (
         "hash_pbkdf2",
         Sig {
             req: 4,
@@ -3348,6 +3380,41 @@ static SIGS: &[(&str, Sig)] = &[
                 p("length", Int(0), "int"),
                 p("binary", Bool(false), "bool"),
                 p("options", EmptyArray, "array"),
+            ],
+            variadic: false,
+        },
+    ),
+    (
+        "hash_update",
+        Sig {
+            req: 2,
+            params: &[
+                p("context", Required, "HashContext"),
+                p("data", Required, "string"),
+            ],
+            variadic: false,
+        },
+    ),
+    (
+        "hash_update_file",
+        Sig {
+            req: 2,
+            params: &[
+                p("context", Required, "HashContext"),
+                p("filename", Required, "string"),
+                p("stream_context", Null, ""),
+            ],
+            variadic: false,
+        },
+    ),
+    (
+        "hash_update_stream",
+        Sig {
+            req: 2,
+            params: &[
+                p("context", Required, "HashContext"),
+                p("stream", Required, ""),
+                p("length", Int(-1), "int"),
             ],
             variadic: false,
         },

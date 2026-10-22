@@ -288,6 +288,22 @@ class DateInterval {
 }
 "#;
 
+/// `ext/hash`'s one class. The state `hash_init` … `hash_final`
+/// (`stdlib::hashext`) keep in it is the private properties; `__debugInfo`
+/// shows the `algo` the reference's `var_dump` shows. The constructor is
+/// private as the reference's is: a context comes only from `hash_init` or
+/// `hash_copy`.
+const HASH_PRELUDE: &str = r#"
+final class HashContext {
+    private string $algo = "";
+    private ?string $key = null;
+    private string $data = "";
+    private bool $finalized = false;
+    private function __construct() {}
+    public function __debugInfo(): array { return ["algo" => $this->algo]; }
+}
+"#;
+
 /// The SPL data-structure classes, written in PHP. They store elements in an
 /// internal array property and mutate it through `$this`, which is the only way
 /// a PHP array — a value, not a handle — can be mutated in place. Aliasing it to
@@ -1954,7 +1970,7 @@ fn prelude_defs() -> &'static PreludeDefs {
     use std::sync::OnceLock;
     static CACHE: OnceLock<PreludeDefs> = OnceLock::new();
     CACHE.get_or_init(|| {
-        let src = format!("{EXCEPTION_PRELUDE}{DATETIME_PRELUDE}{SPL_PRELUDE}");
+        let src = format!("{EXCEPTION_PRELUDE}{DATETIME_PRELUDE}{HASH_PRELUDE}{SPL_PRELUDE}");
         // NOT `compile`: that applies the file-level facts of whatever it is given,
         // and this runs from `load_merged` — after the user program was compiled —
         // so going through it would reset the typing mode the user's own

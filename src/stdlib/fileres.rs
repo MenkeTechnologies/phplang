@@ -94,7 +94,7 @@ impl Stream {
 
     /// Read up to `n` bytes. A short read sets `eof`, as `_php_stream_read`
     /// does when the wrapper hands back less than was asked for.
-    fn read(&mut self, n: usize) -> Vec<u8> {
+    pub(crate) fn read(&mut self, n: usize) -> Vec<u8> {
         let start = self.pos.min(self.buf.len());
         let end = start.saturating_add(n).min(self.buf.len());
         if end - start < n {
@@ -354,7 +354,7 @@ fn bytes_value(b: Vec<u8>) -> Value {
 
 /// The reference's wording for an I/O failure: `strerror(errno)`, without the
 /// `(os error N)` suffix Rust appends.
-fn strerror(e: &std::io::Error) -> String {
+pub(crate) fn strerror(e: &std::io::Error) -> String {
     let s = e.to_string();
     match s.find(" (os error") {
         Some(i) => s[..i].to_string(),
@@ -366,7 +366,7 @@ fn strerror(e: &std::io::Error) -> String {
 /// standard input when the stream is `STDIN`. A stream opened write-only
 /// reports the plain wrapper's `EBADF` notice and yields `None`, which every
 /// caller turns into its own failure value.
-fn read(
+pub(crate) fn read(
     fname: &str,
     res: &Value,
     op: impl FnOnce(&mut Stream) -> Option<Vec<u8>>,

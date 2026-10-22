@@ -7173,6 +7173,8 @@ fn predefined_constants() -> FxHashMap<String, Value> {
     si("GMP_ROUND_ZERO", crate::stdlib::gmp::GMP_ROUND_ZERO);
     si("GMP_ROUND_PLUSINF", crate::stdlib::gmp::GMP_ROUND_PLUSINF);
     si("GMP_ROUND_MINUSINF", crate::stdlib::gmp::GMP_ROUND_MINUSINF);
+    // hash_init flag: HMAC the fed data under the key argument.
+    si("HASH_HMAC", crate::stdlib::hashext::HASH_HMAC);
     // debug_backtrace / debug_print_backtrace option bits.
     si("DEBUG_BACKTRACE_PROVIDE_OBJECT", 1);
     si("DEBUG_BACKTRACE_IGNORE_ARGS", 2);

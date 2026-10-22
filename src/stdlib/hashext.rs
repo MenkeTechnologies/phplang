@@ -1,5 +1,6 @@
 //! PHP standard-library `hashext` functions: file digests, constant-time
-//! comparison, PBKDF2 key derivation and random bytes. Part of the `stdlib`
+//! comparison, PBKDF2 key derivation, random bytes, and the incremental
+//! `hash_init` … `hash_final` family over a `HashContext`. Part of the `stdlib`
 //! chain; see `src/stdlib/mod.rs`. `dispatch` returns `None` for names it does
 //! not handle.
 //!
@@ -19,6 +20,7 @@
 
 use crate::host::with_host;
 use crate::stdlib::common::{arg, int_arg, str_arg, throws};
+use crate::stdlib::fileres::{read as stream_read, strerror};
 use crate::stdlib::hash::{digest_bytes, find, hmac, md5_bytes, sha1_bytes};
 use fusevm::Value;
 
@@ -41,6 +43,12 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         "hash_equals" => Ok(Value::bool(hash_equals(args))),
         "hash_pbkdf2" => hash_pbkdf2(args),
         "random_bytes" => random_bytes(args),
+        "hash_init" => hash_init(args),
+        "hash_update" => hash_update(args),
+        "hash_update_stream" => hash_update_stream(args),
+        "hash_update_file" => hash_update_file(args),
+        "hash_final" => hash_final(args),
+        "hash_copy" => hash_copy(args),
         _ => return None,
     })
 }
@@ -303,4 +311,221 @@ fn splitmix64(mut z: u64) -> u64 {
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
     z ^ (z >> 31)
+}
+
+// ── Incremental hashing: `hash_init` … `hash_final` over a `HashContext` ──────
+//
+// The reference keeps a live digest state inside a `HashContext` object
+// (`ext/hash/hash.c`, `php_hashcontext_object`). phplang's digests are one-shot
+// `fn(&[u8]) -> Vec<u8>` (see `hash::ALGOS`), so the context accumulates the
+// bytes it is fed and digests them once at `hash_final`. Every observable result
+// — the digest, the HMAC, `hash_copy` independence, the refusals and their
+// wording — is the reference's; only the memory profile differs.
+//
+// The state lives in the private properties of the prelude's `HashContext`
+// class (`HASH_PRELUDE` in `src/lib.rs`): `algo`, `key` (the HMAC key, or null),
+// `data` and `finalized`. Keeping it in properties rather than a host-side
+// table is what makes `clone $ctx` behave as the reference's clone handler
+// does — the copy has its own state — and lets `__debugInfo` show the `algo`
+// the reference's `var_dump` shows.
+//
+// `data` holds BYTES, one per `char` (Latin-1), the same byte→codepoint model
+// `wrap` uses for a raw digest. A PHP string fed to `hash_update` contributes
+// its UTF-8 bytes — exactly what `hash()` digests — while `hash_update_file`
+// and `hash_update_stream` contribute the raw bytes they read, so a binary file
+// hashes byte-faithfully instead of being re-encoded.
+
+/// The flag bit `hash_init` reads from `$flags`: the context HMACs under `$key`.
+pub(crate) const HASH_HMAC: i64 = 1;
+
+/// The class every context is an instance of.
+const CONTEXT_CLASS: &str = "HashContext";
+
+/// `hash_init(algo, flags = 0, key = "", options = [])`.
+///
+/// The three refusals are `php_hash_init`'s, in its order: an unknown
+/// algorithm, a checksum where `HASH_HMAC` asks for a cryptographic digest, and
+/// an empty key with `HASH_HMAC` set. A key given without the flag is ignored.
+fn hash_init(args: &[Value]) -> Result<Value, String> {
+    let algo_name = str_arg(args, 0).to_ascii_lowercase();
+    let hmac = int_arg(args, 1) & HASH_HMAC != 0;
+    let Some(algo) = find(&algo_name) else {
+        return Err(throws(
+            "ValueError",
+            "hash_init(): Argument #1 ($algo) must be a valid hashing algorithm",
+        ));
+    };
+    let key = if hmac {
+        if algo.block.is_none() {
+            return Err(throws(
+                "ValueError",
+                "hash_init(): Argument #1 ($algo) must be a cryptographic hashing \
+                 algorithm if HMAC is requested",
+            ));
+        }
+        let key = str_arg(args, 2);
+        if key.is_empty() {
+            return Err(throws(
+                "ValueError",
+                "hash_init(): Argument #3 ($key) must not be empty when HMAC is requested",
+            ));
+        }
+        Value::str(key)
+    } else {
+        Value::Undef
+    };
+    let props = vec![
+        ("algo".to_string(), Value::str(algo.name.to_string())),
+        ("key".to_string(), key),
+        ("data".to_string(), Value::str(String::new())),
+        ("finalized".to_string(), Value::bool(false)),
+    ];
+    Ok(with_host(|h| h.new_object_bare(CONTEXT_CLASS, props)))
+}
+
+/// The `$context` argument of `fname`, checked the way the reference checks it:
+/// a `TypeError` naming the type given for anything but a `HashContext`, and
+/// the `valid, non-finalized` `TypeError` for a context `hash_final` has closed.
+fn context_arg(fname: &str, args: &[Value]) -> Result<Value, String> {
+    let ctx = arg(args, 0);
+    let (is_context, finalized) = with_host(|h| {
+        let is_context = h
+            .object_class(&ctx)
+            .is_some_and(|c| c.eq_ignore_ascii_case(CONTEXT_CLASS));
+        let finalized = is_context && h.is_truthy(&h.prop_get(&ctx, "finalized"));
+        (is_context, finalized)
+    });
+    if !is_context {
+        let given = with_host(|h| h.type_name_for_error(&ctx));
+        return Err(throws(
+            "TypeError",
+            format!("{fname}(): Argument #1 ($context) must be of type HashContext, {given} given"),
+        ));
+    }
+    if finalized {
+        return Err(throws(
+            "TypeError",
+            format!("{fname}(): Argument #1 ($context) must be a valid, non-finalized HashContext"),
+        ));
+    }
+    Ok(ctx)
+}
+
+/// Append raw bytes to the context's buffered input (one Latin-1 `char` each).
+fn context_feed(ctx: &Value, bytes: &[u8]) {
+    with_host(|h| {
+        let mut data = h.to_str(&h.prop_get(ctx, "data"));
+        data.extend(bytes.iter().map(|&b| char::from(b)));
+        h.prop_set(ctx, "data", Value::str(data));
+    });
+}
+
+/// `hash_update(context, data)`: feed a PHP string's bytes. Always `true`.
+fn hash_update(args: &[Value]) -> Result<Value, String> {
+    let ctx = context_arg("hash_update", args)?;
+    context_feed(&ctx, str_arg(args, 1).as_bytes());
+    Ok(Value::bool(true))
+}
+
+/// `hash_update_stream(context, stream, length = -1)`: feed up to `length`
+/// bytes from the stream's cursor (everything left when negative), returning
+/// how many were read.
+fn hash_update_stream(args: &[Value]) -> Result<Value, String> {
+    let ctx = context_arg("hash_update_stream", args)?;
+    let stream = arg(args, 1);
+    if !with_host(|h| h.is_resource(&stream)) {
+        let given = with_host(|h| h.type_name_for_error(&stream));
+        return Err(throws(
+            "TypeError",
+            format!("hash_update_stream(): Argument #2 ($stream) must be of type resource, {given} given"),
+        ));
+    }
+    let length = match arg(args, 2) {
+        Value::Undef => -1,
+        _ => int_arg(args, 2),
+    };
+    let want = usize::try_from(length).unwrap_or(usize::MAX);
+    let bytes =
+        stream_read("hash_update_stream", &stream, |s| Some(s.read(want))).unwrap_or_default();
+    context_feed(&ctx, &bytes);
+    Ok(Value::int(bytes.len() as i64))
+}
+
+/// `hash_update_file(context, filename, stream_context = null)`: feed a file's
+/// raw bytes. An empty path is the stream layer's `ValueError`; an unopenable
+/// one is its `Failed to open stream` warning and `false`; a directory opens
+/// but cannot be read, which is the reference's `Notice` and `false`.
+fn hash_update_file(args: &[Value]) -> Result<Value, String> {
+    let ctx = context_arg("hash_update_file", args)?;
+    let path = str_arg(args, 1);
+    if path.is_empty() {
+        return Err(throws("ValueError", "Path must not be empty"));
+    }
+    match std::fs::read(&path) {
+        Ok(bytes) => {
+            context_feed(&ctx, &bytes);
+            Ok(Value::bool(true))
+        }
+        Err(e) if std::path::Path::new(&path).is_dir() => {
+            with_host(|h| {
+                h.notice(format!(
+                    "hash_update_file(): Read of 8192 bytes failed with errno=21 {}",
+                    strerror(&e)
+                ))
+            });
+            Ok(Value::bool(false))
+        }
+        Err(e) => {
+            with_host(|h| {
+                h.warn(format!(
+                    "hash_update_file({path}): Failed to open stream: {}",
+                    strerror(&e)
+                ))
+            });
+            Ok(Value::bool(false))
+        }
+    }
+}
+
+/// `hash_final(context, binary = false)`: the digest — or the HMAC, when the
+/// context was opened with `HASH_HMAC` — of everything fed so far. The context
+/// is finalized: every later `hash_update`/`hash_final`/`hash_copy` on it is
+/// refused, and its buffered input is released.
+fn hash_final(args: &[Value]) -> Result<Value, String> {
+    let ctx = context_arg("hash_final", args)?;
+    let raw = bool_arg(args, 1);
+    let (algo_name, key, data) = with_host(|h| {
+        let key = match h.prop_get(&ctx, "key") {
+            Value::Undef => None,
+            k => Some(h.to_str(&k).into_bytes()),
+        };
+        let data: Vec<u8> = h
+            .to_str(&h.prop_get(&ctx, "data"))
+            .chars()
+            .map(|c| c as u32 as u8)
+            .collect();
+        h.prop_set(&ctx, "data", Value::str(String::new()));
+        h.prop_set(&ctx, "finalized", Value::bool(true));
+        (h.to_str(&h.prop_get(&ctx, "algo")), key, data)
+    });
+    let algo = find(&algo_name).expect("hash_init only stores a registered algorithm");
+    let digest = match (key, algo.block) {
+        (Some(key), Some(block)) => hmac(block, algo.digest, &key, &data),
+        _ => (algo.digest)(&data),
+    };
+    Ok(wrap(digest, raw))
+}
+
+/// `hash_copy(context)`: an independent context in the same state, as the
+/// reference's `php_hashcontext_clone` produces — later updates to either side
+/// do not reach the other.
+fn hash_copy(args: &[Value]) -> Result<Value, String> {
+    let ctx = context_arg("hash_copy", args)?;
+    Ok(with_host(|h| {
+        let props = ["algo", "key", "data", "finalized"]
+            .iter()
+            .map(|name| (name.to_string(), h.prop_get(&ctx, name)))
+            .collect();
+        h.new_object_bare(CONTEXT_CLASS, props)
+    }))
 }

@@ -802,6 +802,18 @@ static PARAMS: &[(&str, Params)] = &[
         ],
     ),
     (
+        "hash_init",
+        &[
+            (1, "algo", "string"),
+            (2, "flags", "int"),
+            (3, "key", "string"),
+        ],
+    ),
+    ("hash_update", &[(2, "data", "string")]),
+    ("hash_update_stream", &[(3, "length", "int")]),
+    ("hash_update_file", &[(2, "filename", "string")]),
+    ("hash_final", &[(2, "binary", "bool")]),
+    (
         "hash_hmac",
         &[
             (1, "algo", "string"),

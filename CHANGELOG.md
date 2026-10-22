@@ -26,6 +26,32 @@ comment above it.
 
 ---
 
+## Incremental hashing: `hash_init` … `hash_final`
+
+`hash_init`, `hash_update`, `hash_update_stream`, `hash_update_file`,
+`hash_final` and `hash_copy` are implemented over a `HashContext` prelude class,
+with the `HASH_HMAC` flag. Measured under `PHP 8.5.11 (cli)`; pinned in
+`tests/stdlib_hash_context.rs`.
+
+* Every algorithm `hash()` accepts can be fed incrementally; with `HASH_HMAC`
+  the context HMACs under its key and agrees with `hash_hmac` byte for byte.
+* `hash_copy` and `clone` give an independent context; a context `hash_final`
+  has closed is refused by `hash_update`, `hash_final` and `hash_copy` with the
+  reference's `must be a valid, non-finalized HashContext` `TypeError`.
+* The three `hash_init` `ValueError`s (unknown algorithm, checksum with HMAC,
+  empty key with HMAC), the `must be of type HashContext, int given` and `must
+  be of type resource` `TypeError`s, and `hash_update_file`'s empty-path
+  `ValueError`, `Failed to open stream` warning and directory notice are the
+  reference's.
+* `var_dump` and `print_r` show the context's `algo`, as the reference's do.
+
+The context buffers its input and digests it once at `hash_final`, so the
+results are the reference's and the memory profile is not; `(array)`,
+`var_export` and `serialize` of a context show phplang's own state (recorded in
+the `HashContext` corpus entry).
+
+---
+
 ## Byte widths in padding
 
 `sprintf` field widths, `str_pad` and `wordwrap` measure a string in bytes, as the
