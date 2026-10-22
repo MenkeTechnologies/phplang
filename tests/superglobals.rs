@@ -76,11 +76,13 @@ fn version_and_sapi() {
 
 #[test]
 fn get_defined_constants_and_classes() {
-    // The predefined constants are enumerable; a declared class shows up.
+    // The predefined constants are enumerable; a declared class shows up, in
+    // its declared spelling (the reference answers `8|N|Y`).
     let src = r#"<?php
         $c = get_defined_constants();
         echo $c["PHP_INT_SIZE"];
         class Widget {}
-        echo in_array("widget", get_declared_classes()) ? "|Y" : "|N";"#;
-    assert_eq!(run(src), "8|Y");
+        echo in_array("widget", get_declared_classes()) ? "|Y" : "|N";
+        echo in_array("Widget", get_declared_classes()) ? "|Y" : "|N";"#;
+    assert_eq!(run(src), "8|N|Y");
 }

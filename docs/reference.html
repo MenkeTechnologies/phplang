@@ -6107,47 +6107,62 @@ echo implode(",", $a), "|", implode(",", $b);   // =&gt; 1,2,3|a,b,c</code></pre
         <article class="doc-entry" id="doc-reflection-11">
           <h3><a class="doc-anchor" href="#doc-reflection-11">#</a> <code>get_declared_classes</code></h3>
           <pre><code class="lang-php">get_declared_classes(): array</code></pre>
-          <p>Every name in the class table — which always includes the 25 prelude classes, plus any user interfaces, traits, and enums. DIVERGENCE: names are LOWERCASED and the order is the hash map's, not declaration order.</p>
-          <pre><code class="lang-php">var_dump(in_array("exception", get_declared_classes()));   // =&gt; bool(true)</code></pre>
+          <p>Every declared class and enum, in declared spelling and declaration order: the engine and prelude classes first, then the program's own. Interfaces and traits are listed by `get_declared_interfaces()` and `get_declared_traits()`. The internal classes are this build's, so their number and order differ from the reference's.</p>
+          <pre><code class="lang-php">class C {} $c = get_declared_classes(); var_dump(end($c));   // =&gt; string(1) "C"</code></pre>
         </article>
         <article class="doc-entry" id="doc-reflection-12">
-          <h3><a class="doc-anchor" href="#doc-reflection-12">#</a> <code>class_parents</code></h3>
+          <h3><a class="doc-anchor" href="#doc-reflection-12">#</a> <code>get_declared_interfaces</code></h3>
+          <pre><code class="lang-php">get_declared_interfaces(): array</code></pre>
+          <p>Every declared interface, in declared spelling and declaration order: the engine and prelude interfaces first, then the program's own.</p>
+          <pre><code class="lang-php">interface I {} var_dump(in_array("I", get_declared_interfaces()));   // =&gt; bool(true)</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-reflection-13">
+          <h3><a class="doc-anchor" href="#doc-reflection-13">#</a> <code>get_declared_traits</code></h3>
+          <pre><code class="lang-php">get_declared_traits(): array</code></pre>
+          <p>Every declared trait, in declared spelling and declaration order. The prelude declares none the reference would list.</p>
+          <pre><code class="lang-php">trait T {} print_r(get_declared_traits());   // =&gt; Array
+(
+    [0] =&gt; T
+)</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-reflection-14">
+          <h3><a class="doc-anchor" href="#doc-reflection-14">#</a> <code>class_parents</code></h3>
           <pre><code class="lang-php">class_parents(object|string $object_or_class, bool $autoload = true): array|false</code></pre>
           <p>A nearest-first `name =&gt; name` map of the ancestor chain in declared casing, or `false` when the subject is neither an object nor a declared class.</p>
           <pre><code class="lang-php">class A {} class B extends A {} echo implode(",", class_parents(new B));   // =&gt; A</code></pre>
         </article>
-        <article class="doc-entry" id="doc-reflection-13">
-          <h3><a class="doc-anchor" href="#doc-reflection-13">#</a> <code>class_implements</code></h3>
+        <article class="doc-entry" id="doc-reflection-15">
+          <h3><a class="doc-anchor" href="#doc-reflection-15">#</a> <code>class_implements</code></h3>
           <pre><code class="lang-php">class_implements(object|string $object_or_class, bool $autoload = true): array|false</code></pre>
           <p>The interfaces the subject satisfies, transitively and through its parents, keyed by name. Engine ancestry answers too, so `class_implements("Generator")` reports `Iterator` and `Traversable`. An unknown name warns and returns `false`, as in PHP.</p>
           <pre><code class="lang-php">interface I {} class C implements I {} print_r(array_keys(class_implements(new C)));   // =&gt; Array\n(\n    [0] =&gt; I\n)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-reflection-14">
-          <h3><a class="doc-anchor" href="#doc-reflection-14">#</a> <code>class_uses</code></h3>
+        <article class="doc-entry" id="doc-reflection-16">
+          <h3><a class="doc-anchor" href="#doc-reflection-16">#</a> <code>class_uses</code></h3>
           <pre><code class="lang-php">class_uses(object|string $object_or_class, bool $autoload = true): array|false</code></pre>
           <p>The traits THIS class composes with `use`, keyed by name — PHP does not walk the parent chain for it. An unknown name warns and returns `false`.</p>
           <pre><code class="lang-php">trait T {} class C { use T; } print_r(array_keys(class_uses("C")));   // =&gt; Array\n(\n    [0] =&gt; T\n)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-reflection-15">
-          <h3><a class="doc-anchor" href="#doc-reflection-15">#</a> <code>method_exists</code></h3>
+        <article class="doc-entry" id="doc-reflection-17">
+          <h3><a class="doc-anchor" href="#doc-reflection-17">#</a> <code>method_exists</code></h3>
           <pre><code class="lang-php">method_exists(object|string $object_or_class, string $method): bool</code></pre>
           <p>Resolves the method through the class and its parents, comparing the name case-insensitively as PHP does. The engine classes answer too (`method_exists($gen, "current")`). A subject that is neither an object nor a string is the `TypeError` PHP declares on the parameter.</p>
           <pre><code class="lang-php">class C { function m() {} } var_dump(method_exists("C", "M"));   // =&gt; bool(true)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-reflection-16">
-          <h3><a class="doc-anchor" href="#doc-reflection-16">#</a> <code>property_exists</code></h3>
+        <article class="doc-entry" id="doc-reflection-18">
+          <h3><a class="doc-anchor" href="#doc-reflection-18">#</a> <code>property_exists</code></h3>
           <pre><code class="lang-php">property_exists(object|string $object_or_class, string $property): bool</code></pre>
           <p>Checks the class's declarations, walking parents — instance and static properties and promoted constructor parameters, but not a private property an ancestor declared — and, for an OBJECT subject, a property present on the instance and reachable from the calling scope. The name is compared case-SENSITIVELY.</p>
           <pre><code class="lang-php">class C { public $a; } var_dump(property_exists("C", "a"));   // =&gt; bool(true)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-reflection-17">
-          <h3><a class="doc-anchor" href="#doc-reflection-17">#</a> <code>is_a</code></h3>
+        <article class="doc-entry" id="doc-reflection-19">
+          <h3><a class="doc-anchor" href="#doc-reflection-19">#</a> <code>is_a</code></h3>
           <pre><code class="lang-php">is_a(mixed $object_or_class, string $class, bool $allow_string = false): bool</code></pre>
           <p>True when the subject is, extends, or implements the named class, walking parents and interfaces transitively. `Throwable` is special-cased to match the `Exception` and `Error` roots even though no such class is declared. A string subject requires `$allow_string`.</p>
           <pre><code class="lang-php">class A {} class B extends A {} var_dump(is_a(new B, "A"));   // =&gt; bool(true)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-reflection-18">
-          <h3><a class="doc-anchor" href="#doc-reflection-18">#</a> <code>is_subclass_of</code></h3>
+        <article class="doc-entry" id="doc-reflection-20">
+          <h3><a class="doc-anchor" href="#doc-reflection-20">#</a> <code>is_subclass_of</code></h3>
           <pre><code class="lang-php">is_subclass_of(mixed $object_or_class, string $class, bool $allow_string = true): bool</code></pre>
           <p>The same ancestry walk as `is_a`, but the subject's own class is excluded first, so only strict ancestors and interfaces count.</p>
           <pre><code class="lang-php">class A {} class B extends A {}
@@ -6178,104 +6193,109 @@ var_dump(is_subclass_of(new B, "A"), is_subclass_of(new A, "A"));   // =&gt; boo
           <p>Internal helper for the prelude; a phplang extension with no PHP counterpart. Raises an `E_WARNING` with the message at the line of the innermost frame running user code, where the reference — whose method is internal — reports it (`CachingIterator::offsetGet()`'s `Undefined array key`).</p>
         </article>
         <article class="doc-entry" id="doc-runtime-and-diagnostics-5">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-5">#</a> <code>__phplang_method_owner</code></h3>
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-5">#</a> <code>__phplang_deprecated</code></h3>
+          <pre><code class="lang-php">__phplang_deprecated(string $message): null</code></pre>
+          <p>Internal helper for the prelude; a phplang extension with no PHP counterpart. Raises an `E_DEPRECATED` with the message at the line of the innermost frame running user code, where the reference — whose method is internal — reports it (`ArrayObject::__construct()`'s object-backing deprecation).</p>
+        </article>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-6">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-6">#</a> <code>__phplang_method_owner</code></h3>
           <pre><code class="lang-php">__phplang_method_owner(object $object, string $method): ?string</code></pre>
           <p>Internal helper for the prelude; a phplang extension with no PHP counterpart. The lowercased name of the class declaring the method `$object` runs for `$method`, or null. `RecursiveIteratorIterator` uses it to tell a subclass's hook (`beginChildren()`, `callHasChildren()`, …) from the inherited no-op, which `spl_recursive_it_it_construct` likewise leaves uncalled.</p>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-6">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-6">#</a> <code>__phplang_try_call</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-7">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-7">#</a> <code>__phplang_try_call</code></h3>
           <pre><code class="lang-php">__phplang_try_call(Closure $fn): array</code></pre>
           <p>Internal helper for the prelude, which cannot hold a `try` block: runs the closure and answers `[true, $result]`, or `[false, $exception]` with the exception it threw taken off the stack. A phplang extension with no PHP counterpart.</p>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-7">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-7">#</a> <code>assert</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-8">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-8">#</a> <code>assert</code></h3>
           <pre><code class="lang-php">assert(mixed $assertion, mixed $description = null): bool</code></pre>
           <p>Evaluates the assertion for truthiness and RETURNS it. DIVERGENCE: this inverts PHP 8's contract — PHP always returns true and throws `AssertionError` on failure, whereas here `assert(false)` simply returns false and throws nothing. `$description` is never read.</p>
           <pre><code class="lang-php">var_dump(assert(1 === 1), assert(false));   // =&gt; bool(true) bool(false)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-8">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-8">#</a> <code>assert_options</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-9">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-9">#</a> <code>assert_options</code></h3>
           <pre><code class="lang-php">assert_options(int $option, mixed $value = null): int</code></pre>
           <p>DIVERGENCE: a stub that always returns 0 and stores nothing. No argument is read.</p>
           <pre><code class="lang-php">echo assert_options(1);   // =&gt; 0</code></pre>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-9">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-9">#</a> <code>trigger_error</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-10">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-10">#</a> <code>trigger_error</code></h3>
           <pre><code class="lang-php">trigger_error(string $message, int $error_level = E_USER_NOTICE): bool</code></pre>
           <p>Prints `"&lt;label&gt;: &lt;message&gt;"` to STDERR and returns true. The label is `Fatal error` for `E_USER_ERROR`, `Warning` for `E_USER_WARNING`, `Deprecated` for `E_USER_DEPRECATED`, and `Notice` for everything else. DIVERGENCE: `E_USER_ERROR` does NOT halt — execution continues with the next statement.</p>
           <pre><code class="lang-php">trigger_error("careful", E_USER_WARNING); echo "still running";   // =&gt; still running</code></pre>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-10">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-10">#</a> <code>user_error</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-11">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-11">#</a> <code>user_error</code></h3>
           <pre><code class="lang-php">user_error(string $message, int $error_level = E_USER_NOTICE): bool</code></pre>
           <p>The alias of `trigger_error`, sharing its match arm and its non-halting `E_USER_ERROR` behaviour.</p>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-11">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-11">#</a> <code>error_log</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-12">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-12">#</a> <code>error_log</code></h3>
           <pre><code class="lang-php">error_log(string $message, int $message_type = 0, string $destination = ""): bool</code></pre>
           <p>With `$message_type` 3 AND a destination it really appends the raw message bytes to that file — no timestamp and no trailing newline are added. Every other combination writes the message to stderr and returns true. The email and SAPI-logger message types are not implemented.</p>
           <pre><code class="lang-php">error_log("note", 3, "/tmp/php_ref_log.txt"); echo file_get_contents("/tmp/php_ref_log.txt");   // =&gt; note</code></pre>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-12">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-12">#</a> <code>debug_backtrace</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-13">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-13">#</a> <code>debug_backtrace</code></h3>
           <pre><code class="lang-php">debug_backtrace(int $options = DEBUG_BACKTRACE_PROVIDE_OBJECT, int $limit = 0): array</code></pre>
           <p>The call stack as a list of frames, innermost first, each an array with `file` and `line` of the call (absent when internal code made it), `function`, and for a method `class`, `object` (unless `$options` lacks `DEBUG_BACKTRACE_PROVIDE_OBJECT`) and `type` (`-&gt;` or `::`), then `args` (unless `DEBUG_BACKTRACE_IGNORE_ARGS`). An `include`/`require`/`eval` frame is one more entry, with `args` before `function`. `$limit` caps the list. The global scope is not a frame, so top-level code gets an empty array.</p>
           <pre><code class="lang-php">function f() { return count(debug_backtrace()); } echo f();   // =&gt; 1</code></pre>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-13">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-13">#</a> <code>debug_print_backtrace</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-14">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-14">#</a> <code>debug_print_backtrace</code></h3>
           <pre><code class="lang-php">debug_print_backtrace(int $options = 0, int $limit = 0): null</code></pre>
           <p>Prints the frames of `debug_backtrace()` the way `getTraceAsString()` does — `#0 file(line): f(args)` — without the closing `{main}` line. `DEBUG_BACKTRACE_IGNORE_ARGS` drops the argument lists and `$limit` caps the frame count.</p>
           <pre><code class="lang-php">function f() { debug_print_backtrace(); } f();   // =&gt; #0 Command line code(1): f()</code></pre>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-14">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-14">#</a> <code>set_error_handler</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-15">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-15">#</a> <code>set_error_handler</code></h3>
           <pre><code class="lang-php">set_error_handler(?callable $callback, int $error_levels = E_ALL): null</code></pre>
           <p>Pushes the handler (null pushes "none") with the levels it takes and returns the handler it replaces. A warning, notice or deprecation of a level it takes is handed to it as `($errno, $errstr, $errfile, $errline)` instead of being displayed — even under `@`, where `error_reporting()` reads 4437 inside it; returning `false` displays it after all. A diagnostic the handler raises itself takes the default path. `trigger_error(…, E_USER_ERROR)` reaches it too, and is fatal only when it returns `false`. DIVERGENCE: the handler runs at the next builtin boundary after the diagnostic, so one raised in the middle of a library call that goes on to print runs after that output.</p>
           <pre><code class="lang-php">set_error_handler(function ($n, $s) { echo "caught: $s\n"; return true; });
 echo $undefined;   // =&gt; caught: Undefined variable $undefined</code></pre>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-15">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-15">#</a> <code>set_exception_handler</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-16">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-16">#</a> <code>set_exception_handler</code></h3>
           <pre><code class="lang-php">set_exception_handler(?callable $callback): null</code></pre>
           <p>Pushes the handler (null pushes "none") and returns the one it replaces. An exception that reaches the top of a FILE or STDIN script is handed to it instead of the fatal, and the run then ends normally (status 0); one the handler throws is the uncaught one. Under `php -r` it is never called, as in the reference, whose `zend_eval_string` reports the exception itself.</p>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-16">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-16">#</a> <code>restore_error_handler</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-17">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-17">#</a> <code>restore_error_handler</code></h3>
           <pre><code class="lang-php">restore_error_handler(): bool</code></pre>
           <p>Pops the handler stack back to the previous `set_error_handler`; always returns true.</p>
           <pre><code class="lang-php">var_dump(restore_error_handler());   // =&gt; bool(true)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-17">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-17">#</a> <code>restore_exception_handler</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-18">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-18">#</a> <code>restore_exception_handler</code></h3>
           <pre><code class="lang-php">restore_exception_handler(): bool</code></pre>
           <p>Pops the handler stack back to the previous `set_exception_handler`; always returns true.</p>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-18">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-18">#</a> <code>register_shutdown_function</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-19">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-19">#</a> <code>register_shutdown_function</code></h3>
           <pre><code class="lang-php">register_shutdown_function(callable $callback, mixed ...$args): null</code></pre>
           <p>Queues the callback with its arguments. At request end the queue runs in order (one registered during the run is run too), after an `exit` and after any displayed fatal error, before the destructors; an exception one lets escape is reported uncaught and ends the sweep.</p>
           <pre><code class="lang-php">register_shutdown_function(fn($w) =&gt; print("bye $w\n"), "now");   // prints at exit: bye now</code></pre>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-19">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-19">#</a> <code>spl_autoload_register</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-20">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-20">#</a> <code>spl_autoload_register</code></h3>
           <pre><code class="lang-php">spl_autoload_register(?callable $callback = null, bool $throw = true, bool $prepend = false): bool</code></pre>
           <p>DIVERGENCE: a no-op returning true. There is no autoload chain and no `include`, so every class must be declared in the source that uses it.</p>
           <pre><code class="lang-php">var_dump(spl_autoload_register(fn($c) =&gt; null));   // =&gt; bool(true)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-20">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-20">#</a> <code>spl_autoload_unregister</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-21">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-21">#</a> <code>spl_autoload_unregister</code></h3>
           <pre><code class="lang-php">spl_autoload_unregister(callable $callback): bool</code></pre>
           <p>DIVERGENCE: a no-op returning true.</p>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-21">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-21">#</a> <code>get_defined_vars</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-22">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-22">#</a> <code>get_defined_vars</code></h3>
           <pre><code class="lang-php">get_defined_vars(): array</code></pre>
           <p>The current frame's bound variables, in the order they were first bound. An unset name is absent; a name bound to `null` is present. `$this` and `$GLOBALS` are not included. At global scope the populated superglobals come first in the reference's fixed order (`argv`, `argc`, `_GET`, `_POST`, `_COOKIE`, `_FILES`, `_SERVER`), then the script's own variables.</p>
           <pre><code class="lang-php">function f($p) { $a = 1; unset($a); return get_defined_vars(); } print_r(f(7));   // =&gt; [p =&gt; 7]</code></pre>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-22">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-22">#</a> <code>class_alias</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-23">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-23">#</a> <code>class_alias</code></h3>
           <pre><code class="lang-php">class_alias(string $class, string $alias, bool $autoload = true): bool</code></pre>
           <p>DIVERGENCE: it reports whether `$class` exists and REGISTERS NOTHING — `$alias` is never read. A true return is therefore misleading: instantiating the alias afterwards still fails.</p>
           <pre><code class="lang-php">class C {} var_dump(class_alias("C", "D"), class_exists("D"));   // =&gt; bool(true) bool(false)</code></pre>

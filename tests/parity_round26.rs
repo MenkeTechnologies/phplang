@@ -1,0 +1,231 @@
+//! Regressions found by differential probing against `php 8.5.11`
+//! (`/opt/homebrew/bin/php`, `LC_ALL=C TZ=UTC`, default php.ini, `php -r`).
+//! Expected strings are the reference's recorded output; no PHP is needed to
+//! run them.
+
+use phplang::eval_capture;
+
+fn run(src: &str) -> String {
+    eval_capture(src).unwrap_or_else(|e| panic!("eval error for {src:?}: {e}"))
+}
+
+/// `$o->p[] = v` where `p` resolves to a by-value `__get`: the reference calls
+/// `__get`, raises `Indirect modification of overloaded property`, and writes
+/// into a temporary. It used to create a dynamic property with a deprecation.
+#[test]
+fn magic_get_indirect_modification() {
+    let src = r#"<?php class M { public $d = ['arr' => [1]]; function __get($n) { echo "[get $n]"; return $this->d[$n] ?? null; } }
+        $m = new M; $m->arr[] = 2; $m->nope['k'] = 1; echo json_encode($m->d), "\n";
+        "#;
+    assert_eq!(run(src), "[get arr]\nNotice: Indirect modification of overloaded property M::$arr has no effect in Command line code on line 2\n[get nope]\nNotice: Indirect modification of overloaded property M::$nope has no effect in Command line code on line 2\n{\"arr\":[1]}\n");
+}
+
+/// A `function &__get()` hands out a reference, so `$o->p[] = v` writes into the
+/// storage it names (vivifying a missing one), with no notice.
+#[test]
+fn magic_ref_get_writes_through() {
+    let src = r#"<?php class R { public $d = ['arr' => [1]]; function &__get($n) { echo "[get $n]"; return $this->d[$n]; } }
+        $r = new R; $r->arr[] = 2; $r->arr['k'] = 3; $r->fresh[] = 4; echo json_encode($r->d), "\n";
+        "#;
+    assert_eq!(
+        run(src),
+        "[get arr][get arr][get fresh]{\"arr\":{\"0\":1,\"1\":2,\"k\":3},\"fresh\":[4]}\n"
+    );
+}
+
+/// `spl_handlers_dual_it` and `spl_handlers_rec_it_it` set `clone_obj = NULL`, as
+/// does `WeakReference`: cloning one (or a subclass) is an `Error`.
+#[test]
+fn spl_dual_iterators_uncloneable() {
+    let src = r#"<?php class LI extends LimitIterator {}
+        foreach ([new IteratorIterator(new ArrayIterator([1])), new RecursiveIteratorIterator(new RecursiveArrayIterator([1])), new CallbackFilterIterator(new ArrayIterator([]), fn() => true), new LI(new ArrayIterator([1])), WeakReference::create(new stdClass), new ArrayIterator([]), new SplObjectStorage] as $o) {
+            try { $c = clone $o; echo get_class($c), " cloned\n"; } catch (Error $e) { echo $e->getMessage(), "\n"; }
+        }
+        "#;
+    assert_eq!(run(src), "Trying to clone an uncloneable object of class IteratorIterator\nTrying to clone an uncloneable object of class RecursiveIteratorIterator\nTrying to clone an uncloneable object of class CallbackFilterIterator\nTrying to clone an uncloneable object of class LI\nTrying to clone an uncloneable object of class WeakReference\nArrayIterator cloned\nSplObjectStorage cloned\n");
+}
+
+/// `clone` keeps an `ArrayIterator`'s flags (its position starts over) and an
+/// `ArrayObject`'s flags and iterator class.
+#[test]
+fn array_iterator_clone_keeps_flags() {
+    let src = r#"<?php $i = new ArrayIterator([1, 2, 3], ArrayIterator::ARRAY_AS_PROPS); $i->next(); $j = clone $i;
+        var_dump($j->getFlags(), $j->key());
+        $a = new ArrayObject([1], ArrayObject::STD_PROP_LIST, 'RecursiveArrayIterator'); $b = clone $a;
+        var_dump($b->getFlags(), $b->getIteratorClass());
+        "#;
+    assert_eq!(
+        run(src),
+        "int(2)\nint(0)\nint(1)\nstring(22) \"RecursiveArrayIterator\"\n"
+    );
+}
+
+/// `ArrayObject` keeps its flags and iterator class, validates the class as the
+/// `C` parameter type does, hands the iterator its flags, and serializes both.
+#[test]
+fn array_object_flags_and_iterator_class() {
+    let src = r#"<?php class MyIt extends ArrayIterator {}
+        $a = new ArrayObject([1, 2], 0, 'myit');
+        var_dump($a->getFlags(), $a->getIteratorClass(), get_class($a->getIterator()));
+        $a->setFlags(ArrayObject::STD_PROP_LIST | ArrayObject::ARRAY_AS_PROPS); $a->setIteratorClass('ArrayIterator');
+        var_dump($a->getFlags(), $a->getIterator()->getFlags(), serialize($a));
+        $u = unserialize(serialize(new ArrayObject([1], 1, 'MyIt'))); var_dump($u->getFlags(), $u->getIteratorClass());
+        foreach (['nope', 'stdClass'] as $c) {
+            try { new ArrayObject([], 0, $c); } catch (TypeError $e) { echo $e->getMessage(), "\n"; }
+            try { $a->setIteratorClass($c); } catch (TypeError $e) { echo $e->getMessage(), "\n"; }
+        }
+        "#;
+    assert_eq!(run(src), "int(0)\nstring(4) \"MyIt\"\nstring(4) \"MyIt\"\nint(3)\nint(3)\nstring(73) \"O:11:\"ArrayObject\":4:{i:0;i:3;i:1;a:2:{i:0;i:1;i:1;i:2;}i:2;a:0:{}i:3;N;}\"\nint(1)\nstring(4) \"MyIt\"\nArrayObject::__construct(): Argument #3 ($iteratorClass) must be a class name derived from ArrayIterator, nope given\nArrayObject::setIteratorClass(): Argument #1 ($iteratorClass) must be a class name derived from ArrayIterator, nope given\nArrayObject::__construct(): Argument #3 ($iteratorClass) must be a class name derived from ArrayIterator, stdClass given\nArrayObject::setIteratorClass(): Argument #1 ($iteratorClass) must be a class name derived from ArrayIterator, stdClass given\n");
+}
+
+/// ARRAY_AS_PROPS: a property the object does not have is an element, for reads,
+/// writes, `isset`, `unset`, `++` and `[]=`. Without the flag the property path
+/// is the ordinary one, and reflection does not see the forwarding methods.
+#[test]
+fn array_object_array_as_props() {
+    let src = r#"<?php $a = new ArrayObject(['x' => 1], ArrayObject::ARRAY_AS_PROPS);
+        var_dump($a->x, isset($a->x), isset($a->y));
+        $a->y = 2; $a->list = [1]; $a->list[] = 2; $a->n = 1; $a->n++; unset($a->x);
+        var_dump($a->getArrayCopy(), method_exists($a, '__get'));
+        class Sub extends ArrayObject { public $real = 'r'; }
+        $s = new Sub([], ArrayObject::ARRAY_AS_PROPS); $s->real = 'w'; $s->other = 'o';
+        var_dump($s->real, $s['other'], count($s));
+        $p = new ArrayObject(['k' => 1]); var_dump(isset($p->k)); $p->dyn = 1; var_dump(count($p));
+        "#;
+    assert_eq!(run(src), "int(1)\nbool(true)\nbool(false)\narray(3) {\n  [\"y\"]=>\n  int(2)\n  [\"list\"]=>\n  array(2) {\n    [0]=>\n    int(1)\n    [1]=>\n    int(2)\n  }\n  [\"n\"]=>\n  int(2)\n}\nbool(false)\nstring(1) \"w\"\nstring(1) \"o\"\nint(1)\nbool(false)\n\nDeprecated: Creation of dynamic property ArrayObject::$dyn is deprecated in Command line code on line 8\nint(1)\n");
+}
+
+/// `print_r` lists the ordinary properties before the storage
+/// (`spl_array_get_debug_info`); under STD_PROP_LIST `(array)`, `json_encode` and
+/// `var_export` see the properties, not the storage.
+#[test]
+fn array_object_std_prop_list_and_debug_order() {
+    let src = r#"<?php $a = new ArrayObject(['x' => 1]); $a->p = 5;
+        print_r($a); echo "\n";
+        $s = new ArrayObject([1], ArrayObject::STD_PROP_LIST); $s->q = 2;
+        var_dump((array) $s, json_encode($s)); var_export($s); echo "\n";
+        "#;
+    assert_eq!(run(src), "\nDeprecated: Creation of dynamic property ArrayObject::$p is deprecated in Command line code on line 1\nArrayObject Object\n(\n    [p] => 5\n    [storage:ArrayObject:private] => Array\n        (\n            [x] => 1\n        )\n\n)\n\n\nDeprecated: Creation of dynamic property ArrayObject::$q is deprecated in Command line code on line 3\narray(1) {\n  [\"q\"]=>\n  int(2)\n}\nstring(7) \"{\"q\":2}\"\n\\ArrayObject::__set_state(array(\n   'q' => 2,\n))\n");
+}
+
+/// PHP 8.5 deprecates an object as the backing array of `ArrayObject`
+/// (`__construct`, `exchangeArray`) and `ArrayIterator`.
+#[test]
+fn array_object_object_backing_deprecated() {
+    let src = r#"<?php $o = new stdClass; $o->a = 1;
+        $x = new ArrayObject($o); echo count($x), "\n";
+        $x->exchangeArray(new ArrayObject([5, 6])); echo count($x), "\n";
+        $i = new ArrayIterator($o); echo count($i), "\n";
+        "#;
+    assert_eq!(run(src), "\nDeprecated: ArrayObject::__construct(): Using an object as a backing array for ArrayObject is deprecated, as it allows violating class constraints and invariants in Command line code on line 2\n1\n\nDeprecated: ArrayObject::exchangeArray(): Using an object as a backing array for ArrayObject is deprecated, as it allows violating class constraints and invariants in Command line code on line 3\n2\n\nDeprecated: ArrayIterator::__construct(): Using an object as a backing array for ArrayIterator is deprecated, as it allows violating class constraints and invariants in Command line code on line 4\n1\n");
+}
+
+/// `get_declared_classes` lists classes and enums in declared spelling and
+/// declaration order; interfaces and traits have their own functions. It used to
+/// return every table key lowercased in hash order.
+#[test]
+fn get_declared_classes_order_and_spelling() {
+    let src = r#"<?php class MyClass {} interface MyIface {} trait MyTrait {} enum MyEnum { case A; }
+        $c = get_declared_classes();
+        var_dump(array_slice($c, -2), in_array('ArrayObject', $c), in_array('arrayobject', $c), in_array('MyIface', $c), in_array('MyTrait', $c));
+        var_dump(end(get_declared_interfaces()), in_array('Traversable', get_declared_interfaces()), get_declared_traits());
+        "#;
+    assert_eq!(run(src), "array(2) {\n  [0]=>\n  string(7) \"MyClass\"\n  [1]=>\n  string(6) \"MyEnum\"\n}\nbool(true)\nbool(false)\nbool(false)\nbool(false)\n\nNotice: Only variables should be passed by reference in Command line code on line 4\nstring(7) \"MyIface\"\nbool(true)\narray(1) {\n  [0]=>\n  string(7) \"MyTrait\"\n}\n");
+}
+
+/// A promoted constructor parameter declares its property at the constructor's
+/// place among the declarations; typed and unassigned, it dumps as
+/// `uninitialized(type)`.
+#[test]
+fn promoted_property_slot_order() {
+    let src = r#"<?php class K { public $a = 1; function __construct(public $b = 2) {} public $c = 3; }
+        $k = new K; unset($k->a); $k->a = 9; var_dump($k);
+        class P { function __construct(public int $x, protected ?string $y = null) {} }
+        class Q extends P { public $q = 'q'; function __construct() {} }
+        var_dump(new Q);
+        "#;
+    assert_eq!(run(src), "object(K)#1 (3) {\n  [\"a\"]=>\n  int(9)\n  [\"b\"]=>\n  int(2)\n  [\"c\"]=>\n  int(3)\n}\nobject(Q)#2 (1) {\n  [\"x\"]=>\n  uninitialized(int)\n  [\"y\":protected]=>\n  uninitialized(?string)\n  [\"q\"]=>\n  string(1) \"q\"\n}\n");
+}
+
+/// `ZEND_ACC_NOT_SERIALIZABLE`: `serialize` throws for a closure, a generator, an
+/// anonymous class or a `WeakMap` anywhere in the value, and `unserialize` throws
+/// for such a class name instead of building one.
+#[test]
+fn serialize_refuses_closures_generators_anonymous() {
+    let src = r#"<?php function g() { yield 1; }
+        foreach ([fn() => serialize(function () {}), fn() => serialize([1, g()]), fn() => serialize(new class {}), fn() => serialize((object) ['f' => fn() => 1]), fn() => serialize(new WeakMap), fn() => unserialize('O:7:"Closure":0:{}'), fn() => unserialize('a:1:{i:0;O:9:"Generator":0:{}}'), fn() => unserialize('O:7:"WeakMap":0:{}')] as $f) {
+            try { var_dump($f()); } catch (Exception $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+        }
+        "#;
+    assert_eq!(run(src), "Exception: Serialization of 'Closure' is not allowed\nException: Serialization of 'Generator' is not allowed\nException: Serialization of 'class@anonymous' is not allowed\nException: Serialization of 'Closure' is not allowed\nException: Serialization of 'WeakMap' is not allowed\nException: Unserialization of 'Closure' is not allowed\nException: Unserialization of 'Generator' is not allowed\nException: Unserialization of 'WeakMap' is not allowed\n");
+}
+
+/// `WeakReference`: one per referent, no properties of its own, `get()` answers
+/// the referent; direct instantiation, dynamic properties and a non-object are
+/// refused.
+#[test]
+fn weak_reference() {
+    let src = r#"<?php $o = new stdClass; $w = WeakReference::create($o);
+        var_dump($w, $w->get() === $o, WeakReference::create($o) === $w, (array) $w, json_encode($w));
+        foreach ([fn() => new WeakReference, fn() => $w->x = 1, fn() => WeakReference::create(1)] as $f) {
+            try { $f(); } catch (Error $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+        }
+        "#;
+    assert_eq!(run(src), "object(WeakReference)#2 (1) {\n  [\"object\"]=>\n  object(stdClass)#1 (0) {\n  }\n}\nbool(true)\nbool(true)\narray(0) {\n}\nstring(2) \"{}\"\nError: Direct instantiation of WeakReference is not allowed, use WeakReference::create instead\nError: Cannot create dynamic property WeakReference::$x\nTypeError: WeakReference::create(): Argument #1 ($object) must be of type object, int given\n");
+}
+
+/// `WeakMap`: object keys, `isset` as present-and-not-null, the debug view's
+/// `key`/`value` rows, cloning, and the reference's refusals.
+#[test]
+fn weak_map() {
+    let src = r#"<?php $wm = new WeakMap; $a = new stdClass; $b = new ArrayObject; $wm[$a] = 1; $wm[$b] = [2]; $wm[$a] = 'one';
+        var_dump(count($wm), $wm[$a], isset($wm[$a]), isset($wm[new stdClass]), $wm);
+        foreach ($wm as $k => $v) { echo get_class($k), " => ", json_encode($v), "\n"; }
+        $wm[$a] = null; var_dump(isset($wm[$a]), $wm->offsetExists($a));
+        unset($wm[$b]); unset($wm[new stdClass]); var_dump(count($wm));
+        $c = clone $wm; $c[$b] = 3; var_dump(count($wm), count($c), (array) $wm, json_encode($wm));
+        foreach ([fn() => $wm[1] = 2, fn() => $wm[] = 1, fn() => isset($wm["x"]), fn() => $wm->x = 1] as $f) {
+            try { $f(); } catch (Error $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+        }
+        "#;
+    assert_eq!(run(src), "int(2)\nstring(3) \"one\"\nbool(true)\nbool(false)\nobject(WeakMap)#1 (2) {\n  [0]=>\n  array(2) {\n    [\"key\"]=>\n    object(stdClass)#2 (0) {\n    }\n    [\"value\"]=>\n    string(3) \"one\"\n  }\n  [1]=>\n  array(2) {\n    [\"key\"]=>\n    object(ArrayObject)#3 (1) {\n      [\"storage\":\"ArrayObject\":private]=>\n      array(0) {\n      }\n    }\n    [\"value\"]=>\n    array(1) {\n      [0]=>\n      int(2)\n    }\n  }\n}\nstdClass => \"one\"\nArrayObject => [2]\nbool(false)\nbool(false)\nint(1)\nint(1)\nint(2)\narray(0) {\n}\nstring(2) \"{}\"\nTypeError: WeakMap key must be an object\nError: Cannot append to WeakMap\nTypeError: WeakMap key must be an object\nError: Cannot create dynamic property WeakMap::$x\n");
+}
+
+/// `php_json_encode_zval` asks `JsonSerializable` before the enum rule, so an enum
+/// implementing it encodes as its `jsonSerialize()` answer.
+#[test]
+fn json_serializable_enum() {
+    let src = r#"<?php enum E: int implements JsonSerializable { case A = 1; case B = 2; public function jsonSerialize(): mixed { return strtolower($this->name); } }
+        enum F: int { case X = 7; }
+        echo json_encode([E::A, E::B, F::X]), "\n";
+        "#;
+    assert_eq!(run(src), "[\"a\",\"b\",7]\n");
+}
+
+/// A loose `in_array` / `array_search` / `array_keys` compares an object with
+/// `__toString` against a string through the string, as `==` does; SORT_STRING
+/// `array_unique` compares what `__toString` returns.
+#[test]
+fn loose_search_casts_stringable() {
+    let src = r#"<?php class S { function __construct(private $s) {} function __toString(): string { return $this->s; } }
+        $s = new S("s"); $t = new S("10");
+        var_dump(in_array("s", [$s]), in_array($s, ["x", "s"]), array_search($s, ["x", "s"]), array_keys([$s, "s", 1, $t], "s"), in_array("1e1", [$t]), in_array($s, ["s"], true));
+        var_dump(array_unique(["s", $s, $t, "10"]));
+        "#;
+    assert_eq!(run(src), "bool(true)\nbool(true)\nint(1)\narray(2) {\n  [0]=>\n  int(0)\n  [1]=>\n  int(1)\n}\nbool(true)\nbool(false)\narray(2) {\n  [0]=>\n  string(1) \"s\"\n  [2]=>\n  object(S)#2 (1) {\n    [\"s\":\"S\":private]=>\n    string(2) \"10\"\n  }\n}\n");
+}
+
+/// `iterator_apply` rewinds and advances the iterator itself and never calls
+/// `current()` or `key()`, so a callback that reads the iterator sees each
+/// position in turn; a falsy answer stops the walk.
+#[test]
+fn iterator_apply_drives_iterator() {
+    let src = r#"<?php class It implements Iterator { private $i = 0; function rewind(): void { echo "rw "; $this->i = 0; } function valid(): bool { echo "v "; return $this->i < 2; } function current(): mixed { echo "c "; return $this->i; } function key(): mixed { echo "k "; return $this->i; } function next(): void { echo "n "; $this->i++; } }
+        $it = new It; var_dump(iterator_apply($it, function ($x) { echo "[cb $x] "; return true; }, ['a']));
+        $ai = new ArrayIterator([5, 6, 7]); var_dump(iterator_apply($ai, function () use ($ai) { echo $ai->key(), "=", $ai->current(), " "; return $ai->current() < 6; }));
+        "#;
+    assert_eq!(
+        run(src),
+        "rw v [cb a] n v [cb a] n v int(2)\n0=5 1=6 int(2)\n"
+    );
+}

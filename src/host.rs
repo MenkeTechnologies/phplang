@@ -1099,6 +1099,10 @@ pub struct PhpHost {
     class_sites: FxHashMap<String, DeclAt>,
     /// User-declared classes, keyed by lowercase class name.
     classes: FxHashMap<String, ClassDef>,
+    /// The class table's keys in the order they entered it — the order
+    /// `get_declared_classes` and its siblings list them in, as the
+    /// reference's `EG(class_table)` keeps insertion order.
+    class_order: Vec<String>,
     /// When `Some`, `echo` appends here instead of writing to stdout (used by
     /// `eval_capture` and the test harness).
     capture: Option<String>,
@@ -1584,6 +1588,7 @@ impl PhpHost {
             fn_sites: FxHashMap::default(),
             class_sites: FxHashMap::default(),
             classes: FxHashMap::default(),
+            class_order: Vec::new(),
             capture: None,
             error: None,
             signal: None,
@@ -1808,10 +1813,43 @@ impl PhpHost {
             .collect()
     }
 
-    /// The names of all declared classes (lowercased, as stored) — for
-    /// `get_declared_classes`.
-    pub fn all_class_names(&self) -> Vec<String> {
-        self.classes.keys().cloned().collect()
+    /// `get_declared_classes` / `_interfaces` / `_traits`
+    /// (`get_declared_class_impl`): every declared name of one kind, in declared
+    /// spelling and declaration order. The engine types with no `ClassDef` come
+    /// first, standing for the reference's internal classes; the prelude's own
+    /// helpers (a `__` prefix) are not PHP's and are left out. An enum is listed
+    /// as a class.
+    pub fn declared_names(&self, kind: TypeKind) -> Vec<String> {
+        let want = |k: TypeKind| match kind {
+            TypeKind::Class => matches!(k, TypeKind::Class | TypeKind::Enum),
+            other => k == other,
+        };
+        let mut out: Vec<String> = BUILTIN_TYPES
+            .iter()
+            .filter(|(_, k, ..)| want(*k))
+            .map(|(n, ..)| n.to_string())
+            .collect();
+        for key in &self.class_order {
+            let Some(def) = self.classes.get(key) else {
+                continue;
+            };
+            if def.name.starts_with("__") && def.name != "__PHP_Incomplete_Class" {
+                continue;
+            }
+            if self.type_kind(key).is_some_and(want) {
+                out.push(def.name.clone());
+            }
+        }
+        out
+    }
+
+    /// Insert into the class table, recording a new key's place in
+    /// [`PhpHost::declared_names`]' order.
+    fn class_insert(&mut self, key: String, def: ClassDef) {
+        if !self.classes.contains_key(&key) {
+            self.class_order.push(key.clone());
+        }
+        self.classes.insert(key, def);
     }
 
     // ── constants ───────────────────────────────────────────────────────────
@@ -1873,7 +1911,7 @@ impl PhpHost {
     /// Install a compiled program's classes onto the host.
     pub fn load_classes(&mut self, classes: Vec<(String, ClassDef)>) {
         for (name, def) in classes {
-            self.classes.insert(name, def);
+            self.class_insert(name, def);
         }
     }
 
@@ -2020,7 +2058,8 @@ impl PhpHost {
         }
         let lname = name.to_ascii_lowercase();
         if let Some(def) = self.classes.remove(key) {
-            self.classes.insert(lname.clone(), def);
+            self.class_order.retain(|k| k != key);
+            self.class_insert(lname.clone(), def);
         }
         let file = self.current_file().to_string();
         self.class_sites.insert(
@@ -3723,6 +3762,28 @@ impl PhpHost {
         self.ret_ref_slot = Some(slot);
     }
 
+    /// Take the reference cell the last call published with `return` in a
+    /// `function &f()`, or `None` when it returned by value. Unlike
+    /// [`PhpHost::take_ret_ref_slot`] nothing is allocated for a by-value call.
+    pub fn take_published_ret_ref(&mut self) -> Option<usize> {
+        self.ret_ref_slot.take()
+    }
+
+    /// The array the reference cell at `slot` holds, vivifying one into the
+    /// cell first when it holds `null` — the write half of
+    /// `$o->p[] = v` through a `function &__get()`.
+    pub fn ref_cell_ensure_array(&mut self, slot: usize) -> Value {
+        let cur = self.ref_cell_value(slot);
+        if !matches!(cur, Value::Undef) {
+            return cur;
+        }
+        let arr = self.new_array();
+        if let Some(cell) = self.ref_cells.get_mut(slot) {
+            *cell = arr.clone();
+        }
+        arr
+    }
+
     /// Take the reference cell the last call returned. A call that did not return
     /// by reference has none, so `fallback` is parked in a fresh detached cell —
     /// `$r = &f()` on a by-value function then aliases only its own copy.
@@ -4555,7 +4616,8 @@ impl PhpHost {
                 }
                 seen.push(lname.clone());
                 if crate::prelude_type(&c).is_some()
-                    && is_prelude_helper_name(&format!("{c}::{name}"))
+                    && (is_prelude_helper_name(&format!("{c}::{name}"))
+                        || self.spl_array_forwarder(&c, &lname))
                 {
                     continue;
                 }
@@ -4889,6 +4951,18 @@ impl PhpHost {
             Value::Bool(true) => "true",
             Value::Bool(false) => "false",
             Value::Obj(_) => match self.as_array(recv) {
+                // `WeakMap` and `WeakReference` are `ZEND_ACC_NO_DYNAMIC_PROPERTIES`.
+                Some(PhpObj::Object { class, .. })
+                    if matches!(
+                        class.to_ascii_lowercase().as_str(),
+                        "weakmap" | "weakreference"
+                    ) && self.resolve_prop_vis(class, name).is_none() =>
+                {
+                    return Some(format!(
+                        "Cannot create dynamic property {}::${name}",
+                        self.class_display_name(&class.to_ascii_lowercase())
+                    ));
+                }
                 Some(PhpObj::Object { .. } | PhpObj::Ref { .. }) | None => return None,
                 Some(PhpObj::Closure { .. }) => {
                     return Some(format!("Cannot create dynamic property Closure::${name}"));
@@ -4984,6 +5058,35 @@ impl PhpHost {
         let arr = self.new_array();
         self.prop_set(recv, name, arr.clone());
         arr
+    }
+
+    /// `$o->name[...] = v` on an ARRAY_AS_PROPS `ArrayObject`/`ArrayIterator`
+    /// whose `offsetGet` is the prelude's: `spl_array_get_property_ptr_ptr`
+    /// hands out the storage element itself (`spl_array_get_dimension_ptr`),
+    /// vivifying a missing or `null` one to an array, so the write lands in the
+    /// storage. A scalar element is handed back for the write to refuse. `None`
+    /// when the reference would go through `offsetGet` instead.
+    pub fn spl_array_dim_for_write(&mut self, recv: &Value, name: &str) -> Option<Value> {
+        let class = self.instance_class(recv)?;
+        let native_get = matches!(
+            self.method_owner_key(&class, "offsetget").as_deref(),
+            Some("arrayobject" | "arrayiterator")
+        );
+        if !self.spl_array_forwarder(&class, "__get") || !native_get {
+            return None;
+        }
+        let storage = self.prop_get(recv, "storage");
+        if !self.is_array(&storage) {
+            return None;
+        }
+        let key = Value::str(name);
+        let cur = self.index_get(&storage, &key);
+        if !matches!(cur, Value::Undef) {
+            return Some(cur);
+        }
+        let arr = self.new_array();
+        self.arr_set_key(&storage, &key, arr.clone());
+        Some(arr)
     }
 
     /// Whether `class` or an ancestor declares `method` (already lowercased),
@@ -5365,7 +5468,10 @@ impl PhpHost {
             .magic_in_progress
             .iter()
             .any(|(h, p, m)| *h == handle && p == name && *m == magic);
-        if !guarded && self.class_has_method(class, magic) {
+        if !guarded
+            && self.class_has_method(class, magic)
+            && !self.spl_array_props_off(recv, class, magic)
+        {
             return PropAccess::Magic;
         }
         match declared {
@@ -5383,6 +5489,72 @@ impl PhpHost {
             }
             _ => PropAccess::Absent,
         }
+    }
+
+    /// The flags an `ArrayObject` or `ArrayIterator` (or a subclass) carries,
+    /// read from the prelude's static table keyed by `spl_object_id`; `None`
+    /// for any other value.
+    pub fn spl_array_flags(&self, v: &Value) -> Option<i64> {
+        let class = self.instance_class(v)?;
+        let (key, in_pair) = if self.class_is_a(&class, "arrayobject") {
+            ("arrayobject::__state", true)
+        } else if self.class_is_a(&class, "arrayiterator") {
+            ("arrayiterator::__flags", false)
+        } else {
+            return None;
+        };
+        let id = Value::Int(self.object_id(v)?);
+        let entry = self
+            .get_static_stored(key)
+            .and_then(|t| self.array_pairs(&t))
+            .and_then(|pairs| pairs.into_iter().find(|(k, _)| *k == id))
+            .map(|(_, e)| self.deref(e));
+        let flags = match entry {
+            Some(e) if in_pair => self
+                .array_pairs(&e)
+                .and_then(|p| p.into_iter().next())
+                .map(|(_, f)| self.deref(f)),
+            other => other,
+        };
+        Some(match flags {
+            Some(Value::Int(n)) => n,
+            _ => 0,
+        })
+    }
+
+    /// Whether the magic `method` the class would run for a property is the
+    /// `ArrayObject`/`ArrayIterator` prelude's ARRAY_AS_PROPS forwarder on an
+    /// object whose flags do not ask for it: the reference's handlers then
+    /// take the ordinary property path.
+    fn spl_array_props_off(&self, recv: &Value, class: &str, method: &str) -> bool {
+        self.spl_array_forwarder(class, method)
+            && self.spl_array_flags(recv).is_some_and(|f| f & 2 == 0)
+    }
+
+    /// Whether `class` runs the `ArrayObject`/`ArrayIterator` prelude's
+    /// ARRAY_AS_PROPS forwarder for the lowercased magic `method`. The
+    /// reference does this in its object handlers, so reflection
+    /// (`method_exists`, `get_class_methods`) does not see these methods.
+    pub fn spl_array_forwarder(&self, class: &str, method: &str) -> bool {
+        matches!(method, "__get" | "__set" | "__isset" | "__unset")
+            && matches!(
+                self.method_owner_key(class, method).as_deref(),
+                Some("arrayobject" | "arrayiterator")
+            )
+    }
+
+    /// The lowercased class that declares the lowercased `method` for
+    /// `class`, walking the parent chain without cloning a definition.
+    fn method_owner_key(&self, class: &str, method: &str) -> Option<String> {
+        let mut cur = Some(class.to_ascii_lowercase());
+        while let Some(c) = cur {
+            let def = self.classes.get(&c)?;
+            if def.methods.contains_key(method) {
+                return Some(c);
+            }
+            cur = def.parent.as_ref().map(|p| p.to_ascii_lowercase());
+        }
+        None
     }
 
     /// Mark a magic property access as in progress; the matching
@@ -10307,9 +10479,17 @@ pub fn in_clone_with<T>(copy: &Value, body: impl FnOnce() -> T) -> T {
 /// which PHP allows precisely here so a clone can carry a fresh identity).
 pub fn clone_object(v: Value) -> Result<Value, String> {
     // A Throwable is not clonable: the copy would share a trace with its source.
+    // Nor are the SPL iterators whose handlers set `clone_obj = NULL`
+    // (`spl_handlers_dual_it`, `spl_handlers_rec_it_it`), subclasses included.
+    const UNCLONEABLE: [&str; 3] = [
+        "iteratoriterator",
+        "recursiveiteratoriterator",
+        "weakreference",
+    ];
     if with_host(|h| {
-        h.object_class(&v)
-            .is_some_and(|c| h.catch_matches(&c, "throwable"))
+        h.object_class(&v).is_some_and(|c| {
+            h.catch_matches(&c, "throwable") || UNCLONEABLE.iter().any(|u| h.class_is_a(&c, u))
+        })
     }) {
         let class = with_host(|h| h.object_class(&v)).unwrap_or_default();
         return Err(crate::builtins::throws_bare(
@@ -10350,6 +10530,16 @@ pub fn clone_object(v: Value) -> Result<Value, String> {
         ));
     };
     if let Some(class) = with_host(|h| h.object_class(&copy)) {
+        // A prelude class whose state lives outside the instance (a static
+        // table keyed by object id) copies it here, before any `__clone`.
+        if with_host(|h| h.method_declared(&class.to_ascii_lowercase(), "__phplang_clone")) {
+            call_method(
+                &class.to_ascii_lowercase(),
+                "__phplang_clone",
+                Some(copy.clone()),
+                vec![v.clone()],
+            )?;
+        }
         if with_host(|h| h.method_declared(&class.to_ascii_lowercase(), "__clone")) {
             in_clone_hook(&copy, || {
                 call_method(
@@ -10969,6 +11159,53 @@ fn traverse(v: &Value, sink: &mut dyn FnMut(Value, Value)) -> Result<Option<Valu
     Ok(None)
 }
 
+/// `spl_iterator_apply`: rewind the subject's iterator, then while it is
+/// valid run `step` and advance, stopping when `step` answers false. Unlike a
+/// `foreach` it never asks for `current()` or `key()` — the callback reads the
+/// iterator itself if it wants them. An `IteratorAggregate` is walked through
+/// the iterator its `getIterator()` hands back.
+pub fn iterator_apply_walk(
+    v: Value,
+    step: &mut dyn FnMut() -> Result<bool, String>,
+) -> Result<(), String> {
+    if with_host(|h| h.is_array(&v)) {
+        for _ in 0..with_host(|h| h.array_len(&v)) {
+            if !step()? {
+                break;
+            }
+        }
+        return Ok(());
+    }
+    if with_host(|h| h.is_generator_val(&v)) {
+        gen_foreach_rewind(&v)?;
+        while with_host(|h| h.pending_throw.is_none()) && gen_valid(&v)? {
+            if !step()? {
+                break;
+            }
+            gen_next(&v)?;
+        }
+        return Ok(());
+    }
+    let Some(class) = with_host(|h| h.object_class(&v)) else {
+        return Ok(());
+    };
+    if with_host(|h| h.class_has_method(&class, "getIterator")) {
+        let inner = call_method(&class, "getIterator", Some(v.clone()), Vec::new())?;
+        return iterator_apply_walk(inner, step);
+    }
+    if with_host(|h| h.class_has_method(&class, "rewind")) {
+        iter_call(&v, "rewind")?;
+    }
+    loop {
+        let valid = iter_call(&v, "valid")?;
+        if !with_host(|h| h.is_truthy(&valid)) || !step()? {
+            break;
+        }
+        iter_call(&v, "next")?;
+    }
+    Ok(())
+}
+
 /// Whether the run already displayed a fatal in PHP's own shape, so the CLI
 /// wrapper reports only the exit status instead of printing a second, terse copy.
 pub fn fatal_reported() -> bool {
@@ -11551,7 +11788,7 @@ pub enum TypeKind {
 /// class table says so.
 ///
 /// Deliberately NOT here: engine classes this runtime does not implement
-/// (`WeakMap`, `Attribute`, `Fiber`). Answering `class_exists` yes for a name
+/// (`Fiber`). Answering `class_exists` yes for a name
 /// that `new` cannot build trades one wrong answer for a worse one.
 type BuiltinType = (
     &'static str,
@@ -12884,6 +13121,16 @@ pub fn warn_from_prelude(message: &str) {
         set_warn_line(line);
     }
     with_host(|h| h.warn(message));
+    set_warn_line(saved);
+}
+
+/// [`warn_from_prelude`] for an `E_DEPRECATED`.
+pub fn deprecated_from_prelude(message: &str) {
+    let saved = warn_line();
+    if let Some(line) = with_host(|h| prelude_call_site_line(h)) {
+        set_warn_line(line);
+    }
+    with_host(|h| h.deprecated(message));
     set_warn_line(saved);
 }
 

@@ -816,6 +816,10 @@ pub struct ClassDecl {
     pub final_consts: Vec<String>,
     /// Property declarations, in source order (instance and static).
     pub props: Vec<PropDecl>,
+    /// How many of `props` precede the constructor: a promoted parameter
+    /// declares its property at the constructor's place in the slot order
+    /// (`zend_compile_params` declares it as the method is compiled).
+    pub ctor_prop_slot: usize,
     pub methods: Vec<Method>,
     /// Names of the `#[…]` attributes written before the declaration, unqualified.
     /// Only `AllowDynamicProperties` changes behaviour today; the rest are carried

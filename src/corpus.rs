@@ -7130,8 +7130,22 @@ pub const CORPUS: &[Entry] = &[
         "get_declared_classes",
         "Reflection",
         "get_declared_classes(): array",
-        "Every name in the class table — which always includes the 25 prelude classes, plus any user interfaces, traits, and enums. DIVERGENCE: names are LOWERCASED and the order is the hash map's, not declaration order.",
-        "var_dump(in_array(\"exception\", get_declared_classes()));   // => bool(true)",
+        "Every declared class and enum, in declared spelling and declaration order: the engine and prelude classes first, then the program's own. Interfaces and traits are listed by `get_declared_interfaces()` and `get_declared_traits()`. The internal classes are this build's, so their number and order differ from the reference's.",
+        "class C {} $c = get_declared_classes(); var_dump(end($c));   // => string(1) \"C\"",
+    ),
+    (
+        "get_declared_interfaces",
+        "Reflection",
+        "get_declared_interfaces(): array",
+        "Every declared interface, in declared spelling and declaration order: the engine and prelude interfaces first, then the program's own.",
+        "interface I {} var_dump(in_array(\"I\", get_declared_interfaces()));   // => bool(true)",
+    ),
+    (
+        "get_declared_traits",
+        "Reflection",
+        "get_declared_traits(): array",
+        "Every declared trait, in declared spelling and declaration order. The prelude declares none the reference would list.",
+        "trait T {} print_r(get_declared_traits());   // => Array\n(\n    [0] => T\n)",
     ),
     (
         "class_parents",
@@ -7213,6 +7227,13 @@ pub const CORPUS: &[Entry] = &[
         "Runtime and diagnostics",
         "__phplang_warn(string $message): null",
         "Internal helper for the prelude; a phplang extension with no PHP counterpart. Raises an `E_WARNING` with the message at the line of the innermost frame running user code, where the reference — whose method is internal — reports it (`CachingIterator::offsetGet()`'s `Undefined array key`).",
+        "",
+    ),
+    (
+        "__phplang_deprecated",
+        "Runtime and diagnostics",
+        "__phplang_deprecated(string $message): null",
+        "Internal helper for the prelude; a phplang extension with no PHP counterpart. Raises an `E_DEPRECATED` with the message at the line of the innermost frame running user code, where the reference — whose method is internal — reports it (`ArrayObject::__construct()`'s object-backing deprecation).",
         "",
     ),
     (

@@ -127,10 +127,6 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             if let Some(e) = iterator_arg_refusal(name, &arg(args, 0), false) {
                 return Some(Err(e));
             }
-            let arr = match crate::host::foreach_prep(arg(args, 0)) {
-                Ok(a) => a,
-                Err(e) => return Some(Err(e)),
-            };
             let cb = arg(args, 1);
             let extra = args.get(2).cloned().unwrap_or(Value::Undef);
             let cb_args = with_host(|h| {
@@ -144,17 +140,16 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
                     Vec::new()
                 }
             });
-            let n = with_host(|h| h.array_len(&arr));
+            // `spl_iterator_func_apply`: each call counts, and a falsy answer
+            // stops the walk.
             let mut count = 0i64;
-            for _ in 0..n {
-                let r = match crate::host::call_value(cb.clone(), cb_args.clone()) {
-                    Ok(r) => r,
-                    Err(e) => return Some(Err(e)),
-                };
+            let walked = crate::host::iterator_apply_walk(arg(args, 0), &mut || {
+                let r = crate::host::call_value(cb.clone(), cb_args.clone())?;
                 count += 1;
-                if !with_host(|h| h.is_truthy(&r)) {
-                    break;
-                }
+                Ok(with_host(|h| h.is_truthy(&r)))
+            });
+            if let Err(e) = walked {
+                return Some(Err(e));
             }
             Value::int(count)
         }

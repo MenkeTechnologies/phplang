@@ -32,6 +32,11 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         // `[false, $exception]` with the exception it threw taken off the
         // stack: the prelude cannot hold a `try` (its try-defs are not loaded).
         "__phplang_try_call" => return Some(crate::host::try_call(arg(args, 0))),
+        // An E_DEPRECATED raised by a prelude method, at the user's call site.
+        "__phplang_deprecated" => {
+            crate::host::deprecated_from_prelude(&str_arg(args, 0));
+            Value::Undef
+        }
         // An E_WARNING raised by a prelude method, at the user's call site.
         "__phplang_warn" => {
             crate::host::warn_from_prelude(&str_arg(args, 0));

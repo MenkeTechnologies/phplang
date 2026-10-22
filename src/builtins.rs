@@ -2999,6 +2999,11 @@ fn b_prop_fetch_w(vm: &mut VM, _: u8) -> Value {
             if bubble_throw(vm) {
                 return Value::Undef;
             }
+            // A `function &__get()` returned a reference: writes through it
+            // reach the storage it names, so nothing is lost.
+            if let Some(slot) = with_host(|h| h.take_published_ret_ref()) {
+                return with_host(|h| h.ref_cell_value(slot));
+            }
             let lost = with_host(|h| h.object_class(&v).is_none());
             if lost {
                 mark_warn_site(vm);
@@ -3046,8 +3051,10 @@ fn b_prop_ensure_array(vm: &mut VM, _: u8) -> Value {
     }
     // A property out of reach still errors before anything is vivified; the
     // other outcomes all end in a write, which is what this op is for.
-    if let PropAccess::Denied(msg) = prop_plan!(vm, recv, name, "__get") {
-        return throw_php(vm, "Error", &msg);
+    match prop_plan!(vm, recv, name, "__get") {
+        PropAccess::Denied(msg) => return throw_php(vm, "Error", &msg),
+        PropAccess::Magic => return prop_ensure_array_magic(vm, &recv, &name),
+        PropAccess::Direct | PropAccess::Absent => {}
     }
     if let Some(msg) = with_host(|h| h.set_visibility_error(&recv, &name, "indirectly modify")) {
         return throw_php(vm, "Error", &msg);
@@ -3064,6 +3071,43 @@ fn b_prop_ensure_array(vm: &mut VM, _: u8) -> Value {
         // one when the class never declared it.
         h.warn_dynamic_prop(&recv, &name);
         h.prop_ensure_array(&recv, &name)
+    })
+}
+
+/// `$o->p[] = v` / `$o->p[k] = v` where `p` resolves to `__get`
+/// (`zend_std_get_property_ptr_ptr` falling back to `read_property` with
+/// `BP_VAR_W`). A `function &__get()` hands back a reference, and the write lands
+/// in the storage it names, vivifying `null` to an array. A by-value `__get`
+/// hands back a temporary: an object answers the dimension write itself
+/// (`ArrayAccess`), anything else raises the reference's `Indirect modification`
+/// notice and the write goes into a copy no one sees.
+/// An ARRAY_AS_PROPS `ArrayObject` writes into its storage instead
+/// ([`host::PhpHost::spl_array_dim_for_write`]).
+fn prop_ensure_array_magic(vm: &mut VM, recv: &Value, name: &str) -> Value {
+    if let Some(dim) = with_host(|h| h.spl_array_dim_for_write(recv, name)) {
+        return dim;
+    }
+    let v = call_magic(recv, name, "__get", vec![Value::str(name)]);
+    if bubble_throw(vm) {
+        return Value::Undef;
+    }
+    if let Some(slot) = with_host(|h| h.take_published_ret_ref()) {
+        return with_host(|h| h.ref_cell_ensure_array(slot));
+    }
+    if with_host(|h| h.object_class(&v).is_some()) {
+        return v;
+    }
+    mark_warn_site(vm);
+    with_host(|h| {
+        let class = h.object_class(recv).unwrap_or_default();
+        h.notice(format!(
+            "Indirect modification of overloaded property {class}::${name} has no effect"
+        ));
+        if h.is_array(&v) {
+            h.copy_on_assign(v)
+        } else {
+            h.new_array()
+        }
     })
 }
 
@@ -3534,6 +3578,50 @@ fn cast_for_compare(a: &Value, b: &Value) -> Option<(Value, Value)> {
         }
         _ => None,
     }
+}
+
+/// Whether a loose `in_array` / `array_search` / `array_keys($a, $v)` call
+/// may compare an object with a `__toString` against a string: the needle
+/// is an object, or a string searched for among elements that include one.
+fn needs_stringable_search(lname: &str, args: &[Value]) -> bool {
+    let (needle, hay, strict) = match lname {
+        "array_keys" if args.len() >= 2 => (arg(args, 1), arg(args, 0), arg(args, 2)),
+        "array_keys" => return false,
+        _ => (arg(args, 0), arg(args, 1), arg(args, 2)),
+    };
+    with_host(|h| {
+        if h.is_truthy(&strict) {
+            return false;
+        }
+        let objects = |v: &Value| is_stringable_object(h, v);
+        match needle {
+            Value::Obj(_) if objects(&needle) => true,
+            Value::Str(_) => h
+                .array_pairs(&hay)
+                .unwrap_or_default()
+                .iter()
+                .any(|(_, v)| objects(v)),
+            _ => false,
+        }
+    })
+}
+
+/// The keys whose element loosely equals `needle`, each object/string pair
+/// cast through `__toString` as [`cast_for_compare`] casts it; only the first
+/// when `first_only`. Called outside the host borrow.
+fn loose_search_hits(needle: &Value, hay: &Value, first_only: bool) -> Vec<Value> {
+    let pairs = with_host(|h| h.array_pairs(hay)).unwrap_or_default();
+    let mut hits = Vec::new();
+    for (k, v) in pairs {
+        let (a, b) = cast_for_compare(needle, &v).unwrap_or_else(|| (needle.clone(), v));
+        if with_host(|h| loose_eq(h, &a, &b)) {
+            hits.push(k);
+            if first_only {
+                break;
+            }
+        }
+    }
+    hits
 }
 
 fn b_loose_eq(vm: &mut VM, _: u8) -> Value {
@@ -4598,6 +4686,27 @@ pub fn call_library(name: &str, args: &[Value]) -> Result<Value, String> {
         }),
         "implode" | "join" => php_implode(&lname, args)?,
         "explode" => with_host(|h| php_explode(h, args))?,
+        // A loose search that may meet an object/string pair casts it through
+        // `__toString` first, which runs user code outside the host borrow.
+        "in_array" | "array_search" | "array_keys" if needs_stringable_search(&lname, args) => {
+            let (needle, hay) = if lname == "array_keys" {
+                (arg(args, 1), arg(args, 0))
+            } else {
+                (arg(args, 0), arg(args, 1))
+            };
+            let hits = loose_search_hits(&needle, &hay, lname != "array_keys");
+            match &*lname {
+                "in_array" => Value::bool(!hits.is_empty()),
+                "array_search" => hits.into_iter().next().unwrap_or(Value::bool(false)),
+                _ => with_host(|h| {
+                    let out = h.new_array();
+                    for k in hits {
+                        h.arr_push_auto(&out, k);
+                    }
+                    out
+                }),
+            }
+        }
         "in_array" => with_host(|h| php_in_array(h, args)),
         // With a filter value, only the keys whose value equals it — loosely,
         // or strictly when `$strict` is true.
@@ -4772,6 +4881,22 @@ pub fn call_library(name: &str, args: &[Value]) -> Result<Value, String> {
         "array_sum" => with_host(|h| php_array_fold(h, &arg(args, 0), false)),
         "array_product" => with_host(|h| php_array_fold(h, &arg(args, 0), true)),
         "array_flip" => with_host(|h| php_array_flip(h, &arg(args, 0))),
+        // SORT_STRING over an object with `__toString` compares what it
+        // returns, which is user code: the strings are taken outside the borrow.
+        "array_unique" if unique_needs_tostring(args) => {
+            let pairs = with_host(|h| h.array_pairs(&arg(args, 0))).unwrap_or_default();
+            let strs: Vec<String> = pairs.iter().map(|(_, v)| host::to_str_ext(v)).collect();
+            with_host(|h| {
+                let out = h.new_array();
+                let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+                for ((k, v), s) in pairs.into_iter().zip(strs) {
+                    if seen.insert(s) {
+                        h.arr_set_key(&out, &k, v);
+                    }
+                }
+                out
+            })
+        }
         "array_unique" => with_host(|h| php_array_unique(h, args)),
         "array_key_exists" | "key_exists" => with_host(|h| php_array_key_exists(h, args)),
         "array_search" => with_host(|h| php_array_search(h, args)),
@@ -5249,8 +5374,12 @@ fn intval_base(s: &str, base: i64) -> i64 {
 }
 
 /// The array wrapped by an `ArrayObject` / `ArrayIterator` (or subclass),
-/// held in the prelude's private `storage` slot.
+/// held in the prelude's private `storage` slot. `None` under STD_PROP_LIST,
+/// where `spl_array_get_properties_for` hands back the ordinary properties.
 fn spl_array_storage(h: &host::PhpHost, v: &Value) -> Option<Value> {
+    if h.spl_array_flags(v).is_some_and(|f| f & 1 != 0) {
+        return None;
+    }
     h.object_props_mangled(v)
         .into_iter()
         .find(|(n, _)| n == "\0ArrayObject\0storage" || n == "\0ArrayIterator\0storage")
@@ -5259,7 +5388,9 @@ fn spl_array_storage(h: &host::PhpHost, v: &Value) -> Option<Value> {
 
 /// Prelude slots of the SPL classes whose state the reference keeps out of the
 /// property table: `(array)` and `var_export` never show them.
-const SPL_HIDDEN_SLOTS: [&str; 4] = [
+const SPL_HIDDEN_SLOTS: [&str; 6] = [
+    "\0ArrayObject\0",
+    "\0ArrayIterator\0",
     "\0SplDoublyLinkedList\0",
     "\0SplObjectStorage\0",
     "\0SplHeap\0",
@@ -6626,11 +6757,23 @@ fn debug_rows(h: &host::PhpHost, v: &Value, class: &str) -> Vec<(PropRow, Value,
         _ => None,
     };
     let Some(info) = info else {
-        return h
+        let mut rows: Vec<(PropRow, Value, bool)> = h
             .object_props_marked(v)
             .into_iter()
             .map(|(name, val, r)| (prop_row(h, class, name), val, r))
             .collect();
+        // `spl_array_get_debug_info`: the ordinary properties, then the
+        // storage, which the reference keeps outside the property table.
+        if h.spl_array_flags(v).is_some() {
+            if let Some(i) = rows.iter().position(|(row, ..)| {
+                matches!(row, PropRow::Private(c, n)
+                    if n == "storage" && (c == "ArrayObject" || c == "ArrayIterator"))
+            }) {
+                let storage = rows.remove(i);
+                rows.push(storage);
+            }
+        }
+        return rows;
     };
     h.array_pairs_marked(info)
         .unwrap_or_default()
@@ -7581,6 +7724,22 @@ fn php_array_flip(h: &mut host::PhpHost, arr: &Value) -> Value {
 /// two came first in the input. Equality here is the comparison's answer, so
 /// `SORT_REGULAR` dedupes `"10"` against `1e1` and an object against an
 /// equal-property instance of its class.
+/// Whether `array_unique` runs under SORT_STRING (its default) over an
+/// element that is an object with `__toString`.
+fn unique_needs_tostring(args: &[Value]) -> bool {
+    with_host(|h| {
+        let string_mode = match args.get(1) {
+            Some(v) if !matches!(v, Value::Undef) => v.to_int() == 2,
+            _ => true,
+        };
+        string_mode
+            && h.array_pairs(&arg(args, 0))
+                .unwrap_or_default()
+                .iter()
+                .any(|(_, v)| is_stringable_object(h, v))
+    })
+}
+
 fn php_array_unique(h: &mut host::PhpHost, args: &[Value]) -> Value {
     const SORT_STRING: i64 = 2;
     let pairs = h.array_pairs(&arg(args, 0)).unwrap_or_default();
@@ -8165,6 +8324,15 @@ fn json_prepare_seen(v: &Value, prep: &mut JsonPrep) -> Result<Value, i64> {
         return prep.refuse(crate::stdlib::json::JSON_ERROR_RECURSION, Value::Undef);
     }
     let class = with_host(|h| h.object_class(v)).unwrap_or_default();
+    // `php_json_encode_zval` asks JsonSerializable first: an enum that
+    // implements it encodes as its `jsonSerialize()` answer.
+    if with_host(|h| h.class_is_a_pub(&class, "JsonSerializable")) {
+        let produced = host::call_method(&class, "jsonSerialize", Some(v.clone()), Vec::new())
+            .map_err(|_| crate::stdlib::json::JSON_ERROR_NON_BACKED_ENUM)?;
+        let out = json_prepare_seen(&produced, prep);
+        prep.seen.leave();
+        return out;
+    }
     if with_host(|h| h.is_enum_class(&class)) {
         prep.seen.leave();
         return match with_host(|h| h.enum_case_of(v)) {
@@ -8174,13 +8342,6 @@ fn json_prepare_seen(v: &Value, prep: &mut JsonPrep) -> Result<Value, i64> {
                 Value::int(0),
             ),
         };
-    }
-    if with_host(|h| h.class_is_a_pub(&class, "JsonSerializable")) {
-        let produced = host::call_method(&class, "jsonSerialize", Some(v.clone()), Vec::new())
-            .map_err(|_| crate::stdlib::json::JSON_ERROR_NON_BACKED_ENUM)?;
-        let out = json_prepare_seen(&produced, prep);
-        prep.seen.leave();
-        return out;
     }
     let mut out = Vec::new();
     if let Some(st) = with_host(|h| spl_array_storage(h, v)) {

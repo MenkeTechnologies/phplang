@@ -2601,6 +2601,7 @@ impl Parser {
         let mut const_vis = Vec::new();
         let mut final_consts = Vec::new();
         let mut props = Vec::new();
+        let mut ctor_prop_slot = 0;
         let mut methods = Vec::new();
         let mut uses = Vec::new();
         let mut trait_insteadof = Vec::new();
@@ -2819,6 +2820,9 @@ impl Parser {
                 }
                 let body = if has_body { self.block()? } else { Vec::new() };
                 self.magic = saved;
+                if mname.eq_ignore_ascii_case("__construct") {
+                    ctor_prop_slot = props.len();
+                }
                 methods.push(Method {
                     name: mname,
                     params,
@@ -2913,6 +2917,7 @@ impl Parser {
             const_vis,
             final_consts,
             props,
+            ctor_prop_slot,
             methods,
             attributes: Vec::new(),
             namespace: String::new(),

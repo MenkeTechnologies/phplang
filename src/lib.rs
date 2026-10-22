@@ -304,6 +304,71 @@ final class HashContext {
 }
 "#;
 
+/// `Zend/zend_weakrefs.c`'s `WeakReference` and `WeakMap`. Their state lives in
+/// static tables keyed by object id, so an instance has no properties of its
+/// own, as the reference's have none. phplang has no refcounts, so a referent
+/// is never released early: `get()` keeps answering it and a map keeps its
+/// entry after the program drops the key (BUGS.md).
+const WEAKREF_PRELUDE: &str = r##"
+final class WeakReference {
+    // referent id => the WeakReference made for it; WeakReference id => referent
+    private static $__made = [];
+    private static $__referent = [];
+    private static $__creating = false;
+    public function __construct() {
+        if (!self::$__creating) { throw new Error("Direct instantiation of WeakReference is not allowed, use WeakReference::create instead"); }
+    }
+    // `zend_weakref_find`: one WeakReference per referent.
+    public static function create(object $object): WeakReference {
+        $id = spl_object_id($object);
+        if (isset(self::$__made[$id])) { return self::$__made[$id]; }
+        self::$__creating = true;
+        $ref = new WeakReference();
+        self::$__creating = false;
+        self::$__referent[spl_object_id($ref)] = $object;
+        return self::$__made[$id] = $ref;
+    }
+    public function get(): ?object { return self::$__referent[spl_object_id($this)] ?? null; }
+    public function __debugInfo(): array { return ["object" => $this->get()]; }
+}
+final class WeakMap implements ArrayAccess, Countable, IteratorAggregate {
+    // map id => [key id => [key, value]]
+    private static $__maps = [];
+    private static function __key($object) {
+        if (!is_object($object)) { throw new TypeError("WeakMap key must be an object"); }
+        return spl_object_id($object);
+    }
+    public function offsetGet($object): mixed {
+        $k = self::__key($object);
+        $map = self::$__maps[spl_object_id($this)] ?? [];
+        if (!array_key_exists($k, $map)) { throw new Error("Object " . get_class($object) . "#$k not contained in WeakMap"); }
+        return $map[$k][1];
+    }
+    // A null offset is `$map[] = $v`, which `zend_weakmap_write_dimension` refuses.
+    public function offsetSet($object, mixed $value): void {
+        if ($object === null) { throw new Error("Cannot append to WeakMap"); }
+        self::$__maps[spl_object_id($this)][self::__key($object)] = [$object, $value];
+    }
+    // `zend_weakmap_has_dimension`: present and not null.
+    public function offsetExists($object): bool {
+        return isset((self::$__maps[spl_object_id($this)] ?? [])[self::__key($object)][1]);
+    }
+    public function offsetUnset($object): void {
+        unset(self::$__maps[spl_object_id($this)][self::__key($object)]);
+    }
+    public function count(): int { return count(self::$__maps[spl_object_id($this)] ?? []); }
+    public function getIterator(): Iterator {
+        foreach (self::$__maps[spl_object_id($this)] ?? [] as [$key, $value]) { yield $key => $value; }
+    }
+    private function __phplang_clone($orig) { self::$__maps[spl_object_id($this)] = self::$__maps[spl_object_id($orig)] ?? []; }
+    public function __debugInfo(): array {
+        $out = [];
+        foreach (self::$__maps[spl_object_id($this)] ?? [] as [$key, $value]) { $out[] = ["key" => $key, "value" => $value]; }
+        return $out;
+    }
+}
+"##;
+
 /// The SPL data-structure classes, written in PHP. They store elements in an
 /// internal array property and mutate it through `$this`, which is the only way
 /// a PHP array — a value, not a handle — can be mutated in place. Aliasing it to
@@ -560,25 +625,64 @@ class SplFixedArray implements IteratorAggregate, ArrayAccess, Countable, JsonSe
         return $out;
     }
 }
+// ext/spl/spl_array.c's ArrayObject. The flags and the iterator class live in
+// a static table keyed by object id, as ArrayIterator's flags do, so the
+// instance shows only its storage. An object passed as the backing array is
+// copied into it: the reference's write-through to that object is not
+// modelled (BUGS.md).
 class ArrayObject implements IteratorAggregate, ArrayAccess, Countable {
     const STD_PROP_LIST = 1;
     const ARRAY_AS_PROPS = 2;
     private $storage = [];
-    public function __construct(array|object $array = [], int $flags = 0, string $iteratorClass = ArrayIterator::class) { $this->storage = is_array($array) ? $array : get_object_vars($array); }
+    // id => [the flags a program set, the iterator class]
+    private static $__state = [];
+    public function __construct(array|object $array = [], int $flags = 0, string $iteratorClass = ArrayIterator::class) {
+        $iteratorClass = self::__itclass($iteratorClass, 'ArrayObject::__construct(): Argument #3');
+        if (func_num_args() == 0) { return; }
+        $this->storage = self::__backing($array, 'ArrayObject::__construct()');
+        self::$__state[spl_object_id($this)] = [$flags & ~0xFFFF0000, $iteratorClass];
+    }
+    // `spl_array_set_array`: an object backing is deprecated since 8.5.
+    private static function __backing($array, $fn) {
+        if (is_array($array)) { return $array; }
+        __phplang_deprecated("$fn: Using an object as a backing array for ArrayObject is deprecated, as it allows violating class constraints and invariants");
+        return $array instanceof ArrayObject || $array instanceof ArrayIterator ? $array->getArrayCopy() : get_object_vars($array);
+    }
+    // The `C` parameter type: a class derived from ArrayIterator.
+    private static function __itclass($class, $arg) {
+        if (!class_exists($class) || !is_a($class, ArrayIterator::class, true)) {
+            throw new TypeError("$arg (\$iteratorClass) must be a class name derived from ArrayIterator, $class given");
+        }
+        if (strcasecmp($class, ArrayIterator::class) === 0) { return ArrayIterator::class; }
+        foreach (get_declared_classes() as $c) { if (strcasecmp($c, $class) === 0) { return $c; } }
+        return $class;
+    }
+    private function __state() { return self::$__state[spl_object_id($this)] ?? [0, ArrayIterator::class]; }
     public function offsetGet(mixed $key): mixed { return $this->storage[$key]; }
     public function offsetSet(mixed $key, mixed $value): void { if ($key === null) { $this->storage[] = $value; } else { $this->storage[$key] = $value; } }
     public function offsetExists(mixed $key): bool { return isset($this->storage[$key]); }
     public function offsetUnset(mixed $key): void { unset($this->storage[$key]); }
+    // ARRAY_AS_PROPS: a property the object does not have is an element
+    // (`spl_array_read_property` and its siblings). The host calls these only
+    // while the flag is set.
+    public function __get($name) { return $this->offsetGet($name); }
+    public function __set($name, $value) { $this->offsetSet($name, $value); }
+    public function __isset($name) { return $this->offsetExists($name) && $this->offsetGet($name) !== null; }
+    public function __unset($name) { $this->offsetUnset($name); }
     public function append(mixed $value): void { $this->storage[] = $value; }
     public function count(): int { return count($this->storage); }
     public function getArrayCopy(): array { return $this->storage; }
-    public function exchangeArray(array|object $array): array { $old = $this->storage; $this->storage = is_array($array) ? $array : get_object_vars($array); return $old; }
-    public function getIterator(): Iterator { return new ArrayIterator($this->storage); }
-    public function getFlags(): int { return 0; }
-    public function setFlags(int $flags): void {}
-    public function getIteratorClass(): string { return ArrayIterator::class; }
-    public function __serialize(): array { return [0, $this->storage, array_diff_key(get_object_vars($this), ['storage' => 1]), null]; }
-    public function __unserialize(array $data): void { $this->storage = $data[1]; foreach ($data[2] ?? [] as $k => $v) { $this->$k = $v; } }
+    public function exchangeArray(array|object $array): array { $old = $this->storage; $this->storage = self::__backing($array, 'ArrayObject::exchangeArray()'); return $old; }
+    // `spl_array_object_new_ex` for the iterator: it starts with this object's flags.
+    public function getIterator(): Iterator { [$flags, $class] = $this->__state(); return new $class($this->storage, $flags); }
+    public function getFlags(): int { return $this->__state()[0]; }
+    public function setFlags(int $flags): void { self::$__state[spl_object_id($this)] = [$flags & ~0xFFFF0000, $this->__state()[1]]; }
+    public function getIteratorClass(): string { return $this->__state()[1]; }
+    public function setIteratorClass(string $iteratorClass): void { self::$__state[spl_object_id($this)] = [$this->__state()[0], self::__itclass($iteratorClass, 'ArrayObject::setIteratorClass(): Argument #1')]; }
+    // `spl_array_object_new_ex` with `clone_orig`: the copy keeps the flags and the iterator class.
+    private function __phplang_clone($orig) { self::$__state[spl_object_id($this)] = $orig->__state(); }
+    public function __serialize(): array { [$flags, $class] = $this->__state(); return [$flags, $this->storage, array_diff_key(get_object_vars($this), ['storage' => 1]), $class === ArrayIterator::class ? null : $class]; }
+    public function __unserialize(array $data): void { $this->storage = $data[1]; foreach ($data[2] ?? [] as $k => $v) { $this->$k = $v; } self::$__state[spl_object_id($this)] = [$data[0], $data[3] ?? ArrayIterator::class]; }
     public function asort(int $flags = SORT_REGULAR): bool { return asort($this->storage, $flags); }
     public function ksort(int $flags = SORT_REGULAR): bool { return ksort($this->storage, $flags); }
     public function uasort(callable $callback): bool { return uasort($this->storage, $callback); }
@@ -635,7 +739,11 @@ class ArrayIterator implements SeekableIterator, ArrayAccess, Countable {
     private static $__cursor = [];
     // id => the flags a program set, `ar_flags & ~SPL_ARRAY_INT_MASK`.
     private static $__flags = [];
-    public function __construct(array|object $array = [], int $flags = 0) { $this->storage = is_array($array) ? $array : get_object_vars($array); self::$__flags[spl_object_id($this)] = $flags & ~0xFFFF0000; }
+    public function __construct(array|object $array = [], int $flags = 0) {
+        if (!is_array($array)) { __phplang_deprecated("ArrayIterator::__construct(): Using an object as a backing array for ArrayIterator is deprecated, as it allows violating class constraints and invariants"); }
+        $this->storage = is_array($array) ? $array : ($array instanceof ArrayObject || $array instanceof ArrayIterator ? $array->getArrayCopy() : get_object_vars($array));
+        self::$__flags[spl_object_id($this)] = $flags & ~0xFFFF0000;
+    }
     private function __at() {
         $c = self::$__cursor[spl_object_id($this)] ?? [0, null];
         if ($c[1] === null) { $c[1] = array_keys($this->storage); self::$__cursor[spl_object_id($this)] = $c; }
@@ -654,11 +762,19 @@ class ArrayIterator implements SeekableIterator, ArrayAccess, Countable {
     public function offsetSet(mixed $key, mixed $value): void { if ($key === null) { $this->storage[] = $value; } else { $this->storage[$key] = $value; } self::$__cursor[spl_object_id($this)][1] = null; }
     public function offsetExists(mixed $key): bool { return isset($this->storage[$key]); }
     public function offsetUnset(mixed $key): void { unset($this->storage[$key]); self::$__cursor[spl_object_id($this)][1] = null; }
+    // ARRAY_AS_PROPS, as ArrayObject's.
+    public function __get($name) { return $this->offsetGet($name); }
+    public function __set($name, $value) { $this->offsetSet($name, $value); }
+    public function __isset($name) { return $this->offsetExists($name) && $this->offsetGet($name) !== null; }
+    public function __unset($name) { $this->offsetUnset($name); }
     public function append(mixed $value): void { $this->storage[] = $value; self::$__cursor[spl_object_id($this)][1] = null; }
     public function count(): int { return count($this->storage); }
     public function getArrayCopy(): array { return $this->storage; }
     public function getFlags(): int { return self::$__flags[spl_object_id($this)] ?? 0; }
     public function setFlags(int $flags): void { self::$__flags[spl_object_id($this)] = $flags & ~0xFFFF0000; }
+    // `spl_array_object_new_ex` with `clone_orig`: the copy keeps the flags; its
+    // position starts over.
+    private function __phplang_clone($orig) { self::$__flags[spl_object_id($this)] = self::$__flags[spl_object_id($orig)] ?? 0; }
     public function __serialize(): array { return [self::$__flags[spl_object_id($this)] ?? 0, $this->storage, array_diff_key(get_object_vars($this), ['storage' => 1]), null]; }
     public function __unserialize(array $data): void { $this->storage = $data[1]; foreach ($data[2] ?? [] as $k => $v) { $this->$k = $v; } self::$__flags[spl_object_id($this)] = $data[0]; }
     public function asort(int $flags = SORT_REGULAR): bool { return asort($this->storage, $flags); }
@@ -1970,7 +2086,9 @@ fn prelude_defs() -> &'static PreludeDefs {
     use std::sync::OnceLock;
     static CACHE: OnceLock<PreludeDefs> = OnceLock::new();
     CACHE.get_or_init(|| {
-        let src = format!("{EXCEPTION_PRELUDE}{DATETIME_PRELUDE}{HASH_PRELUDE}{SPL_PRELUDE}");
+        let src = format!(
+            "{EXCEPTION_PRELUDE}{DATETIME_PRELUDE}{HASH_PRELUDE}{WEAKREF_PRELUDE}{SPL_PRELUDE}"
+        );
         // NOT `compile`: that applies the file-level facts of whatever it is given,
         // and this runs from `load_merged` — after the user program was compiled —
         // so going through it would reset the typing mode the user's own

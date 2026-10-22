@@ -2876,7 +2876,33 @@ impl Compiler {
                 prop_types.extend(t.prop_types.iter().map(|(n, ty)| (n.clone(), ty.clone())));
             }
         }
-        for prop in &decl.props {
+        // A promoted constructor parameter declares its property at the
+        // constructor's place among the declarations (`zend_compile_params`):
+        // typed, it starts uninitialized; untyped, it starts null.
+        let promoted = decl
+            .methods
+            .iter()
+            .filter(|m| m.name.eq_ignore_ascii_case("__construct"))
+            .flat_map(|m| m.params.iter().filter(|p| p.promoted))
+            .map(|p| PropDecl {
+                name: p.name.clone(),
+                default: None,
+                ty: p.ty.clone(),
+                is_static: false,
+                visibility: p.promoted_vis,
+                set_visibility: p.promoted_set_vis,
+                readonly: p.readonly || decl.is_readonly,
+                is_final: false,
+                line: p.line,
+            });
+        let at = decl.ctor_prop_slot.min(decl.props.len());
+        let props: Vec<PropDecl> = decl.props[..at]
+            .iter()
+            .cloned()
+            .chain(promoted)
+            .chain(decl.props[at..].iter().cloned())
+            .collect();
+        for prop in &props {
             let name = &prop.name;
             prop_vis.insert(name.clone(), prop.visibility);
             match prop.set_visibility {
@@ -2927,8 +2953,7 @@ impl Compiler {
         // A class's own properties take their slots before the ones its traits
         // bring in: `zend_do_bind_traits` adds trait properties after the class
         // body is declared. The sort is stable, so each group keeps its order.
-        prop_defaults
-            .sort_by_key(|(n, _)| !decl.props.iter().any(|p| !p.is_static && &p.name == n));
+        prop_defaults.sort_by_key(|(n, _)| !props.iter().any(|p| !p.is_static && &p.name == n));
 
         for m in &decl.methods {
             method_vis.insert(m.name.to_ascii_lowercase(), m.visibility);

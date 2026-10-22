@@ -298,6 +298,36 @@ that nothing still holds it, and a promoted local in a running fusevm frame or a
 value on a VM stack is invisible to the host, so that is left alone rather than
 risk destroying a live object.
 
+## A reference keeps its `&` after its last alias is gone
+
+```text
+$ php -r '$a = [1, 2]; $r = &$a[0]; unset($r); var_dump($a);'
+array(2) { [0]=> int(1) [1]=> int(2) }
+$ target/debug/php -r '$a = [1, 2]; $r = &$a[0]; unset($r); var_dump($a);'
+array(2) { [0]=> &int(1) [1]=> int(2) }
+```
+
+`var_dump` marks an element `&` while it is a reference with more than one
+holder; the reference drops the marker when the count falls back to one. The
+same shape follows `foreach ($a as &$v) {} unset($v);`, a `function &f()` whose
+returned reference the caller did not bind, and a `function &__get()` written
+through. phplang has no reference counts, so an element made a reference stays
+one. The values are right; only the marker differs.
+
+## `WeakMap` and `WeakReference` never let go of an object
+
+```text
+$ php -r '$wm = new WeakMap; $k = new stdClass; $wm[$k] = 1; unset($k); var_dump(count($wm));'
+int(0)
+$ target/debug/php -r '… same …'
+int(1)
+```
+
+Likewise `WeakReference::get()` keeps answering an object the program has
+dropped, where the reference answers `NULL`. Both classes are otherwise the
+reference's; releasing an entry needs the same refcounts as the destruction
+entry above.
+
 ## `include`: the search path
 
 ```text
@@ -316,7 +346,10 @@ file's directory. The same value is what `get_include_path()` returns.
 | form | reference | phplang |
 |---|---|---|
 | `try { goto out; } finally { … } out:` — a `goto` out of a `try`/`catch`/`finally` body | runs the `finally`, then jumps | a phplang compile error: a `try` body is a chunk of its own and the jump cannot leave it |
-| `iconv_strlen("héllo")` | `int(5)` | `Call to undefined function iconv_strlen()` |
+| `iconv_strlen("héllo")`, `iconv("UTF-8", "ASCII//TRANSLIT", "é")` | `int(5)`; `string(2) "'e"` (the platform libiconv's transliteration) | `Call to undefined function`: no `iconv*` function exists |
+| `new ReflectionClass("A")`, `ReflectionObject`, `ReflectionMethod`, … | the Reflection API | `Error: Class "ReflectionClass" not found`: no `Reflection*` class exists; only the reflection FUNCTIONS (`get_class_methods`, `property_exists`, …) are implemented |
+| `$o = new stdClass; $x = new ArrayObject($o); $x["b"] = 2; var_dump(isset($o->b));` — an object as the backing array (deprecated since 8.5) | `bool(true)`: the ArrayObject reads and writes the object's properties | `bool(false)`: the object's properties are copied into the storage, so a write does not reach the object. The deprecation is the reference's |
+| `$wm = new WeakMap; $wm->getIterator()`; `$wm[new stdClass]` on a missing key | `InternalIterator`; the `Error`'s trace has no `offsetGet` frame | `Generator`; the trace shows the prelude's `WeakMap->offsetGet(…)` frame, as the other prelude `ArrayAccess` classes do |
 | `class A { public string $n { get => $this->n; } }` — PHP 8.4 property hooks | runs | a parse error: hooks have no lowering. The `RoundingMode` enum is likewise absent. Asymmetric visibility, the `|>` pipe, `clone($o, [...])` and the `(void)` cast are implemented |
 | `clone($o, ...$args)`, `$f = fn(&$x) => 1; $g = f(...);` | argument unpacking in `clone()` evaluates; a first-class callable of a function with a by-reference parameter keeps the by-reference signature | a compile-time fatal for the unpacking; the callable the `f(...)` form builds is variadic by value, so `$g($v)` does not write `$v` back |
 | `$o = (new A)->m(...)` where `A` has only `__call` — the callable's frame | the trace shows a frame `A->foo(1, 2)` with `__call` called from `[internal function]` | the trampoline is transparent, so `__call` is reported as called from the call site |
@@ -340,7 +373,6 @@ file's directory. The same value is what `get_include_path()` returns.
 | `class K { private function __construct() {} } new K;` — likewise a `final` class, and from `php -r` or a file | `Error: Call to private K::__construct() from global scope` | the object is constructed: `new` does not check the constructor's visibility. Found while adding the prelude's `HashContext`, whose constructor is private as the reference's is but does not refuse `new HashContext` |
 | `strlen(...) <=> strtoupper(...)`, `strlen(...) == strlen(...)` — two first-class-callable closures | `zend_closure_compare`: equal only when they name the same function, `$this` and scope (`int(1)`; `bool(true)`) | any two such closures order as equal (`int(0)`), and `==` is identity (`bool(false)`): the closure value does not record which function it forwards to |
 | `$a = new stdClass; $a->s = $a; $b = new stdClass; $b->s = $b; var_dump($a == $b);` — comparing self-referential objects or arrays | `Error: Nesting level too deep - recursive dependency?` | a Rust stack overflow aborts the process: the comparison walk has no recursion guard |
-| `class K { public $a = 1; function __construct(public $b = 2) {} public $c = 3; } $k = new K; unset($k->a); $k->a = 9; var_dump($k);` | `a`, `b`, `c` — a promoted parameter takes its slot where the constructor is declared | `a`, `c`, `b`: a promoted property is not in the class's slot list, so it sorts after every declaration with an initializer. Object ordering (`<=>`) walks the same list and inherits the difference for a class mixing the two kinds |
 | `class B implements I { function f(string $a) {} }` over `interface I { function f(int $a); }`; `class C extends B { private function f() {} }` over a public `B::f` | `Fatal error: Declaration of B::f(string $a) must be compatible with I::f(int $a)`; `Access level to C::f() must be public (as in class B)` | the class links: method signature compatibility and access-level narrowing are not checked. Only the abstract-method, `final` and asymmetric-visibility rules are |
 | `function p(#[SensitiveParameter] $x) { throw new Exception; }` — the trace of the exception | `p(Object(SensitiveParameterValue))` | `p('secret')`: the attribute is parsed and dropped |
 | `echo E_STRICT;`; `PHP_BINARY` | `Deprecated: Constant E_STRICT is deprecated since 8.4, …`; the interpreter's path | no deprecation; `PHP_BINARY` is an undefined constant |

@@ -102,11 +102,23 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             };
             let out = with_host(|h| {
                 let outer = std::mem::replace(&mut h.serialize_info, answers);
+                let denied = unserializable_in(h, &a, &mut crate::host::Visiting::default());
                 let s = php_serialize(h, &a);
                 h.serialize_info = outer;
-                s
+                denied.map_or(Ok(s), Err)
             });
-            Value::str(out)
+            match out {
+                Ok(s) => Value::str(s),
+                Err(class) => {
+                    let _ = crate::host::throw_from_internal(
+                        "serialize",
+                        std::slice::from_ref(&a),
+                        "Exception",
+                        &format!("Serialization of '{class}' is not allowed"),
+                    );
+                    Value::Undef
+                }
+            }
         }
         "unserialize" => {
             let s = with_host(|h| h.to_str(&arg(args, 0)));
@@ -122,6 +134,15 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             // parsed, in the order their objects were finished, as the
             // reference's delayed calls do — and not at all when the payload
             // was malformed.
+            if let Unser::Denied(class) = &result {
+                let _ = crate::host::throw_from_internal(
+                    "unserialize",
+                    std::slice::from_ref(&arg(args, 0)),
+                    "Exception",
+                    &format!("Unserialization of '{class}' is not allowed"),
+                );
+                return Some(Ok(Value::Undef));
+            }
             if !matches!(result, Unser::Failed(..)) {
                 for (obj, data) in deferred {
                     let class = with_host(|h| h.object_class(&obj)).unwrap_or_default();
@@ -164,6 +185,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
                     });
                     Value::bool(false)
                 }
+                Unser::Denied(_) => Value::Undef,
             }
         }
 
@@ -221,6 +243,78 @@ pub fn debug_type(h: &crate::host::PhpHost, v: &Value) -> String {
 /// Render a value in PHP's serialization format: null, bool, int, float, string,
 /// and (recursively) arrays, objects and `enum` cases. A resource serializes as
 /// `i:0;`, as the reference writes it.
+/// The classes whose `ce_flags` carry `ZEND_ACC_NOT_SERIALIZABLE` among those
+/// this runtime has, besides closures, generators and anonymous classes.
+const NOT_SERIALIZABLE: [&str; 2] = ["weakmap", "weakreference"];
+
+/// The first value `serialize` would meet that `php_var_serialize_intern`
+/// refuses, named as its `Serialization of '%s' is not allowed` names it —
+/// walked in the order the render walks, `__serialize`/`__sleep` answers in
+/// place of properties. `None` when every value can be written.
+fn unserializable_in(
+    h: &crate::host::PhpHost,
+    v: &Value,
+    seen: &mut crate::host::Visiting,
+) -> Option<String> {
+    if h.is_closure(v) {
+        return Some("Closure".to_string());
+    }
+    if h.is_generator_val(v) {
+        return Some("Generator".to_string());
+    }
+    if !(h.is_array(v) || h.is_object(v)) || h.is_stream(v) || !seen.enter(v) {
+        return None;
+    }
+    let children: Vec<Value> = if h.is_array(v) {
+        h.array_pairs(v)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(_, val)| val)
+            .collect()
+    } else {
+        let class = h.object_class(v).unwrap_or_default();
+        if class.contains("@anonymous")
+            || NOT_SERIALIZABLE.contains(&class.to_ascii_lowercase().as_str())
+        {
+            seen.leave();
+            return Some(crate::host::display_class(&class).to_string());
+        }
+        let answer = match v {
+            Value::Obj(id) => h.serialize_info.get(id),
+            _ => None,
+        };
+        match answer {
+            Some(data) => h
+                .array_pairs(data)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(_, val)| val)
+                .collect(),
+            None if h.enum_case_of(v).is_some() => Vec::new(),
+            None => h.object_props(v).into_iter().map(|(_, val)| val).collect(),
+        }
+    };
+    let found = children.iter().find_map(|c| unserializable_in(h, c, seen));
+    seen.leave();
+    found
+}
+
+/// The declared name of `class` when `object_common` refuses to build it
+/// (`ZEND_ACC_NOT_SERIALIZABLE`), or `None`.
+fn not_unserializable(class: &str) -> Option<String> {
+    let lower = class.to_ascii_lowercase();
+    match lower.as_str() {
+        "closure" => return Some("Closure".to_string()),
+        "generator" => return Some("Generator".to_string()),
+        _ => {}
+    }
+    with_host(|h| {
+        let refused = NOT_SERIALIZABLE.contains(&lower.as_str()) || lower.contains("@anonymous");
+        (refused && h.class_exists(class))
+            .then(|| crate::host::display_class(&h.class_display_name(&lower)).to_string())
+    })
+}
+
 fn php_serialize(h: &crate::host::PhpHost, v: &Value) -> String {
     php_serialize_seen(h, v, &mut crate::host::Visiting::default())
 }
@@ -479,6 +573,8 @@ enum Unser {
     /// Malformed, at the given byte offset. `unexpected_end` marks the payload
     /// that claimed more container elements than it carried.
     Failed(usize, bool),
+    /// An object of a class `ZEND_ACC_NOT_SERIALIZABLE` marks, by its name.
+    Denied(String),
 }
 
 /// Parse a PHP serialization payload. Byte-oriented so string lengths are
@@ -491,8 +587,12 @@ fn php_unserialize(b: &[u8], deferred: &mut Vec<(Value, Option<Value>)>) -> Unse
         fail_at: None,
         unexpected_end: false,
         saturated: false,
+        denied: None,
     };
     let Some(v) = p.value() else {
+        if let Some(class) = p.denied {
+            return Unser::Denied(class);
+        }
         return Unser::Failed(p.fail_at.unwrap_or(0), p.unexpected_end);
     };
     if p.pos != b.len() {
@@ -522,6 +622,9 @@ struct Parser<'a> {
     /// Set when an `i:` literal was clamped to `PHP_INT_MIN`/`PHP_INT_MAX`. The
     /// value still stands; the reference just warns about the clamp.
     saturated: bool,
+    /// Set when an `O:` named a class that may not be unserialized: the
+    /// reference throws and abandons the payload, with no offset warning.
+    denied: Option<String>,
 }
 
 impl<'a> Parser<'a> {
@@ -715,6 +818,10 @@ impl<'a> Parser<'a> {
             b'O' => {
                 self.eat(b"O:")?;
                 let class = self.length_prefixed_string()?;
+                if let Some(name) = not_unserializable(&class) {
+                    self.denied = Some(name);
+                    return None;
+                }
                 self.eat(b":")?;
                 let count = self.int_until(b':')?;
                 if count < 0 {

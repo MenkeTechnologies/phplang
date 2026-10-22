@@ -2634,6 +2634,22 @@ static SIGS: &[(&str, Sig)] = &[
         },
     ),
     (
+        "get_declared_interfaces",
+        Sig {
+            req: 0,
+            params: &[],
+            variadic: false,
+        },
+    ),
+    (
+        "get_declared_traits",
+        Sig {
+            req: 0,
+            params: &[],
+            variadic: false,
+        },
+    ),
+    (
         "get_defined_constants",
         Sig {
             req: 0,

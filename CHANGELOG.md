@@ -26,6 +26,45 @@ comment above it.
 
 ---
 
+## Round 26: SPL arrays, weak references, serialization refusals, magic writes
+
+Measured under `PHP 8.5.11 (cli)`; pinned in `tests/parity_round26.rs`.
+
+* `$o->p[] = v` / `$o->p[k] = v` through a by-value `__get` raises the
+  reference's `Indirect modification of overloaded property` notice and writes
+  into a temporary, instead of creating a dynamic property. A
+  `function &__get()` hands out its reference and the write lands in the
+  storage it names.
+* `IteratorIterator`, `RecursiveIteratorIterator`, every dual iterator built on
+  them (subclasses included) and `WeakReference` refuse `clone` with the
+  reference's `Trying to clone an uncloneable object` `Error`.
+* `ArrayObject` keeps its flags and iterator class: `getFlags`/`setFlags`,
+  `getIteratorClass`/`setIteratorClass` (with the `must be a class name derived
+  from ArrayIterator` `TypeError`), `getIterator()` builds that class with the
+  object's flags, `serialize` carries both, and `clone` keeps them —
+  `ArrayIterator`'s clone keeps its flags too. ARRAY_AS_PROPS makes a missing
+  property an element for reads, writes, `isset`, `unset`, `++` and `[]=`;
+  STD_PROP_LIST makes `(array)`, `json_encode` and `var_export` see the
+  properties. `var_dump`/`print_r` list the properties before the storage. An
+  object as the backing array raises the 8.5 deprecation.
+* `get_declared_classes()` answers in declared spelling and declaration order,
+  classes and enums only; `get_declared_interfaces()` and
+  `get_declared_traits()` are implemented.
+* A promoted constructor parameter declares its property at the constructor's
+  place among the declarations, so dump order, `<=>` and `uninitialized(type)`
+  rows for a constructor that never ran are the reference's.
+* `serialize` throws `Serialization of 'Closure' is not allowed` (likewise
+  `Generator`, an anonymous class, `WeakMap`, `WeakReference`) wherever the
+  value appears, and `unserialize` throws `Unserialization of '…' is not
+  allowed` instead of building one. Both used to write or build silently.
+* `WeakMap` and `WeakReference` are implemented (see BUGS.md for release).
+* An enum implementing `JsonSerializable` encodes as its `jsonSerialize()`.
+* Loose `in_array`, `array_search` and `array_keys($a, $v)` compare an object
+  with `__toString` against a string through the string; SORT_STRING
+  `array_unique` compares what `__toString` returns.
+* `iterator_apply` drives the iterator itself — `rewind`, `valid`, the
+  callback, `next` — and never calls `current()`/`key()`.
+
 ## Incremental hashing: `hash_init` … `hash_final`
 
 `hash_init`, `hash_update`, `hash_update_stream`, `hash_update_file`,

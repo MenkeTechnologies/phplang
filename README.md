@@ -404,7 +404,7 @@ end-to-end (see `tests/basic.rs`):
   `CallbackFilterIterator`, `LimitIterator`, `CachingIterator`, `AppendIterator`,
   `NoRewindIterator`, `InfiniteIterator`, `EmptyIterator`, `RegexIterator`,
   `RecursiveArrayIterator`, `RecursiveIteratorIterator`, `RecursiveTreeIterator`
-  and the recursive filters) plus `stdClass`, all as PHP preludes — the list,
+  and the recursive filters), `WeakMap` and `WeakReference`, plus `stdClass`, all as PHP preludes — the list,
   heap, fixed-array and iterator classes ports of `ext/spl` (iterator modes, heap
   sift order, `spl_iterators.c`'s walks, the reference's exceptions); output buffering (a port of `main/output.c`: `ob_start` handlers with `$phase` bits, chunk sizes and ability flags, `ob_get_status`, `ob_list_handlers`),
   variadic introspection (`func_get_args`/`func_num_args`), the stream functions
@@ -480,7 +480,7 @@ end-to-end (see `tests/basic.rs`):
     `strnatcmp`/`strnatcasecmp`, `soundex`, `str_getcsv`, `array_walk_recursive`,
     `array_find`/`array_any`/`array_all`, `array_udiff`/`array_multisort`.
   - **system** — `getenv`/`putenv`, `phpversion`, `php_sapi_name`, `php_uname`,
-    `getmypid`, `extension_loaded`, `get_defined_constants`, `get_declared_classes`.
+    `getmypid`, `extension_loaded`, `get_defined_constants`, `get_declared_classes`/`_interfaces`/`_traits`.
 
 ## [0x04] NOT YET (LATER WAVES)
 

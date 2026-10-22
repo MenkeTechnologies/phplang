@@ -75,7 +75,10 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             let method = str_arg(args, 1);
             with_host(|h| {
                 let class = h.instance_class(&a).unwrap_or_else(|| h.to_str(&a));
-                Value::bool(h.class_has_method(&class, &method))
+                let lname = method.to_ascii_lowercase();
+                Value::bool(
+                    h.class_has_method(&class, &method) && !h.spl_array_forwarder(&class, &lname),
+                )
             })
         }
         // `property_exists($object_or_class, $property)`: see
@@ -292,16 +295,24 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
                 Err(e) => return Some(Err(e)),
             }
         }
-        // `get_declared_classes()`: the names of every declared class (lowercased,
-        // as the host stores them), via the host enumerator.
-        "get_declared_classes" => with_host(|h| {
-            let names: Vec<Value> = h.all_class_names().into_iter().map(Value::str).collect();
-            let arr = h.new_array();
-            for n in names {
-                h.arr_push_auto(&arr, n);
-            }
-            arr
-        }),
+        // `get_declared_classes()` and its siblings: one declaration kind, in
+        // declared spelling and declaration order (`get_declared_class_impl`).
+        "get_declared_classes" | "get_declared_interfaces" | "get_declared_traits" => {
+            with_host(|h| {
+                let kind = match name {
+                    "get_declared_classes" => TypeKind::Class,
+                    "get_declared_interfaces" => TypeKind::Interface,
+                    _ => TypeKind::Trait,
+                };
+                let names: Vec<Value> =
+                    h.declared_names(kind).into_iter().map(Value::str).collect();
+                let arr = h.new_array();
+                for n in names {
+                    h.arr_push_auto(&arr, n);
+                }
+                arr
+            })
+        }
 
         _ => return None,
     };
