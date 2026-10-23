@@ -127,10 +127,14 @@ fn mktime_huge_field_returns_false_no_panic() {
 
 #[test]
 fn strtotime_empty_string_is_false() {
-    // An empty string is a parse failure; an all-blank one is not empty to
-    // timelib (its trim keeps the last character) and reads as "now".
+    // An empty string is a parse failure, and so — since the timelib of PHP
+    // 8.5.12, whose trim no longer keeps the last character — is an all-blank
+    // one (php -r 'var_dump(strtotime("   ", 42));' → bool(false)).
     assert_eq!(run(r#"<?php echo strtotime("") === false ? "F":"?";"#), "F");
-    assert_eq!(run(r#"<?php echo strtotime("   ", 42);"#), "42");
+    assert_eq!(
+        run(r#"<?php echo var_export(strtotime("   ", 42), true);"#),
+        "false"
+    );
     // "now" still resolves to the base timestamp.
     assert_eq!(run(r#"<?php echo strtotime("now", 42);"#), "42");
 }
