@@ -256,8 +256,8 @@ fn user_exception_subclass_is_catchable_by_base() {
 
 #[test]
 fn leading_backslash_global_namespace_prefix() {
-    // The `\` global-namespace prefix on class and function names is accepted
-    // (phplang has no namespaces, so `\Exception` == `Exception`).
+    // The `\` global-namespace prefix on class and function names is accepted:
+    // at file scope `\Exception` is `Exception`.
     let src = r#"<?php
         try { throw new \Exception("boom"); }
         catch (\Throwable $e) { echo \strlen($e->getMessage()); }"#;
