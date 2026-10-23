@@ -822,6 +822,11 @@ impl<'a> Parser<'a> {
                     self.denied = Some(name);
                     return None;
                 }
+                // An undeclared class is handed to the autoloaders when its name is
+                // read, before any of its properties (`zend_lookup_class`).
+                if crate::host::class_known(&class).is_err() {
+                    return None;
+                }
                 self.eat(b":")?;
                 let count = self.int_until(b':')?;
                 if count < 0 {

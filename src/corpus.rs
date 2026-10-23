@@ -7060,21 +7060,21 @@ pub const CORPUS: &[Entry] = &[
         "class_exists",
         "Reflection",
         "class_exists(string $class, bool $autoload = true): bool",
-        "A case-insensitive lookup in the host class table, answering for CLASSES only: an interface, a trait or an enum shares that table but is reported by its own predicate (an enum, as in PHP, is both). The engine's own classes `Closure` and `Generator` answer too. `$autoload` is never read.",
+        "A case-insensitive lookup in the host class table, answering for CLASSES only: an interface, a trait or an enum shares that table but is reported by its own predicate (an enum, as in PHP, is both). The engine's own classes `Closure` and `Generator` answer too. With `$autoload` (the default) a name not yet declared is handed to the autoloaders first.",
         "interface I {} var_dump(class_exists(\"I\"), class_exists(\"Closure\"));   // => bool(false) bool(true)",
     ),
     (
         "interface_exists",
         "Reflection",
         "interface_exists(string $interface, bool $autoload = true): bool",
-        "True for a declared interface, and for the engine's own — `Traversable`, `Iterator`, `IteratorAggregate`, `Countable`, `ArrayAccess`, `Stringable`, `JsonSerializable`, `Throwable`, `UnitEnum`, `BackedEnum`. `$autoload` is never read.",
+        "True for a declared interface, and for the engine's own — `Traversable`, `Iterator`, `IteratorAggregate`, `Countable`, `ArrayAccess`, `Stringable`, `JsonSerializable`, `Throwable`, `UnitEnum`, `BackedEnum`. With `$autoload` (the default) a name not yet declared is handed to the autoloaders first.",
         "interface I {} var_dump(interface_exists(\"I\"), interface_exists(\"Traversable\"));   // => bool(true) bool(true)",
     ),
     (
         "trait_exists",
         "Reflection",
         "trait_exists(string $trait, bool $autoload = true): bool",
-        "True for a declared trait and false for every other kind of name. `$autoload` is never read.",
+        "True for a declared trait and false for every other kind of name. With `$autoload` (the default) a name not yet declared is handed to the autoloaders first.",
         "trait T {} var_dump(trait_exists(\"T\"), class_exists(\"T\"));   // => bool(true) bool(false)",
     ),
     (
@@ -7197,10 +7197,8 @@ pub const CORPUS: &[Entry] = &[
         "class A {} class B extends A {}\nvar_dump(is_subclass_of(new B, \"A\"), is_subclass_of(new A, \"A\"));   // => bool(true) bool(false)",
     ),
     // ══ Runtime and diagnostics (stdlib::runtime) ═══════════════════════════
-    // Most of this module is deliberately inert: phplang has no error-handler
-    // chain, no shutdown queue, and no autoload chain, so the registration
-    // functions accept a callback and discard it. The four that do real work are
-    // `assert`, `trigger_error`/`user_error`, `error_log`, and `class_alias`.
+    // The error and exception handlers, the shutdown queue and the autoload
+    // chain each keep what they are given; see the entries below.
     (
         "__phplang_trace_string",
         "Runtime and diagnostics",
@@ -7352,14 +7350,28 @@ pub const CORPUS: &[Entry] = &[
         "spl_autoload_register",
         "Runtime and diagnostics",
         "spl_autoload_register(?callable $callback = null, bool $throw = true, bool $prepend = false): bool",
-        "DIVERGENCE: a no-op returning true. There is no autoload chain and no `include`, so every class must be declared in the source that uses it.",
-        "var_dump(spl_autoload_register(fn($c) => null));   // => bool(true)",
+        "Adds `$callback` to the autoload chain (at the front with `$prepend`); a callable already in it is not added again. When a class, interface, trait or enum that does not exist is needed — `new`, a static call, constant or property, `extends`/`implements`, `class_exists()` and the other lookups that autoload — each loader is called with the name (no leading `\\`) until it exists. A loader that throws ends the chain with its exception. `$throw = false` is ignored with a notice. DIVERGENCE: a null `$callback` (the default `spl_autoload`) registers nothing.",
+        "spl_autoload_register(fn($c) => eval(\"class $c {}\")); echo get_class(new Lazy);   // => Lazy",
     ),
     (
         "spl_autoload_unregister",
         "Runtime and diagnostics",
         "spl_autoload_unregister(callable $callback): bool",
-        "DIVERGENCE: a no-op returning true.",
+        "Removes `$callback` from the autoload chain; false when it was not in it.",
+        "",
+    ),
+    (
+        "spl_autoload_functions",
+        "Runtime and diagnostics",
+        "spl_autoload_functions(): array",
+        "The registered autoloaders, in the order they are called.",
+        "spl_autoload_register('strlen'); var_dump(spl_autoload_functions() === ['strlen']);   // => bool(true)",
+    ),
+    (
+        "spl_autoload_call",
+        "Runtime and diagnostics",
+        "spl_autoload_call(string $class): void",
+        "Runs the autoload chain for `$class`, stopping at the first loader after which it exists.",
         "",
     ),
     (

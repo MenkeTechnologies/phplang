@@ -5408,6 +5408,22 @@ static SIGS: &[(&str, Sig)] = &[
         },
     ),
     (
+        "spl_autoload_call",
+        Sig {
+            req: 1,
+            params: &[p("class", Required, "string")],
+            variadic: false,
+        },
+    ),
+    (
+        "spl_autoload_functions",
+        Sig {
+            req: 0,
+            params: &[],
+            variadic: false,
+        },
+    ),
+    (
         "spl_autoload_register",
         Sig {
             req: 0,

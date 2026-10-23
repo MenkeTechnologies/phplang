@@ -2870,6 +2870,40 @@ impl Compiler {
         Ok(())
     }
 
+    /// The parent and interfaces `decl` names that this compilation cannot
+    /// see declared, checked where the declaration runs (`ops::CLASS_LINK_CHECK`)
+    /// — which is where an autoloader gets to supply them, and where a missing
+    /// one is the reference's `Error`.
+    fn emit_link_checks(&mut self, b: &mut ChunkBuilder, decl: &ClassDecl) {
+        let known = |n: &str| {
+            let ln = n.to_ascii_lowercase();
+            self.class_decls.contains_key(&ln)
+                || crate::prelude_type(&ln).is_some()
+                || host::with_host(|h| h.class_exists(&ln))
+        };
+        let wanted: Vec<(String, bool)> = decl
+            .parent
+            .iter()
+            .map(|p| (p.clone(), false))
+            .chain(decl.implements.iter().map(|i| (i.clone(), true)))
+            .filter(|(n, _)| !known(n))
+            .collect();
+        for (name, interface) in wanted {
+            let idx = b.add_constant(Value::str(name));
+            b.emit(Op::LoadConst(idx), self.cur_line);
+            b.emit(
+                if interface {
+                    Op::LoadTrue
+                } else {
+                    Op::LoadFalse
+                },
+                self.cur_line,
+            );
+            b.emit(Op::CallBuiltin(ops::CLASS_LINK_CHECK, 2), self.cur_line);
+            b.emit(Op::Pop, self.cur_line);
+        }
+    }
+
     /// Lower a class declaration to a `ClassDef`: constant and property-default
     /// initializers become standalone expression chunks (each leaving its value
     /// on the stack), and each method body compiles like a free function. A
@@ -2879,6 +2913,7 @@ impl Compiler {
         if !self.prelude {
             self.check_class_members(decl)?;
             self.check_enum(decl)?;
+            self.emit_link_checks(b, decl);
         }
         let prev_class = self.current_class.take();
         let prev_parent = self.current_parent.take();

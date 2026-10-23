@@ -243,6 +243,12 @@ end-to-end (see `tests/basic.rs`):
   table; an unqualified function or constant tries the namespace first and the
   global one second, at run time. Names held in strings are fully qualified and
   may carry a leading `\` (`class_exists('\A\P')`, `call_user_func('\A\f')`).
+  **Autoloading**: `spl_autoload_register` (with `$prepend`, duplicates kept
+  once), `spl_autoload_unregister`, `spl_autoload_functions` and
+  `spl_autoload_call`; a class, interface, trait or enum that is not declared
+  yet is handed to the loaders by `new`, static calls, constants and
+  properties, a declaration's `extends`/`implements`, `unserialize` and the
+  lookup functions (`class_exists` and the rest, `is_a`, `method_exists`, …).
 - The **magic constants** `__LINE__`, `__FILE__`, `__DIR__`, `__FUNCTION__`,
   `__CLASS__`, `__METHOD__`, `__NAMESPACE__` and `__TRAIT__`, resolved where they
   are WRITTEN rather than where the call arrives: `__CLASS__` in an inherited

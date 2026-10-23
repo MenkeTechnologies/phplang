@@ -213,11 +213,48 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             with_host(|h| h.register_shutdown_fn(arg(args, 0), rest));
             Value::Undef
         }
-        // spl_autoload_register(): bool — no autoloader chain; accept and report
-        // success.
-        "spl_autoload_register" => Value::bool(true),
-        // spl_autoload_unregister(): bool — nothing registered; report success.
-        "spl_autoload_unregister" => Value::bool(true),
+        // `spl_autoload_register(?callable $callback = null, bool $throw = true,
+        // bool $prepend = false)`: add a loader to the chain `autoload` runs.
+        // `$throw` is ignored — registration always throws on a bad callback —
+        // and saying `false` draws the reference's notice. A null callback would
+        // register the default `spl_autoload`, which is not implemented, so it
+        // registers nothing.
+        "spl_autoload_register" => {
+            let throw = args.get(1).is_none_or(|v| with_host(|h| h.is_truthy(v)));
+            if !throw {
+                with_host(|h| {
+                    h.notice(
+                        "spl_autoload_register(): Argument #2 ($do_throw) has been ignored, \
+                         spl_autoload_register() will always throw",
+                    )
+                });
+            }
+            let prepend = args.get(2).is_some_and(|v| with_host(|h| h.is_truthy(v)));
+            match arg(args, 0) {
+                Value::Undef => {}
+                callback => with_host(|h| h.autoload_register(callback, prepend)),
+            }
+            Value::bool(true)
+        }
+        // `spl_autoload_unregister(callable $callback)`: whether it was registered.
+        "spl_autoload_unregister" => {
+            Value::bool(with_host(|h| h.autoload_unregister(&arg(args, 0))))
+        }
+        // `spl_autoload_functions()`: the registered loaders, in calling order.
+        "spl_autoload_functions" => with_host(|h| {
+            let out = h.new_array();
+            for l in h.autoload_functions() {
+                h.arr_push_auto(&out, l);
+            }
+            out
+        }),
+        // `spl_autoload_call(string $class)`: run the chain for `$class`.
+        "spl_autoload_call" => {
+            if let Err(e) = crate::host::autoload(&str_arg(args, 0)) {
+                return Some(Err(e));
+            }
+            Value::Undef
+        }
 
         // get_defined_vars(): array — the current frame's bound variables, in
         // the order they were first bound. This used to return an empty array

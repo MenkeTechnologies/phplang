@@ -33,10 +33,18 @@ fn object_arg_type_error(func: &str, v: &Value) -> String {
 
 /// Dispatch a `reflection`-category PHP function by lowercased name.
 pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
+    // A class NAME these look up is handed to the autoloaders first
+    // (`zend_lookup_class`), unless the call says not to.
+    if let Some(class) = autoload_subject(name, args) {
+        if let Err(e) = crate::host::class_known(&class) {
+            return Some(Err(e));
+        }
+    }
     let v = match name {
         // ── existence predicates ────────────────────────────────────────────
-        // `class_exists($name, $autoload = true)`: the autoload flag is ignored
-        // (nothing to autoload in this runtime). Case-insensitive lookup.
+        // `class_exists($name, $autoload = true)`: a name not yet declared has
+        // been handed to the autoloaders (see `autoload_subject`) unless
+        // `$autoload` is false. Case-insensitive lookup.
         // Each of the four answers for exactly ONE declaration kind: an
         // `interface I {}` makes `interface_exists('I')` true and
         // `class_exists('I')` FALSE, and an `enum E {}` is an enum, not a class.
@@ -228,8 +236,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         // ── ancestry / composition enumeration ──────────────────────────────
         // `class_parents($object_or_class, $autoload = true)`: an associative
         // array `name => name` for each ancestor, nearest first, or `false` when
-        // the subject is not a declared class/object. The autoload flag is
-        // ignored (nothing to autoload). Names carry the parent's declared
+        // the subject is not a declared class/object. Names carry the parent's declared
         // casing, as PHP does.
         "class_parents" => {
             let a = arg(args, 0);
@@ -319,6 +326,30 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         _ => return None,
     };
     Some(Ok(v))
+}
+
+/// The class-name string `name`'s call looks up — and so autoloads — if any:
+/// the first argument when it is a string and the function takes a class
+/// there, gated by `$allow_string` for `is_a`/`is_subclass_of` and by
+/// `$autoload` for the `class_*` family and the `*_exists` predicates.
+fn autoload_subject(name: &str, args: &[Value]) -> Option<String> {
+    let Some(Value::Str(class)) = args.first() else {
+        return None;
+    };
+    let flag = |i: usize, default: bool| {
+        args.get(i)
+            .map_or(default, |v| with_host(|h| h.is_truthy(v)))
+    };
+    let looks_up = match name {
+        "method_exists" | "property_exists" | "get_parent_class" | "get_class_methods"
+        | "get_class_vars" => true,
+        "is_a" => flag(2, false),
+        "is_subclass_of" => flag(2, true),
+        "class_exists" | "interface_exists" | "trait_exists" | "enum_exists" | "class_parents"
+        | "class_implements" | "class_uses" => flag(1, true),
+        _ => false,
+    };
+    looks_up.then(|| class.to_string())
 }
 
 /// Resolve the subject of `is_a`/`is_subclass_of` to a class name. Objects use

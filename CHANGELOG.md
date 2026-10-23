@@ -26,6 +26,32 @@ comment above it.
 
 ---
 
+## Round 27: autoloading
+
+`spl_autoload_register` was a no-op returning `true`; the chain is now real.
+Measured under `PHP 8.5.11 (cli)`; pinned in `tests/autoload.rs`.
+
+* `spl_autoload_register($callback, $throw, $prepend)` adds a loader (at the
+  front with `$prepend`; one already registered is not added again), and
+  `$throw = false` draws the reference's `has been ignored` notice.
+  `spl_autoload_unregister` answers whether the loader was registered;
+  `spl_autoload_functions` and `spl_autoload_call` are implemented.
+* A class, interface, trait or enum that is not declared yet is handed to each
+  loader in turn — by its fully qualified name, without a leading `\` — until
+  it exists: by `new`, a static call, a class constant, a static property, a
+  declaration's `extends` and `implements`, `unserialize`, the `*_exists`
+  predicates (unless `$autoload` is false), `is_a` (with `$allow_string`),
+  `is_subclass_of`, `method_exists`, `property_exists`, `get_parent_class`,
+  `get_class_methods`, `get_class_vars`, `class_parents`, `class_uses` and
+  `constant("C::K")`. A name that cannot be a class is never passed on, a
+  loader asking for the class it is loading gets `false`, and a loader that
+  throws ends the lookup with its exception.
+* A declaration whose parent or interface does not exist when the declaration
+  runs is the reference's `Error: Class "X" not found` / `Interface "X" not
+  found`; it used to be declared anyway, with nothing inherited.
+
+---
+
 ## Round 27: namespaces
 
 Names resolve as `zend_compile.c` resolves them; the flat model, which folded

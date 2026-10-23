@@ -506,6 +506,12 @@ pub mod ops {
     /// the namespaced constant, else the global one, else `Error: Undefined
     /// constant "ns\NAME"`.
     pub const CONST_FETCH_NS: u16 = 159;
+    /// `[name, interface] -> null`. A class declaration's parent (or, with
+    /// `interface` true, an interface it implements or extends) at the point
+    /// the declaration runs: autoloaded if it is not declared yet, and
+    /// `Error: Class "X" not found` / `Interface "X" not found` if it is
+    /// still missing (`zend_do_link_class`).
+    pub const CLASS_LINK_CHECK: u16 = 160;
 }
 
 /// The capture name a `static` closure carries from its creation site.
@@ -1187,6 +1193,12 @@ pub struct PhpHost {
     /// key in `constants`. A namespace is case-insensitive and a constant's own
     /// name is not, so `\a\b\K` reaches `A\B\K` and `A\B\k` does not.
     const_ns_keys: FxHashMap<String, String>,
+    /// The `spl_autoload_register` chain, in calling order.
+    autoloaders: Vec<Value>,
+    /// The lowercased classes being autoloaded right now — a loader that asks
+    /// for the class it is loading gets `false`, not a recursion
+    /// (`EG(in_autoload)`).
+    autoloading: FxHashSet<String>,
     /// The next resource number to hand out. Numbers are never reused.
     next_resource_id: i64,
     /// The `include`/`require`/`eval` constructs currently running, innermost
@@ -1626,6 +1638,8 @@ impl PhpHost {
             try_defs: Vec::new(),
             constants: predefined_constants(),
             const_ns_keys: FxHashMap::default(),
+            autoloaders: Vec::new(),
+            autoloading: FxHashSet::default(),
             next_resource_id: 1,
             includes: Vec::new(),
             included_files: Vec::new(),
@@ -9841,6 +9855,144 @@ pub fn fcc_refusal(callable: &Value, instance: bool) -> Option<String> {
     callvalue_refusal(callable)
 }
 
+// ── autoloading ─────────────────────────────────────────────────────────────
+
+impl PhpHost {
+    /// Whether two autoloader callables are the same one, as
+    /// `spl_autoload_register` decides a duplicate: the same closure or
+    /// object, or the same function or method named the same way.
+    fn same_callable(&self, a: &Value, b: &Value) -> bool {
+        match (a, b) {
+            (Value::Str(x), Value::Str(y)) => unanchored(x).eq_ignore_ascii_case(unanchored(y)),
+            (Value::Obj(x), Value::Obj(y)) if x == y => true,
+            _ if self.is_array(a) && self.is_array(b) => {
+                let (pa, pb) = (
+                    self.array_pairs(a).unwrap_or_default(),
+                    self.array_pairs(b).unwrap_or_default(),
+                );
+                pa.len() == 2
+                    && pb.len() == 2
+                    && self
+                        .to_str(&pa[1].1)
+                        .eq_ignore_ascii_case(&self.to_str(&pb[1].1))
+                    && match (&pa[0].1, &pb[0].1) {
+                        (Value::Obj(x), Value::Obj(y)) if self.is_object(&pa[0].1) => x == y,
+                        (x, y) => unanchored(&self.to_str(x))
+                            .eq_ignore_ascii_case(unanchored(&self.to_str(y))),
+                    }
+            }
+            _ => false,
+        }
+    }
+
+    /// `spl_autoload_register(, prepend: )`. A callable
+    /// already in the chain is not added twice.
+    pub fn autoload_register(&mut self, callback: Value, prepend: bool) {
+        if self
+            .autoloaders
+            .iter()
+            .any(|l| self.same_callable(l, &callback))
+        {
+            return;
+        }
+        if prepend {
+            self.autoloaders.insert(0, callback);
+        } else {
+            self.autoloaders.push(callback);
+        }
+    }
+
+    /// `spl_autoload_unregister()`: whether it was in the chain.
+    pub fn autoload_unregister(&mut self, callback: &Value) -> bool {
+        match self
+            .autoloaders
+            .iter()
+            .position(|l| self.same_callable(l, callback))
+        {
+            Some(i) => {
+                self.autoloaders.remove(i);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// `spl_autoload_functions()`: the chain, in calling order.
+    pub fn autoload_functions(&self) -> Vec<Value> {
+        self.autoloaders.clone()
+    }
+}
+
+/// Whether `name` could name a class at all (`zend_is_valid_class_name`): only
+/// such a name is handed to an autoloader.
+fn is_valid_class_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'\\' || c >= 0x80)
+}
+
+/// Make `class` exist if an autoloader can (`zend_lookup_class` →
+/// `spl_perform_autoload`): each registered loader is called with the name,
+/// leading `\` dropped, until the class, interface, trait or enum is
+/// declared. Answers whether it exists afterwards. A loader that throws ends
+/// the chain with the exception pending, and a loader that asks for the class
+/// it is loading is answered `false`.
+pub fn autoload(class: &str) -> Result<bool, String> {
+    let name = unanchored(class);
+    let lname = name.to_ascii_lowercase();
+    let loaders = with_host(|h| {
+        if h.class_exists(name)
+            || h.autoloaders.is_empty()
+            || h.autoloading.contains(&lname)
+            || !is_valid_class_name(name)
+        {
+            None
+        } else {
+            h.autoloading.insert(lname.clone());
+            Some(h.autoloaders.clone())
+        }
+    });
+    let Some(loaders) = loaders else {
+        return Ok(with_host(|h| h.class_exists(name)));
+    };
+    let mut out = Ok(());
+    for loader in loaders {
+        if let Err(e) = call_value(loader, vec![Value::str(name.to_string())]) {
+            out = Err(e);
+            break;
+        }
+        if unwinding() || with_host(|h| h.class_exists(name)) {
+            break;
+        }
+    }
+    with_host(|h| h.autoloading.remove(&lname));
+    out.map(|()| with_host(|h| h.class_exists(name)))
+}
+
+/// Give the autoloaders their chance at `class` before a lookup that would
+/// refuse it. `Some` is what the caller returns instead of going on: the run
+/// is unwinding with a loader's exception. `self`, `parent` and `static` name
+/// the running scope and are never autoloaded.
+fn autoload_first(class: &str) -> Result<Option<Value>, String> {
+    if ["self", "parent", "static"]
+        .iter()
+        .any(|r| class.eq_ignore_ascii_case(r))
+    {
+        return Ok(None);
+    }
+    class_known(class)?;
+    Ok(unwinding().then_some(Value::Undef))
+}
+
+/// Whether `class` exists, autoloading it if it does not yet.
+pub fn class_known(class: &str) -> Result<bool, String> {
+    if with_host(|h| h.class_exists(class)) {
+        return Ok(true);
+    }
+    autoload(class)
+}
+
 /// Invoke a callable *value*: a closure handle runs its captured-plus-bound body
 /// in a fresh scope; an array / `"C::m"` / `__invoke` object resolves through
 /// `callable_method`; a plain string is dispatched by name through
@@ -10226,6 +10378,9 @@ pub fn new_object(class: &str, args: Vec<Value>) -> Result<Value, String> {
 /// a constructor argument is evaluated — `ZEND_NEW` allocates it there, which
 /// is why `new A(new B)` makes `A` object #1 and `B` #2.
 pub fn alloc_object(class: &str) -> Result<Value, String> {
+    if let Some(v) = autoload_first(class)? {
+        return Ok(v);
+    }
     let cl = class.to_ascii_lowercase();
     // Both refusals are catchable `Error`s in the reference; a bare `Err` here
     // stopped the program with a scaffold message no `try` block could see.
@@ -10686,6 +10841,9 @@ fn run_in_class_scope(declaring: &str, chunk: Chunk) -> Result<Value, String> {
 /// `Class::CONST` — evaluate the (inherited) constant initializer. On an `enum`, a
 /// name that is not a real constant is resolved as an enum case singleton.
 pub fn class_const(class: &str, name: &str) -> Result<Value, String> {
+    if let Some(v) = autoload_first(class)? {
+        return Ok(v);
+    }
     if let Some((declaring, chunk)) = with_host(|h| h.resolve_const_chunk(class, name)) {
         if let Some(msg) = with_host(|h| h.const_access_denied(class, name)) {
             return Err(crate::builtins::throws_bare("Error", msg));
@@ -10942,6 +11100,9 @@ fn static_prop_denied(class: &str, name: &str) -> Option<String> {
 /// `Class::$prop` read. On first access the (constant) initializer runs once and
 /// is stored in the per-class static cell; subsequent reads return the cell.
 pub fn static_prop_get(class: &str, name: &str) -> Result<Value, String> {
+    if let Some(v) = autoload_first(class)? {
+        return Ok(v);
+    }
     let Some((key, chunk)) = with_host(|h| h.resolve_static_key(class, name)) else {
         return Err(crate::builtins::throws_bare(
             "Error",
@@ -10967,6 +11128,9 @@ pub fn static_prop_get(class: &str, name: &str) -> Result<Value, String> {
 /// property is null rather than an `Error`. An unknown class is still the
 /// ordinary `Class "X" not found`.
 pub fn static_prop_get_quiet(class: &str, name: &str) -> Result<Value, String> {
+    if let Some(v) = autoload_first(class)? {
+        return Ok(v);
+    }
     let declared = with_host(|h| h.resolve_static_key(class, name).is_some());
     if !declared {
         if !with_host(|h| h.class_exists(class)) {
@@ -11043,6 +11207,9 @@ pub fn class_vars(class: &str) -> Result<Option<Value>, String> {
 
 /// `Class::$prop = val` — write the per-class static cell, initializing lazily.
 pub fn static_prop_set(class: &str, name: &str, val: Value) -> Result<Value, String> {
+    if let Some(v) = autoload_first(class)? {
+        return Ok(v);
+    }
     let Some((key, _)) = with_host(|h| h.resolve_static_key(class, name)) else {
         return Err(crate::builtins::throws_bare(
             "Error",

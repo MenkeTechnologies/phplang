@@ -118,6 +118,7 @@ pub fn install(vm: &mut VM) {
     reg!(vm, ops::GLOBALS_ISSET, b_globals_isset);
     reg!(vm, ops::NS_FN_NAME, b_ns_fn_name);
     reg!(vm, ops::CONST_FETCH_NS, b_const_fetch_ns);
+    reg!(vm, ops::CLASS_LINK_CHECK, b_class_link_check);
     reg!(vm, ops::CONST_DECL, b_const_decl);
     reg!(vm, ops::PROP_GET_EMPTY, b_prop_get_empty);
     reg!(vm, ops::PROP_INCDEC, b_prop_incdec);
@@ -1009,6 +1010,21 @@ fn b_ns_fn_name(vm: &mut VM, _: u8) -> Value {
     Value::Str(qualified)
 }
 
+/// See `ops::CLASS_LINK_CHECK`.
+fn b_class_link_check(vm: &mut VM, _: u8) -> Value {
+    let interface = vm.pop().to_int() != 0;
+    let name = pop_name(vm);
+    match class_or_autoload(vm, &name) {
+        Ok(true) => Value::Undef,
+        Ok(false) => {
+            mark_frame_line(vm);
+            let kind = if interface { "Interface" } else { "Class" };
+            throw_php(vm, "Error", &format!("{kind} \"{name}\" not found"))
+        }
+        Err(v) => v,
+    }
+}
+
 /// See `ops::CONST_FETCH_NS`.
 fn b_const_fetch_ns(vm: &mut VM, _: u8) -> Value {
     let qualified = pop_name(vm);
@@ -1583,7 +1599,7 @@ fn static_method_plan(
     // A call on a class that was never declared never reaches a method table:
     // the class is what is missing, and PHP says so instead of naming a method
     // that could not have existed either way.
-    if !with_host(|h| h.class_exists(class)) {
+    if !class_or_autoload(vm, class)? {
         return Err(throw_php(
             vm,
             "Error",
@@ -1930,6 +1946,18 @@ fn bubbled(vm: &mut VM, v: Value) -> Value {
         Value::Undef
     } else {
         v
+    }
+}
+
+/// Whether `class` exists once the autoloaders have had their chance at it.
+/// `Err` carries what the caller returns instead of its own refusal: the
+/// exception a loader threw (already pending, so the chunk just unwinds) or a
+/// fatal one raised.
+fn class_or_autoload(vm: &mut VM, class: &str) -> Result<bool, Value> {
+    match host::class_known(class) {
+        Ok(found) if !bubble_throw(vm) => Ok(found),
+        Ok(_) => Err(Value::Undef),
+        Err(e) => Err(fail(vm, e)),
     }
 }
 
@@ -3350,8 +3378,13 @@ fn b_call_class_check(vm: &mut VM, _: u8) -> Value {
     let class = pop_name(vm);
     // `Closure` is synthesized rather than declared, exactly as
     // `static_method_plan` lets it through ahead of its own existence check.
-    if class.eq_ignore_ascii_case("Closure") || with_host(|h| h.class_exists(&class)) {
+    if class.eq_ignore_ascii_case("Closure") {
         return Value::Str(class);
+    }
+    match class_or_autoload(vm, &class) {
+        Ok(true) => return Value::Str(class),
+        Ok(false) => {}
+        Err(v) => return v,
     }
     mark_frame_line(vm);
     throw_php(

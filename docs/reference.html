@@ -6047,19 +6047,19 @@ echo implode(",", $a), "|", implode(",", $b);   // =&gt; 1,2,3|a,b,c</code></pre
         <article class="doc-entry" id="doc-reflection-1">
           <h3><a class="doc-anchor" href="#doc-reflection-1">#</a> <code>class_exists</code></h3>
           <pre><code class="lang-php">class_exists(string $class, bool $autoload = true): bool</code></pre>
-          <p>A case-insensitive lookup in the host class table, answering for CLASSES only: an interface, a trait or an enum shares that table but is reported by its own predicate (an enum, as in PHP, is both). The engine's own classes `Closure` and `Generator` answer too. `$autoload` is never read.</p>
+          <p>A case-insensitive lookup in the host class table, answering for CLASSES only: an interface, a trait or an enum shares that table but is reported by its own predicate (an enum, as in PHP, is both). The engine's own classes `Closure` and `Generator` answer too. With `$autoload` (the default) a name not yet declared is handed to the autoloaders first.</p>
           <pre><code class="lang-php">interface I {} var_dump(class_exists("I"), class_exists("Closure"));   // =&gt; bool(false) bool(true)</code></pre>
         </article>
         <article class="doc-entry" id="doc-reflection-2">
           <h3><a class="doc-anchor" href="#doc-reflection-2">#</a> <code>interface_exists</code></h3>
           <pre><code class="lang-php">interface_exists(string $interface, bool $autoload = true): bool</code></pre>
-          <p>True for a declared interface, and for the engine's own — `Traversable`, `Iterator`, `IteratorAggregate`, `Countable`, `ArrayAccess`, `Stringable`, `JsonSerializable`, `Throwable`, `UnitEnum`, `BackedEnum`. `$autoload` is never read.</p>
+          <p>True for a declared interface, and for the engine's own — `Traversable`, `Iterator`, `IteratorAggregate`, `Countable`, `ArrayAccess`, `Stringable`, `JsonSerializable`, `Throwable`, `UnitEnum`, `BackedEnum`. With `$autoload` (the default) a name not yet declared is handed to the autoloaders first.</p>
           <pre><code class="lang-php">interface I {} var_dump(interface_exists("I"), interface_exists("Traversable"));   // =&gt; bool(true) bool(true)</code></pre>
         </article>
         <article class="doc-entry" id="doc-reflection-3">
           <h3><a class="doc-anchor" href="#doc-reflection-3">#</a> <code>trait_exists</code></h3>
           <pre><code class="lang-php">trait_exists(string $trait, bool $autoload = true): bool</code></pre>
-          <p>True for a declared trait and false for every other kind of name. `$autoload` is never read.</p>
+          <p>True for a declared trait and false for every other kind of name. With `$autoload` (the default) a name not yet declared is handed to the autoloaders first.</p>
           <pre><code class="lang-php">trait T {} var_dump(trait_exists("T"), class_exists("T"));   // =&gt; bool(true) bool(false)</code></pre>
         </article>
         <article class="doc-entry" id="doc-reflection-4">
@@ -6290,22 +6290,33 @@ echo $undefined;   // =&gt; caught: Undefined variable $undefined</code></pre>
         <article class="doc-entry" id="doc-runtime-and-diagnostics-22">
           <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-22">#</a> <code>spl_autoload_register</code></h3>
           <pre><code class="lang-php">spl_autoload_register(?callable $callback = null, bool $throw = true, bool $prepend = false): bool</code></pre>
-          <p>DIVERGENCE: a no-op returning true. There is no autoload chain and no `include`, so every class must be declared in the source that uses it.</p>
-          <pre><code class="lang-php">var_dump(spl_autoload_register(fn($c) =&gt; null));   // =&gt; bool(true)</code></pre>
+          <p>Adds `$callback` to the autoload chain (at the front with `$prepend`); a callable already in it is not added again. When a class, interface, trait or enum that does not exist is needed — `new`, a static call, constant or property, `extends`/`implements`, `class_exists()` and the other lookups that autoload — each loader is called with the name (no leading `\`) until it exists. A loader that throws ends the chain with its exception. `$throw = false` is ignored with a notice. DIVERGENCE: a null `$callback` (the default `spl_autoload`) registers nothing.</p>
+          <pre><code class="lang-php">spl_autoload_register(fn($c) =&gt; eval("class $c {}")); echo get_class(new Lazy);   // =&gt; Lazy</code></pre>
         </article>
         <article class="doc-entry" id="doc-runtime-and-diagnostics-23">
           <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-23">#</a> <code>spl_autoload_unregister</code></h3>
           <pre><code class="lang-php">spl_autoload_unregister(callable $callback): bool</code></pre>
-          <p>DIVERGENCE: a no-op returning true.</p>
+          <p>Removes `$callback` from the autoload chain; false when it was not in it.</p>
         </article>
         <article class="doc-entry" id="doc-runtime-and-diagnostics-24">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-24">#</a> <code>get_defined_vars</code></h3>
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-24">#</a> <code>spl_autoload_functions</code></h3>
+          <pre><code class="lang-php">spl_autoload_functions(): array</code></pre>
+          <p>The registered autoloaders, in the order they are called.</p>
+          <pre><code class="lang-php">spl_autoload_register('strlen'); var_dump(spl_autoload_functions() === ['strlen']);   // =&gt; bool(true)</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-25">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-25">#</a> <code>spl_autoload_call</code></h3>
+          <pre><code class="lang-php">spl_autoload_call(string $class): void</code></pre>
+          <p>Runs the autoload chain for `$class`, stopping at the first loader after which it exists.</p>
+        </article>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-26">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-26">#</a> <code>get_defined_vars</code></h3>
           <pre><code class="lang-php">get_defined_vars(): array</code></pre>
           <p>The current frame's bound variables, in the order they were first bound. An unset name is absent; a name bound to `null` is present. `$this` and `$GLOBALS` are not included. At global scope the populated superglobals come first in the reference's fixed order (`argv`, `argc`, `_GET`, `_POST`, `_COOKIE`, `_FILES`, `_SERVER`), then the script's own variables.</p>
           <pre><code class="lang-php">function f($p) { $a = 1; unset($a); return get_defined_vars(); } print_r(f(7));   // =&gt; [p =&gt; 7]</code></pre>
         </article>
-        <article class="doc-entry" id="doc-runtime-and-diagnostics-25">
-          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-25">#</a> <code>class_alias</code></h3>
+        <article class="doc-entry" id="doc-runtime-and-diagnostics-27">
+          <h3><a class="doc-anchor" href="#doc-runtime-and-diagnostics-27">#</a> <code>class_alias</code></h3>
           <pre><code class="lang-php">class_alias(string $class, string $alias, bool $autoload = true): bool</code></pre>
           <p>DIVERGENCE: it reports whether `$class` exists and REGISTERS NOTHING — `$alias` is never read. A true return is therefore misleading: instantiating the alias afterwards still fails.</p>
           <pre><code class="lang-php">class C {} var_dump(class_alias("C", "D"), class_exists("D"));   // =&gt; bool(true) bool(false)</code></pre>
