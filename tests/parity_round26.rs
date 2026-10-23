@@ -229,3 +229,89 @@ fn iterator_apply_drives_iterator() {
         "rw v [cb a] n v [cb a] n v int(2)\n0=5 1=6 int(2)\n"
     );
 }
+
+/// A by-reference `foreach` walks the live array: an element the body appends is
+/// visited, after the deleted ones are skipped. It used to stop at the keys the
+/// loop started with.
+#[test]
+fn foreach_by_ref_visits_appended() {
+    let src = r#"<?php $a = [1, 2, 3]; foreach ($a as $k => &$v) { $v *= 2; if ($k == 0) { $a[] = 99; } } unset($v); print_r($a);
+        $b = [1]; foreach ($b as $k => &$v) { echo "$k "; if ($k < 4) $b[] = $k + 10; } unset($v); echo count($b), "\n";
+        $c = ['a' => 1, 'b' => 2]; foreach ($c as $k => &$v) { echo $k; if ($k == 'a') { unset($c['b']); $c['z'] = 3; } } unset($v); echo "\n";
+        $d = [1, 2]; foreach ($d as $k => &$v) { echo $k; if ($k == 1) unset($d[1]); if ($k == 0) $d[] = 5; } echo "\n";
+        $e = []; foreach ($e as &$v) { echo "never"; } echo "ok\n";
+        $f = [1, 2]; foreach ($f as &$v) { if ($v == 1) { $f[] = 3; } if ($v == 2) break; } unset($v); print_r($f);
+        "#;
+    assert_eq!(run(src), "Array\n(\n    [0] => 2\n    [1] => 4\n    [2] => 6\n    [3] => 198\n)\n0 1 2 3 4 5\naz\n012\nok\nArray\n(\n    [0] => 1\n    [1] => 2\n    [2] => 3\n)\n");
+}
+
+/// A `&` target destructuring a call result has nothing to alias: each
+/// by-reference fetch raises `Attempting to set reference to non referenceable
+/// value` and binds a copy. A variable subject is aliased with no notice.
+#[test]
+fn list_ref_on_call_result_notices() {
+    let src = r#"<?php function f() { return [1, [2]]; }
+        [&$x, [&$y]] = f(); echo $x, $y, "\n";
+        [$a, &$b] = f(); echo $a, json_encode($b), "\n";
+        $v = [1, [2]]; [&$p, [&$q]] = $v; $p = 5; $q = 6; echo json_encode($v), "\n";
+        "#;
+    assert_eq!(run(src), "\nNotice: Attempting to set reference to non referenceable value in Command line code on line 2\n\nNotice: Attempting to set reference to non referenceable value in Command line code on line 2\n\nNotice: Attempting to set reference to non referenceable value in Command line code on line 2\n12\n\nNotice: Attempting to set reference to non referenceable value in Command line code on line 3\n1[2]\n[5,[6]]\n");
+}
+
+/// An arrow function binds each free variable of its body only when the enclosing
+/// scope has it, with no diagnostic (`ZEND_BIND_IMPLICIT`); a `use` clause still
+/// warns. A variable the body assigns used to warn `Undefined variable` when the
+/// arrow function was created.
+#[test]
+fn arrow_fn_implicit_capture_is_silent() {
+    let src = r#"<?php $f = fn() => $u ?? 1; echo $f(), "\n";
+        $g = fn() => ($z = 5) + 1; echo $g(), "\n";
+        $n = null; $h = fn() => $n; var_dump($h());
+        $k = fn() => $nope; var_dump($k());
+        $c = function () use ($w) { return $w; }; var_dump($c());
+        "#;
+    assert_eq!(run(src), "1\n6\nNULL\n\nWarning: Undefined variable $nope in Command line code on line 4\nNULL\n\nWarning: Undefined variable $w in Command line code on line 5\nNULL\n");
+}
+
+/// `array_key_exists` refuses an array or object key with the container-offset
+/// `TypeError` and words its own null deprecation; `array_flip` and
+/// `array_count_values` skip a value that is neither int nor string with a
+/// warning; `array_fill_keys` and `array_combine` key a non-int through its string
+/// form. A NAN offset reports the narrowing too.
+#[test]
+fn array_key_functions_take_only_int_and_string() {
+    let src = r#"<?php $a = ['' => 1, 1 => 2, 0 => 3];
+        foreach ([null, 1.5, NAN, [], new stdClass] as $k) {
+            try { var_dump(array_key_exists($k, $a)); } catch (TypeError $e) { echo $e->getMessage(), "\n"; }
+        }
+        var_dump(array_count_values([1.5, "a", true, "1", 1]));
+        var_dump(array_flip([1.5, true, "x", 2]));
+        var_dump(array_fill_keys([1.5, true, null], 0), array_combine([1.5, true, null], [1, 2, 3]));
+        $b = []; $b[NAN] = 1; var_dump($b);
+        "#;
+    assert_eq!(run(src), "\nDeprecated: Using null as the key parameter for array_key_exists() is deprecated, use an empty string instead in Command line code on line 3\nbool(true)\n\nDeprecated: Implicit conversion from float 1.5 to int loses precision in Command line code on line 3\nbool(true)\n\nWarning: The float NAN is not representable as an int, cast occurred in Command line code on line 3\n\nDeprecated: Implicit conversion from float NAN to int loses precision in Command line code on line 3\nbool(true)\nCannot access offset of type array on array\nCannot access offset of type stdClass on array\n\nWarning: array_count_values(): Can only count string and integer values, entry skipped in Command line code on line 5\n\nWarning: array_count_values(): Can only count string and integer values, entry skipped in Command line code on line 5\narray(2) {\n  [\"a\"]=>\n  int(1)\n  [1]=>\n  int(2)\n}\n\nWarning: array_flip(): Can only flip string and integer values, entry skipped in Command line code on line 6\n\nWarning: array_flip(): Can only flip string and integer values, entry skipped in Command line code on line 6\narray(2) {\n  [\"x\"]=>\n  int(2)\n  [2]=>\n  int(3)\n}\narray(3) {\n  [\"1.5\"]=>\n  int(0)\n  [1]=>\n  int(0)\n  [\"\"]=>\n  int(0)\n}\narray(3) {\n  [\"1.5\"]=>\n  int(1)\n  [1]=>\n  int(2)\n  [\"\"]=>\n  int(3)\n}\n\nWarning: The float NAN is not representable as an int, cast occurred in Command line code on line 8\n\nDeprecated: Implicit conversion from float NAN to int loses precision in Command line code on line 8\narray(1) {\n  [0]=>\n  int(1)\n}\n");
+}
+
+/// `zend_compile_list_assign`: a destructuring with a `&` target needs a
+/// variable or a call as its subject. A literal, an assignment or a ternary is
+/// a compile-time fatal, so the `echo` before it never prints. An assignment
+/// subject used to run silently.
+#[test]
+fn list_ref_needs_a_variable_or_call_subject() {
+    let fatal = "\nFatal error: Cannot assign reference to non referenceable value in Command \
+                 line code on line 1\nStack trace:\n#0 {main}\n";
+    for code in [
+        "echo 1; [&$x] = [1];",
+        "echo 1; list(&$x) = $y = [1];",
+        "echo 1; [$a, [&$b]] = true ? [1, [2]] : [];",
+    ] {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_php"))
+            .arg("-r")
+            .arg(code)
+            .stderr(std::process::Stdio::null())
+            .output()
+            .expect("spawn php -r");
+        assert_eq!(String::from_utf8_lossy(&out.stdout), fatal, "code: {code}");
+        assert_eq!(out.status.code(), Some(255), "code: {code}");
+    }
+}

@@ -32,6 +32,45 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         // `[false, $exception]` with the exception it threw taken off the
         // stack: the prelude cannot hold a `try` (its try-defs are not loaded).
         "__phplang_try_call" => return Some(crate::host::try_call(arg(args, 0))),
+        // The keys of an array that follow the last of `$walked` it still
+        // holds, in its order — every key when it holds none of them. How a
+        // by-reference `foreach` picks up the elements its body appended: they
+        // sit after every bucket the walk started with.
+        "__phplang_keys_after" => with_host(|h| {
+            let live: Vec<Value> = h
+                .array_pairs(&arg(args, 0))
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(k, _)| k)
+                .collect();
+            let walked: Vec<Value> = h
+                .array_pairs(&arg(args, 1))
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(_, k)| k)
+                .collect();
+            let start = walked
+                .iter()
+                .rev()
+                .find_map(|w| live.iter().position(|k| k == w))
+                .map_or(0, |p| p + 1);
+            let keys = live[start..].to_vec();
+            let out = h.new_array();
+            for k in keys {
+                h.arr_push_auto(&out, k);
+            }
+            out
+        }),
+        // `[&$x] = f()` on a call that did not return by reference: the
+        // reference's notice, once per `FETCH_LIST_W` the pattern makes.
+        "__phplang_list_ref_notice" => with_host(|h| {
+            if h.take_published_ret_ref().is_none() {
+                for _ in 0..arg(args, 0).to_int() {
+                    h.notice("Attempting to set reference to non referenceable value");
+                }
+            }
+            Value::Undef
+        }),
         // An E_DEPRECATED raised by a prelude method, at the user's call site.
         "__phplang_deprecated" => {
             crate::host::deprecated_from_prelude(&str_arg(args, 0));

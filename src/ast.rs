@@ -920,6 +920,10 @@ pub struct SwitchCase {
 pub struct Capture {
     pub name: String,
     pub by_ref: bool,
+    /// An arrow function's capture rather than a `use` clause's: bound only
+    /// when the enclosing variable is, and without a diagnostic when it is not
+    /// (`ZEND_BIND_IMPLICIT`).
+    pub implicit: bool,
 }
 
 /// Which of the four file-inclusion constructs an [`Expr::Include`] is.

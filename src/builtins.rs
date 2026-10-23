@@ -1967,6 +1967,14 @@ fn b_mkclosure(vm: &mut VM, argc: u8) -> Value {
     while let Some(k) = it.next() {
         let Some(v) = it.next() else { break };
         let name = with_host(|h| h.to_str(&k));
+        // An arrow function's implicit capture (NUL-prefixed by the compiler)
+        // binds only a variable the enclosing scope has bound, silently.
+        if let Some(bare) = name.strip_prefix('\0') {
+            if with_host(|h| h.var_defined(bare)) {
+                captured.push((bare.to_string(), v));
+            }
+            continue;
+        }
         captured.push((name, v));
     }
     with_host(|h| h.make_closure(&def_name, captured))
@@ -4898,7 +4906,7 @@ pub fn call_library(name: &str, args: &[Value]) -> Result<Value, String> {
             })
         }
         "array_unique" => with_host(|h| php_array_unique(h, args)),
-        "array_key_exists" | "key_exists" => with_host(|h| php_array_key_exists(h, args)),
+        "array_key_exists" | "key_exists" => with_host(|h| php_array_key_exists(h, args))?,
         "array_search" => with_host(|h| php_array_search(h, args)),
         // The sort family takes an optional `SORT_*` flags argument in position 1.
         "sort" => with_host(|h| php_sort(h, &arg(args, 0), false, sort_flags(args))),
@@ -7709,6 +7717,11 @@ fn php_array_flip(h: &mut host::PhpHost, arr: &Value) -> Value {
     let out = h.new_array();
     for (k, v) in pairs {
         // value becomes key, key becomes value (host normalizes the new key).
+        // `PHP_FUNCTION(array_flip)` takes only an int or a string as a key.
+        if !matches!(v, Value::Int(_) | Value::Str(_)) {
+            h.warn("array_flip(): Can only flip string and integer values, entry skipped");
+            continue;
+        }
         h.arr_set_key(&out, &v, k);
     }
     out
@@ -7793,11 +7806,28 @@ fn php_array_unique(h: &mut host::PhpHost, args: &[Value]) -> Value {
     out
 }
 
-fn php_array_key_exists(h: &mut host::PhpHost, args: &[Value]) -> Value {
-    let key = arg(args, 0);
+fn php_array_key_exists(h: &mut host::PhpHost, args: &[Value]) -> Result<Value, String> {
+    let mut key = arg(args, 0);
     let arr = arg(args, 1);
+    // `php_array_key_exists`: an array or object key is the container-offset
+    // `TypeError`, and a null key has a deprecation of its own wording.
+    if h.is_array(&arr) {
+        if let Some(t) = h.bad_offset_type(&key) {
+            return Err(throws(
+                "TypeError",
+                format!("Cannot access offset of type {t} on array"),
+            ));
+        }
+        if matches!(key, Value::Undef) {
+            h.deprecated(
+                "Using null as the key parameter for array_key_exists() is deprecated, use an \
+                 empty string instead",
+            );
+            key = Value::str("");
+        }
+    }
     if let Some(found) = h.array_has_key(&arr, &key) {
-        return Value::bool(found);
+        return Ok(Value::bool(found));
     }
     // Not an array: an object receiver falls back to matching its property
     // names, which is what the reference does for `ArrayObject`/`stdClass`.
@@ -7807,7 +7837,7 @@ fn php_array_key_exists(h: &mut host::PhpHost, args: &[Value]) -> Value {
         .unwrap_or_default()
         .iter()
         .any(|(k, _)| h.to_str(k) == want);
-    Value::bool(found)
+    Ok(Value::bool(found))
 }
 
 fn php_array_search(h: &host::PhpHost, args: &[Value]) -> Value {
@@ -7983,9 +8013,22 @@ fn php_array_combine(h: &mut host::PhpHost, args: &[Value]) -> Result<Value, Str
     }
     let out = h.new_array();
     for ((_, k), (_, v)) in keys.into_iter().zip(vals) {
+        let k = string_key(h, k);
         h.arr_set_key(&out, &k, v);
     }
     Ok(out)
+}
+
+/// How `array_combine` and `array_fill_keys` turn a value into a key: an int
+/// stays an int, anything else goes through its STRING form
+/// (`zval_get_tmp_string`, then `zend_symtable_update`), so `1.5` is the key
+/// `"1.5"`, `true` the key `1` and `null` the key `""`, with no offset
+/// diagnostics.
+pub(crate) fn string_key(h: &mut host::PhpHost, k: Value) -> Value {
+    match k {
+        Value::Int(_) | Value::Str(_) => k,
+        other => Value::str(h.to_str_diag(&other)),
+    }
 }
 
 /// `array_diff` (`intersect=false`) / `array_intersect` (`intersect=true`) over

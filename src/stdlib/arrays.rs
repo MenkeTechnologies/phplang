@@ -204,6 +204,7 @@ fn php_array_fill_keys(h: &mut host::PhpHost, args: &[Value]) -> Value {
     let value = arg(args, 1);
     let out = h.new_array();
     for (_, k) in h.array_pairs(&keys).unwrap_or_default() {
+        let k = crate::builtins::string_key(h, k);
         h.arr_set_key(&out, &k, value.clone());
     }
     out
@@ -496,6 +497,7 @@ fn php_array_count_values(h: &mut host::PhpHost, args: &[Value]) -> Value {
     let out = h.new_array();
     for (_, v) in pairs {
         if !matches!(v, Value::Int(_) | Value::Str(_)) {
+            h.warn("array_count_values(): Can only count string and integer values, entry skipped");
             continue;
         }
         let prev = h.index_get(&out, &v);

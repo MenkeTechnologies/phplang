@@ -2413,6 +2413,13 @@ impl PhpHost {
                     self.warn(format!(
                         "The float {shown} is not representable as an int, cast occurred"
                     ));
+                    // `zend_dval_to_lval_safe`: NAN casts to 0, which it is not
+                    // compatible with, so the narrowing is reported as well.
+                    if f.is_nan() {
+                        self.deprecated(format!(
+                            "Implicit conversion from float {shown} to int loses precision"
+                        ));
+                    }
                 } else if f.fract() != 0.0 {
                     self.deprecated(format!(
                         "Implicit conversion from float {shown} to int loses precision"

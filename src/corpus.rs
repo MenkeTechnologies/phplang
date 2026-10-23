@@ -7230,6 +7230,20 @@ pub const CORPUS: &[Entry] = &[
         "",
     ),
     (
+        "__phplang_list_ref_notice",
+        "Runtime and diagnostics",
+        "__phplang_list_ref_notice(int $fetches): null",
+        "Internal helper behind a destructuring with a `&` target whose subject is a call result; a phplang extension with no PHP counterpart. Unless the call returned by reference, raises the reference's `Attempting to set reference to non referenceable value` notice once per by-reference fetch the pattern makes.",
+        "",
+    ),
+    (
+        "__phplang_keys_after",
+        "Runtime and diagnostics",
+        "__phplang_keys_after(array $array, array $walked): array",
+        "Internal helper behind a by-reference `foreach`; a phplang extension with no PHP counterpart. The keys of `$array` that follow the last key of `$walked` it still holds, in its order, or all of them when it holds none. The loop refills its key list from it when the list runs out, so an element the body appended is visited, as the reference's live hash iterator visits it.",
+        "",
+    ),
+    (
         "__phplang_deprecated",
         "Runtime and diagnostics",
         "__phplang_deprecated(string $message): null",

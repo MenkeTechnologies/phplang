@@ -2270,8 +2270,38 @@ impl Compiler {
             Ok(())
         })?;
         b.emit(Op::Jump(top), 0);
+        // A by-reference `foreach` walks the LIVE array (`FE_FETCH_RW` over a
+        // hash iterator), so an element the body appends is visited too. When
+        // the key list runs out, it is refilled with the keys that now follow
+        // the last of its keys the array still holds; an empty refill ends the
+        // loop.
+        let refill = b.current_pos();
+        let mut no_more = None;
+        if by_ref {
+            b.emit(Op::LoadInt(0), 0);
+            self.emit_get_var(b, &i_t);
+            b.emit(Op::CallBuiltin(ops::LT, 2), 0);
+            b.emit(Op::CallBuiltin(ops::TRUTHY, 1), 0);
+            no_more = Some(b.emit(Op::JumpIfFalse(0), 0));
+            self.emit_set_var(b, &keys_t, |c, b| {
+                let fi = b.add_constant(Value::str("__phplang_keys_after"));
+                b.emit(Op::LoadConst(fi), 0);
+                c.emit_get_var(b, &arr_t);
+                c.emit_get_var(b, &keys_t);
+                b.emit(Op::CallBuiltin(ops::CALL, 3), 0);
+                Ok(())
+            })?;
+            self.emit_set_var(b, &i_t, |_, b| {
+                b.emit(Op::LoadInt(0), 0);
+                Ok(())
+            })?;
+            b.emit(Op::Jump(top), 0);
+        }
         let end = b.current_pos();
-        b.patch_jump(exit, end);
+        b.patch_jump(exit, refill);
+        if let Some(j) = no_more {
+            b.patch_jump(j, end);
+        }
         for j in ctx.breaks {
             b.patch_jump(j, end);
         }
@@ -4237,6 +4267,7 @@ impl Compiler {
                     .map(|name| Capture {
                         name,
                         by_ref: false,
+                        implicit: true,
                     })
                     .collect();
                 // The body IS a returned expression, which a `void` arrow function
@@ -5469,11 +5500,28 @@ impl Compiler {
                 // as an op. (The reverse of `ops::DECL_FATAL`, which is an op
                 // precisely because PHP's trait fatal lands at run time.)
                 let ref_root = Self::ref_source(rhs);
-                if ref_root.is_none() && Self::pattern_binds_by_ref(elems) && is_literal(rhs) {
-                    return Err("Cannot assign reference to non referenceable value".into());
+                if ref_root.is_none()
+                    && Self::pattern_binds_by_ref(elems)
+                    && !is_variable_or_call(rhs)
+                {
+                    return Err(self.compile_fatal(
+                        self.cur_line,
+                        "Cannot assign reference to non referenceable value",
+                    ));
                 }
                 let src = self.tmp_name("list");
                 self.emit_set_var(b, &src, |c, b| c.compile_rhs(b, rhs))?;
+                // A call result has no home for a `&` target to alias: each
+                // `FETCH_LIST_W` on it notices, then binds a copy — unless the
+                // callee returned by reference (checked when it has returned).
+                if ref_root.is_none() && Self::pattern_binds_by_ref(elems) {
+                    let n = Self::ref_list_fetches(elems);
+                    let fi = b.add_constant(Value::str("__phplang_list_ref_notice"));
+                    b.emit(Op::LoadConst(fi), self.cur_line);
+                    b.emit(Op::LoadInt(n), self.cur_line);
+                    b.emit(Op::CallBuiltin(ops::CALL, 2), self.cur_line);
+                    b.emit(Op::Pop, self.cur_line);
+                }
                 self.compile_list_targets(b, elems, &src, ref_root)?;
                 // The whole `[...] = rhs` expression evaluates to the RHS value.
                 self.emit_get_var(b, &src);
@@ -5517,6 +5565,21 @@ impl Compiler {
     /// Whether any target in this pattern is by reference, at any depth — a
     /// nested `[[&$x]]` needs the subject to be referenceable just as much as a
     /// flat one does.
+    /// How many `FETCH_LIST_W`s a pattern makes: one per `&` target, and one
+    /// per nested pattern that holds one, plus that pattern's own.
+    fn ref_list_fetches(elems: &[ArrayElem]) -> i64 {
+        elems
+            .iter()
+            .map(|e| match &e.value {
+                _ if e.by_ref => 1,
+                Expr::Array(inner, _) if Self::pattern_binds_by_ref(inner) => {
+                    1 + Self::ref_list_fetches(inner)
+                }
+                _ => 0,
+            })
+            .sum()
+    }
+
     fn pattern_binds_by_ref(elems: &[ArrayElem]) -> bool {
         elems.iter().any(|e| {
             e.by_ref
@@ -6021,7 +6084,15 @@ impl Compiler {
             b.emit(Op::LoadTrue, 0);
         }
         for cap in captures {
-            let cidx = b.add_constant(Value::str(cap.name.clone()));
+            // An implicit capture travels under a NUL-prefixed name, which tells
+            // `MKCLOSURE` to bind it only if the enclosing variable is bound.
+            let implicit = cap.implicit && cap.name != "this";
+            let shown = if implicit {
+                format!("\0{}", cap.name)
+            } else {
+                cap.name.clone()
+            };
+            let cidx = b.add_constant(Value::str(shown));
             b.emit(Op::LoadConst(cidx), 0);
             if cap.by_ref {
                 // `use (&$v)` captures a handle to the enclosing variable's
@@ -6038,6 +6109,8 @@ impl Compiler {
                 // quiet one — the loud twin would report a variable PHP never
                 // considers the closure to have read.
                 self.compile_quiet(b, &Expr::Var("this".to_string()))?;
+            } else if implicit {
+                self.compile_quiet(b, &Expr::Var(cap.name.clone()))?;
             } else {
                 self.emit_get_var(b, &cap.name);
             }
@@ -7330,22 +7403,24 @@ fn is_silently_numeric(e: &Expr) -> bool {
     }
 }
 
-/// Whether an expression is a literal value written in the source.
-///
-/// Distinguishes the two ways a destructuring subject can fail to be
-/// referenceable, which PHP treats differently: a literal is a fatal
-/// (`Cannot assign reference to non referenceable value`), while a temporary
-/// that merely has no home — a call result — is a notice and then a copy.
-fn is_literal(e: &Expr) -> bool {
+/// `zend_is_variable_or_call`: the subjects a destructuring with a `&`
+/// target may take. Anything else — a literal, an assignment, a ternary — is
+/// the compile-time `Cannot assign reference to non referenceable value`,
+/// while a call result, a temporary with no home, is a notice and then a copy.
+fn is_variable_or_call(e: &Expr) -> bool {
     matches!(
         e,
-        Expr::Null
-            | Expr::Bool(_)
-            | Expr::Int(_)
-            | Expr::Float(_)
-            | Expr::Str(_)
-            | Expr::Interp(_)
-            | Expr::Array(..)
+        Expr::Var(_)
+            | Expr::VarVar(_)
+            | Expr::Index(..)
+            | Expr::PropGet(..)
+            | Expr::NullsafePropGet(..)
+            | Expr::StaticProp(..)
+            | Expr::Call(..)
+            | Expr::CallValue(..)
+            | Expr::MethodCall(..)
+            | Expr::NullsafeMethodCall(..)
+            | Expr::StaticCall(..)
     )
 }
 

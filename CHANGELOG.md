@@ -64,6 +64,22 @@ Measured under `PHP 8.5.11 (cli)`; pinned in `tests/parity_round26.rs`.
   `array_unique` compares what `__toString` returns.
 * `iterator_apply` drives the iterator itself — `rewind`, `valid`, the
   callback, `next` — and never calls `current()`/`key()`.
+* A by-reference `foreach` visits the elements its body appends (it walks the
+  live array, refilling its key list from the keys that follow the last one
+  it started with that is still present).
+* A destructuring with a `&` target whose subject is neither a variable nor a
+  call is the compile-time `Cannot assign reference to non referenceable value`
+  in the reference's `Fatal error` shape (an assignment or ternary subject used
+  to run); a call result raises `Attempting to set reference to non referenceable
+  value` once per by-reference fetch.
+* An arrow function binds a free variable only when the enclosing scope has it,
+  silently — a variable its body assigns no longer warns `Undefined variable`
+  when the function is created.
+* `array_key_exists` refuses an array or object key with the container-offset
+  `TypeError` and words its own null deprecation; `array_flip` and
+  `array_count_values` skip and warn for a value that is neither int nor
+  string; `array_fill_keys` and `array_combine` key a non-int through its
+  string form; a NAN offset raises the narrowing deprecation after its warning.
 
 ## Incremental hashing: `hash_init` … `hash_final`
 

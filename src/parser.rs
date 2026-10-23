@@ -3936,7 +3936,11 @@ impl Parser {
                                 return Err(self.syntax_error_expecting(listing));
                             }
                             let name = self.expect_var()?;
-                            uses.push(Capture { name, by_ref });
+                            uses.push(Capture {
+                                name,
+                                by_ref,
+                                implicit: false,
+                            });
                             if !self.eat_punct(",") {
                                 break;
                             }
