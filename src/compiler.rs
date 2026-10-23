@@ -290,6 +290,47 @@ const BYREF_ARG_DIAG: &[(&str, u32, &str)] = &[
     ("preg_replace_callback_array", 4, "count"),
 ];
 
+/// The library functions whose OUT parameters a call writes back, as
+/// `(name, 0-based positions)`. The array mutators, which take their array by
+/// variable name, are in [`BYREF_ARG_DIAG`] instead.
+const BYREF_BUILTINS: &[(&str, &[usize])] = &[
+    ("preg_match", &[2]),
+    ("preg_match_all", &[2]),
+    ("preg_replace", &[4]),
+    ("preg_filter", &[4]),
+    ("preg_replace_callback", &[4]),
+    ("preg_replace_callback_array", &[3]),
+    ("parse_str", &[1]),
+    ("similar_text", &[2]),
+    ("str_replace", &[3]),
+    ("str_ireplace", &[3]),
+    ("settype", &[0]),
+];
+
+/// Every by-reference parameter position of library function `name`
+/// (0-based), as reflection and a first-class callable's dump report them.
+pub(crate) fn library_byref_positions(name: &str) -> Vec<usize> {
+    let lname = name.to_ascii_lowercase();
+    let mut out: Vec<usize> = BYREF_ARG_DIAG
+        .iter()
+        .filter(|(n, ..)| *n == lname)
+        .map(|(_, argno, _)| *argno as usize - 1)
+        .chain(
+            BYREF_BUILTINS
+                .iter()
+                .filter(|(n, _)| *n == lname)
+                .flat_map(|(_, p)| p.iter().copied()),
+        )
+        .collect();
+    // Declared by reference but `PREFER_REF`, so absent from the diagnostics.
+    if matches!(lname.as_str(), "extract" | "array_multisort") {
+        out.push(0);
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
 /// The highest argument number [`BYREF_ARG_DIAG`] describes. A named argument
 /// can reach a slot far past the number of arguments actually written —
 /// `preg_replace(count: [])` fills argument 5 with one argument — so the
@@ -431,6 +472,12 @@ pub struct Compiler {
     /// The functions it declares anywhere else (an `if`, a function body):
     /// whether they exist is known only when the call runs.
     cond_fns: FxHashSet<String>,
+    /// `(global, namespaced)` for the unqualified call in a namespace that was
+    /// just settled to the global function, while that call compiles. Its
+    /// arguments are compiled for the global function, but the name it calls
+    /// is still chosen when it runs ([`ops::NS_FN_NAME`]), so a namespaced
+    /// function a later `include` declares takes over, as upstream.
+    ns_global_call: Option<(String, String)>,
     /// Emit per-statement DAP line markers (`php --dap`). Off for normal runs so
     /// the compiled chunk carries zero extra ops.
     debug: bool,
@@ -961,20 +1008,36 @@ impl Compiler {
     }
 
     /// Push the name a call dispatches on: the literal, or — for an
-    /// unqualified name in a namespace that could not be settled — the
-    /// run-time choice between its two readings.
+    /// unqualified name in a namespace — the run-time choice between its two
+    /// readings, made once per call site.
     fn emit_fn_name(&mut self, b: &mut ChunkBuilder, name: &str) {
-        match split_ns_fallback(name) {
-            Some((qualified, _)) => {
-                let idx = b.add_constant(Value::str(qualified.to_string()));
-                b.emit(Op::LoadConst(idx), 0);
-                b.emit(Op::CallBuiltin(ops::NS_FN_NAME, 1), 0);
-            }
+        let runtime = match split_ns_fallback(name) {
+            Some((qualified, _)) => Some(qualified.to_string()),
+            None => self
+                .ns_global_call
+                .take_if(|(global, _)| global == name)
+                .map(|(_, qualified)| qualified),
+        };
+        match runtime {
+            Some(qualified) => self.emit_ns_fn_name(b, qualified),
             None => {
                 let idx = b.add_constant(Value::str(name.to_string()));
                 b.emit(Op::LoadConst(idx), 0);
             }
         }
+    }
+
+    /// `[ns\name, site] -> name` ([`ops::NS_FN_NAME`]), with a key of its own
+    /// for this call site: the choice is cached per site, as the reference
+    /// caches it in the opline's runtime slot.
+    fn emit_ns_fn_name(&mut self, b: &mut ChunkBuilder, qualified: String) {
+        let site = format!("@ns#{}", self.static_slot);
+        self.static_slot += 1;
+        let idx = b.add_constant(Value::str(qualified));
+        b.emit(Op::LoadConst(idx), 0);
+        let idx = b.add_constant(Value::str(site));
+        b.emit(Op::LoadConst(idx), 0);
+        b.emit(Op::CallBuiltin(ops::NS_FN_NAME, 2), self.cur_line);
     }
 
     fn emit_call_name_check(&mut self, b: &mut ChunkBuilder, name: &str, argc: usize) {
@@ -1075,19 +1138,6 @@ impl Compiler {
     }
 
     fn seed_builtin_byref(&mut self) {
-        const BYREF_BUILTINS: &[(&str, &[usize])] = &[
-            ("preg_match", &[2]),
-            ("preg_match_all", &[2]),
-            ("preg_replace", &[4]),
-            ("preg_filter", &[4]),
-            ("preg_replace_callback", &[4]),
-            ("preg_replace_callback_array", &[3]),
-            ("parse_str", &[1]),
-            ("similar_text", &[2]),
-            ("str_replace", &[3]),
-            ("str_ireplace", &[3]),
-            ("settype", &[0]),
-        ];
         for (name, positions) in BYREF_BUILTINS {
             self.byref_fns.insert(name.to_string(), positions.to_vec());
         }
@@ -3858,7 +3908,13 @@ impl Compiler {
         // already name compiles as a call to that name.
         if let Expr::Call(name, args) = e {
             if let Some(settled) = self.settle_fn_name(name) {
-                return self.compile_expr(b, &Expr::Call(settled, args.clone()));
+                let global = split_ns_fallback(name)
+                    .filter(|(q, _)| *q != settled)
+                    .map(|(q, _)| (settled.clone(), q.to_string()));
+                let saved = std::mem::replace(&mut self.ns_global_call, global);
+                let out = self.compile_expr(b, &Expr::Call(settled, args.clone()));
+                self.ns_global_call = saved;
+                return out;
             }
         }
         // A chain containing a `?->` is lowered whole, so the short-circuit can
@@ -4222,6 +4278,10 @@ impl Compiler {
                         self.emit_byref_writeback(b, args, &known, guarded)?;
                     }
                 } else if is_direct_minmax2(name, args) {
+                    // Frameless even through a namespace: the reference
+                    // guards it with `ZEND_JMP_FRAMELESS` rather than giving it
+                    // up.
+                    self.ns_global_call = None;
                     // A literal two-argument `min`/`max`. The reference compiles
                     // exactly this shape to its FRAMELESS implementation, which
                     // answers differently from the variadic one when an operand
@@ -4423,7 +4483,27 @@ impl Compiler {
             // object's own class, anything else an `Error`), and then the
             // ordinary `new` sequence runs on that name.
             Expr::NewDyn(class, args) => {
-                self.compile_expr(b, class)?;
+                // `new ("\C")`: a constant class name is settled while compiling,
+                // and its leading `\` goes with it — even from the name a
+                // "not found" reports, unlike `new $c`'s.
+                let literal = match &**class {
+                    Expr::Str(s) => Some(s.clone()),
+                    Expr::Interp(parts) => parts
+                        .iter()
+                        .map(|p| match p {
+                            InterpPart::Lit(l) => Some(l.as_str()),
+                            _ => None,
+                        })
+                        .collect::<Option<String>>(),
+                    _ => None,
+                };
+                match literal {
+                    Some(s) => self.compile_expr(
+                        b,
+                        &Expr::Str(s.strip_prefix('\\').unwrap_or(&s).to_string()),
+                    )?,
+                    None => self.compile_expr(b, class)?,
+                }
                 b.emit(Op::CallBuiltin(ops::DYN_CLASS, 1), self.cur_line);
                 self.emit_callee_check(b, ops::CALL_CLASS_CHECK, args.len());
                 b.emit(Op::CallBuiltin(ops::NEW_ALLOC, 1), self.cur_line);

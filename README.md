@@ -241,7 +241,9 @@ end-to-end (see `tests/basic.rs`):
   included, and a qualified name is relative to the current namespace unless its
   first segment is an import. A class name never falls back to the global
   table; an unqualified function or constant tries the namespace first and the
-  global one second, at run time. Names held in strings are fully qualified and
+  global one second, when the call site first runs (so a namespaced function a
+  later `include` declares takes over a site that has not run yet, and not one
+  that has). Names held in strings are fully qualified and
   may carry a leading `\` (`class_exists('\A\P')`, `call_user_func('\A\f')`).
   **Autoloading**: `spl_autoload_register` (with `$prepend`, duplicates kept
   once), `spl_autoload_unregister`, `spl_autoload_functions` and
@@ -501,10 +503,6 @@ end-to-end (see `tests/basic.rs`):
 
 A few current deviations, documented in-code:
 
-- An unqualified call written in a namespace is settled when it is compiled if
-  either reading of it already exists: a namespaced function declared later by
-  an `include` does not take over a call to the global function of that name
-  that was compiled before it.
 - `declare(strict_types=1)` is whole-program rather than per-file: the main
   script's declaration sets the mode for every call, and one in an `include`d
   file or `eval()`'d code is ignored. Upstream reads the mode from the file

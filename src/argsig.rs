@@ -6387,3 +6387,54 @@ static SIGS: &[(&str, Sig)] = &[
         },
     ),
 ];
+
+/// One declared parameter of a library function, as reflection and a
+/// first-class callable's dump report it.
+#[derive(Clone)]
+pub struct LibParam {
+    pub name: String,
+    /// The declared type, `""` for none.
+    pub ty: String,
+    pub by_ref: bool,
+    pub variadic: bool,
+    /// The default, `None` for a required or variadic parameter.
+    pub def: Option<Def>,
+}
+
+/// The parameters of library function `name`: names, types and defaults from
+/// the argument table, by-reference positions from the compiler's, and the
+/// variadic tail's name from the corpus signature (the table records only
+/// that there is one). `None` for a name the table does not know.
+pub fn library_params(name: &str) -> Option<Vec<LibParam>> {
+    let sig = sig_of(name)?;
+    let byref = crate::compiler::library_byref_positions(name);
+    let mut out: Vec<LibParam> = sig
+        .params
+        .iter()
+        .enumerate()
+        .map(|(i, p)| LibParam {
+            name: p.name.to_string(),
+            ty: p.ty.to_string(),
+            by_ref: byref.contains(&i),
+            variadic: false,
+            def: (p.def != Def::Required).then_some(p.def),
+        })
+        .collect();
+    if sig.variadic {
+        let spelled = crate::corpus::signature_params(name)
+            .unwrap_or_default()
+            .into_iter()
+            .find(|p| p.variadic);
+        let at = out.len();
+        out.push(LibParam {
+            name: spelled
+                .as_ref()
+                .map_or_else(|| "args".to_string(), |p| p.name.clone()),
+            ty: spelled.map(|p| p.ty).unwrap_or_default(),
+            by_ref: byref.contains(&at),
+            variadic: true,
+            def: None,
+        });
+    }
+    Some(out)
+}

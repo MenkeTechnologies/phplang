@@ -26,6 +26,35 @@ comment above it.
 
 ---
 
+## Round 28: closures in dumps, namespaced call sites, `call_user_func` frames
+
+Measured under `PHP 8.5.11 (cli)`; pinned in `tests/parity_round28.rs`.
+
+* `var_dump` and `print_r` show a closure as the reference does
+  (`zend_closure_get_debug_info`): `name`, `file` and `line` for a literal,
+  its `use` captures under `static` (a by-reference one marked `&`), the bound
+  `this`, and each `parameter` as `<required>`/`<optional>` with `&` for a
+  by-reference one. A first-class callable shows the `function` it forwards to
+  (`strlen`, `K::m`) and that function's parameters — a library function's
+  read from the argument tables, a variadic tail named from its signature. It
+  used to dump as `array(0) {}`. `var_export` gives `\Closure::__set_state(array(
+  ))`, `json_encode` gives `{}`, and a closure takes an object number (`#N`)
+  like any object.
+* An unqualified call written in a namespace is resolved when the call site
+  first runs, and that answer is kept for the site, as the reference's runtime
+  cache keeps it: a namespaced function declared later by `include` or `eval`
+  takes over a site that has not run yet, but not one that has. Such a call
+  reaches the global function as an ordinary call, so its argument errors are
+  framed (`#0 …: strlen(Array)`), where the same call written globally is
+  compiled to an opcode and is not.
+* `call_user_func($cb, …)` and a two-argument `call_user_func_array` written in
+  the source refuse a bad callback from the caller's frame (`#0 {main}`), as
+  the reference's `ZEND_INIT_USER_CALL` does.
+* `new ("\C")` with a constant class name drops the leading `\` from the
+  name it reports missing; `new $c` keeps it, as before.
+
+---
+
 ## Round 27: autoloading
 
 `spl_autoload_register` was a no-op returning `true`; the chain is now real.

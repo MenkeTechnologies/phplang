@@ -7456,3 +7456,94 @@ pub const CORPUS: &[Entry] = &[
     ),
     // APPEND_HERE
 ];
+
+/// One parameter as a corpus signature spells it. The argument tables in
+/// [`crate::argsig`] are the authority on names and defaults; a signature is
+/// read only for what they lack, such as a variadic parameter's name.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SigParam {
+    pub name: String,
+    /// The declared type as written, `""` when there is none.
+    pub ty: String,
+    pub by_ref: bool,
+    pub variadic: bool,
+    /// The default as written (`SORT_REGULAR`, `null`), `None` for a
+    /// required or variadic parameter.
+    pub default: Option<String>,
+}
+
+/// The parameters of library function `name` as its corpus signature spells
+/// them (`sprintf(string $format, mixed ...$values): string`), or `None` when
+/// the corpus does not document it as a function.
+pub fn signature_params(name: &str) -> Option<Vec<SigParam>> {
+    let lname = name.to_ascii_lowercase();
+    let sig = CORPUS
+        .iter()
+        .find(|(n, chapter, ..)| {
+            n.eq_ignore_ascii_case(&lname)
+                && ![
+                    "Keyword",
+                    "Predefined constant",
+                    "Prelude class",
+                    "Operator",
+                    "Language construct",
+                    "Magic method",
+                    "Cast",
+                    "Built-in object methods",
+                ]
+                .contains(chapter)
+        })?
+        .2;
+    let open = sig.find('(')?;
+    // The parameter list runs to the `)` that closes the first `(`; a default
+    // may itself hold brackets or a quoted comma.
+    let mut depth = 0usize;
+    let mut quote: Option<char> = None;
+    let mut parts = vec![String::new()];
+    for c in sig[open + 1..].chars() {
+        match (quote, c) {
+            (Some(q), _) if c == q => quote = None,
+            (Some(_), _) => {}
+            (None, '"' | '\'') => quote = Some(c),
+            (None, '(' | '[') => depth += 1,
+            (None, ')') if depth == 0 => break,
+            (None, ')' | ']') => depth -= 1,
+            (None, ',') if depth == 0 => {
+                parts.push(String::new());
+                continue;
+            }
+            _ => {}
+        }
+        if let Some(cur) = parts.last_mut() {
+            cur.push(c);
+        }
+    }
+    let params = parts
+        .iter()
+        .filter_map(|p| {
+            let p = p.trim();
+            let dollar = p.find('$')?;
+            let (head, tail) = (p[..dollar].trim_end(), &p[dollar + 1..]);
+            let name: String = tail
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            let variadic = head.ends_with("...");
+            let head = head.trim_end_matches("...").trim_end();
+            let by_ref = head.ends_with('&');
+            let ty = head.trim_end_matches('&').trim().to_string();
+            let default = tail
+                .split_once('=')
+                .map(|(_, d)| d.trim().to_string())
+                .filter(|_| !variadic);
+            Some(SigParam {
+                name,
+                ty,
+                by_ref,
+                variadic,
+                default,
+            })
+        })
+        .collect();
+    Some(params)
+}

@@ -1000,14 +1000,24 @@ fn b_const_fetch(vm: &mut VM, _: u8) -> Value {
 
 /// See `ops::NS_FN_NAME`.
 fn b_ns_fn_name(vm: &mut VM, _: u8) -> Value {
+    let site = pop_name(vm).to_string();
     let qualified = pop_name(vm);
-    let global = qualified.rsplit('\\').next().unwrap_or(&qualified);
-    if !crate::stdlib::callable::dispatches(&qualified)
-        && crate::stdlib::callable::dispatches(global)
-    {
-        return Value::str(global.to_string());
+    if let Some(name) = with_host(|h| h.ns_call_sites.get(&site).cloned()) {
+        return name;
     }
-    Value::Str(qualified)
+    let global = qualified.rsplit('\\').next().unwrap_or(&qualified);
+    let name = if crate::stdlib::callable::dispatches(&qualified) {
+        Value::Str(qualified.clone())
+    } else if crate::stdlib::callable::dispatches(global) {
+        // Reached through the namespace, so never specialised: see
+        // `host::Dispatch::CompiledInNamespace`.
+        Value::str(format!("\\{global}"))
+    } else {
+        // Neither exists yet: refused as the namespaced name, and not cached.
+        return Value::Str(qualified);
+    };
+    with_host(|h| h.ns_call_sites.insert(site, name.clone()));
+    name
 }
 
 /// See `ops::CLASS_LINK_CHECK`.
@@ -6755,7 +6765,7 @@ fn php_print_r(h: &host::PhpHost, v: &Value, depth: usize, seen: &mut host::Visi
         s.push_str(&format!("{pad})\n"));
         seen.leave();
         s
-    } else if h.is_object(v) {
+    } else if h.is_object(v) || is_dumped_closure(h, v) {
         php_print_r_object(h, v, depth, seen)
     } else {
         h.to_str(v)
@@ -6799,6 +6809,12 @@ fn with_debug_info<T>(roots: &[Value], render: impl FnOnce(&mut host::PhpHost) -
         h.debug_info = outer;
         out
     }))
+}
+
+/// Whether `v` is a closure whose debug info the dumper was handed: it prints
+/// as an object of class `Closure` with those rows.
+fn is_dumped_closure(h: &host::PhpHost, v: &Value) -> bool {
+    matches!(v, Value::Obj(id) if h.debug_info.contains_key(id)) && h.is_closure(v)
 }
 
 /// How `var_dump` and `print_r` label one property row of an object.
@@ -6890,7 +6906,10 @@ fn php_print_r_object(
 ) -> String {
     let pad = "    ".repeat(depth);
     let inner = "    ".repeat(depth + 1);
-    let class = h.object_class(v).unwrap_or_else(|| "stdClass".to_string());
+    let class = h
+        .object_class(v)
+        .or_else(|| h.instance_class(v))
+        .unwrap_or_else(|| "stdClass".to_string());
     // An anonymous class prints only the head of its name — see `display_class`.
     let shown = host::display_class(&class);
     let head = match h.enum_case_of(v) {
@@ -6993,8 +7012,11 @@ fn php_var_dump_body(
             let (case, _) = h.enum_case_of(v).unwrap_or_default();
             format!("{pad}{amp}enum({class}::{case})\n")
         }
-        Value::Obj(_) if h.is_object(v) => {
-            let class = h.object_class(v).unwrap_or_else(|| "stdClass".to_string());
+        Value::Obj(_) if h.is_object(v) || is_dumped_closure(h, v) => {
+            let class = h
+                .object_class(v)
+                .or_else(|| h.instance_class(v))
+                .unwrap_or_else(|| "stdClass".to_string());
             let props = debug_rows(h, v, &class);
             let mut s = format!(
                 "{pad}{amp}object({})#{} ({}) {{\n",
@@ -8188,7 +8210,10 @@ fn php_var_export_body(
             }
         }
         Value::Str(s) => export_string(s),
-        Value::Obj(_) if h.is_object(v) => php_var_export_object(h, v, depth, seen),
+        // A closure exports like an object of class `Closure` with no properties.
+        Value::Obj(_) if h.is_object(v) || h.is_closure(v) => {
+            php_var_export_object(h, v, depth, seen)
+        }
         Value::Obj(_) if h.is_array(v) => {
             let pad = "  ".repeat(depth);
             let inner = "  ".repeat(depth + 1);
@@ -8222,7 +8247,7 @@ fn var_export_item(
     let body = php_var_export(h, v, depth, seen);
     // A cycle collapses to the scalar `NULL`, which stays on the key's line —
     // the break is for a real nested BLOCK, not for anything array-typed.
-    if (h.is_array(v) || h.is_object(v)) && body != "NULL" {
+    if (h.is_array(v) || h.is_object(v) || h.is_closure(v)) && body != "NULL" {
         format!("\n{}{body}", "  ".repeat(depth))
     } else {
         body
@@ -8252,7 +8277,10 @@ fn php_var_export_object(
     depth: usize,
     seen: &mut host::Visiting,
 ) -> String {
-    let class = h.object_class(v).unwrap_or_else(|| "stdClass".to_string());
+    let class = h
+        .object_class(v)
+        .or_else(|| h.instance_class(v))
+        .unwrap_or_else(|| "stdClass".to_string());
     if let Some((case, _)) = h.enum_case_of(v) {
         return format!("\\{class}::{case}");
     }
@@ -8552,7 +8580,9 @@ fn php_json_encode(h: &host::PhpHost, v: &Value, flags: i64, depth: usize) -> St
             None => json_string(s, flags),
         },
         Value::Obj(_) => {
-            let pairs = if h.is_object(v) {
+            // A closure is an object with no properties: `{}`.
+            let object = h.is_object(v) || h.is_closure(v);
+            let pairs = if object {
                 h.object_props(v)
                     .into_iter()
                     .map(|(k, val)| (Value::str(k), val))
@@ -8562,7 +8592,7 @@ fn php_json_encode(h: &host::PhpHost, v: &Value, flags: i64, depth: usize) -> St
             };
             // A real object always encodes as a JSON object, even with no
             // properties — `json_encode(new stdClass())` is `{}`, not `[]`.
-            let as_list = is_list(&pairs) && !h.is_object(v) && flags & JSON_FORCE_OBJECT == 0;
+            let as_list = is_list(&pairs) && !object && flags & JSON_FORCE_OBJECT == 0;
             let (open, close) = if as_list { ('[', ']') } else { ('{', '}') };
             if pairs.is_empty() {
                 return format!("{open}{close}");

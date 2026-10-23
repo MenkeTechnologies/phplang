@@ -298,31 +298,6 @@ that nothing still holds it, and a promoted local in a running fusevm frame or a
 value on a VM stack is invisible to the host, so that is left alone rather than
 risk destroying a live object.
 
-## A namespaced function declared by a later `include` does not take over an unqualified call
-
-```text
-$ cat inc.php
-<?php namespace A; function strlen($s) { return 99; }
-$ cat late.php
-<?php namespace A; function t() { return strlen("x"); } include __DIR__ . "/inc.php"; echo t();
-$ php late.php
-99
-$ target/debug/php late.php
-1
-```
-
-An unqualified call written in a namespace is resolved at run time upstream
-(`ZEND_INIT_NS_FCALL_BY_NAME`): `A\strlen` if it exists by then, else the
-global `strlen`. phplang settles the call when it COMPILES it whenever either
-reading already exists — the namespaced function if this compilation declares
-it or it is loaded, otherwise the global one — because every by-reference
-slot, argument diagnostic and specialised opcode is keyed by the callee's name.
-Only a call neither of whose readings exists yet is left to run time. So a
-namespaced function that appears later, through an `include` or `eval`, does
-not shadow the global function for a call compiled before it. (One the same
-file declares conditionally IS left to run time, so `if (…) { function
-strlen() {} }` decides the call by whether the `if` ran.)
-
 ## A regex that backtracks catastrophically still matches
 
 ```text
@@ -418,9 +393,7 @@ file's directory. The same value is what `get_include_path()` returns.
 | `class_implements("ArrayIterator")`, `("Exception")`, `("SplStack")` | `SeekableIterator, Traversable, Iterator, ArrayAccess, Serializable, Countable`; `Stringable, Throwable`; … | the lists come from the prelude's own `implements` clauses, so they lack `Serializable`/`Throwable` and differ in order. A user class gets the reference's order |
 | `class C extends B {} class B extends A {} class A {}`; `echo class_exists("B") ? 1 : 0; class B extends A {} class A {}` — a declaration the reference cannot bind early | `Error: Class "B" not found` (C's parent is not linked yet when C's declaration runs); `0` | the declaration links and `1`: every top-level type is loaded before the program runs, so only a parent no compilation declares is looked up (and autoloaded) where the declaration stands |
 | `spl_autoload_register()` with no callback | registers the default `spl_autoload`, which includes `<lowercased class>.inc` or `.php` from the include path | registers nothing: `spl_autoload` is not implemented |
-| `var_dump(function ($a) {})` | `object(Closure)#1 (4) { ["name"]=> … ["file"]=> … ["line"]=> … ["parameter"]=> … }` | `array(0) {}`: a closure dumps as an empty array |
-| `$c = '\\Nope'; new $c;` | `Error: Class "Nope" not found` — the leading `\` is dropped from the message | `Class "\\Nope" not found`: the name is quoted as written, which is right for `$c::m()` but not for `new` |
-| `call_user_func("NoPe")` — the trace of the callback `TypeError` | `#0 {main}` | `#0 Command line code(1): call_user_func('NoPe')` then `#1 {main}`: the refusal is framed by the library function |
+| `$f = function () { static $n = 0; }; var_dump($f);` — a closure's `static` variables | listed under `["static"]` beside its `use` captures (`["n"]=> int(0)`) | only the `use` captures are listed: the compiled `static` slots are not tied to the closure value |
 
 ## `...` unpacking: what is modelled and what is not
 

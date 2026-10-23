@@ -497,10 +497,11 @@ pub mod ops {
     pub const GLOBALS_UNSET: u16 = 156;
     /// `[name] -> bool`. `isset($GLOBALS[name])`.
     pub const GLOBALS_ISSET: u16 = 157;
-    /// `[ns\name] -> name`. The function an UNQUALIFIED call written in a
-    /// namespace reaches (`ZEND_INIT_NS_FCALL_BY_NAME`): the namespaced one
-    /// when it exists, else the global one, else the namespaced name, which
-    /// the call then refuses as undefined.
+    /// `[ns\name, site] -> name`. The function an UNQUALIFIED call written in
+    /// a namespace reaches (`ZEND_INIT_NS_FCALL_BY_NAME`): the namespaced one
+    /// when it exists, else the global one (with a leading `\`, see
+    /// `Dispatch::CompiledInNamespace`), else the namespaced name, which the
+    /// call then refuses as undefined. The first answer is kept for `site`.
     pub const NS_FN_NAME: u16 = 158;
     /// `[ns\NAME] -> value`. An unqualified constant written in a namespace:
     /// the namespaced constant, else the global one, else `Error: Undefined
@@ -1199,6 +1200,11 @@ pub struct PhpHost {
     /// for the class it is loading gets `false`, not a recursion
     /// (`EG(in_autoload)`).
     autoloading: FxHashSet<String>,
+    /// The callee each unqualified namespaced call site settled on the first
+    /// time it ran, keyed by the site's compiled key — the reference's
+    /// per-opline runtime cache slot, which is why a namespaced function
+    /// declared AFTER a site first ran does not take it over.
+    pub ns_call_sites: FxHashMap<String, Value>,
     /// The next resource number to hand out. Numbers are never reused.
     next_resource_id: i64,
     /// The `include`/`require`/`eval` constructs currently running, innermost
@@ -1640,6 +1646,7 @@ impl PhpHost {
             const_ns_keys: FxHashMap::default(),
             autoloaders: Vec::new(),
             autoloading: FxHashSet::default(),
+            ns_call_sites: FxHashMap::default(),
             next_resource_id: 1,
             includes: Vec::new(),
             included_files: Vec::new(),
@@ -4403,9 +4410,9 @@ impl PhpHost {
 
     /// The 1-based creation-order number PHP shows as `#N` in `var_dump`.
     ///
-    /// PHP numbers class instances only, so count the `Object` entries up to and
-    /// including this handle rather than using the raw heap index (which also
-    /// covers arrays, closures and resources).
+    /// PHP numbers objects only — class instances and closures — so count those
+    /// entries up to and including this handle rather than using the raw heap
+    /// index (which also covers arrays and resources).
     ///
     /// KNOWN DIVERGENCE: PHP frees an object's handle when its refcount drops to
     /// zero and hands the number to the next allocation, so a program that
@@ -4420,8 +4427,10 @@ impl PhpHost {
             .iter()
             .enumerate()
             .take(*h as usize + 1)
+            // A closure is an object to the reference and takes a number too.
             .filter(|(i, o)| {
-                matches!(o, PhpObj::Object { .. }) && !self.transient_objs.contains(&(*i as u32))
+                matches!(o, PhpObj::Object { .. } | PhpObj::Closure { .. })
+                    && !self.transient_objs.contains(&(*i as u32))
             })
             .count()
     }
@@ -8537,9 +8546,20 @@ pub enum Dispatch {
     Compiled,
     /// Reached through a value: `$f(…)`, a callback, `call_user_func`.
     Indirect,
+    /// Written as an UNQUALIFIED call inside a namespace that reached the global
+    /// function. The reference resolves those at run time
+    /// (`ZEND_INIT_NS_FCALL_BY_NAME`) and so never specialises them into an
+    /// opcode, but the call is still the source's, under its strict mode.
+    /// The compiler marks one by loading its name with a leading `\`.
+    CompiledInNamespace,
 }
 
 fn call_function_dispatched(name: &str, args: Vec<Value>, how: Dispatch) -> Result<Value, String> {
+    let how = if how == Dispatch::Compiled && name.starts_with('\\') {
+        Dispatch::CompiledInNamespace
+    } else {
+        how
+    };
     // A function name held in a string may carry the global-namespace `\`
     // (`zend_init_dynamic_call_string`, `zend_is_callable_check_func`).
     let name = name.strip_prefix('\\').unwrap_or(name);
@@ -8628,7 +8648,10 @@ fn throw_from_internal_typed(name: &str, args: &[Value], e: String) -> Result<Va
 fn compiles_to_an_opcode(name: &str, argc: usize) -> bool {
     match name {
         "strlen" | "count" | "sizeof" | "get_class" => argc == 1,
-        "array_key_exists" => argc == 2,
+        "array_key_exists" | "call_user_func_array" => argc == 2,
+        // `zend_compile_func_cuf`: `ZEND_INIT_USER_CALL` with the callee
+        // checked by the opcode.
+        "call_user_func" => argc >= 1,
         _ => false,
     }
 }
@@ -8723,7 +8746,7 @@ fn call_library_throwing(name: &str, args: Vec<Value>, how: Dispatch) -> Result<
         crate::argsig::check_args(
             name,
             &args,
-            how == Dispatch::Compiled && with_host(|h| h.strict_types()),
+            how != Dispatch::Indirect && with_host(|h| h.strict_types()),
         )
     };
     if let Err(e) = checked {
@@ -9983,6 +10006,165 @@ fn autoload_first(class: &str) -> Result<Option<Value>, String> {
     }
     class_known(class)?;
     Ok(unwinding().then_some(Value::Undef))
+}
+
+/// `(name, by_ref, has_default, variadic)` of one parameter, as a closure's
+/// debug info needs it.
+type DebugParam = (String, bool, bool, bool);
+
+/// One parameter as a closure's debug info lists it: `&$name`, and whether
+/// it is required.
+fn debug_param_rows(params: &[DebugParam]) -> Vec<(String, &'static str)> {
+    // `required_num_args`: everything up to the last parameter that has no
+    // default and is not variadic, whatever defaults stand before it.
+    let required = params
+        .iter()
+        .rposition(|(_, _, has_default, variadic)| !has_default && !variadic)
+        .map_or(0, |i| i + 1);
+    params
+        .iter()
+        .enumerate()
+        .map(|(i, (name, by_ref, ..))| {
+            let amp = if *by_ref { "&" } else { "" };
+            let req = if i < required {
+                "<required>"
+            } else {
+                "<optional>"
+            };
+            (format!("{amp}${name}"), req)
+        })
+        .collect()
+}
+
+/// `zend_closure_get_debug_info`: the array `var_dump` and `print_r` show for
+/// a closure — `name`, `file` and `line` for a literal (`function` naming the
+/// callee for a first-class callable), the `static` captured variables, the
+/// bound `this`, and each `parameter` as `<required>`/`<optional>`. `None`
+/// for anything but a closure.
+pub fn closure_debug_info(v: &Value) -> Option<Value> {
+    struct Real {
+        name: String,
+        file: String,
+        line: i64,
+        statics: Vec<(String, Value)>,
+    }
+    let (real, fake_callee, this, params) = with_host(|h| {
+        let Some(PhpObj::Closure {
+            params,
+            chunk,
+            captured,
+            bound_this,
+            site,
+            ..
+        }) = h.as_array(v)
+        else {
+            return None;
+        };
+        let fake = params.first().is_some_and(|p| p.name == FCC_PARAM);
+        let callee = fake
+            .then(|| captured.iter().find(|(n, _)| n.starts_with("@fcc")))
+            .flatten()
+            .map(|(_, c)| h.deref(c.clone()));
+        let real = (!fake).then(|| Real {
+            name: site
+                .as_ref()
+                .map_or_else(|| "{closure}".to_string(), |s| s.render(&h.script_name)),
+            file: if chunk.source.is_empty() {
+                h.script_name.clone()
+            } else {
+                chunk.source.clone()
+            },
+            line: match site {
+                Some(DeclSite::Closure(_, line)) => i64::from(*line),
+                _ => 0,
+            },
+            statics: captured
+                .iter()
+                .filter(|(n, _)| !n.starts_with(['@', '$']) && n != "this")
+                .cloned()
+                .collect(),
+        });
+        let params: Vec<DebugParam> = params
+            .iter()
+            .map(|p| (p.name.clone(), p.by_ref, p.default.is_some(), p.variadic))
+            .collect();
+        Some((real, callee, bound_this.clone(), params))
+    })?;
+    // A first-class callable names the function it forwards to, and reports
+    // that function's parameters rather than its own variadic shell.
+    let (function, this, params) = match fake_callee {
+        Some(callee) => {
+            let (function, bound, params) = fcc_target(&callee);
+            (Some(function), bound.or(this), params)
+        }
+        None => (None, this, params),
+    };
+    let rows = debug_param_rows(&params);
+    Some(with_host(|h| {
+        let out = h.new_array();
+        let set = |h: &mut PhpHost, k: &str, val: Value| h.arr_set_key(&out, &Value::str(k), val);
+        match (&real, function) {
+            (Some(r), _) => {
+                set(h, "name", Value::str(r.name.clone()));
+                set(h, "file", Value::str(r.file.clone()));
+                set(h, "line", Value::int(r.line));
+                if !r.statics.is_empty() {
+                    let st = h.new_array();
+                    for (n, val) in &r.statics {
+                        h.arr_set_key(&st, &Value::str(n.clone()), val.clone());
+                    }
+                    set(h, "static", st);
+                }
+            }
+            (None, Some(f)) => set(h, "function", Value::str(f)),
+            (None, None) => {}
+        }
+        if let Some(t) = this {
+            set(h, "this", t);
+        }
+        if !rows.is_empty() {
+            let ps = h.new_array();
+            for (k, req) in rows {
+                h.arr_set_key(&ps, &Value::str(k), Value::str(req.to_string()));
+            }
+            set(h, "parameter", ps);
+        }
+        out
+    }))
+}
+
+/// What a first-class callable forwards to, as its debug info reports it: the
+/// callee's name (`strlen`, `K::m`), the object a method callable is bound
+/// to, and the callee's parameters `(name, by_ref, has_default, variadic)`.
+fn fcc_target(callee: &Value) -> (String, Option<Value>, Vec<DebugParam>) {
+    let user_params = |def: &FuncDef| -> Vec<DebugParam> {
+        def.params
+            .iter()
+            .map(|p| (p.name.clone(), p.by_ref, p.default.is_some(), p.variadic))
+            .collect()
+    };
+    if let Some((class, method, this)) = callable_method(callee) {
+        let found = with_host(|h| {
+            let declared = h.class_display_name(&class.to_ascii_lowercase());
+            let def = h.resolve_method(&class, &method).map(|(_, d)| d);
+            (declared, def)
+        });
+        let (declared, def) = found;
+        let params = def.as_ref().map(user_params).unwrap_or_default();
+        return (format!("{declared}::{method}"), this, params);
+    }
+    let name = with_host(|h| h.to_str(callee));
+    let name = unanchored(&name).to_string();
+    if let Some(def) = with_host(|h| h.functions.get(&name.to_ascii_lowercase()).cloned()) {
+        let params = user_params(&def);
+        return (def.declared.clone().unwrap_or(name), None, params);
+    }
+    let params = crate::argsig::library_params(&name)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|p| (p.name, p.by_ref, p.def.is_some(), p.variadic))
+        .collect();
+    (name.to_ascii_lowercase(), None, params)
 }
 
 /// Whether `class` exists, autoloading it if it does not yet.
@@ -13289,7 +13471,19 @@ pub fn collect_object_hooks(
             let method = methods.iter().find(|m| h.class_has_method(&class, m))?;
             Some((class, *method))
         });
+        // A closure has no properties to show; what the dumpers print is its
+        // engine-built debug info, parked like a `__debugInfo` answer.
+        let closure_info = if hook.is_none() && methods.contains(&"__debugInfo") {
+            closure_debug_info(v)
+        } else {
+            None
+        };
         let target = match hook {
+            None if closure_info.is_some() => {
+                let arr = closure_info.unwrap_or(Value::Undef);
+                map.insert(*id, arr.clone());
+                arr
+            }
             Some((class, method)) => {
                 let r = call_method(&class, method, Some(v.clone()), Vec::new());
                 if unwinding() {
