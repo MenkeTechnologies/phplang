@@ -493,7 +493,10 @@ end-to-end (see `tests/basic.rs`):
     `basename`/`dirname`/`pathinfo`, `realpath`, `getcwd`, …).
   - **reflection** — `class_exists`, `method_exists`, `property_exists`,
     `get_class`, `get_parent_class`, `get_object_vars`, `get_class_methods`,
-    `class_parents`, `is_a`/`is_subclass_of`. **callable** — `call_user_func`(`_array`)
+    `class_parents`, `is_a`/`is_subclass_of`, and the Reflection API —
+    `ReflectionClass`/`Object`/`Enum`, `ReflectionMethod`, `ReflectionProperty`,
+    `ReflectionFunction`, `ReflectionParameter`, `ReflectionNamedType`/`UnionType`,
+    `ReflectionClassConstant` — as a PHP prelude. **callable** — `call_user_func`(`_array`)
     (incl. array/`Class::method` callables), `function_exists`. **misc** —
     `strnatcmp`/`strnatcasecmp`, `soundex`, `str_getcsv`, `array_walk_recursive`,
     `array_find`/`array_any`/`array_all`, `array_udiff`/`array_multisort`.

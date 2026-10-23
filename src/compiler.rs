@@ -3127,6 +3127,12 @@ impl Compiler {
                 prop_defaults.push((name.clone(), pb.build()));
             }
         }
+        let mut prop_order: Vec<String> = props.iter().map(|p| p.name.clone()).collect();
+        for (n, _) in prop_defaults.iter().chain(static_prop_defaults.iter()) {
+            if !prop_order.contains(n) {
+                prop_order.push(n.clone());
+            }
+        }
         // A class's own properties take their slots before the ones its traits
         // bring in: `zend_do_bind_traits` adds trait properties after the class
         // body is declared. The sort is stable, so each group keeps its order.
@@ -3304,6 +3310,7 @@ impl Compiler {
                 final_props: finals.props,
                 method_sites: finals.method_sites,
                 abstract_methods: finals.abstract_methods,
+                prop_order,
             },
         ));
 

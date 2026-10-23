@@ -7468,8 +7468,118 @@ pub const CORPUS: &[Entry] = &[
         "DIVERGENCE: hardcoded `false`, reading neither argument. phplang is a standalone runtime with no request context, so there is no `$_GET` or `$_POST` to consult.",
         "var_dump(filter_has_var(INPUT_GET, \"q\"));   // => bool(false)",
     ),
+    (
+        "__phplang_reflect",
+        "Reflection",
+        "__phplang_reflect(string $op, mixed ...$args): mixed",
+        "Internal helper behind the prelude's `Reflection*` classes; a phplang extension with no PHP counterpart. Answers the engine's metadata — a class's flags, parent, interfaces and traits; its methods, properties and constants in the reference's order; a function's or method's parameters and their defaults — as arrays the prelude wraps in reflection objects.",
+        "",
+    ),
+    (
+        "ReflectionClass",
+        "Prelude class",
+        "class ReflectionClass {\n    public string $name;\n    __construct(object|string $objectOrClass)\n    getName()  getShortName()  getNamespaceName()  inNamespace()\n    isInterface()  isTrait()  isEnum()  isAbstract()  isFinal()  isInstantiable()  isInternal()  isUserDefined()  isAnonymous()\n    getParentClass()  getInterfaceNames()  getInterfaces()  getTraitNames()  implementsInterface()  isSubclassOf()  isInstance()\n    hasMethod()  getMethod()  getMethods(?int $filter)  getConstructor()\n    hasProperty()  getProperty()  getProperties(?int $filter)  getDefaultProperties()  getStaticProperties()  getStaticPropertyValue()  setStaticPropertyValue()\n    hasConstant()  getConstant()  getConstants()  getReflectionConstant()\n    newInstance(...$args)  newInstanceArgs(array $args)  newInstanceWithoutConstructor()\n}",
+        "A class, interface, trait or enum by name or by instance; `ReflectionException: Class \"X\" does not exist` otherwise. Methods and properties are listed own first (a trait's included) in declaration order, then each ancestor's not overridden — an ancestor's private members are not inherited — and an abstract class lists its interfaces' methods; constants list an enum's cases first. Made from an object, `hasProperty` also sees its dynamic properties. DIVERGENCE: `getDocComment()` and `getFileName()` answer `false`, `getAttributes()` an empty array, and there is no `__toString()`.",
+        "class A { public $x = 1; } echo (new ReflectionClass(\"A\"))->getProperties()[0]->name;   // => x",
+    ),
+    (
+        "ReflectionObject",
+        "Prelude class",
+        "class ReflectionObject extends ReflectionClass { __construct(object $object) }",
+        "`ReflectionClass` made from an instance.",
+        "",
+    ),
+    (
+        "ReflectionEnum",
+        "Prelude class",
+        "class ReflectionEnum extends ReflectionClass { isBacked()  getCases()  hasCase() }",
+        "`ReflectionClass` of an enum; `ReflectionException` for anything else. `getCases()` answers the case objects themselves.",
+        "",
+    ),
+    (
+        "ReflectionMethod",
+        "Prelude class",
+        "class ReflectionMethod extends ReflectionFunctionAbstract {\n    public string $name; public string $class;\n    __construct(object|string $objectOrMethod, ?string $method = null)\n    static createFromMethodName(string $method)\n    getModifiers()  isPublic()  isProtected()  isPrivate()  isStatic()  isFinal()  isAbstract()  isConstructor()\n    getDeclaringClass()  invoke(?object $object, ...$args)  invokeArgs(?object $object, array $args)  getClosure()\n}",
+        "A method, found along the class's chain (an ancestor's private one included). `invoke` runs it from the declaring class's scope, so a private method can be called; `setAccessible()` has no effect and is deprecated, and the one-argument `\"C::m\"` constructor is deprecated in favour of `createFromMethodName`, as in 8.5.",
+        "",
+    ),
+    (
+        "ReflectionProperty",
+        "Prelude class",
+        "class ReflectionProperty {\n    public string $name; public string $class;\n    __construct(object|string $class, string $property)\n    getModifiers()  isPublic()  isProtected()  isPrivate()  isStatic()  isReadOnly()  isFinal()\n    hasType()  getType()  hasDefaultValue()  getDefaultValue()  getDeclaringClass()\n    getValue(?object $object)  setValue($objectOrValue, $value)  isInitialized(?object $object)\n}",
+        "A property, read and written from the declaring class's scope so its visibility does not stand in the way. The modifiers carry the write visibility (`protected(set)` for a public readonly property). A one-argument `setValue` on a static property is deprecated, as in 8.5.",
+        "",
+    ),
+    (
+        "ReflectionFunction",
+        "Prelude class",
+        "class ReflectionFunction extends ReflectionFunctionAbstract {\n    __construct(Closure|string $function)\n    isInternal()  isClosure()  invoke(...$args)  invokeArgs(array $args)  getClosure()\n}",
+        "A user function, a library function or a closure; `ReflectionException: Function f() does not exist` otherwise. `ReflectionFunctionAbstract` supplies `getName()`, `getShortName()`, `getNamespaceName()`, `getParameters()`, `getNumberOfParameters()`, `getNumberOfRequiredParameters()`, `isVariadic()`, `hasReturnType()` and `getReturnType()`. DIVERGENCE: a library function's return type is read from this corpus's signature, which does not always spell the reference's union.",
+        "",
+    ),
+    (
+        "ReflectionParameter",
+        "Prelude class",
+        "class ReflectionParameter {\n    public string $name;\n    getName()  getPosition()  isOptional()  isVariadic()  isPassedByReference()  canBePassedByValue()\n    hasType()  getType()  allowsNull()  isDefaultValueAvailable()  getDefaultValue()  getDeclaringFunction()  getDeclaringClass()\n}",
+        "One parameter. A parameter is optional once no required one follows it. `getDefaultValue()` evaluates the default where it was declared; a library function's comes from the argument tables.",
+        "",
+    ),
+    (
+        "ReflectionNamedType",
+        "Prelude class",
+        "class ReflectionNamedType extends ReflectionType { getName()  isBuiltin()  allowsNull()  __toString() }",
+        "A declared type with one alternative besides `null`: `?I` names `I` and allows null. `self` inside a class names the class. A type of several alternatives is a `ReflectionUnionType`, whose `getTypes()` lists them in the order the type prints in.",
+        "",
+    ),
+    (
+        "ReflectionUnionType",
+        "Prelude class",
+        "class ReflectionUnionType extends ReflectionType { getTypes()  allowsNull()  __toString() }",
+        "A union type, printed and listed in the reference's order — class names, then the built-in types in the engine's fixed order, `null` last.",
+        "",
+    ),
+    (
+        "ReflectionClassConstant",
+        "Prelude class",
+        "class ReflectionClassConstant { public string $name; public string $class; getName()  getValue()  getDeclaringClass() }",
+        "One class constant.",
+        "",
+    ),
+    (
+        "ReflectionException",
+        "Prelude class",
+        "class ReflectionException extends Exception {}",
+        "What the reflection constructors throw for a name that does not exist.",
+        "",
+    ),
+    (
+        "Reflection",
+        "Prelude class",
+        "class Reflection { static getModifierNames(int $modifiers): array }",
+        "The modifier names, in the reference's order: `abstract`, `final`, the visibility, the write visibility, `static`, `readonly`.",
+        "var_dump(Reflection::getModifierNames(17));   // => array(2) { [0]=> \"public\" [1]=> \"static\" }",
+    ),
     // APPEND_HERE
 ];
+
+/// The corpus signature of library function `name`, skipping the chapters
+/// that document something other than a function.
+fn function_signature(name: &str) -> Option<&'static str> {
+    const NOT_FUNCTIONS: &[&str] = &[
+        "Keyword",
+        "Predefined constant",
+        "Prelude class",
+        "Operator",
+        "Language construct",
+        "Magic method",
+        "Cast",
+        "Built-in object methods",
+    ];
+    CORPUS
+        .iter()
+        .find(|(n, chapter, ..)| n.eq_ignore_ascii_case(name) && !NOT_FUNCTIONS.contains(chapter))
+        .map(|e| e.2)
+}
 
 /// One parameter as a corpus signature spells it. The argument tables in
 /// [`crate::argsig`] are the authority on names and defaults; a signature is
@@ -7490,24 +7600,7 @@ pub struct SigParam {
 /// them (`sprintf(string $format, mixed ...$values): string`), or `None` when
 /// the corpus does not document it as a function.
 pub fn signature_params(name: &str) -> Option<Vec<SigParam>> {
-    let lname = name.to_ascii_lowercase();
-    let sig = CORPUS
-        .iter()
-        .find(|(n, chapter, ..)| {
-            n.eq_ignore_ascii_case(&lname)
-                && ![
-                    "Keyword",
-                    "Predefined constant",
-                    "Prelude class",
-                    "Operator",
-                    "Language construct",
-                    "Magic method",
-                    "Cast",
-                    "Built-in object methods",
-                ]
-                .contains(chapter)
-        })?
-        .2;
+    let sig = function_signature(name)?;
     let open = sig.find('(')?;
     // The parameter list runs to the `)` that closes the first `(`; a default
     // may itself hold brackets or a quoted comma.
@@ -7560,4 +7653,19 @@ pub fn signature_params(name: &str) -> Option<Vec<SigParam>> {
         })
         .collect();
     Some(params)
+}
+
+/// The return type a library function's corpus signature declares, split
+/// into its alternatives (`?int` → `[int, null]`), or `None` without one.
+pub fn signature_return(name: &str) -> Option<Vec<String>> {
+    let ret = function_signature(name)?.rsplit_once("):")?.1.trim();
+    let (nullable, ret) = match ret.strip_prefix('?') {
+        Some(r) => (true, r),
+        None => (false, ret),
+    };
+    let mut parts: Vec<String> = ret.split('|').map(|p| p.trim().to_string()).collect();
+    if nullable {
+        parts.push("null".to_string());
+    }
+    Some(parts)
 }

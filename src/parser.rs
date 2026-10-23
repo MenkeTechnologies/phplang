@@ -3853,6 +3853,27 @@ impl Parser {
                 // `$variable`, not a bareword constant/method name).
                 if let Some(Tok::Var(_)) = self.peek() {
                     let prop = self.expect_var()?;
+                    if self.eat_punct("(") {
+                        // `Class::$method(…)` — a static method call whose name
+                        // a variable holds, not a call of the property's value.
+                        // It runs as the `[class, $method]` callable.
+                        let class_value = match class {
+                            ClassRef::Name(n) if is_class_relative_name(&n) => {
+                                Expr::StaticGet(ClassRef::Name(n), "class".to_string())
+                            }
+                            ClassRef::Name(n) => Expr::Str(n),
+                            ClassRef::Expr(ce) => *ce,
+                        };
+                        let callee = Expr::Array(
+                            vec![
+                                ArrayElem::new(None, class_value),
+                                ArrayElem::new(None, Expr::Var(prop)),
+                            ],
+                            ArraySyntax::Short,
+                        );
+                        e = Expr::CallValue(Box::new(callee), self.arg_list()?);
+                        continue;
+                    }
                     e = Expr::StaticProp(class, prop);
                 } else if self.eat_punct("{") {
                     // PHP 8.3 dynamic class constant fetch, `Class::{$expr}`:

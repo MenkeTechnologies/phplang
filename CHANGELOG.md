@@ -26,6 +26,40 @@ comment above it.
 
 ---
 
+## Round 28: the Reflection API
+
+`new ReflectionClass(…)` and the rest were `Class "ReflectionClass" not
+found`. They are now PHP-written prelude classes over the engine's metadata
+(`__phplang_reflect`). Measured under `PHP 8.5.11 (cli)`; pinned in
+`tests/reflection_api.rs`.
+
+* `ReflectionClass` / `ReflectionObject` / `ReflectionEnum`: names (short,
+  namespace), the kind and modifier tests, the parent, interfaces and traits,
+  `implementsInterface` / `isSubclassOf` / `isInstance`, methods, properties and
+  constants (own first in declaration order, a trait's included, then each
+  ancestor's not overridden; an ancestor's private members are not inherited;
+  an enum's cases are constants and `cases`/`from`/`tryFrom` methods), the
+  default and static property values, `newInstance`, `newInstanceArgs` (named
+  arguments too) and `newInstanceWithoutConstructor`.
+* `ReflectionMethod` (and `createFromMethodName`), `ReflectionFunction` (user,
+  library and closure), `ReflectionParameter`, `ReflectionProperty`,
+  `ReflectionClassConstant`, `ReflectionNamedType`, `ReflectionUnionType`,
+  `ReflectionException` and `Reflection::getModifierNames`. Modifiers carry the
+  write visibility (`protected(set)` for a public readonly property). `invoke`,
+  `getValue` and `setValue` run from the declaring class's scope, so private
+  members are reachable. Types print in the reference's order and `self` in a
+  method names its class; defaults evaluate where they were declared, a library
+  function's from the argument tables. The 8.5 deprecations of
+  `setAccessible()`, the one-argument `ReflectionMethod` constructor, a
+  one-argument static `setValue()` and `getConstant()` of a missing constant
+  are raised.
+* `A::$method(…)` calls the static method a variable names; it used to call the
+  value of a static property `$method`.
+* A class that implements no interface of its own lists the ones it inherits
+  in reverse, as the reference does (`class_implements`, `getInterfaceNames`).
+
+---
+
 ## Round 28: closures in dumps, namespaced call sites, `call_user_func` frames
 
 Measured under `PHP 8.5.11 (cli)`; pinned in `tests/parity_round28.rs`.

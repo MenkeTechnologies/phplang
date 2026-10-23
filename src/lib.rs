@@ -369,6 +369,457 @@ final class WeakMap implements ArrayAccess, Countable, IteratorAggregate {
 }
 "##;
 
+/// The Reflection API (`ext/reflection`), written in PHP over the engine's
+/// `__phplang_reflect` metadata. Each object keeps only the public `name`
+/// (and `class`) the reference shows; the rest of its state lives in static
+/// tables keyed by object id, as `WeakReference`'s does. Access that crosses
+/// visibility (`getValue`, `invoke`) runs in a closure bound to the declaring
+/// class, which is the scope the reference grants it.
+const REFLECTION_PRELUDE: &str = r##"
+class ReflectionException extends Exception {}
+
+class Reflection {
+    public static function getModifierNames(int $modifiers): array {
+        $names = [];
+        if ($modifiers & 64) { $names[] = "abstract"; }
+        if ($modifiers & 32) { $names[] = "final"; }
+        if ($modifiers & 1) { $names[] = "public"; }
+        elseif ($modifiers & 4) { $names[] = "private"; }
+        elseif ($modifiers & 2) { $names[] = "protected"; }
+        if ($modifiers & 1024) { $names[] = "public(set)"; }
+        elseif ($modifiers & 2048) { $names[] = "protected(set)"; }
+        elseif ($modifiers & 4096) { $names[] = "private(set)"; }
+        if ($modifiers & 16) { $names[] = "static"; }
+        if ($modifiers & (128 | 65536)) { $names[] = "readonly"; }
+        return $names;
+    }
+}
+
+abstract class ReflectionType implements Stringable {
+    // object id => [name => as printed, parts => alternatives, null => allows null]
+    protected static $__info = [];
+    public static function __make(array $info): ReflectionType {
+        $t = count($info["parts"]) == 1 ? new ReflectionNamedType() : new ReflectionUnionType();
+        ReflectionType::$__info[spl_object_id($t)] = $info;
+        return $t;
+    }
+    public function allowsNull(): bool { return ReflectionType::$__info[spl_object_id($this)]["null"]; }
+    public function __toString(): string { return ReflectionType::$__info[spl_object_id($this)]["name"]; }
+}
+
+class ReflectionNamedType extends ReflectionType {
+    public function getName(): string { return ReflectionType::$__info[spl_object_id($this)]["parts"][0]; }
+    public function isBuiltin(): bool {
+        return in_array(strtolower($this->getName()), ["int", "float", "string", "bool", "array", "mixed",
+            "void", "null", "never", "false", "true", "callable", "iterable", "object", "static"], true);
+    }
+}
+
+class ReflectionUnionType extends ReflectionType {
+    public function getTypes(): array {
+        $info = ReflectionType::$__info[spl_object_id($this)];
+        $types = [];
+        foreach ($info["parts"] as $p) { $types[] = ReflectionType::__make(["name" => $p, "parts" => [$p], "null" => $p === "null"]); }
+        if ($info["null"]) { $types[] = ReflectionType::__make(["name" => "null", "parts" => ["null"], "null" => true]); }
+        return $types;
+    }
+}
+
+abstract class ReflectionFunctionAbstract {
+    public string $name = "";
+    // object id => [kind, target, name] — what __phplang_reflect("params") reads
+    protected static $__spec = [];
+    public function __spec(): array { return ReflectionFunctionAbstract::$__spec[spl_object_id($this)]; }
+    public function getName(): string { return $this->name; }
+    public function getShortName(): string { $p = strrpos($this->name, "\\"); return $p === false ? $this->name : substr($this->name, $p + 1); }
+    public function getNamespaceName(): string { $p = strrpos($this->name, "\\"); return $p === false ? "" : substr($this->name, 0, $p); }
+    public function inNamespace(): bool { return str_contains($this->name, "\\"); }
+    public function getParameters(): array {
+        [$kind, $target, $fname] = $this->__spec();
+        $out = [];
+        foreach (__phplang_reflect("params", $kind, $target, $fname) as $i => $info) {
+            $out[] = ReflectionParameter::__make($this, $info, $i);
+        }
+        return $out;
+    }
+    public function getNumberOfParameters(): int { [$k, $t, $n] = $this->__spec(); return count(__phplang_reflect("params", $k, $t, $n)); }
+    public function getNumberOfRequiredParameters(): int {
+        [$k, $t, $n] = $this->__spec();
+        $req = 0;
+        foreach (__phplang_reflect("params", $k, $t, $n) as $p) { if (!$p["optional"]) { $req++; } }
+        return $req;
+    }
+    public function isVariadic(): bool {
+        [$k, $t, $n] = $this->__spec();
+        foreach (__phplang_reflect("params", $k, $t, $n) as $p) { if ($p["variadic"]) { return true; } }
+        return false;
+    }
+    abstract protected function __returnInfo();
+    public function hasReturnType(): bool { return $this->__returnInfo() !== null; }
+    public function getReturnType(): ?ReflectionType { $t = $this->__returnInfo(); return $t === null ? null : ReflectionType::__make($t); }
+    public function getDocComment(): string|false { return false; }
+    public function isUserDefined(): bool { return !$this->isInternal(); }
+    public function getStaticVariables(): array { return []; }
+    public function getAttributes(?string $name = null, int $flags = 0): array { return []; }
+}
+
+class ReflectionFunction extends ReflectionFunctionAbstract {
+    // object id => what __phplang_reflect("function") answered
+    private static $__fn = [];
+    public function __construct(Closure|string $function) {
+        $info = __phplang_reflect("function", $function);
+        if ($info === false) { throw new ReflectionException("Function " . $function . "() does not exist"); }
+        $this->name = $info["name"];
+        ReflectionFunction::$__fn[spl_object_id($this)] = [$info, $function];
+        ReflectionFunctionAbstract::$__spec[spl_object_id($this)] = $info["closure"] ? ["closure", $function, ""] : ["function", $info["name"], ""];
+    }
+    protected function __returnInfo() { return ReflectionFunction::$__fn[spl_object_id($this)][0]["return"]; }
+    public function isInternal(): bool { return ReflectionFunction::$__fn[spl_object_id($this)][0]["internal"]; }
+    public function isClosure(): bool { return ReflectionFunction::$__fn[spl_object_id($this)][0]["closure"]; }
+    public function invoke(mixed ...$args): mixed { return call_user_func_array(ReflectionFunction::$__fn[spl_object_id($this)][1], $args); }
+    public function invokeArgs(array $args = []): mixed { return call_user_func_array(ReflectionFunction::$__fn[spl_object_id($this)][1], $args); }
+    public function getClosure(): Closure { $f = ReflectionFunction::$__fn[spl_object_id($this)][1]; return $f instanceof Closure ? $f : Closure::fromCallable($f); }
+}
+
+class ReflectionMethod extends ReflectionFunctionAbstract {
+    const IS_STATIC = 16;
+    const IS_PUBLIC = 1;
+    const IS_PROTECTED = 2;
+    const IS_PRIVATE = 4;
+    const IS_ABSTRACT = 64;
+    const IS_FINAL = 32;
+    public string $class = "";
+    private static $__m = [];
+    public function __construct(object|string $objectOrMethod, ?string $method = null) {
+        if ($method === null) {
+            __phplang_reflect("deprecated", "Calling ReflectionMethod::__construct() with 1 argument is deprecated, use ReflectionMethod::createFromMethodName() instead");
+            if (!is_string($objectOrMethod) || !str_contains($objectOrMethod, "::")) {
+                throw new ReflectionException("ReflectionMethod::__construct(): Argument #1 (\$objectOrMethod) must be a valid method name");
+            }
+            [$objectOrMethod, $method] = explode("::", $objectOrMethod, 2);
+        }
+        $class = is_object($objectOrMethod) ? get_class($objectOrMethod) : $objectOrMethod;
+        $c = __phplang_reflect("class", $class);
+        if ($c === false) { throw new ReflectionException("Class \"" . $class . "\" does not exist"); }
+        $info = __phplang_reflect("method", $c["name"], $method);
+        if ($info === null) { throw new ReflectionException("Method " . $c["name"] . "::" . $method . "() does not exist"); }
+        $this->name = $info["name"];
+        $this->class = $info["class"];
+        ReflectionMethod::$__m[spl_object_id($this)] = $info;
+        ReflectionFunctionAbstract::$__spec[spl_object_id($this)] = ["method", $info["class"], $info["name"]];
+    }
+    public static function createFromMethodName(string $method): static {
+        if (!str_contains($method, "::")) {
+            throw new ReflectionException("ReflectionMethod::createFromMethodName(): Argument #1 (\$method) must be a valid method name");
+        }
+        [$class, $name] = explode("::", $method, 2);
+        return new static($class, $name);
+    }
+    private function __info(): array { return ReflectionMethod::$__m[spl_object_id($this)]; }
+    protected function __returnInfo() { return $this->__info()["type"]; }
+    public function getModifiers(): int { return $this->__info()["modifiers"]; }
+    public function isPublic(): bool { return ($this->getModifiers() & 1) != 0; }
+    public function isProtected(): bool { return ($this->getModifiers() & 2) != 0; }
+    public function isPrivate(): bool { return ($this->getModifiers() & 4) != 0; }
+    public function isStatic(): bool { return ($this->getModifiers() & 16) != 0; }
+    public function isFinal(): bool { return ($this->getModifiers() & 32) != 0; }
+    public function isAbstract(): bool { return ($this->getModifiers() & 64) != 0; }
+    public function isConstructor(): bool { return strcasecmp($this->name, "__construct") == 0; }
+    public function isDestructor(): bool { return strcasecmp($this->name, "__destruct") == 0; }
+    public function isInternal(): bool { return __phplang_reflect("class", $this->class)["internal"]; }
+    public function getDeclaringClass(): ReflectionClass { return new ReflectionClass($this->class); }
+    #[\Deprecated(message: "as it has no effect since PHP 8.1", since: "8.5")]
+    public function setAccessible(bool $accessible): void {}
+    public function invoke(?object $object = null, mixed ...$args): mixed { return $this->invokeArgs($object, $args); }
+    public function invokeArgs(?object $object = null, array $args = []): mixed {
+        $name = $this->name;
+        if ($this->isStatic()) {
+            return Closure::bind(function ($c, $n, $a) { return $c::$n(...$a); }, null, $this->class)($this->class, $name, $args);
+        }
+        return Closure::bind(function ($o, $n, $a) { return $o->$n(...$a); }, null, $this->class)($object, $name, $args);
+    }
+    public function getClosure(?object $object = null): Closure {
+        $name = $this->name;
+        if ($this->isStatic()) {
+            return Closure::bind(function (...$a) use ($name) { return static::$name(...$a); }, null, $this->class);
+        }
+        return Closure::bind(function (...$a) use ($name) { return $this->$name(...$a); }, $object, $this->class);
+    }
+}
+
+class ReflectionParameter {
+    public string $name = "";
+    // object id => [function, info, position]
+    private static $__p = [];
+    public static function __make(ReflectionFunctionAbstract $fn, array $info, int $position): ReflectionParameter {
+        $p = new ReflectionParameter();
+        $p->name = $info["name"];
+        ReflectionParameter::$__p[spl_object_id($p)] = [$fn, $info, $position];
+        return $p;
+    }
+    private function __info(): array { return ReflectionParameter::$__p[spl_object_id($this)][1]; }
+    public function getName(): string { return $this->name; }
+    public function getPosition(): int { return ReflectionParameter::$__p[spl_object_id($this)][2]; }
+    public function isOptional(): bool { return $this->__info()["optional"]; }
+    public function isVariadic(): bool { return $this->__info()["variadic"]; }
+    public function isPassedByReference(): bool { return $this->__info()["byref"]; }
+    public function canBePassedByValue(): bool { return !$this->__info()["byref"]; }
+    public function hasType(): bool { return $this->__info()["type"] !== null; }
+    public function getType(): ?ReflectionType { $t = $this->__info()["type"]; return $t === null ? null : ReflectionType::__make($t); }
+    public function allowsNull(): bool { $t = $this->__info()["type"]; return $t === null || $t["null"]; }
+    public function isDefaultValueAvailable(): bool { return $this->__info()["default"]; }
+    public function getDefaultValue(): mixed {
+        if (!$this->__info()["default"]) { throw new ReflectionException("Internal error: Failed to retrieve the default value"); }
+        $fn = ReflectionParameter::$__p[spl_object_id($this)][0];
+        [$k, $t, $n] = $fn->__spec();
+        return __phplang_reflect("default", $k, $t, $n, $this->getPosition());
+    }
+    public function getDeclaringFunction(): ReflectionFunctionAbstract { return ReflectionParameter::$__p[spl_object_id($this)][0]; }
+    public function getDeclaringClass(): ?ReflectionClass {
+        $fn = ReflectionParameter::$__p[spl_object_id($this)][0];
+        return $fn instanceof ReflectionMethod ? new ReflectionClass($fn->class) : null;
+    }
+    public function getAttributes(?string $name = null, int $flags = 0): array { return []; }
+}
+
+class ReflectionProperty {
+    const IS_STATIC = 16;
+    const IS_READONLY = 128;
+    const IS_PUBLIC = 1;
+    const IS_PROTECTED = 2;
+    const IS_PRIVATE = 4;
+    const IS_ABSTRACT = 64;
+    const IS_FINAL = 32;
+    public string $name = "";
+    public string $class = "";
+    private static $__p = [];
+    public function __construct(object|string $class, string $property) {
+        $cname = is_object($class) ? get_class($class) : $class;
+        $c = __phplang_reflect("class", $cname);
+        if ($c === false) { throw new ReflectionException("Class \"" . $cname . "\" does not exist"); }
+        $info = __phplang_reflect("prop", $c["name"], $property);
+        if ($info === null && is_object($class) && property_exists($class, $property)) {
+            $info = ["name" => $property, "class" => $c["name"], "modifiers" => 1, "type" => null, "default" => false];
+        }
+        if ($info === null) { throw new ReflectionException("Property " . $c["name"] . "::\$" . $property . " does not exist"); }
+        $this->name = $info["name"];
+        $this->class = $info["class"];
+        ReflectionProperty::$__p[spl_object_id($this)] = $info;
+    }
+    private function __info(): array { return ReflectionProperty::$__p[spl_object_id($this)]; }
+    public function getName(): string { return $this->name; }
+    public function getModifiers(): int { return $this->__info()["modifiers"]; }
+    public function isPublic(): bool { return ($this->getModifiers() & 1) != 0; }
+    public function isProtected(): bool { return ($this->getModifiers() & 2) != 0; }
+    public function isPrivate(): bool { return ($this->getModifiers() & 4) != 0; }
+    public function isStatic(): bool { return ($this->getModifiers() & 16) != 0; }
+    public function isReadOnly(): bool { return ($this->getModifiers() & 128) != 0; }
+    public function isFinal(): bool { return ($this->getModifiers() & 32) != 0; }
+    public function isDefault(): bool { return true; }
+    public function hasType(): bool { return $this->__info()["type"] !== null; }
+    public function getType(): ?ReflectionType { $t = $this->__info()["type"]; return $t === null ? null : ReflectionType::__make($t); }
+    public function hasDefaultValue(): bool { return $this->__info()["default"]; }
+    public function getDefaultValue(): mixed { return __phplang_reflect("prop_default", $this->class, $this->name); }
+    public function getDeclaringClass(): ReflectionClass { return new ReflectionClass($this->class); }
+    public function getDocComment(): string|false { return false; }
+    #[\Deprecated(message: "as it has no effect since PHP 8.1", since: "8.5")]
+    public function setAccessible(bool $accessible): void {}
+    public function getValue(?object $object = null): mixed {
+        if ($this->isStatic()) {
+            return Closure::bind(function ($c, $n) { return __phplang_reflect("static_get", $c, $n); }, null, $this->class)($this->class, $this->name);
+        }
+        return Closure::bind(function ($o, $n) { return $o->$n; }, null, $this->class)($object, $this->name);
+    }
+    public function setValue(mixed $objectOrValue = null, mixed $value = null): void {
+        if ($this->isStatic()) {
+            if (func_num_args() == 1) {
+                __phplang_reflect("deprecated", "Calling ReflectionProperty::setValue() with a single argument is deprecated");
+            }
+            $v = func_num_args() == 1 ? $objectOrValue : $value;
+            Closure::bind(function ($c, $n, $v) { __phplang_reflect("static_set", $c, $n, $v); }, null, $this->class)($this->class, $this->name, $v);
+            return;
+        }
+        Closure::bind(function ($o, $n, $v) { $o->$n = $v; }, null, $this->class)($objectOrValue, $this->name, $value);
+    }
+    public function isInitialized(?object $object = null): bool {
+        if ($this->isStatic()) { return true; }
+        return Closure::bind(function ($o, $n) { return isset($o->$n) || array_key_exists($n, get_object_vars($o)); }, null, $this->class)($object, $this->name);
+    }
+    public function getAttributes(?string $name = null, int $flags = 0): array { return []; }
+}
+
+class ReflectionClassConstant {
+    const IS_PUBLIC = 1;
+    const IS_PROTECTED = 2;
+    const IS_PRIVATE = 4;
+    const IS_FINAL = 32;
+    public string $name = "";
+    public string $class = "";
+    public function __construct(object|string $class, string $constant) {
+        $r = new ReflectionClass($class);
+        if (!$r->hasConstant($constant)) { throw new ReflectionException("Constant " . $r->name . "::" . $constant . " does not exist"); }
+        $this->name = $constant;
+        $this->class = $r->name;
+    }
+    public function getName(): string { return $this->name; }
+    public function getValue(): mixed { return constant($this->class . "::" . $this->name); }
+    public function getDeclaringClass(): ReflectionClass { return new ReflectionClass($this->class); }
+}
+
+class ReflectionClass {
+    const IS_IMPLICIT_ABSTRACT = 16;
+    const IS_EXPLICIT_ABSTRACT = 64;
+    const IS_FINAL = 32;
+    const IS_READONLY = 65536;
+    public string $name = "";
+    private static $__c = [];
+    public function __construct(object|string $objectOrClass) {
+        $info = __phplang_reflect("class", $objectOrClass);
+        if ($info === false) { throw new ReflectionException("Class \"" . $objectOrClass . "\" does not exist"); }
+        $this->name = $info["name"];
+        $info["object"] = is_object($objectOrClass) ? $objectOrClass : null;
+        ReflectionClass::$__c[spl_object_id($this)] = $info;
+    }
+    private function __info(): array { return ReflectionClass::$__c[spl_object_id($this)]; }
+    public function getName(): string { return $this->name; }
+    public function getShortName(): string { $p = strrpos($this->name, "\\"); return $p === false ? $this->name : substr($this->name, $p + 1); }
+    public function getNamespaceName(): string { $p = strrpos($this->name, "\\"); return $p === false ? "" : substr($this->name, 0, $p); }
+    public function inNamespace(): bool { return str_contains($this->name, "\\"); }
+    public function isInterface(): bool { return $this->__info()["interface"]; }
+    public function isTrait(): bool { return $this->__info()["trait"]; }
+    public function isEnum(): bool { return $this->__info()["enum"]; }
+    public function isAbstract(): bool { return $this->__info()["abstract"]; }
+    public function isFinal(): bool { return $this->__info()["final"]; }
+    public function isReadOnly(): bool { return false; }
+    public function isInternal(): bool { return $this->__info()["internal"]; }
+    public function isUserDefined(): bool { return !$this->__info()["internal"]; }
+    public function isAnonymous(): bool { return $this->__info()["anonymous"]; }
+    public function isCloneable(): bool { return $this->isInstantiable(); }
+    public function isInstantiable(): bool {
+        $i = $this->__info();
+        if ($i["interface"] || $i["trait"] || $i["enum"] || $i["abstract"]) { return false; }
+        $ctor = __phplang_reflect("method", $this->name, "__construct");
+        return $ctor === null || ($ctor["modifiers"] & 1) != 0;
+    }
+    public function isIterable(): bool { return $this->implementsInterface("Traversable") && $this->isInstantiable(); }
+    public function isIterateable(): bool { return $this->isIterable(); }
+    public function getModifiers(): int {
+        $i = $this->__info();
+        return ($i["abstract"] && !$i["interface"] ? 64 : 0) | ($i["final"] ? 32 : 0);
+    }
+    public function getParentClass(): ReflectionClass|false {
+        $p = $this->__info()["parent"];
+        return $p === null ? false : new ReflectionClass($p);
+    }
+    public function getInterfaceNames(): array { return $this->__info()["interfaces"]; }
+    public function getInterfaces(): array {
+        $out = [];
+        foreach ($this->getInterfaceNames() as $i) { $out[$i] = new ReflectionClass($i); }
+        return $out;
+    }
+    public function getTraitNames(): array { return $this->__info()["traits"]; }
+    public function getTraits(): array {
+        $out = [];
+        foreach ($this->getTraitNames() as $t) { $out[$t] = new ReflectionClass($t); }
+        return $out;
+    }
+    public function implementsInterface(ReflectionClass|string $interface): bool {
+        $name = $interface instanceof ReflectionClass ? $interface->name : $interface;
+        $r = __phplang_reflect("class", $name);
+        if ($r === false) { throw new ReflectionException("Interface \"" . $name . "\" does not exist"); }
+        if (!$r["interface"]) { throw new ReflectionException($r["name"] . " is not an interface"); }
+        return is_a($this->name, $r["name"], true);
+    }
+    public function isSubclassOf(ReflectionClass|string $class): bool {
+        $name = $class instanceof ReflectionClass ? $class->name : $class;
+        $r = __phplang_reflect("class", $name);
+        if ($r === false) { throw new ReflectionException("Class \"" . $name . "\" does not exist"); }
+        return strcasecmp($r["name"], $this->name) != 0 && is_a($this->name, $r["name"], true);
+    }
+    public function isInstance(object $object): bool { return is_a($object, $this->name); }
+    public function hasMethod(string $name): bool { return __phplang_reflect("method", $this->name, $name) !== null; }
+    public function getMethod(string $name): ReflectionMethod { return new ReflectionMethod($this->name, $name); }
+    public function getMethods(?int $filter = null): array {
+        $out = [];
+        foreach (__phplang_reflect("methods", $this->name) as $m) {
+            if ($filter === null || ($m["modifiers"] & $filter)) { $out[] = new ReflectionMethod($this->name, $m["name"]); }
+        }
+        return $out;
+    }
+    public function getConstructor(): ?ReflectionMethod { return $this->hasMethod("__construct") ? new ReflectionMethod($this->name, "__construct") : null; }
+    // Made from an object, its dynamic properties count too.
+    public function hasProperty(string $name): bool {
+        $o = $this->__info()["object"];
+        return __phplang_reflect("prop", $this->name, $name) !== null || ($o !== null && property_exists($o, $name));
+    }
+    public function getProperty(string $name): ReflectionProperty { return new ReflectionProperty($this->name, $name); }
+    public function getProperties(?int $filter = null): array {
+        $out = [];
+        foreach (__phplang_reflect("props", $this->name) as $p) {
+            if ($filter === null || ($p["modifiers"] & $filter)) { $out[] = new ReflectionProperty($this->name, $p["name"]); }
+        }
+        return $out;
+    }
+    // The static properties first, then the instance ones.
+    public function getDefaultProperties(): array {
+        $out = [];
+        foreach ([true, false] as $static) {
+            foreach (__phplang_reflect("props", $this->name) as $p) {
+                if ($p["default"] && (($p["modifiers"] & 16) != 0) === $static) {
+                    $out[$p["name"]] = __phplang_reflect("prop_default", $this->name, $p["name"]);
+                }
+            }
+        }
+        return $out;
+    }
+    public function getStaticProperties(): array {
+        $out = [];
+        foreach ($this->getProperties(16) as $p) { $out[$p->name] = $p->getValue(); }
+        return $out;
+    }
+    public function getStaticPropertyValue(string $name, mixed $default = null): mixed {
+        if (!$this->hasProperty($name)) {
+            if (func_num_args() > 1) { return $default; }
+            throw new ReflectionException("Property " . $this->name . "::\$" . $name . " does not exist");
+        }
+        return $this->getProperty($name)->getValue();
+    }
+    public function setStaticPropertyValue(string $name, mixed $value): void { $this->getProperty($name)->setValue(null, $value); }
+    public function hasConstant(string $name): bool { return array_key_exists($name, __phplang_reflect("consts", $this->name)); }
+    public function getConstants(?int $filter = null): array { return __phplang_reflect("consts", $this->name); }
+    public function getConstant(string $name): mixed {
+        $all = __phplang_reflect("consts", $this->name);
+        if (!array_key_exists($name, $all)) {
+            __phplang_reflect("deprecated", "ReflectionClass::getConstant() for a non-existent constant is deprecated, use ReflectionClass::hasConstant() to check if the constant exists");
+            return false;
+        }
+        return $all[$name];
+    }
+    public function getReflectionConstant(string $name): ReflectionClassConstant|false { return $this->hasConstant($name) ? new ReflectionClassConstant($this->name, $name) : false; }
+    public function newInstance(mixed ...$args): object { $c = $this->name; return new $c(...$args); }
+    public function newInstanceArgs(array $args = []): ?object { $c = $this->name; return new $c(...$args); }
+    public function newInstanceWithoutConstructor(): object { return __phplang_reflect("instantiate", $this->name); }
+    public function getFileName(): string|false { return false; }
+    public function getDocComment(): string|false { return false; }
+    public function getAttributes(?string $name = null, int $flags = 0): array { return []; }
+    public function getExtensionName(): string|false { return false; }
+}
+
+class ReflectionObject extends ReflectionClass {
+    public function __construct(object $object) { parent::__construct($object); }
+}
+
+class ReflectionEnum extends ReflectionClass {
+    public function __construct(object|string $objectOrClass) {
+        parent::__construct($objectOrClass);
+        if (!$this->isEnum()) { throw new ReflectionException("Class \"" . $this->name . "\" is not an enum"); }
+    }
+    public function isBacked(): bool { return $this->implementsInterface("BackedEnum"); }
+    public function getCases(): array { $c = $this->name; return $c::cases(); }
+    public function hasCase(string $name): bool { foreach ($this->getCases() as $case) { if ($case->name === $name) { return true; } } return false; }
+}
+"##;
+
 /// The SPL data-structure classes, written in PHP. They store elements in an
 /// internal array property and mutate it through `$this`, which is the only way
 /// a PHP array — a value, not a handle — can be mutated in place. Aliasing it to
@@ -2087,7 +2538,7 @@ fn prelude_defs() -> &'static PreludeDefs {
     static CACHE: OnceLock<PreludeDefs> = OnceLock::new();
     CACHE.get_or_init(|| {
         let src = format!(
-            "{EXCEPTION_PRELUDE}{DATETIME_PRELUDE}{HASH_PRELUDE}{WEAKREF_PRELUDE}{SPL_PRELUDE}"
+            "{EXCEPTION_PRELUDE}{DATETIME_PRELUDE}{HASH_PRELUDE}{WEAKREF_PRELUDE}{SPL_PRELUDE}{REFLECTION_PRELUDE}"
         );
         // NOT `compile`: that applies the file-level facts of whatever it is given,
         // and this runs from `load_merged` — after the user program was compiled —

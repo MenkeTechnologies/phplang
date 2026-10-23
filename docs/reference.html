@@ -2499,6 +2499,97 @@ $h = new H; $h-&gt;insert(3); $h-&gt;insert(9); echo $h-&gt;extract();   // =&gt
           <p>The state of an incremental hash, created only by `hash_init()` or `hash_copy()` and consumed by `hash_update()`, `hash_update_stream()`, `hash_update_file()` and `hash_final()`. `var_dump` and `print_r` show its algorithm, as the reference's do; `clone` copies the state. DIVERGENCE: `(array)` and `var_export` show the prelude's private properties, where the reference shows none; `serialize` is not the reference's form.</p>
           <pre><code class="lang-php">$c = hash_init("sha256"); var_dump($c);   // =&gt; object(HashContext)#1 (1) { ["algo"]=&gt; string(6) "sha256" }</code></pre>
         </article>
+        <article class="doc-entry" id="doc-prelude-class-60">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-60">#</a> <code>ReflectionClass</code></h3>
+          <pre><code class="lang-php">class ReflectionClass {
+    public string $name;
+    __construct(object|string $objectOrClass)
+    getName()  getShortName()  getNamespaceName()  inNamespace()
+    isInterface()  isTrait()  isEnum()  isAbstract()  isFinal()  isInstantiable()  isInternal()  isUserDefined()  isAnonymous()
+    getParentClass()  getInterfaceNames()  getInterfaces()  getTraitNames()  implementsInterface()  isSubclassOf()  isInstance()
+    hasMethod()  getMethod()  getMethods(?int $filter)  getConstructor()
+    hasProperty()  getProperty()  getProperties(?int $filter)  getDefaultProperties()  getStaticProperties()  getStaticPropertyValue()  setStaticPropertyValue()
+    hasConstant()  getConstant()  getConstants()  getReflectionConstant()
+    newInstance(...$args)  newInstanceArgs(array $args)  newInstanceWithoutConstructor()
+}</code></pre>
+          <p>A class, interface, trait or enum by name or by instance; `ReflectionException: Class "X" does not exist` otherwise. Methods and properties are listed own first (a trait's included) in declaration order, then each ancestor's not overridden — an ancestor's private members are not inherited — and an abstract class lists its interfaces' methods; constants list an enum's cases first. Made from an object, `hasProperty` also sees its dynamic properties. DIVERGENCE: `getDocComment()` and `getFileName()` answer `false`, `getAttributes()` an empty array, and there is no `__toString()`.</p>
+          <pre><code class="lang-php">class A { public $x = 1; } echo (new ReflectionClass("A"))-&gt;getProperties()[0]-&gt;name;   // =&gt; x</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-prelude-class-61">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-61">#</a> <code>ReflectionObject</code></h3>
+          <pre><code class="lang-php">class ReflectionObject extends ReflectionClass { __construct(object $object) }</code></pre>
+          <p>`ReflectionClass` made from an instance.</p>
+        </article>
+        <article class="doc-entry" id="doc-prelude-class-62">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-62">#</a> <code>ReflectionEnum</code></h3>
+          <pre><code class="lang-php">class ReflectionEnum extends ReflectionClass { isBacked()  getCases()  hasCase() }</code></pre>
+          <p>`ReflectionClass` of an enum; `ReflectionException` for anything else. `getCases()` answers the case objects themselves.</p>
+        </article>
+        <article class="doc-entry" id="doc-prelude-class-63">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-63">#</a> <code>ReflectionMethod</code></h3>
+          <pre><code class="lang-php">class ReflectionMethod extends ReflectionFunctionAbstract {
+    public string $name; public string $class;
+    __construct(object|string $objectOrMethod, ?string $method = null)
+    static createFromMethodName(string $method)
+    getModifiers()  isPublic()  isProtected()  isPrivate()  isStatic()  isFinal()  isAbstract()  isConstructor()
+    getDeclaringClass()  invoke(?object $object, ...$args)  invokeArgs(?object $object, array $args)  getClosure()
+}</code></pre>
+          <p>A method, found along the class's chain (an ancestor's private one included). `invoke` runs it from the declaring class's scope, so a private method can be called; `setAccessible()` has no effect and is deprecated, and the one-argument `"C::m"` constructor is deprecated in favour of `createFromMethodName`, as in 8.5.</p>
+        </article>
+        <article class="doc-entry" id="doc-prelude-class-64">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-64">#</a> <code>ReflectionProperty</code></h3>
+          <pre><code class="lang-php">class ReflectionProperty {
+    public string $name; public string $class;
+    __construct(object|string $class, string $property)
+    getModifiers()  isPublic()  isProtected()  isPrivate()  isStatic()  isReadOnly()  isFinal()
+    hasType()  getType()  hasDefaultValue()  getDefaultValue()  getDeclaringClass()
+    getValue(?object $object)  setValue($objectOrValue, $value)  isInitialized(?object $object)
+}</code></pre>
+          <p>A property, read and written from the declaring class's scope so its visibility does not stand in the way. The modifiers carry the write visibility (`protected(set)` for a public readonly property). A one-argument `setValue` on a static property is deprecated, as in 8.5.</p>
+        </article>
+        <article class="doc-entry" id="doc-prelude-class-65">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-65">#</a> <code>ReflectionFunction</code></h3>
+          <pre><code class="lang-php">class ReflectionFunction extends ReflectionFunctionAbstract {
+    __construct(Closure|string $function)
+    isInternal()  isClosure()  invoke(...$args)  invokeArgs(array $args)  getClosure()
+}</code></pre>
+          <p>A user function, a library function or a closure; `ReflectionException: Function f() does not exist` otherwise. `ReflectionFunctionAbstract` supplies `getName()`, `getShortName()`, `getNamespaceName()`, `getParameters()`, `getNumberOfParameters()`, `getNumberOfRequiredParameters()`, `isVariadic()`, `hasReturnType()` and `getReturnType()`. DIVERGENCE: a library function's return type is read from this corpus's signature, which does not always spell the reference's union.</p>
+        </article>
+        <article class="doc-entry" id="doc-prelude-class-66">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-66">#</a> <code>ReflectionParameter</code></h3>
+          <pre><code class="lang-php">class ReflectionParameter {
+    public string $name;
+    getName()  getPosition()  isOptional()  isVariadic()  isPassedByReference()  canBePassedByValue()
+    hasType()  getType()  allowsNull()  isDefaultValueAvailable()  getDefaultValue()  getDeclaringFunction()  getDeclaringClass()
+}</code></pre>
+          <p>One parameter. A parameter is optional once no required one follows it. `getDefaultValue()` evaluates the default where it was declared; a library function's comes from the argument tables.</p>
+        </article>
+        <article class="doc-entry" id="doc-prelude-class-67">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-67">#</a> <code>ReflectionNamedType</code></h3>
+          <pre><code class="lang-php">class ReflectionNamedType extends ReflectionType { getName()  isBuiltin()  allowsNull()  __toString() }</code></pre>
+          <p>A declared type with one alternative besides `null`: `?I` names `I` and allows null. `self` inside a class names the class. A type of several alternatives is a `ReflectionUnionType`, whose `getTypes()` lists them in the order the type prints in.</p>
+        </article>
+        <article class="doc-entry" id="doc-prelude-class-68">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-68">#</a> <code>ReflectionUnionType</code></h3>
+          <pre><code class="lang-php">class ReflectionUnionType extends ReflectionType { getTypes()  allowsNull()  __toString() }</code></pre>
+          <p>A union type, printed and listed in the reference's order — class names, then the built-in types in the engine's fixed order, `null` last.</p>
+        </article>
+        <article class="doc-entry" id="doc-prelude-class-69">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-69">#</a> <code>ReflectionClassConstant</code></h3>
+          <pre><code class="lang-php">class ReflectionClassConstant { public string $name; public string $class; getName()  getValue()  getDeclaringClass() }</code></pre>
+          <p>One class constant.</p>
+        </article>
+        <article class="doc-entry" id="doc-prelude-class-70">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-70">#</a> <code>ReflectionException</code></h3>
+          <pre><code class="lang-php">class ReflectionException extends Exception {}</code></pre>
+          <p>What the reflection constructors throw for a name that does not exist.</p>
+        </article>
+        <article class="doc-entry" id="doc-prelude-class-71">
+          <h3><a class="doc-anchor" href="#doc-prelude-class-71">#</a> <code>Reflection</code></h3>
+          <pre><code class="lang-php">class Reflection { static getModifierNames(int $modifiers): array }</code></pre>
+          <p>The modifier names, in the reference's order: `abstract`, `final`, the visibility, the write visibility, `static`, `readonly`.</p>
+          <pre><code class="lang-php">var_dump(Reflection::getModifierNames(17));   // =&gt; array(2) { [0]=&gt; "public" [1]=&gt; "static" }</code></pre>
+        </article>
       </section>
 
       <section class="tutorial-section" id="ch-core-library-strings">
@@ -6167,6 +6258,11 @@ echo implode(",", $a), "|", implode(",", $b);   // =&gt; 1,2,3|a,b,c</code></pre
           <p>The same ancestry walk as `is_a`, but the subject's own class is excluded first, so only strict ancestors and interfaces count.</p>
           <pre><code class="lang-php">class A {} class B extends A {}
 var_dump(is_subclass_of(new B, "A"), is_subclass_of(new A, "A"));   // =&gt; bool(true) bool(false)</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-reflection-21">
+          <h3><a class="doc-anchor" href="#doc-reflection-21">#</a> <code>__phplang_reflect</code></h3>
+          <pre><code class="lang-php">__phplang_reflect(string $op, mixed ...$args): mixed</code></pre>
+          <p>Internal helper behind the prelude's `Reflection*` classes; a phplang extension with no PHP counterpart. Answers the engine's metadata — a class's flags, parent, interfaces and traits; its methods, properties and constants in the reference's order; a function's or method's parameters and their defaults — as arrays the prelude wraps in reflection objects.</p>
         </article>
       </section>
 

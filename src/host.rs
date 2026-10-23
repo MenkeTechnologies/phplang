@@ -778,6 +778,10 @@ pub struct ClassDef {
     /// and the `abstract` ones of an abstract class. A trait's are not recorded.
     /// By lowercased name.
     pub abstract_methods: FxHashSet<String>,
+    /// Every property THIS class declares, instance and static, in
+    /// declaration order (a promoted one at its constructor's place), then the
+    /// ones its traits bring — the order reflection lists them in.
+    pub prop_order: Vec<String>,
 }
 
 /// One compiled `catch (T1 | T2 [$var]) { body }` clause of a `try`.
@@ -4540,6 +4544,12 @@ impl PhpHost {
             .collect();
         if def.methods.contains_key("__tostring") && !declared.iter().any(|d| d == "stringable") {
             declared.push("stringable".to_string());
+        }
+        // A class that implements nothing of its own lists what it inherits
+        // in reverse — measured: `class Q extends B {}` over `B implements S,
+        // U` answers `U, S`, and one more level of the same answers `S, U`.
+        if declared.is_empty() && def.parent.is_some() {
+            out.reverse();
         }
         let spell = |lower: &str| {
             self.classes
@@ -14029,4 +14039,387 @@ fn raise_deprecated_call(frame: &str, d: &crate::ast::Deprecation) {
         errlevel::E_USER_DEPRECATED
     };
     with_host(|h| h.diagnose("Deprecated", level, warn_line(), msg));
+}
+
+// ── reflection metadata ─────────────────────────────────────────────────────
+//
+// What the PHP-written `Reflection*` classes of the prelude ask the engine
+// for, through `__phplang_reflect`. Names come back in declared spelling and
+// in the order the reference's tables list them.
+
+/// `ReflectionMethod::IS_*` / `ReflectionProperty::IS_*` modifier bits.
+pub mod refl_flags {
+    pub const PUBLIC: i64 = 1;
+    pub const PROTECTED: i64 = 2;
+    pub const PRIVATE: i64 = 4;
+    pub const STATIC: i64 = 16;
+    pub const FINAL: i64 = 32;
+    pub const ABSTRACT: i64 = 64;
+    pub const READONLY: i64 = 128;
+    pub const PUBLIC_SET: i64 = 1024;
+    pub const PROTECTED_SET: i64 = 2048;
+    pub const PRIVATE_SET: i64 = 4096;
+}
+
+/// A class as reflection describes it.
+pub struct ReflClass {
+    pub name: String,
+    pub parent: Option<String>,
+    pub interfaces: Vec<String>,
+    pub traits: Vec<String>,
+    pub is_interface: bool,
+    pub is_trait: bool,
+    pub is_enum: bool,
+    pub is_abstract: bool,
+    pub is_final: bool,
+    /// Built into the engine (or its PHP-written prelude) rather than declared
+    /// by the program.
+    pub internal: bool,
+    pub anonymous: bool,
+}
+
+/// A method or property as reflection describes it.
+pub struct ReflMember {
+    pub name: String,
+    /// The declaring class, in declared spelling.
+    pub class: String,
+    pub modifiers: i64,
+    /// The declared type (a method's return type), as reflection spells it.
+    pub ty: Option<crate::ast::TypeHint>,
+    pub has_default: bool,
+}
+
+fn vis_bits(v: Option<&Visibility>) -> i64 {
+    match v {
+        Some(Visibility::Private) => refl_flags::PRIVATE,
+        Some(Visibility::Protected) => refl_flags::PROTECTED,
+        _ => refl_flags::PUBLIC,
+    }
+}
+
+impl PhpHost {
+    /// The chain `class`, its parent, … as `(lowercased, def)`.
+    fn refl_chain(&self, class: &str) -> Vec<(String, &ClassDef)> {
+        let mut out = Vec::new();
+        let mut cur = Some(unanchored(class).to_ascii_lowercase());
+        while let Some(c) = cur {
+            let Some(def) = self.classes.get(&c) else {
+                break;
+            };
+            cur = def.parent.as_ref().map(|p| p.to_ascii_lowercase());
+            out.push((c, def));
+        }
+        out
+    }
+
+    /// `new ReflectionClass($name)`'s view of a class, interface, trait or
+    /// enum, or `None` when there is no such type.
+    pub fn refl_class(&self, name: &str) -> Option<ReflClass> {
+        let lname = unanchored(name).to_ascii_lowercase();
+        if let Some(def) = self.classes.get(&lname) {
+            return Some(ReflClass {
+                name: def.name.clone(),
+                parent: def
+                    .parent
+                    .as_ref()
+                    .map(|p| self.class_display_name(&p.to_ascii_lowercase())),
+                interfaces: self.class_interface_names(&lname),
+                traits: def.uses.clone(),
+                is_interface: def.is_interface,
+                is_trait: def.is_trait,
+                is_enum: def.is_enum,
+                is_abstract: def.is_abstract || def.is_interface,
+                is_final: def.is_final || def.is_enum,
+                internal: crate::prelude_type(&lname).is_some(),
+                anonymous: def.name.contains("@anonymous"),
+            });
+        }
+        let (spelled, kind, parents, _) = builtin_type(&lname)?;
+        Some(ReflClass {
+            name: spelled.to_string(),
+            parent: None,
+            interfaces: parents.iter().map(|p| p.to_string()).collect(),
+            traits: Vec::new(),
+            is_interface: *kind == TypeKind::Interface,
+            is_trait: false,
+            is_enum: false,
+            is_abstract: *kind == TypeKind::Interface,
+            is_final: matches!(lname.as_str(), "closure" | "generator"),
+            internal: true,
+            anonymous: false,
+        })
+    }
+
+    /// One method of `def` (declared in the class keyed `c`) as reflection
+    /// describes it, by lowercased name.
+    fn refl_method_of(&self, c: &str, def: &ClassDef, lname: &str) -> Option<ReflMember> {
+        // An enum's `cases`/`from`/`tryFrom` are the engine's, public static.
+        if def.is_enum && !def.methods.contains_key(lname) {
+            let backed = def
+                .interfaces
+                .iter()
+                .any(|i| i.eq_ignore_ascii_case("BackedEnum"));
+            let spelled = match lname {
+                "cases" => "cases",
+                "from" if backed => "from",
+                "tryfrom" if backed => "tryFrom",
+                _ => return None,
+            };
+            return Some(ReflMember {
+                name: spelled.to_string(),
+                class: self.class_display_name(c),
+                modifiers: refl_flags::PUBLIC | refl_flags::STATIC,
+                ty: None,
+                has_default: false,
+            });
+        }
+        let f = def.methods.get(lname)?;
+        let spelled = def
+            .method_sites
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case(lname))
+            .map_or_else(|| lname.to_string(), |(n, _)| n.clone());
+        let mut modifiers = vis_bits(def.method_vis.get(lname));
+        if def.static_methods.contains(lname) {
+            modifiers |= refl_flags::STATIC;
+        }
+        if def.final_methods.contains(lname) {
+            modifiers |= refl_flags::FINAL;
+        }
+        if def.abstract_methods.contains(lname) {
+            modifiers |= refl_flags::ABSTRACT;
+        }
+        Some(ReflMember {
+            name: spelled,
+            class: self.class_display_name(c),
+            modifiers,
+            ty: f.ret.clone(),
+            has_default: false,
+        })
+    }
+
+    /// The methods `ReflectionClass::getMethods()` lists: the class's own (a
+    /// trait's included) in declaration order, then each ancestor's that are
+    /// not overridden — an ancestor's private ones are not inherited.
+    pub fn refl_methods(&self, class: &str) -> Vec<ReflMember> {
+        let mut seen: Vec<String> = Vec::new();
+        let mut out = Vec::new();
+        for (depth, (c, def)) in self.refl_method_chain(class).into_iter().enumerate() {
+            let mut names: Vec<String> = def.method_sites.iter().map(|(n, _)| n.clone()).collect();
+            if def.is_enum {
+                names.extend(["cases", "from", "tryFrom"].map(String::from));
+            }
+            for name in &names {
+                let lname = name.to_ascii_lowercase();
+                if seen.contains(&lname)
+                    || (crate::prelude_type(&c).is_some()
+                        && is_prelude_helper_name(&format!("{c}::{name}")))
+                {
+                    continue;
+                }
+                let Some(m) = self.refl_method_of(&c, def, &lname) else {
+                    continue;
+                };
+                if depth > 0 && m.modifiers & refl_flags::PRIVATE != 0 {
+                    continue;
+                }
+                seen.push(lname);
+                out.push(m);
+            }
+        }
+        out
+    }
+
+    /// `new ReflectionMethod($class, $name)`: the nearest declaration along
+    /// the chain, an ancestor's private one included.
+    pub fn refl_method(&self, class: &str, name: &str) -> Option<ReflMember> {
+        let lname = name.to_ascii_lowercase();
+        self.refl_method_chain(class)
+            .into_iter()
+            .find_map(|(c, def)| self.refl_method_of(&c, def, &lname))
+    }
+
+    /// Where a method lookup walks: the class and its ancestors, then the
+    /// interfaces, whose abstract methods an abstract class inherits.
+    fn refl_method_chain(&self, class: &str) -> Vec<(String, &ClassDef)> {
+        let mut out = self.refl_chain(class);
+        for i in self.class_interface_names(&unanchored(class).to_ascii_lowercase()) {
+            let li = i.to_ascii_lowercase();
+            if let Some(def) = self.classes.get(&li) {
+                if !out.iter().any(|(c, _)| *c == li) {
+                    out.push((li, def));
+                }
+            }
+        }
+        out
+    }
+
+    /// The parameters of method `name` along `class`'s chain.
+    pub fn refl_method_params(&self, class: &str, name: &str) -> Option<(String, Vec<Param>)> {
+        let lname = name.to_ascii_lowercase();
+        self.refl_chain(class).into_iter().find_map(|(c, def)| {
+            def.methods
+                .get(&lname)
+                .map(|f| (self.class_display_name(&c), f.params.clone()))
+        })
+    }
+
+    /// One property declared by `def` (the class keyed `c`).
+    fn refl_prop_of(&self, c: &str, def: &ClassDef, name: &str) -> Option<ReflMember> {
+        let is_static = def.static_prop_defaults.iter().any(|(n, _)| n == name);
+        if !is_static && !def.prop_defaults.iter().any(|(n, _)| n == name) {
+            return None;
+        }
+        let read = vis_bits(def.prop_vis.get(name));
+        let mut modifiers = read;
+        if is_static {
+            modifiers |= refl_flags::STATIC;
+        }
+        // The write visibility, when it is narrower than the read one; a
+        // public readonly property is implicitly `protected(set)`.
+        let write = match def.prop_set_vis.get(name) {
+            Some(v) => vis_bits(Some(v)),
+            None if def.readonly_props.contains(name) && read == refl_flags::PUBLIC => {
+                refl_flags::PROTECTED
+            }
+            None => read,
+        };
+        if write != read {
+            modifiers |= match write {
+                refl_flags::PRIVATE => refl_flags::PRIVATE_SET,
+                refl_flags::PROTECTED => refl_flags::PROTECTED_SET,
+                _ => refl_flags::PUBLIC_SET,
+            };
+        }
+        if def.readonly_props.contains(name) {
+            modifiers |= refl_flags::READONLY;
+        }
+        if def.final_props.contains(name) {
+            modifiers |= refl_flags::FINAL;
+        }
+        let ty = def.prop_types.get(name).cloned();
+        // An untyped property always has a default (`null` at the least); a
+        // typed one only when it was given one.
+        let has_default = ty.is_none() || !def.uninit_props.contains_key(name);
+        Some(ReflMember {
+            name: name.to_string(),
+            class: self.class_display_name(c),
+            modifiers,
+            ty,
+            has_default,
+        })
+    }
+
+    /// The properties `ReflectionClass::getProperties()` lists: the class's
+    /// own in declaration order, then each ancestor's not redeclared — an
+    /// ancestor's private ones are not inherited.
+    pub fn refl_props(&self, class: &str) -> Vec<ReflMember> {
+        let mut seen: Vec<String> = Vec::new();
+        let mut out = Vec::new();
+        for (depth, (c, def)) in self.refl_chain(class).into_iter().enumerate() {
+            for name in &def.prop_order {
+                if seen.contains(name) {
+                    continue;
+                }
+                let Some(p) = self.refl_prop_of(&c, def, name) else {
+                    continue;
+                };
+                if depth > 0 && p.modifiers & refl_flags::PRIVATE != 0 {
+                    continue;
+                }
+                seen.push(name.clone());
+                out.push(p);
+            }
+        }
+        out
+    }
+
+    /// `new ReflectionProperty($class, $name)`: the nearest declaration.
+    pub fn refl_prop(&self, class: &str, name: &str) -> Option<ReflMember> {
+        self.refl_chain(class)
+            .into_iter()
+            .enumerate()
+            .find_map(|(depth, (c, def))| {
+                self.refl_prop_of(&c, def, name)
+                    .filter(|p| depth == 0 || p.modifiers & refl_flags::PRIVATE == 0)
+            })
+    }
+
+    /// The default-value chunk of property `name` and the class that
+    /// declares it, for `ReflectionProperty::getDefaultValue()`.
+    pub fn refl_prop_default(&self, class: &str, name: &str) -> Option<(String, Chunk)> {
+        self.refl_chain(class).into_iter().find_map(|(c, def)| {
+            def.prop_defaults
+                .iter()
+                .chain(def.static_prop_defaults.iter())
+                .find(|(n, _)| n == name)
+                .map(|(_, chunk)| (c.clone(), chunk.clone()))
+        })
+    }
+
+    /// The constant names `ReflectionClass::getConstants()` lists: the
+    /// class's own, then each ancestor's and each interface's not redeclared.
+    pub fn refl_const_names(&self, class: &str) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let mut visit: Vec<String> = vec![unanchored(class).to_ascii_lowercase()];
+        let mut done: Vec<String> = Vec::new();
+        while let Some(c) = (!visit.is_empty()).then(|| visit.remove(0)) {
+            if done.contains(&c) {
+                continue;
+            }
+            let Some(def) = self.classes.get(&c) else {
+                continue;
+            };
+            done.push(c.clone());
+            // An enum's cases are class constants too, listed first.
+            let names = def
+                .enum_cases
+                .iter()
+                .map(|(n, _)| n)
+                .chain(def.consts.iter().map(|(n, _)| n));
+            for n in names {
+                if !out.contains(n) {
+                    out.push(n.clone());
+                }
+            }
+            if let Some(p) = &def.parent {
+                visit.push(p.to_ascii_lowercase());
+            }
+            visit.extend(def.interfaces.iter().map(|i| i.to_ascii_lowercase()));
+        }
+        out
+    }
+
+    /// A user function's parameters, return type and declared name.
+    pub fn refl_user_function(
+        &self,
+        name: &str,
+    ) -> Option<(String, Vec<Param>, Option<crate::ast::TypeHint>)> {
+        let def = self.functions.get(&unanchored(name).to_ascii_lowercase())?;
+        Some((
+            def.declared.clone().unwrap_or_else(|| name.to_string()),
+            def.params.clone(),
+            def.ret.clone(),
+        ))
+    }
+
+    /// A closure's parameters, return type and `{closure:…}` name.
+    pub fn refl_closure(
+        &self,
+        v: &Value,
+    ) -> Option<(String, Vec<Param>, Option<crate::ast::TypeHint>)> {
+        let Some(PhpObj::Closure { params, ret, .. }) = self.as_array(v) else {
+            return None;
+        };
+        let name = self
+            .closure_callable_name(v)
+            .unwrap_or_else(|| "{closure}".to_string());
+        Some((name, params.clone(), ret.clone()))
+    }
+}
+
+/// Evaluate a reflected default (a parameter's or a property's) in the scope
+/// of the class that declared it.
+pub fn refl_eval_default(class: &str, chunk: Chunk) -> Result<Value, String> {
+    run_in_class_scope(class, chunk)
 }

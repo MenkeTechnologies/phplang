@@ -41,6 +41,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         }
     }
     let v = match name {
+        "__phplang_reflect" => return Some(reflect(args)),
         // ── existence predicates ────────────────────────────────────────────
         // `class_exists($name, $autoload = true)`: a name not yet declared has
         // been handed to the autoloaders (see `autoload_subject`) unless
@@ -403,4 +404,283 @@ fn resolve_named_class_warn(h: &mut crate::host::PhpHost, a: &Value, func: &str)
         "{func}(): Class {name} does not exist and could not be loaded"
     ));
     None
+}
+
+// ── `__phplang_reflect`: the prelude's `Reflection*` classes ───────────────
+
+use super::common::{make_list, make_map};
+
+fn key(s: &str) -> Value {
+    Value::str(s.to_string())
+}
+
+/// A declared type as the prelude builds a `ReflectionType` from it:
+/// `[name => as printed, parts => the alternatives but null, null => allows
+/// null]`, or `null` for no declared type.
+fn type_info(ty: Option<&crate::ast::TypeHint>, self_class: &str) -> Value {
+    let Some(ty) = ty else {
+        return Value::Undef;
+    };
+    // `self` in a method names its class; outside one it stays `self`.
+    let me = if self_class.is_empty() {
+        "self"
+    } else {
+        self_class
+    };
+    let name = ty.declared(me, Some("parent"));
+    let alts: Vec<&str> = name.trim_start_matches('?').split('|').collect();
+    let parts: Vec<Value> = if alts == ["null"] {
+        vec![key("null")]
+    } else {
+        alts.iter()
+            .filter(|p| **p != "null")
+            .map(|p| Value::str(p.to_string()))
+            .collect()
+    };
+    let null = ty.nullable() || name == "mixed" || name == "null";
+    make_map(vec![
+        (key("name"), Value::str(name.clone())),
+        (key("parts"), make_list(parts)),
+        (key("null"), Value::bool(null)),
+    ])
+}
+
+fn member_info(m: crate::host::ReflMember) -> Value {
+    let ty = type_info(m.ty.as_ref(), &m.class);
+    make_map(vec![
+        (key("name"), Value::str(m.name)),
+        (key("class"), Value::str(m.class)),
+        (key("modifiers"), Value::Int(m.modifiers)),
+        (key("type"), ty),
+        (key("default"), Value::bool(m.has_default)),
+    ])
+}
+
+/// One parameter: `[name, optional, variadic, byref, type, default]`.
+fn param_rows(params: Vec<(String, bool, bool, bool, Value)>) -> Value {
+    // `required_num_args`: up to the last parameter with no default.
+    let required = params
+        .iter()
+        .rposition(|(_, has_default, variadic, ..)| !has_default && !variadic)
+        .map_or(0, |i| i + 1);
+    make_list(
+        params
+            .into_iter()
+            .enumerate()
+            .map(|(i, (name, has_default, variadic, by_ref, ty))| {
+                make_map(vec![
+                    (key("name"), Value::str(name)),
+                    (key("optional"), Value::bool(i >= required)),
+                    (key("variadic"), Value::bool(variadic)),
+                    (key("byref"), Value::bool(by_ref)),
+                    (key("type"), ty),
+                    (key("default"), Value::bool(has_default)),
+                ])
+            })
+            .collect(),
+    )
+}
+
+/// What a `[kind, target, name]` function spec names: its display name,
+/// the class its defaults run in, its user parameters (or a library
+/// function's), and its return type.
+enum Callee {
+    User {
+        class: String,
+        params: Vec<crate::host::Param>,
+    },
+    Library(Vec<crate::argsig::LibParam>),
+}
+
+fn callee(kind: &str, target: &Value, name: &str) -> Option<Callee> {
+    match kind {
+        "method" => {
+            let class = with_host(|h| h.to_str(target));
+            let (class, params) = with_host(|h| h.refl_method_params(&class, name))?;
+            Some(Callee::User { class, params })
+        }
+        "closure" => {
+            let (_, params, _) = with_host(|h| h.refl_closure(target))?;
+            Some(Callee::User {
+                class: String::new(),
+                params,
+            })
+        }
+        _ => {
+            let fname = with_host(|h| h.to_str(target));
+            if let Some((_, params, _)) = with_host(|h| h.refl_user_function(&fname)) {
+                return Some(Callee::User {
+                    class: String::new(),
+                    params,
+                });
+            }
+            crate::argsig::library_params(&fname).map(Callee::Library)
+        }
+    }
+}
+
+/// A library parameter's default as a value, or `None` when the table does
+/// not know it.
+fn lib_default(d: crate::argsig::Def) -> Option<Value> {
+    use crate::argsig::Def;
+    Some(match d {
+        Def::Required | Def::Unknown => return None,
+        Def::Null => Value::Undef,
+        Def::Bool(b) => Value::bool(b),
+        Def::Int(n) => Value::Int(n),
+        Def::Float(f) => Value::Float(f),
+        Def::Str(s) => Value::str(s.to_string()),
+        Def::EmptyArray => make_list(Vec::new()),
+    })
+}
+
+/// `__phplang_reflect($op, ...)` — see the prelude's `Reflection*` classes.
+pub(crate) fn reflect(args: &[Value]) -> Result<Value, String> {
+    let op = str_arg(args, 0);
+    let a1 = arg(args, 1);
+    let s1 = str_arg(args, 1);
+    let s2 = str_arg(args, 2);
+    let s3 = str_arg(args, 3);
+    Ok(match op.as_str() {
+        "class" => {
+            let name = with_host(|h| h.instance_class(&a1)).unwrap_or(s1);
+            match with_host(|h| h.refl_class(&name)) {
+                None => Value::bool(false),
+                Some(c) => make_map(vec![
+                    (key("name"), Value::str(c.name)),
+                    (key("parent"), c.parent.map_or(Value::Undef, Value::str)),
+                    (
+                        key("interfaces"),
+                        make_list(c.interfaces.into_iter().map(Value::str).collect()),
+                    ),
+                    (
+                        key("traits"),
+                        make_list(c.traits.into_iter().map(Value::str).collect()),
+                    ),
+                    (key("interface"), Value::bool(c.is_interface)),
+                    (key("trait"), Value::bool(c.is_trait)),
+                    (key("enum"), Value::bool(c.is_enum)),
+                    (key("abstract"), Value::bool(c.is_abstract)),
+                    (key("final"), Value::bool(c.is_final)),
+                    (key("internal"), Value::bool(c.internal)),
+                    (key("anonymous"), Value::bool(c.anonymous)),
+                ]),
+            }
+        }
+        "methods" => make_list(
+            with_host(|h| h.refl_methods(&s1))
+                .into_iter()
+                .map(member_info)
+                .collect(),
+        ),
+        "method" => with_host(|h| h.refl_method(&s1, &s2)).map_or(Value::Undef, member_info),
+        "props" => make_list(
+            with_host(|h| h.refl_props(&s1))
+                .into_iter()
+                .map(member_info)
+                .collect(),
+        ),
+        "prop" => with_host(|h| h.refl_prop(&s1, &s2)).map_or(Value::Undef, member_info),
+        "prop_default" => match with_host(|h| h.refl_prop_default(&s1, &s2)) {
+            Some((class, chunk)) => crate::host::refl_eval_default(&class, chunk)?,
+            None => Value::Undef,
+        },
+        "consts" => {
+            let names = with_host(|h| h.refl_const_names(&s1));
+            let mut pairs = Vec::with_capacity(names.len());
+            for n in names {
+                let v = crate::host::class_const(&s1, &n)?;
+                pairs.push((Value::str(n), v));
+            }
+            make_map(pairs)
+        }
+        "function" => {
+            let closure = with_host(|h| h.is_closure(&a1));
+            let found = if closure {
+                with_host(|h| h.refl_closure(&a1))
+                    .map(|(n, _, ret)| (n, false, type_info(ret.as_ref(), "")))
+            } else if let Some((n, _, ret)) = with_host(|h| h.refl_user_function(&s1)) {
+                Some((n, false, type_info(ret.as_ref(), "")))
+            } else if crate::stdlib::callable::function_resolves(&s1) {
+                let ret = crate::corpus::signature_return(&s1)
+                    .map(|t| type_info(Some(&crate::ast::TypeHint { parts: t }), ""))
+                    .unwrap_or(Value::Undef);
+                Some((crate::host::unanchored(&s1).to_ascii_lowercase(), true, ret))
+            } else {
+                None
+            };
+            match found {
+                None => Value::bool(false),
+                Some((name, internal, ret)) => make_map(vec![
+                    (key("name"), Value::str(name)),
+                    (key("internal"), Value::bool(internal)),
+                    (key("closure"), Value::bool(closure)),
+                    (key("return"), ret),
+                ]),
+            }
+        }
+        "params" => match callee(&s1, &arg(args, 2), &s3) {
+            None => Value::bool(false),
+            Some(Callee::User { params, class }) => param_rows(
+                params
+                    .into_iter()
+                    .map(|p| {
+                        let ty = type_info(p.ty.as_ref(), &class);
+                        (p.name, p.default.is_some(), p.variadic, p.by_ref, ty)
+                    })
+                    .collect(),
+            ),
+            Some(Callee::Library(params)) => param_rows(
+                params
+                    .into_iter()
+                    .map(|p| {
+                        let ty = (!p.ty.is_empty()).then(|| crate::ast::TypeHint {
+                            parts: p
+                                .ty
+                                .trim_start_matches('?')
+                                .split('|')
+                                .map(str::to_string)
+                                .chain(p.ty.starts_with('?').then(|| "null".to_string()))
+                                .collect(),
+                        });
+                        (
+                            p.name,
+                            p.def.is_some(),
+                            p.variadic,
+                            p.by_ref,
+                            type_info(ty.as_ref(), ""),
+                        )
+                    })
+                    .collect(),
+            ),
+        },
+        "default" => {
+            let index = arg(args, 4).to_int() as usize;
+            match callee(&s1, &arg(args, 2), &s3) {
+                Some(Callee::User { class, params }) => {
+                    match params.into_iter().nth(index).and_then(|p| p.default) {
+                        Some(chunk) => crate::host::refl_eval_default(&class, chunk)?,
+                        None => Value::Undef,
+                    }
+                }
+                Some(Callee::Library(params)) => params
+                    .get(index)
+                    .and_then(|p| p.def)
+                    .and_then(lib_default)
+                    .unwrap_or(Value::Undef),
+                None => Value::Undef,
+            }
+        }
+        // Static property access from a closure the prelude bound to the
+        // declaring class, so the visibility checks pass as they would there.
+        "static_get" => crate::host::static_prop_get(&s1, &s2)?,
+        "static_set" => crate::host::static_prop_set(&s1, &s2, arg(args, 3))?,
+        // `newInstanceWithoutConstructor()`: the defaults, no constructor.
+        "instantiate" => crate::host::alloc_object(&s1)?,
+        "deprecated" => {
+            with_host(|h| h.deprecated(s1));
+            Value::Undef
+        }
+        _ => Value::Undef,
+    })
 }

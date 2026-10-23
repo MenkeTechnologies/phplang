@@ -215,3 +215,15 @@ fn a_namespaced_library_call_is_an_ordinary_framed_call() {
 "##
     );
 }
+
+#[test]
+fn a_class_implementing_nothing_lists_inherited_interfaces_in_reverse() {
+    let src = r##"<?php interface S {} interface U {} interface W {} class B implements S, U {} class Q extends B {} class R extends Q {} class T extends B implements W {} echo implode(",", class_implements("Q")), "|", implode(",", class_implements("R")), "|", implode(",", class_implements("T")), "|", implode(",", (new ReflectionClass("Q"))->getInterfaceNames());"##;
+    assert_eq!(run(src), r##"U,S|S,U|S,U,W|U,S"##);
+}
+
+#[test]
+fn a_variable_static_method_name_calls_the_method() {
+    let src = r##"<?php class A { static function s($x) { return "s$x"; } protected static function p() { return "p"; } static function q() { $m = "p"; return static::$m() . self::$m(); } } class B extends A { static $v = "s"; } $m = "s"; $c = "A"; echo A::$m(1), $c::$m(2), B::q(), (new B)::$m(3);"##;
+    assert_eq!(run(src), r##"s1s2pps3"##);
+}
