@@ -298,6 +298,48 @@ that nothing still holds it, and a promoted local in a running fusevm frame or a
 value on a VM stack is invisible to the host, so that is left alone rather than
 risk destroying a live object.
 
+## Namespaces are flat: a qualified name in an expression does not resolve
+
+```text
+$ php -r 'namespace A; class P {} echo get_class(new P);'
+A\P
+$ target/debug/php -r 'namespace A; class P {} echo get_class(new P);'
+P
+
+$ php -r 'namespace A { class P {} } namespace { var_dump(new A\P); }'
+object(A\P)#1 (0) {}
+$ target/debug/php -r '… same …'
+Parse error: syntax error, unexpected fully qualified name "\P", expecting ")"
+
+$ php -r 'namespace A; class P { const Z = 2; } echo \A\P::Z;'
+2
+$ target/debug/php -r '… same …'
+Fatal error: Uncaught Error: Class "A\P" not found
+```
+
+Declarations take no namespace (a class or function is keyed by its short
+name), a qualified name in `new` or a call does not parse, and a qualified
+static reference is looked up under its full name, which nothing was declared
+as. `__NAMESPACE__`, `namespace\Name` and qualified constants work. Closing it
+is name resolution at compile time (the current namespace and the `use`
+imports) with declarations keyed by their fully qualified name, and the
+unqualified function/constant fallback to the global namespace at run time —
+the README lists it under NOT YET.
+
+## A regex that backtracks catastrophically still matches
+
+```text
+$ php -r 'var_dump(preg_replace("/(?:\D+|<\d+>)*[!?]/", "", "foobar foobar foobar"), preg_last_error_msg());'
+NULL
+string(25) "Backtrack limit exhausted"
+$ target/debug/php -r '… same …'
+string(20) "foobar foobar foobar"
+string(8) "No error"
+```
+
+The reference's PCRE gives up at `pcre.backtrack_limit` (1000000); phplang's
+regex engine does not backtrack that way, finds no match and reports no error.
+
 ## A reference keeps its `&` after its last alias is gone
 
 ```text

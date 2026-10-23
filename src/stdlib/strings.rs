@@ -414,28 +414,35 @@ fn strtr(args: &[Value]) -> Value {
         return Value::str(String::from_utf8_lossy(&out).into_owned());
     }
     // 2-arg map form.
-    let mut pairs = with_host(|h| h.array_pairs(&arg(args, 1)).unwrap_or_default())
+    let all = with_host(|h| h.array_pairs(&arg(args, 1)).unwrap_or_default())
         .into_iter()
         .map(|(k, v)| (with_host(|h| h.to_str(&k)), with_host(|h| h.to_str(&v))))
-        .filter(|(k, _)| !k.is_empty())
         .collect::<Vec<_>>();
+    // `php_strtr_array`: an empty key cannot match and is reported once, on a
+    // non-empty subject (an empty one returns before the map is read).
+    if !s.is_empty() && all.iter().any(|(k, _)| k.is_empty()) {
+        with_host(|h| h.warn("strtr(): Ignoring replacement of empty string"));
+    }
+    let mut pairs: Vec<(String, String)> = all.into_iter().filter(|(k, _)| !k.is_empty()).collect();
     // Longest keys win at each position.
     pairs.sort_by_key(|p| std::cmp::Reverse(p.0.len()));
     let bytes = s.as_bytes();
-    let mut out = String::with_capacity(s.len());
+    let mut out: Vec<u8> = Vec::with_capacity(s.len());
     let mut i = 0;
     'outer: while i < bytes.len() {
         for (k, v) in &pairs {
             if bytes[i..].starts_with(k.as_bytes()) {
-                out.push_str(v);
+                out.extend_from_slice(v.as_bytes());
                 i += k.len();
                 continue 'outer;
             }
         }
-        out.push(bytes[i] as char);
+        // Copied as a BYTE: pushing it as a `char` re-encoded every byte of a
+        // multi-byte character (`é` came back as `Ã©`).
+        out.push(bytes[i]);
         i += 1;
     }
-    Value::str(out)
+    Value::str(String::from_utf8_lossy(&out).into_owned())
 }
 
 /// One splice: replace `l` bytes of `s` starting at `f` with `replace`, where
@@ -622,13 +629,13 @@ fn chunk_split(args: &[Value]) -> Result<Value, String> {
         Some(v) if !matches!(v, Value::Undef) => str_arg(args, 2),
         _ => "\r\n".to_string(),
     };
-    let cs: Vec<char> = body.chars().collect();
-    let mut out = String::new();
-    for chunk in cs.chunks(length as usize) {
-        out.extend(chunk.iter());
-        out.push_str(&end);
+    // `$length` counts bytes, as everywhere in PHP's string family.
+    let mut out: Vec<u8> = Vec::with_capacity(body.len() + end.len());
+    for chunk in body.as_bytes().chunks(length as usize) {
+        out.extend_from_slice(chunk);
+        out.extend_from_slice(end.as_bytes());
     }
-    Ok(Value::str(out))
+    Ok(Value::str(String::from_utf8_lossy(&out).into_owned()))
 }
 
 fn quotemeta(s: &str) -> String {

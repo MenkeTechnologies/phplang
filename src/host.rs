@@ -4958,6 +4958,24 @@ impl PhpHost {
             Value::Bool(true) => "true",
             Value::Bool(false) => "false",
             Value::Obj(_) => match self.as_array(recv) {
+                // An enum case is immutable: its `name`/`value` are readonly
+                // and it takes no dynamic property (`zend_enum_register_props`
+                // declares them readonly; enums are NO_DYNAMIC_PROPERTIES).
+                Some(PhpObj::Object { class, props }) if self.is_enum_class(class) => {
+                    let shown = self.class_display_name(&class.to_ascii_lowercase());
+                    return Some(if props.contains_key(name) {
+                        // A write THROUGH the property (`$e->value[] = 1`) is
+                        // refused in the indirect wording.
+                        let how = if verb == "modify" {
+                            "indirectly modify"
+                        } else {
+                            "modify"
+                        };
+                        format!("Cannot {how} readonly property {shown}::${name}")
+                    } else {
+                        format!("Cannot create dynamic property {shown}::${name}")
+                    });
+                }
                 // `WeakMap` and `WeakReference` are `ZEND_ACC_NO_DYNAMIC_PROPERTIES`.
                 Some(PhpObj::Object { class, .. })
                     if matches!(
@@ -5345,9 +5363,13 @@ impl PhpHost {
     /// readonly property that was never initialized (it is still uninitialized
     /// afterwards) and refuses it once it holds a value.
     pub fn readonly_unset_error(&self, recv: &Value, name: &str) -> Option<String> {
-        let Some(PhpObj::Object { class, .. }) = self.as_array(recv) else {
+        let Some(PhpObj::Object { class, props }) = self.as_array(recv) else {
             return None;
         };
+        if self.is_enum_class(class) && props.contains_key(name) {
+            let shown = self.class_display_name(&class.to_ascii_lowercase());
+            return Some(format!("Cannot unset readonly property {shown}::${name}"));
+        }
         let owner = self.readonly_owner(class, name)?;
         self.readonly_is_init(recv, name).then(|| {
             let display = self.class_display_name(&owner);

@@ -292,6 +292,57 @@ fn array_key_functions_take_only_int_and_string() {
     assert_eq!(run(src), "\nDeprecated: Using null as the key parameter for array_key_exists() is deprecated, use an empty string instead in Command line code on line 3\nbool(true)\n\nDeprecated: Implicit conversion from float 1.5 to int loses precision in Command line code on line 3\nbool(true)\n\nWarning: The float NAN is not representable as an int, cast occurred in Command line code on line 3\n\nDeprecated: Implicit conversion from float NAN to int loses precision in Command line code on line 3\nbool(true)\nCannot access offset of type array on array\nCannot access offset of type stdClass on array\n\nWarning: array_count_values(): Can only count string and integer values, entry skipped in Command line code on line 5\n\nWarning: array_count_values(): Can only count string and integer values, entry skipped in Command line code on line 5\narray(2) {\n  [\"a\"]=>\n  int(1)\n  [1]=>\n  int(2)\n}\n\nWarning: array_flip(): Can only flip string and integer values, entry skipped in Command line code on line 6\n\nWarning: array_flip(): Can only flip string and integer values, entry skipped in Command line code on line 6\narray(2) {\n  [\"x\"]=>\n  int(2)\n  [2]=>\n  int(3)\n}\narray(3) {\n  [\"1.5\"]=>\n  int(0)\n  [1]=>\n  int(0)\n  [\"\"]=>\n  int(0)\n}\narray(3) {\n  [\"1.5\"]=>\n  int(1)\n  [1]=>\n  int(2)\n  [\"\"]=>\n  int(3)\n}\n\nWarning: The float NAN is not representable as an int, cast occurred in Command line code on line 8\n\nDeprecated: Implicit conversion from float NAN to int loses precision in Command line code on line 8\narray(1) {\n  [0]=>\n  int(1)\n}\n");
 }
 
+/// `%` as a conversion (`%5%`) consumes an argument and writes one `%`, padding
+/// ignored; when the argument is missing the scan resumes on that `%`, which opens
+/// another spec, so the count the `ArgumentCountError` names is the reference's.
+#[test]
+fn sprintf_percent_conversion() {
+    let src = r#"<?php foreach (['sprintf("%5%", 1)', 'sprintf("%s%5%", 1, 2)', 'sprintf("%5%%s", "x", "y")', 'sprintf("%5%")', 'sprintf("%-%")', 'sprintf("%5% %s", "a")'] as $code) {
+            try { var_dump(eval("return $code;")); } catch (ArgumentCountError $e) { echo $e->getMessage(), "\n"; }
+        }
+        "#;
+    assert_eq!(run(src), "string(1) \"%\"\nstring(2) \"1%\"\nstring(2) \"%y\"\n3 arguments are required, 1 given\n3 arguments are required, 1 given\n3 arguments are required, 2 given\n");
+}
+
+/// The array form of `strtr` copies unmatched bytes as bytes — it used to re-encode
+/// each byte of a multi-byte character (`é` became `Ã©`) — and warns `Ignoring
+/// replacement of empty string` for an empty key on a non-empty subject.
+#[test]
+fn strtr_array_keeps_utf8_and_warns_on_empty_key() {
+    let src = r#"<?php var_dump(strtr("héllo", ["l" => "L", "é" => "e"]), strtr("日本語", ["本" => "x"]));
+        var_dump(strtr("abc", ["" => "x", "a" => "A"]), strtr("", ["" => "x"]));
+        "#;
+    assert_eq!(run(src), "string(5) \"heLLo\"\nstring(7) \"日x語\"\n\nWarning: strtr(): Ignoring replacement of empty string in Command line code on line 2\nstring(3) \"Abc\"\nstring(0) \"\"\n");
+}
+
+/// A multi-byte pad string fills the width byte by byte, and `chunk_split`'s
+/// length counts bytes, as the rest of the string family does.
+#[test]
+fn str_pad_and_chunk_split_count_bytes() {
+    let src = r#"<?php var_dump(str_pad("héllo", 10, "é"), str_pad("a", 5, "é", STR_PAD_BOTH), chunk_split("héllo wörld", 4, "|"));
+        "#;
+    assert_eq!(
+        run(src),
+        "string(10) \"hélloéé\"\nstring(5) \"éaé\"\nstring(17) \"hél|lo w|örl|d|\"\n"
+    );
+}
+
+/// An enum case's `name` and `value` are readonly and an enum takes no dynamic
+/// property, from outside or from its own methods. A write used to change the
+/// singleton for the rest of the program.
+#[test]
+fn enum_case_is_immutable() {
+    let src = r#"<?php enum S: int { case H = 1; public function f() { $this->value = 2; } }
+        enum U { case A; }
+        $x = S::H; $u = U::A;
+        foreach ([fn() => $x->value = 5, fn() => $x->value++, fn() => $x->value[] = 1, fn() => $u->name = "z", fn() => $u->foo = 1, function () use ($u) { unset($u->name); }, fn() => S::H->f()] as $f) {
+            try { $f(); } catch (Error $e) { echo $e->getMessage(), "\n"; }
+        }
+        var_dump(S::H->value, U::A);
+        "#;
+    assert_eq!(run(src), "Cannot modify readonly property S::$value\nCannot modify readonly property S::$value\nCannot indirectly modify readonly property S::$value\nCannot modify readonly property U::$name\nCannot create dynamic property U::$foo\nCannot unset readonly property U::$name\nCannot modify readonly property S::$value\nint(1)\nenum(U::A)\n");
+}
+
 /// `zend_compile_list_assign`: a destructuring with a `&` target needs a
 /// variable or a call as its subject. A literal, an assignment or a ternary is
 /// a compile-time fatal, so the `echo` before it never prints. An assignment

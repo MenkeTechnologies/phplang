@@ -80,6 +80,15 @@ Measured under `PHP 8.5.11 (cli)`; pinned in `tests/parity_round26.rs`.
   `array_count_values` skip and warn for a value that is neither int nor
   string; `array_fill_keys` and `array_combine` key a non-int through its
   string form; a NAN offset raises the narrowing deprecation after its warning.
+* `sprintf`'s `%` conversion (`%5%`) consumes an argument and writes one `%`;
+  a missing argument leaves the conversion character to be scanned again, so
+  the `ArgumentCountError` count is the reference's.
+* The array form of `strtr` copies unmatched bytes as bytes (multi-byte
+  characters used to come back re-encoded, `é` as `Ã©`) and warns for an empty
+  key; a multi-byte `str_pad` pad string and `chunk_split`'s length count bytes.
+* An enum case is immutable: writing `name`/`value` is `Cannot modify readonly
+  property` (`Cannot indirectly modify` through `[]`), `unset` is refused, and
+  a dynamic property is `Cannot create dynamic property`.
 
 ## Incremental hashing: `hash_init` … `hash_final`
 

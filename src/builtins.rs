@@ -6283,8 +6283,13 @@ pub(crate) fn php_sprintf(
         if ai >= args.len() {
             // The reference records the gap and moves on WITHOUT looking at the
             // conversion character, which is why `sprintf("%")` reports a
-            // missing argument rather than a missing specifier.
+            // missing argument rather than a missing specifier. Nor does it
+            // CONSUME that character: the scan resumes on it, so the `%` of
+            // `"%5%"` opens a second spec, which wants a second argument.
             max_missing = Some(max_missing.map_or(ai, |m: usize| m.max(ai)));
+            if spec.conv != '\0' {
+                i -= 1;
+            }
             continue;
         }
         if spec.conv == '\0' {
@@ -6531,6 +6536,8 @@ fn render_spec(h: &mut host::PhpHost, s: &FmtSpec, v: &Value) -> String {
             }
             (txt, false)
         }
+        // `case '%'`: one `%`, whatever the flags and width said.
+        '%' => return "%".to_string(),
         other => return format!("%{other}"),
     };
     pad_field(body, s, is_num)
@@ -7141,7 +7148,12 @@ fn php_str_pad(h: &host::PhpHost, args: &[Value]) -> Result<String, String> {
         return Ok(s);
     }
     let need = (target - cur) as usize;
-    let make = |n: usize| -> String { pad.chars().cycle().take(n).collect::<String>() };
+    // The pad string repeats BYTE by byte, as the width is counted: a
+    // multi-byte pad fills `n` bytes, not `n` characters.
+    let make = |n: usize| -> String {
+        let bytes: Vec<u8> = pad.bytes().cycle().take(n).collect();
+        String::from_utf8_lossy(&bytes).into_owned()
+    };
     Ok(match ty {
         0 => format!("{}{}", make(need), s),
         2 => {
