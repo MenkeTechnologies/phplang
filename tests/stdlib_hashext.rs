@@ -229,12 +229,10 @@ fn pbkdf2_errors() {
 
 #[test]
 fn random_bytes_length_and_error() {
-    // Each byte maps to exactly one codepoint under the Latin-1 wrap, so
-    // mb_strlen (codepoint count) is the byte count — strlen/bin2hex would
-    // over-count high bytes that re-encode as multi-byte UTF-8.
-    assert_eq!(run(r#"<?php echo mb_strlen(random_bytes(16));"#), "16");
-    assert_eq!(run(r#"<?php echo mb_strlen(random_bytes(1));"#), "1");
-    assert_eq!(run(r#"<?php echo mb_strlen(random_bytes(100));"#), "100");
+    // The result is that many BYTES.
+    assert_eq!(run(r#"<?php echo strlen(random_bytes(16));"#), "16");
+    assert_eq!(run(r#"<?php echo strlen(random_bytes(1));"#), "1");
+    assert_eq!(run(r#"<?php echo strlen(random_bytes(100));"#), "100");
     // Zero / negative length is a catchable ValueError, as the reference throws.
     assert_eq!(
         run(r#"<?php try { random_bytes(0); }

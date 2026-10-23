@@ -172,13 +172,12 @@ fn multibyte_byte_slices_do_not_panic() {
     // Bug 1: these all sliced a &str at a raw byte offset that landed mid-UTF-8
     // char ("é" is two bytes) and panicked "byte index N is not a char boundary".
     // PHP strings are byte-oriented, so byte-length results are expected.
-    // "héllo" bytes: h é(2) l l o. Splicing at byte offset 2 lands inside "é":
-    // PHP emits the raw bytes 68 c3 78; phplang stores results in a Rust `String`,
-    // so the dangling 0xC3 lead byte surfaces as U+FFFD via from_utf8_lossy. The
-    // load-bearing assertion is "no panic" — old code crashed here.
+    // "héllo" bytes: h é(2) l l o. Splicing at byte offset 2 lands inside "é",
+    // and the reference keeps the dangling lead byte: 68 c3 78
+    // (php -r 'echo bin2hex(substr_replace("héllo", "x", 2));').
     assert_eq!(
-        run(r#"<?php echo substr_replace("héllo", "x", 2);"#),
-        "h\u{FFFD}x"
+        run(r#"<?php echo bin2hex(substr_replace("héllo", "x", 2));"#),
+        "68c378"
     );
     assert_eq!(run(r#"<?php echo substr_count("héllo héllo", "l");"#), "4");
     // stripos with an offset that falls mid-char must not panic.

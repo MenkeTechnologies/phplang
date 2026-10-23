@@ -134,8 +134,8 @@ fn html_translation_table_entities_has_latin1() {
     // HTML_ENTITIES adds the ISO-8859-1 supplement; U+00A9 -> &copy;.
     let src = r#"<?php
         $e = get_html_translation_table(HTML_ENTITIES);
-        $copy = chr(0xA9);   // phplang chr() UTF-8-encodes the code point (U+00A9)
-        $nbsp = chr(0xA0);   // U+00A0
+        $copy = "\u{A9}";    // the table is keyed by UTF-8 characters
+        $nbsp = "\u{A0}";
         echo $e[$copy], "|", $e[$nbsp], "|", $e["&"];"#;
     assert_eq!(run(src), "&copy;|&nbsp;|&amp;");
 }
