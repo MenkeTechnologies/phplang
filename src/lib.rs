@@ -1093,12 +1093,18 @@ class ArrayObject implements IteratorAggregate, ArrayAccess, Countable {
         $this->storage = self::__backing($array, 'ArrayObject::__construct()');
         self::$__state[spl_object_id($this)] = [$flags & ~0xFFFF0000, $iteratorClass];
     }
-    // `spl_array_set_array`: an object backing is deprecated since 8.5.
+    // `spl_array_set_array`: an object backing is deprecated since 8.5. The
+    // object itself is the storage — its properties are the elements, or,
+    // for another ArrayObject / ArrayIterator, ITS storage — so a write
+    // through either reaches both.
     private static function __backing($array, $fn) {
         if (is_array($array)) { return $array; }
         __phplang_deprecated("$fn: Using an object as a backing array for ArrayObject is deprecated, as it allows violating class constraints and invariants");
-        return $array instanceof ArrayObject || $array instanceof ArrayIterator ? $array->getArrayCopy() : get_object_vars($array);
+        return $array;
     }
+    // Whether the storage is another ArrayObject / ArrayIterator, whose own
+    // element methods the operations forward to.
+    private function __shared() { return $this->storage instanceof ArrayObject || $this->storage instanceof ArrayIterator; }
     // The `C` parameter type: a class derived from ArrayIterator.
     private static function __itclass($class, $arg) {
         if (!class_exists($class) || !is_a($class, ArrayIterator::class, true)) {
@@ -1109,10 +1115,34 @@ class ArrayObject implements IteratorAggregate, ArrayAccess, Countable {
         return $class;
     }
     private function __state() { return self::$__state[spl_object_id($this)] ?? [0, ArrayIterator::class]; }
-    public function offsetGet(mixed $key): mixed { return $this->storage[$key]; }
-    public function offsetSet(mixed $key, mixed $value): void { if ($key === null) { $this->storage[] = $value; } else { $this->storage[$key] = $value; } }
-    public function offsetExists(mixed $key): bool { return isset($this->storage[$key]); }
-    public function offsetUnset(mixed $key): void { unset($this->storage[$key]); }
+    public function offsetGet(mixed $key): mixed {
+        if (!is_object($this->storage)) { return $this->storage[$key]; }
+        if ($this->__shared()) { return $this->storage->offsetGet($key); }
+        return $this->storage->$key;
+    }
+    public function offsetSet(mixed $key, mixed $value): void {
+        if (!is_object($this->storage)) {
+            if ($key === null) { $this->storage[] = $value; } else { $this->storage[$key] = $value; }
+            return;
+        }
+        if ($this->__shared()) { $this->storage->offsetSet($key, $value); return; }
+        if ($key === null) {
+            // The next integer key the object's properties leave free.
+            $key = 0;
+            foreach (array_keys(get_object_vars($this->storage)) as $k) { if (is_int($k) && $k >= $key) { $key = $k + 1; } }
+        }
+        $this->storage->$key = $value;
+    }
+    public function offsetExists(mixed $key): bool {
+        if (!is_object($this->storage)) { return isset($this->storage[$key]); }
+        if ($this->__shared()) { return $this->storage->offsetExists($key); }
+        return isset($this->storage->$key);
+    }
+    public function offsetUnset(mixed $key): void {
+        if (!is_object($this->storage)) { unset($this->storage[$key]); return; }
+        if ($this->__shared()) { $this->storage->offsetUnset($key); return; }
+        unset($this->storage->$key);
+    }
     // ARRAY_AS_PROPS: a property the object does not have is an element
     // (`spl_array_read_property` and its siblings). The host calls these only
     // while the flag is set.
@@ -1120,12 +1150,19 @@ class ArrayObject implements IteratorAggregate, ArrayAccess, Countable {
     public function __set($name, $value) { $this->offsetSet($name, $value); }
     public function __isset($name) { return $this->offsetExists($name) && $this->offsetGet($name) !== null; }
     public function __unset($name) { $this->offsetUnset($name); }
-    public function append(mixed $value): void { $this->storage[] = $value; }
-    public function count(): int { return count($this->storage); }
-    public function getArrayCopy(): array { return $this->storage; }
-    public function exchangeArray(array|object $array): array { $old = $this->storage; $this->storage = self::__backing($array, 'ArrayObject::exchangeArray()'); return $old; }
+    public function append(mixed $value): void {
+        if (!is_object($this->storage)) { $this->storage[] = $value; return; }
+        if ($this->__shared()) { $this->storage->append($value); return; }
+        throw new Error("Cannot append properties to objects, use ArrayObject::offsetSet() instead");
+    }
+    public function count(): int { return count($this->getArrayCopy()); }
+    public function getArrayCopy(): array {
+        if (!is_object($this->storage)) { return $this->storage; }
+        return $this->__shared() ? $this->storage->getArrayCopy() : get_object_vars($this->storage);
+    }
+    public function exchangeArray(array|object $array): array { $old = $this->getArrayCopy(); $this->storage = self::__backing($array, 'ArrayObject::exchangeArray()'); return $old; }
     // `spl_array_object_new_ex` for the iterator: it starts with this object's flags.
-    public function getIterator(): Iterator { [$flags, $class] = $this->__state(); return new $class($this->storage, $flags); }
+    public function getIterator(): Iterator { [$flags, $class] = $this->__state(); return new $class($this->getArrayCopy(), $flags); }
     public function getFlags(): int { return $this->__state()[0]; }
     public function setFlags(int $flags): void { self::$__state[spl_object_id($this)] = [$flags & ~0xFFFF0000, $this->__state()[1]]; }
     public function getIteratorClass(): string { return $this->__state()[1]; }
@@ -1134,12 +1171,23 @@ class ArrayObject implements IteratorAggregate, ArrayAccess, Countable {
     private function __phplang_clone($orig) { self::$__state[spl_object_id($this)] = $orig->__state(); }
     public function __serialize(): array { [$flags, $class] = $this->__state(); return [$flags, $this->storage, array_diff_key(get_object_vars($this), ['storage' => 1]), $class === ArrayIterator::class ? null : $class]; }
     public function __unserialize(array $data): void { $this->storage = $data[1]; foreach ($data[2] ?? [] as $k => $v) { $this->$k = $v; } self::$__state[spl_object_id($this)] = [$data[0], $data[3] ?? ArrayIterator::class]; }
-    public function asort(int $flags = SORT_REGULAR): bool { return asort($this->storage, $flags); }
-    public function ksort(int $flags = SORT_REGULAR): bool { return ksort($this->storage, $flags); }
-    public function uasort(callable $callback): bool { return uasort($this->storage, $callback); }
-    public function uksort(callable $callback): bool { return uksort($this->storage, $callback); }
-    public function natsort(): bool { return natsort($this->storage); }
-    public function natcasesort(): bool { return natcasesort($this->storage); }
+    public function asort(int $flags = SORT_REGULAR): bool { return $this->__sort("asort", $flags); }
+    public function ksort(int $flags = SORT_REGULAR): bool { return $this->__sort("ksort", $flags); }
+    public function uasort(callable $callback): bool { return $this->__sort("uasort", $callback); }
+    public function uksort(callable $callback): bool { return $this->__sort("uksort", $callback); }
+    public function natsort(): bool { return $this->__sort("natsort"); }
+    public function natcasesort(): bool { return $this->__sort("natcasesort"); }
+    // Sort the storage in place; an object backing has its properties put
+    // back in the sorted order, a shared one is sorted by its owner.
+    private function __sort($fn, ...$args) {
+        if (!is_object($this->storage)) { return $fn($this->storage, ...$args); }
+        if ($this->__shared()) { return $this->storage->$fn(...$args); }
+        $props = get_object_vars($this->storage);
+        $r = $fn($props, ...$args);
+        foreach (array_keys(get_object_vars($this->storage)) as $k) { unset($this->storage->$k); }
+        foreach ($props as $k => $v) { $this->storage->$k = $v; }
+        return $r;
+    }
 }
 interface SeekableIterator extends Iterator {
     public function seek(int $offset): void;

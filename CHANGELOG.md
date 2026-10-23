@@ -65,6 +65,15 @@ found`. They are now PHP-written prelude classes over the engine's metadata
 * `[&$x] = g()` over a `function &g()` binds the targets into the array the
   callee returned by reference, so writing `$x` reaches it; over a by-value
   callee it notices and binds a copy, as before.
+* An `ArrayObject` over an object (deprecated since 8.5) reads and writes the
+  object's properties instead of a copy of them — `$x["b"] = 2` reaches
+  `$o->b`, `$x[] = v` adds the next integer-named property, `append()` is the
+  reference's `Cannot append properties to objects` — and one over another
+  `ArrayObject` shares its storage. `count`, iteration, `getArrayCopy`, the
+  sorts, `json_encode`, `(array)` and `var_export` see the backing object.
+* An all-blank time string is the `Empty string` error, as in the timelib
+  PHP 8.5.12 ships (`strtotime("   ")` is `false`, `new DateTime("  ")` throws
+  `DateMalformedStringException`); 8.5.11 kept one blank and read it as now.
 
 ---
 

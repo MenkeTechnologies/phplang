@@ -1,5 +1,5 @@
-//! Round 28 regressions found by differential probing against `php 8.5.11`
-//! (`/opt/homebrew/bin/php`, `php -r`). Expected strings are the reference's
+//! Round 28 regressions found by differential probing against `php 8.5.12`
+//! (`/opt/homebrew/bin/php`, `php -r`; the reference moved from 8.5.11 to 8.5.12 during the round). Expected strings are the reference's
 //! recorded output; no PHP is needed to run them.
 
 use phplang::eval_capture;
@@ -260,6 +260,55 @@ Array
 
 Notice: Attempting to set reference to non referenceable value in Command line code on line 1
 int(2)
+"##
+    );
+}
+
+#[test]
+fn an_array_object_over_an_object_reads_and_writes_its_properties() {
+    let src = r##"<?php $o = new stdClass; $o->a = 1; $x = @new ArrayObject($o); $x["b"] = 2; var_dump(isset($o->b), $x["a"], count($x)); unset($x["a"]); $o->c = 3; var_dump(isset($o->a), $x["c"], $x->getArrayCopy()); foreach ($x as $k => $v) { echo "$k=$v "; } echo json_encode($x), "\n"; try { $x[] = 5; } catch (Error $e) { echo $e->getMessage(), "\n"; } $o->z = 0; $x->asort(); print_r($o); $a = new ArrayObject([1]); $b = @new ArrayObject($a); $b[] = 2; $b["k"] = 3; var_dump(count($a), $a["k"]); $c = new ArrayObject([]); @$c->exchangeArray($o); $c["q"] = 9; var_dump($o->q);"##;
+    assert_eq!(
+        run(src),
+        r##"bool(true)
+int(1)
+int(2)
+bool(false)
+int(3)
+array(2) {
+  ["b"]=>
+  int(2)
+  ["c"]=>
+  int(3)
+}
+b=2 c=3 {"b":2,"c":3}
+stdClass Object
+(
+    [z] => 0
+    [b] => 2
+    [c] => 3
+    [0] => 5
+)
+int(3)
+int(3)
+int(9)
+"##
+    );
+}
+
+#[test]
+fn an_all_blank_time_string_is_the_empty_string_error() {
+    let src = r##"<?php var_dump(strtotime("   ", 5), strtotime("\t", 5), strtotime(" now ", 5), date_create("  "), date_parse(" ")["errors"]); try { new DateTime("  "); } catch (Exception $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }"##;
+    assert_eq!(
+        run(src),
+        r##"bool(false)
+bool(false)
+int(5)
+bool(false)
+array(1) {
+  [0]=>
+  string(12) "Empty string"
+}
+DateMalformedStringException: Failed to parse time string (  ) at position 0 ( ): Empty string
 "##
     );
 }

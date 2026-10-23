@@ -2527,26 +2527,33 @@ fn act(st: &mut State, rule: Rule, t: &Tok) {
 
 /// `timelib_strtotime`.
 pub fn strtotime(input: &[u8]) -> (Time, Errors) {
-    // The trim of the shipped parse_date.c (`s < e`; the .re beside it still
-    // reads `s <= e`): it never trims the LAST character away, so an
-    // all-blank string is one blank, not empty.
+    // The leading and trailing blanks are trimmed. An all-blank string trims
+    // to nothing and is the `Empty string` error, reported against its first
+    // character — the timelib PHP 8.5.12 ships; 8.5.11's kept the last blank,
+    // so `strtotime("   ")` was the base time there.
     let mut s = 0;
     let mut e = input.len();
+    let mut tok_char = 0;
     if !input.is_empty() {
-        let mut last = input.len() - 1;
-        while input[s].is_ascii_whitespace_c() && s < last {
-            s += 1;
+        if input.iter().all(|c| c.is_ascii_whitespace_c()) {
+            e = 0;
+            tok_char = input[0];
+        } else {
+            let mut last = input.len() - 1;
+            while input[s].is_ascii_whitespace_c() && s < last {
+                s += 1;
+            }
+            while input[last].is_ascii_whitespace_c() && last > s {
+                last -= 1;
+            }
+            e = last + 1;
         }
-        while input[last].is_ascii_whitespace_c() && last > s {
-            last -= 1;
-        }
-        e = last + 1;
     }
     let mut st = State {
         time: Time::default(),
         errors: Errors::default(),
         tok: 0,
-        tok_char: 0,
+        tok_char,
     };
     if e == s {
         st.error("Empty string");

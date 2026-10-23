@@ -5464,6 +5464,25 @@ fn spl_array_storage(h: &host::PhpHost, v: &Value) -> Option<Value> {
         .map(|(_, st)| st)
 }
 
+/// The elements an `ArrayObject`/`ArrayIterator` wraps: its storage array, or —
+/// for an object backing — the backing object's properties, following a
+/// backing that is itself one of the two to the storage it shares.
+fn spl_storage_pairs(h: &host::PhpHost, v: &Value) -> Option<Vec<(Value, Value)>> {
+    let st = spl_array_storage(h, v)?;
+    if h.is_array(&st) {
+        return h.array_pairs(&st);
+    }
+    if spl_array_storage(h, &st).is_some() {
+        return spl_storage_pairs(h, &st);
+    }
+    Some(
+        h.object_props(&st)
+            .into_iter()
+            .map(|(k, val)| (Value::str(k), val))
+            .collect(),
+    )
+}
+
 /// Prelude slots of the SPL classes whose state the reference keeps out of the
 /// property table: `(array)` and `var_export` never show them.
 const SPL_HIDDEN_SLOTS: [&str; 6] = [
@@ -5480,8 +5499,8 @@ const SPL_HIDDEN_SLOTS: [&str; 6] = [
 /// `ArrayIterator` or `SplFixedArray`, or the properties left once the
 /// prelude's internal slots are dropped. `None` for any other object.
 fn spl_view(h: &host::PhpHost, v: &Value) -> Option<Vec<(Value, Value)>> {
-    if let Some(st) = spl_array_storage(h, v) {
-        return h.array_pairs(&st);
+    if let Some(pairs) = spl_storage_pairs(h, v) {
+        return Some(pairs);
     }
     let props = h.object_props_mangled(v);
     if let Some((_, el)) = props
@@ -8487,9 +8506,9 @@ fn json_prepare_seen(v: &Value, prep: &mut JsonPrep) -> Result<Value, i64> {
         };
     }
     let mut out = Vec::new();
-    if let Some(st) = with_host(|h| spl_array_storage(h, v)) {
+    if let Some(pairs) = with_host(|h| spl_storage_pairs(h, v)) {
         // ArrayObject / ArrayIterator encode as their wrapped array.
-        for (k, val) in with_host(|h| h.array_pairs(&st).unwrap_or_default()) {
+        for (k, val) in pairs {
             let name = with_host(|h| h.to_str(&k));
             out.push((name, json_prepare_seen(&val, prep)?));
         }
