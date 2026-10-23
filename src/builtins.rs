@@ -4885,17 +4885,15 @@ pub fn call_library(name: &str, args: &[Value]) -> Result<Value, String> {
             };
             crate::stdlib::textx::check_html_charset(h, &lname, args.get(2));
             let named = lname == "htmlentities";
-            // A byte that is not UTF-8: U+FFFD under ENT_SUBSTITUTE (the
-            // default), dropped under ENT_IGNORE, and otherwise the whole
-            // result is the empty string.
+            // An invalid UTF-8 unit (as `php_next_utf8_char` groups them):
+            // U+FFFD under ENT_SUBSTITUTE (the default), dropped under
+            // ENT_IGNORE, and otherwise the whole result is the empty string.
             let s = if crate::bytes::has_raw(&s) {
-                let bad = |c: char| crate::bytes::has_raw(c.encode_utf8(&mut [0u8; 4]));
+                let units = crate::bytes::php_utf8_units(&s).into_iter();
                 if flags & 8 != 0 {
-                    s.chars()
-                        .map(|c| if bad(c) { '\u{FFFD}' } else { c })
-                        .collect()
+                    units.map(|u| u.unwrap_or('\u{FFFD}')).collect()
                 } else if flags & 4 != 0 {
-                    s.chars().filter(|&c| !bad(c)).collect()
+                    units.flatten().collect()
                 } else {
                     return Value::str(String::new());
                 }
@@ -8756,6 +8754,19 @@ fn json_string(s: &str, flags: i64) -> String {
     let escape_slashes = flags & JSON_UNESCAPED_SLASHES == 0;
     let escape_unicode = flags & JSON_UNESCAPED_UNICODE == 0;
     let escape_terminators = flags & JSON_UNESCAPED_LINE_TERMINATORS == 0;
+    // Invalid UTF-8 is substituted or dropped per unit as `php_next_utf8_char`
+    // groups them: each unit becomes the one raw byte the loop below handles.
+    let units: String;
+    let s = if crate::bytes::has_raw(s) {
+        let raw = crate::bytes::from_bytes(&[0xFF]);
+        units = crate::bytes::php_utf8_units(s)
+            .into_iter()
+            .map(|u| u.map_or_else(|| raw.clone(), String::from))
+            .collect();
+        units.as_str()
+    } else {
+        s
+    };
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
     for c in s.chars() {

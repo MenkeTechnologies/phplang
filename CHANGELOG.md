@@ -26,6 +26,35 @@ comment above it.
 
 ---
 
+## Round 30: iconv
+
+Measured under `PHP 8.5.12 (cli)` linking libiconv 1.11; pinned in
+`tests/stdlib_iconv.rs` and `tests/byte_strings.rs`.
+
+* `iconv`, `iconv_strlen`, `iconv_substr`, `iconv_strpos`, `iconv_strrpos`,
+  `iconv_get_encoding`, `ICONV_IMPL` and `ICONV_VERSION` exist. The charsets
+  are UTF-8, ASCII, ISO-8859-1, ISO-8859-15, CP1252, UTF-16 and UTF-32 (BE/LE,
+  and plain with a byte-order mark), under every alias the reference's
+  libiconv accepts for them.
+* What libiconv adds beyond the charsets is generated off the reference by
+  `scripts/gen_iconv_tables.php` into `src/stdlib/iconv_tables.rs`: the alias
+  table, the spelling its 8-bit converters write without `//TRANSLIT`
+  (`Œ` → `OE` in ISO-8859-1), and the `//TRANSLIT` spellings (`é` → `'e`).
+  `//IGNORE` drops unencodable characters and skips undecodable bytes; the
+  `Detected an illegal character` / `incomplete multibyte character` notices
+  and the `Wrong encoding` warning are the reference's.
+* `utf8_decode`, `htmlspecialchars`/`htmlentities` under `ENT_SUBSTITUTE` and
+  `ENT_IGNORE`, and `json_encode` under `JSON_INVALID_UTF8_*` group invalid
+  UTF-8 as ext/standard's `php_next_utf8_char` does (`"\xE2\x82"` is one
+  unit, `"\xC0\x80"` two). `utf8_encode` widens a raw byte rather than its
+  stored form. `mb_convert_encoding` writes ISO-8859-1 as bytes, honours a
+  single `$from_encoding` or a candidate list, and writes `?` for invalid input.
+* `src/argsig.rs`'s hand-written helpers moved above the generated `SIGS`
+  table, so `scripts/gen-argsig.php` (which rewrites everything after it)
+  regenerates the table without deleting them.
+
+---
+
 ## Round 29: byte strings
 
 `Value::Str` is a Rust `String`, so a byte at or above 0x80 that is not part of

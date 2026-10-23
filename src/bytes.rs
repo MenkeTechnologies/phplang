@@ -150,6 +150,57 @@ pub fn mb_text(s: &str) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
+/// One step of ext/standard's UTF-8 decoder (`php_next_utf8_char`), which
+/// `htmlspecialchars`, `json_encode` and `utf8_decode` share: the character at
+/// the start of `b`, or `None` for an invalid unit, and how many bytes either
+/// took. An invalid unit is not mbstring's maximal subpart: a truncated
+/// sequence swallows the trail bytes it has, and a well-formed but disallowed
+/// one (an overlong form, a surrogate, past U+10FFFF) is ONE unit of its full
+/// length.
+pub fn php_next_utf8_char(b: &[u8]) -> (Option<char>, usize) {
+    let lead = |c: u8| c < 0x80 || (0xC2..=0xF4).contains(&c);
+    let trail = |i: usize| b.get(i).is_some_and(|&c| (0x80..=0xBF).contains(&c));
+    // The length of a truncated or broken `n`-byte sequence: up to (not
+    // including) the first byte that could start a character.
+    let broken = |n: usize| {
+        (1..n)
+            .find(|&i| b.get(i).is_none_or(|&c| lead(c)))
+            .unwrap_or(n)
+    };
+    let c = b[0];
+    let (n, cp, min) = match c {
+        0..=0x7F => return (Some(char::from(c)), 1),
+        0xC2..=0xDF => (2, u32::from(c & 0x1F), 0x80),
+        0xE0..=0xEF => (3, u32::from(c & 0x0F), 0x800),
+        0xF0..=0xF4 => (4, u32::from(c & 0x07), 0x10000),
+        _ => return (None, 1),
+    };
+    if !(1..n).all(trail) {
+        return (None, broken(n));
+    }
+    let cp = b[1..n]
+        .iter()
+        .fold(cp, |acc, &t| (acc << 6) | u32::from(t & 0x3F));
+    if cp < min {
+        return (None, n);
+    }
+    (char::from_u32(cp).filter(|_| cp <= 0x10FFFF), n)
+}
+
+/// `s` decoded by [`php_next_utf8_char`]: each character, or `None` for each
+/// invalid unit.
+pub fn php_utf8_units(s: &str) -> Vec<Option<char>> {
+    let bytes = to_bytes(s);
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut rest = &bytes[..];
+    while !rest.is_empty() {
+        let (c, n) = php_next_utf8_char(rest);
+        out.push(c);
+        rest = &rest[n..];
+    }
+    out
+}
+
 /// The PHP length of a stored string: its byte count.
 pub fn byte_len(s: &str) -> usize {
     if has_raw(s) {
@@ -193,6 +244,22 @@ mod tests {
         let joined = format!("{}{}", from_bytes(&[0xc3]), from_bytes(&[0xa9]));
         assert_ne!(joined, "\u{e9}");
         assert_eq!(canonical(joined), "\u{e9}");
+    }
+
+    #[test]
+    fn php_units_group_invalid_bytes_as_ext_standard_does() {
+        let units = |b: &[u8]| {
+            php_utf8_units(&from_bytes(b))
+                .iter()
+                .map(|u| u.unwrap_or('?'))
+                .collect::<String>()
+        };
+        assert_eq!(units(b"\xe2\x82"), "?");
+        assert_eq!(units(b"\xe2a\x82"), "?a?");
+        assert_eq!(units(b"\xc0\x80"), "??");
+        assert_eq!(units(b"\xed\xa0\x80"), "?");
+        assert_eq!(units(b"\xf4\x90\x80\x80"), "?");
+        assert_eq!(units(b"\xf0\x9f\x98a\xc3\xa9"), "?a\u{e9}");
     }
 
     #[test]

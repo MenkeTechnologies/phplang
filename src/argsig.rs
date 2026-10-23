@@ -506,6 +506,57 @@ fn callable_param(sig: &Sig) -> Option<(usize, &'static str, bool)> {
     })
 }
 
+/// One declared parameter of a library function, as reflection and a
+/// first-class callable's dump report it.
+#[derive(Clone)]
+pub struct LibParam {
+    pub name: String,
+    /// The declared type, `""` for none.
+    pub ty: String,
+    pub by_ref: bool,
+    pub variadic: bool,
+    /// The default, `None` for a required or variadic parameter.
+    pub def: Option<Def>,
+}
+
+/// The parameters of library function `name`: names, types and defaults from
+/// the argument table, by-reference positions from the compiler's, and the
+/// variadic tail's name from the corpus signature (the table records only
+/// that there is one). `None` for a name the table does not know.
+pub fn library_params(name: &str) -> Option<Vec<LibParam>> {
+    let sig = sig_of(name)?;
+    let byref = crate::compiler::library_byref_positions(name);
+    let mut out: Vec<LibParam> = sig
+        .params
+        .iter()
+        .enumerate()
+        .map(|(i, p)| LibParam {
+            name: p.name.to_string(),
+            ty: p.ty.to_string(),
+            by_ref: byref.contains(&i),
+            variadic: false,
+            def: (p.def != Def::Required).then_some(p.def),
+        })
+        .collect();
+    if sig.variadic {
+        let spelled = crate::corpus::signature_params(name)
+            .unwrap_or_default()
+            .into_iter()
+            .find(|p| p.variadic);
+        let at = out.len();
+        out.push(LibParam {
+            name: spelled
+                .as_ref()
+                .map_or_else(|| "args".to_string(), |p| p.name.clone()),
+            ty: spelled.map(|p| p.ty).unwrap_or_default(),
+            by_ref: byref.contains(&at),
+            variadic: true,
+            def: None,
+        });
+    }
+    Some(out)
+}
+
 use Def::{Bool, EmptyArray, Float, Int, Null, Required, Str, Unknown};
 
 /// The declared shapes, sorted by name so [`sig_of`] can binary-search.
@@ -515,7 +566,7 @@ use Def::{Bool, EmptyArray, Float, Int, Null, Required, Str, Unknown};
 /// default in this generated table is a literal too.
 #[allow(clippy::approx_constant)]
 static SIGS: &[(&str, Sig)] = &[
-    // generated: 601 functions
+    // generated: 613 functions
     (
         "abs",
         Sig {
@@ -3519,6 +3570,75 @@ static SIGS: &[(&str, Sig)] = &[
         },
     ),
     (
+        "iconv",
+        Sig {
+            req: 3,
+            params: &[
+                p("from_encoding", Required, "string"),
+                p("to_encoding", Required, "string"),
+                p("string", Required, "string"),
+            ],
+            variadic: false,
+        },
+    ),
+    (
+        "iconv_get_encoding",
+        Sig {
+            req: 0,
+            params: &[p("type", Str("all"), "string")],
+            variadic: false,
+        },
+    ),
+    (
+        "iconv_strlen",
+        Sig {
+            req: 1,
+            params: &[
+                p("string", Required, "string"),
+                p("encoding", Null, "?string"),
+            ],
+            variadic: false,
+        },
+    ),
+    (
+        "iconv_strpos",
+        Sig {
+            req: 2,
+            params: &[
+                p("haystack", Required, "string"),
+                p("needle", Required, "string"),
+                p("offset", Int(0), "int"),
+                p("encoding", Null, "?string"),
+            ],
+            variadic: false,
+        },
+    ),
+    (
+        "iconv_strrpos",
+        Sig {
+            req: 2,
+            params: &[
+                p("haystack", Required, "string"),
+                p("needle", Required, "string"),
+                p("encoding", Null, "?string"),
+            ],
+            variadic: false,
+        },
+    ),
+    (
+        "iconv_substr",
+        Sig {
+            req: 2,
+            params: &[
+                p("string", Required, "string"),
+                p("offset", Required, "int"),
+                p("length", Null, "?int"),
+                p("encoding", Null, "?string"),
+            ],
+            variadic: false,
+        },
+    ),
+    (
         "idate",
         Sig {
             req: 1,
@@ -6406,54 +6526,3 @@ static SIGS: &[(&str, Sig)] = &[
         },
     ),
 ];
-
-/// One declared parameter of a library function, as reflection and a
-/// first-class callable's dump report it.
-#[derive(Clone)]
-pub struct LibParam {
-    pub name: String,
-    /// The declared type, `""` for none.
-    pub ty: String,
-    pub by_ref: bool,
-    pub variadic: bool,
-    /// The default, `None` for a required or variadic parameter.
-    pub def: Option<Def>,
-}
-
-/// The parameters of library function `name`: names, types and defaults from
-/// the argument table, by-reference positions from the compiler's, and the
-/// variadic tail's name from the corpus signature (the table records only
-/// that there is one). `None` for a name the table does not know.
-pub fn library_params(name: &str) -> Option<Vec<LibParam>> {
-    let sig = sig_of(name)?;
-    let byref = crate::compiler::library_byref_positions(name);
-    let mut out: Vec<LibParam> = sig
-        .params
-        .iter()
-        .enumerate()
-        .map(|(i, p)| LibParam {
-            name: p.name.to_string(),
-            ty: p.ty.to_string(),
-            by_ref: byref.contains(&i),
-            variadic: false,
-            def: (p.def != Def::Required).then_some(p.def),
-        })
-        .collect();
-    if sig.variadic {
-        let spelled = crate::corpus::signature_params(name)
-            .unwrap_or_default()
-            .into_iter()
-            .find(|p| p.variadic);
-        let at = out.len();
-        out.push(LibParam {
-            name: spelled
-                .as_ref()
-                .map_or_else(|| "args".to_string(), |p| p.name.clone()),
-            ty: spelled.map(|p| p.ty).unwrap_or_default(),
-            by_ref: byref.contains(&at),
-            variadic: true,
-            def: None,
-        });
-    }
-    Some(out)
-}

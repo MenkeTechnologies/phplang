@@ -884,6 +884,45 @@ static PARAMS: &[(&str, Params)] = &[
         ],
     ),
     ("hypot", &[(1, "x", "float"), (2, "y", "float")]),
+    (
+        "iconv",
+        &[
+            (1, "from_encoding", "string"),
+            (2, "to_encoding", "string"),
+            (3, "string", "string"),
+        ],
+    ),
+    ("iconv_get_encoding", &[(1, "type", "string")]),
+    (
+        "iconv_strlen",
+        &[(1, "string", "string"), (2, "encoding", "?string")],
+    ),
+    (
+        "iconv_strpos",
+        &[
+            (1, "haystack", "string"),
+            (2, "needle", "string"),
+            (3, "offset", "int"),
+            (4, "encoding", "?string"),
+        ],
+    ),
+    (
+        "iconv_strrpos",
+        &[
+            (1, "haystack", "string"),
+            (2, "needle", "string"),
+            (3, "encoding", "?string"),
+        ],
+    ),
+    (
+        "iconv_substr",
+        &[
+            (1, "string", "string"),
+            (2, "offset", "int"),
+            (3, "length", "?int"),
+            (4, "encoding", "?string"),
+        ],
+    ),
     ("ignore_user_abort", &[(1, "enable", "?bool")]),
     (
         "in_array",

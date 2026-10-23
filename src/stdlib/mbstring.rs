@@ -608,18 +608,63 @@ fn mb_convert_encoding(args: &[Value]) -> Result<Value, String> {
             ),
         ));
     }
-    Ok(Value::str(match to.as_str() {
-        "ASCII" => s
-            .chars()
-            .map(|c| if (c as u32) < 0x80 { c } else { '?' })
+    // The source charset: the one named, or the first of a candidate list
+    // (an array, or a comma-separated string) the bytes are valid in. One this
+    // module does not implement is read as UTF-8.
+    let candidates: Vec<String> = match args.get(2) {
+        Some(v) if with_host(|h| h.is_array(v)) => with_host(|h| {
+            h.array_pairs(v)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(_, val)| normalize_encoding(&h.to_str(&val)))
+                .collect()
+        }),
+        Some(v) if !matches!(v, Value::Undef) => str_arg(args, 2)
+            .split(',')
+            .map(|e| normalize_encoding(e.trim()))
             .collect(),
-        "ISO-8859-1" => s
-            .chars()
-            .map(|c| if (c as u32) <= 0xFF { c } else { '?' })
+        _ => Vec::new(),
+    };
+    let valid_in = |cs: &str| match cs {
+        "ASCII" => crate::bytes::to_bytes(&s).is_ascii(),
+        "UTF-8" => !crate::bytes::has_raw(&s),
+        _ => true,
+    };
+    let from = match candidates.as_slice() {
+        [one] => one.clone(),
+        many => many
+            .iter()
+            .find(|c| valid_in(c))
+            .cloned()
+            .unwrap_or_else(|| "UTF-8".to_string()),
+    };
+    let text: String = match from.as_str() {
+        "ASCII" => crate::bytes::to_bytes(&s)
+            .iter()
+            .map(|&b| if b < 0x80 { char::from(b) } else { '?' })
             .collect(),
-        // UTF-8: the Rust string is already UTF-8.
-        _ => s,
-    }))
+        "ISO-8859-1" => crate::bytes::to_bytes(&s)
+            .iter()
+            .map(|&b| char::from(b))
+            .collect(),
+        // Each maximal invalid subpart is one `?`.
+        _ => crate::bytes::mb_text(&s).into_owned(),
+    };
+    Ok(match to.as_str() {
+        "ASCII" => Value::str(
+            text.chars()
+                .map(|c| if c.is_ascii() { c } else { '?' })
+                .collect::<String>(),
+        ),
+        "ISO-8859-1" => {
+            let bytes: Vec<u8> = text
+                .chars()
+                .map(|c| u8::try_from(u32::from(c)).unwrap_or(b'?'))
+                .collect();
+            Value::str(crate::bytes::from_bytes(&bytes))
+        }
+        _ => Value::str(text),
+    })
 }
 
 /// The encodings `mb_convert_encoding` accepts as a target. phplang stores every

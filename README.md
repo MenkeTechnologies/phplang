@@ -483,7 +483,10 @@ end-to-end (see `tests/basic.rs`):
     resolution, interval arithmetic). No tz database: a zone identifier resolves only
     when its offset is fixed (`UTC`, `Etc/GMT±N`); offsets and abbreviations work.
   - **hash** — `md5`/`sha1`/`hash`/`crc32`/`hash_hmac`. **encoding** —
-    `base64_*`, `bin2hex`/`hex2bin`, quoted-printable, `utf8_*`. **url** —
+    `base64_*`, `bin2hex`/`hex2bin`, quoted-printable, `utf8_*`, and `iconv` with
+    `iconv_strlen`/`substr`/`strpos`/`strrpos` over the Unicode and Latin
+    charsets (aliases, fallbacks and `//TRANSLIT` measured off the reference's
+    libiconv). **url** —
     `urlencode`/`rawurlencode` (+decode), `http_build_query`, `parse_url`,
     `parse_str` (with the `PHP_URL_*` component selectors).
   - **json** — `json_encode`, `json_decode` (objects to `stdClass`, or to arrays

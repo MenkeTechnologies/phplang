@@ -7510,6 +7510,8 @@ fn predefined_constants() -> FxHashMap<String, Value> {
         m.insert(k.to_string(), Value::str(v.to_string()));
     };
     ss("PHP_EOL", "\n");
+    ss("ICONV_IMPL", "libiconv");
+    ss("ICONV_VERSION", "1.11");
     // ext/date's format constants, the same strings as `DateTimeInterface::*`.
     for (k, v) in [
         ("DATE_ATOM", r"Y-m-d\TH:i:sP"),

@@ -168,3 +168,39 @@ fn a_script_may_hold_bytes_that_are_not_utf8() {
     let _ = std::fs::remove_file(&path);
     assert_eq!(out.stdout, b"361e962\n\xfd");
 }
+
+#[test]
+fn invalid_utf8_units_are_grouped_as_ext_standard_groups_them() {
+    let src = r##"<?php foreach (["\xe2\x82", "\xe2a\x82", "\xc0\x80", "\xed\xa0\x80", "\xf4\x90\x80\x80", "\xf0\x9f\x98a\xc3\xa9"] as $s) { echo bin2hex(@utf8_decode($s)), " ", bin2hex(htmlspecialchars($s, ENT_SUBSTITUTE)), " ", json_encode($s, JSON_INVALID_UTF8_SUBSTITUTE), " ", bin2hex(htmlspecialchars($s, ENT_IGNORE)), "\n"; }"##;
+    assert_eq!(
+        run(src),
+        r##"3f efbfbd "\ufffd" 
+3f613f efbfbd61efbfbd "\ufffda\ufffd" 61
+3f3f efbfbdefbfbd "\ufffd\ufffd" 
+3f efbfbd "\ufffd" 
+3f efbfbd "\ufffd" 
+3f61e9 efbfbd61c3a9 "\ufffda\u00e9" 61c3a9
+"##
+    );
+}
+
+#[test]
+fn utf8_encode_widens_each_raw_byte() {
+    let src =
+        r##"<?php echo bin2hex(@utf8_encode("\xe9\xff")), " ", bin2hex(@utf8_encode("é")), "\n";"##;
+    assert_eq!(
+        run(src),
+        r##"c3a9c3bf c383c2a9
+"##
+    );
+}
+
+#[test]
+fn mb_convert_encoding_writes_single_byte_charsets_as_bytes() {
+    let src = r##"<?php echo bin2hex(mb_convert_encoding("é€", "ISO-8859-1")), " ", bin2hex(mb_convert_encoding("é€", "ASCII")), " ", bin2hex(mb_convert_encoding("\xe9", "UTF-8", "ISO-8859-1")), " ", bin2hex(mb_convert_encoding("a\xe2\x82b", "ISO-8859-1")), " ", bin2hex(mb_convert_encoding("\xed\xa0\x80", "UTF-8")), " ", bin2hex(mb_convert_encoding("é", "UTF-8", "ASCII")), " ", bin2hex(mb_convert_encoding("\xe9t", "UTF-8", "ASCII,ISO-8859-1")), " ", bin2hex(mb_convert_encoding("\xe9t", "UTF-8", ["UTF-8", "ISO-8859-1"])), "\n";"##;
+    assert_eq!(
+        run(src),
+        r##"e93f 3f3f c3a9 613f62 3f3f3f 3f3f c3a974 c3a974
+"##
+    );
+}
