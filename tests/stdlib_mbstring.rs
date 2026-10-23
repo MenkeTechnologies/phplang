@@ -176,10 +176,10 @@ fn convert_and_detect_encoding() {
         run(r#"<?php echo mb_convert_encoding("hello", "UTF-8");"#),
         "hello"
     );
-    // é (U+00E9 <= 0xFF) survives ISO-8859-1.
+    // é (U+00E9 <= 0xFF) survives ISO-8859-1 as its one byte, 0xE9.
     assert_eq!(
-        run(r#"<?php echo mb_convert_encoding("héllo", "ISO-8859-1");"#),
-        "héllo"
+        run(r#"<?php echo bin2hex(mb_convert_encoding("héllo", "ISO-8859-1"));"#),
+        "68e96c6c6f"
     );
     // Detection: pure ASCII vs UTF-8.
     assert_eq!(run(r#"<?php echo mb_detect_encoding("hello");"#), "ASCII");
