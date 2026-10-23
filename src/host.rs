@@ -3830,6 +3830,12 @@ impl PhpHost {
         self.ret_ref_slot.take()
     }
 
+    /// Whether the call that just returned published a by-reference cell,
+    /// leaving it for the binding that follows to take.
+    pub fn has_published_ret_ref(&self) -> bool {
+        self.ret_ref_slot.is_some()
+    }
+
     /// The array the reference cell at `slot` holds, vivifying one into the
     /// cell first when it holds `null` — the write half of
     /// `$o->p[] = v` through a `function &__get()`.

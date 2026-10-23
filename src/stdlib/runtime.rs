@@ -64,7 +64,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         // `[&$x] = f()` on a call that did not return by reference: the
         // reference's notice, once per `FETCH_LIST_W` the pattern makes.
         "__phplang_list_ref_notice" => with_host(|h| {
-            if h.take_published_ret_ref().is_none() {
+            if !h.has_published_ret_ref() {
                 for _ in 0..arg(args, 0).to_int() {
                     h.notice("Attempting to set reference to non referenceable value");
                 }

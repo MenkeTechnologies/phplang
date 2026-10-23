@@ -5713,6 +5713,36 @@ impl Compiler {
                     ));
                 }
                 let src = self.tmp_name("list");
+                let call = matches!(
+                    rhs,
+                    Expr::Call(..)
+                        | Expr::MethodCall(..)
+                        | Expr::StaticCall(..)
+                        | Expr::CallValue(..)
+                );
+                if ref_root.is_none() && Self::pattern_binds_by_ref(elems) && call {
+                    // `[&$x] = f()`: the subject is bound to the cell a
+                    // `function &f()` published, so a `&` target aliases an
+                    // element of what the callee returned. A callee that
+                    // returned by value has no cell: each by-reference fetch
+                    // notices and the targets bind a detached copy.
+                    let ni = b.add_constant(Value::str(src.clone()));
+                    b.emit(Op::LoadConst(ni), self.cur_line);
+                    self.compile_expr(b, rhs)?;
+                    let n = Self::ref_list_fetches(elems);
+                    let fi = b.add_constant(Value::str("__phplang_list_ref_notice"));
+                    b.emit(Op::LoadConst(fi), self.cur_line);
+                    b.emit(Op::LoadInt(n), self.cur_line);
+                    b.emit(Op::CallBuiltin(ops::CALL, 2), self.cur_line);
+                    b.emit(Op::Pop, self.cur_line);
+                    b.emit(Op::CallBuiltin(ops::REF_SLOT_RET, 1), 0);
+                    b.emit(Op::CallBuiltin(ops::REF_TO_VAR, 2), 0);
+                    b.emit(Op::Pop, 0);
+                    let subject = Expr::Var(src.clone());
+                    self.compile_list_targets(b, elems, &src, Some(&subject))?;
+                    self.emit_get_var(b, &src);
+                    return Ok(());
+                }
                 self.emit_set_var(b, &src, |c, b| c.compile_rhs(b, rhs))?;
                 // A call result has no home for a `&` target to alias: each
                 // `FETCH_LIST_W` on it notices, then binds a copy — unless the

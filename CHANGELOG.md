@@ -62,6 +62,9 @@ found`. They are now PHP-written prelude classes over the engine's metadata
   declared where its declaration stands, not before the program runs:
   `class_exists("C")` above `class C implements I {}` is `false`, and `new C`
   there is `Class "C" not found`. Pinned in `tests/parity_round28.rs`.
+* `[&$x] = g()` over a `function &g()` binds the targets into the array the
+  callee returned by reference, so writing `$x` reaches it; over a by-value
+  callee it notices and binds a copy, as before.
 
 ---
 

@@ -238,3 +238,28 @@ Class "D" not found
 D"##
     );
 }
+
+#[test]
+fn a_reference_destructuring_of_a_by_reference_call_aliases_the_returned_array() {
+    let src = r##"<?php function &g() { static $a = [1, [2]]; return $a; } [&$x, [&$y]] = g(); $x = 9; $y = 8; print_r(g()); class K { public $d = ["a" => 1]; function &m() { return $this->d; } } $k = new K; ["a" => &$v] = $k->m(); $v = 5; print_r($k->d); function f() { return [1]; } [&$z] = f(); $z = 2; var_dump($z);"##;
+    assert_eq!(
+        run(src),
+        r##"Array
+(
+    [0] => 9
+    [1] => Array
+        (
+            [0] => 8
+        )
+
+)
+Array
+(
+    [a] => 5
+)
+
+Notice: Attempting to set reference to non referenceable value in Command line code on line 1
+int(2)
+"##
+    );
+}
