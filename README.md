@@ -235,8 +235,14 @@ end-to-end (see `tests/basic.rs`):
   subject), and `&` elements in an array literal (`[&$a]`, `['k' => &$x]`),
   each bound to its variable; a referenced element stays shared across an array
   copy and `var_dump` marks it with `&`, as PHP does.
-  Namespaces are accepted in a flat model
-  (`namespace X;` / `use A\B\C;`; qualified names fold to their short name).
+  **Namespaces** resolve as the reference resolves them: declarations belong to
+  the enclosing `namespace` (`A\f`, `A\P`, `A\K`), `use` imports bind class,
+  function (`use function`) and constant (`use const`) aliases, group imports
+  included, and a qualified name is relative to the current namespace unless its
+  first segment is an import. A class name never falls back to the global
+  table; an unqualified function or constant tries the namespace first and the
+  global one second, at run time. Names held in strings are fully qualified and
+  may carry a leading `\` (`class_exists('\A\P')`, `call_user_func('\A\f')`).
 - The **magic constants** `__LINE__`, `__FILE__`, `__DIR__`, `__FUNCTION__`,
   `__CLASS__`, `__METHOD__`, `__NAMESPACE__` and `__TRAIT__`, resolved where they
   are WRITTEN rather than where the call arrives: `__CLASS__` in an inherited
@@ -250,9 +256,8 @@ end-to-end (see `tests/basic.rs`):
   path, `Command line code` for `-r`, or `Standard input code` for a script on
   stdin — for included code its resolved path, for `eval()`'d code
   `<file>(<line>) : eval()'d code` — and `__DIR__` falls back to the working
-  directory when there is no file. In the flat namespace model
-  `__NAMESPACE__` is the declared namespace in full, while class and function
-  names stay unqualified.
+  directory when there is no file. `__NAMESPACE__` is the declared namespace in
+  full, and `__CLASS__`, `__FUNCTION__` and `__METHOD__` carry it (`A\B\P::m`).
 - **Enums** (PHP 8.1): pure enums (`enum Suit { case Hearts; … }` with
   `Suit::Hearts`, `->name`, `Suit::cases()`, singleton `===` identity) and backed
   enums (`enum Status: string { case Active = 'active'; }` with `->value`,
@@ -488,11 +493,12 @@ end-to-end (see `tests/basic.rs`):
 
 ## [0x04] NOT YET (LATER WAVES)
 
-True (non-flat) namespaces with `as` alias remapping. A few current deviations,
-documented in-code:
+A few current deviations, documented in-code:
 
-- A namespaced class name in a type declaration is checked and reported by its
-  last segment (`Foo\Bar` reads as `Bar`), as class names are everywhere else.
+- An unqualified call written in a namespace is settled when it is compiled if
+  either reading of it already exists: a namespaced function declared later by
+  an `include` does not take over a call to the global function of that name
+  that was compiled before it.
 - `declare(strict_types=1)` is whole-program rather than per-file: the main
   script's declaration sets the mode for every call, and one in an `include`d
   file or `eval()`'d code is ignored. Upstream reads the mode from the file

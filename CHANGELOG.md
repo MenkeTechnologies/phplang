@@ -26,6 +26,45 @@ comment above it.
 
 ---
 
+## Round 27: namespaces
+
+Names resolve as `zend_compile.c` resolves them; the flat model, which folded
+every qualified class or function name to its last segment, is gone. Measured
+under `PHP 8.5.11 (cli)`; pinned in `tests/namespaces.rs`.
+
+* A declaration belongs to the enclosing namespace: `namespace A; class P {}`
+  declares `A\P` (`get_class`, `::class`, `var_dump`, `serialize` and every
+  message say so), `function f` declares `A\f` and `const K` declares `A\K`.
+  `__CLASS__`, `__FUNCTION__`, `__METHOD__` and `__TRAIT__` carry the namespace,
+  and `namespace { }` is the global namespace again.
+* `use` imports bind: classes and namespaces (`use A\B`, `use A\B as C`),
+  functions (`use function`) and constants (`use const`, case-sensitive), and
+  the grouped `use A\{B, function f, const K as L}` form. A reused alias, a
+  `self`/`parent`/`static` alias and an alias that clashes with a class the file
+  declared are the reference's compile-time fatals; a reserved word after `as`
+  is its syntax error.
+* A qualified name is relative to the current namespace unless its first
+  segment is an import, so `new A\P`, `A\f()` and `A\P::K` parse and resolve —
+  `A\f()` written inside `A` is `A\A\f()`, as upstream. A class name never falls
+  back to the global table (`namespace A; new Exception` is `Class
+  "A\Exception" not found`), while an unqualified function or constant tries the
+  namespace first and the global one second, so `strlen()` and `PHP_EOL` still
+  reach the library and a namespaced `strlen` shadows it.
+* Type declarations, `catch`, `instanceof`, `extends`/`implements`, trait `use`,
+  `insteadof` and attribute names resolve as class names; an interpolated
+  `"{$a[K]}"` resolves in the enclosing namespace.
+* A name held in a string is fully qualified and may carry a leading `\`:
+  `class_exists('\A\P')`, `function_exists('\A\f')`, `$c::K`, `new $c`,
+  `call_user_func('\A\f')`, `'\A\P::s'` and `['\A\P', 's']` callbacks,
+  `constant('\A\P::K')`, `is_a`, `is_subclass_of`, `method_exists` and
+  `get_parent_class`.
+* A constant's namespace part is case-insensitive (`\a\K` reaches `A\K`), and
+  the redefinition warning names the folded key.
+* An undefined function is reported as the call spelled it: `NoPe()` raises
+  `Call to undefined function NoPe()`, not `nope()`.
+
+---
+
 ## Constructor visibility
 
 `new` checks the constructor's visibility as `ZEND_NEW` does, through

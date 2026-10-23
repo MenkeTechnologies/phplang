@@ -116,6 +116,8 @@ pub fn install(vm: &mut VM) {
     reg!(vm, ops::GLOBALS_BIND, b_globals_bind);
     reg!(vm, ops::GLOBALS_UNSET, b_globals_unset);
     reg!(vm, ops::GLOBALS_ISSET, b_globals_isset);
+    reg!(vm, ops::NS_FN_NAME, b_ns_fn_name);
+    reg!(vm, ops::CONST_FETCH_NS, b_const_fetch_ns);
     reg!(vm, ops::CONST_DECL, b_const_decl);
     reg!(vm, ops::PROP_GET_EMPTY, b_prop_get_empty);
     reg!(vm, ops::PROP_INCDEC, b_prop_incdec);
@@ -815,7 +817,7 @@ fn b_instanceof(vm: &mut VM, _: u8) -> Value {
 fn b_dyn_class(vm: &mut VM, _: u8) -> Value {
     let v = vm.pop();
     if let Value::Str(s) = &v {
-        return Value::str(s.to_string());
+        return Value::str(host::anchored_class(s));
     }
     match with_host(|h| h.object_class(&v)) {
         Some(class) => Value::str(class),
@@ -991,6 +993,31 @@ fn b_const_fetch(vm: &mut VM, _: u8) -> Value {
         None => {
             mark_frame_line(vm);
             throw_php(vm, "Error", &undefined_constant(&name))
+        }
+    }
+}
+
+/// See `ops::NS_FN_NAME`.
+fn b_ns_fn_name(vm: &mut VM, _: u8) -> Value {
+    let qualified = pop_name(vm);
+    let global = qualified.rsplit('\\').next().unwrap_or(&qualified);
+    if !crate::stdlib::callable::dispatches(&qualified)
+        && crate::stdlib::callable::dispatches(global)
+    {
+        return Value::str(global.to_string());
+    }
+    Value::Str(qualified)
+}
+
+/// See `ops::CONST_FETCH_NS`.
+fn b_const_fetch_ns(vm: &mut VM, _: u8) -> Value {
+    let qualified = pop_name(vm);
+    let global = qualified.rsplit('\\').next().unwrap_or(&qualified);
+    match with_host(|h| h.const_fetch(&qualified).or_else(|| h.const_fetch(global))) {
+        Some(v) => v,
+        None => {
+            mark_frame_line(vm);
+            throw_php(vm, "Error", &undefined_constant(&qualified))
         }
     }
 }

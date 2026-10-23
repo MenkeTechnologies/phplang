@@ -77,6 +77,7 @@ const NOT_IN_PHP: &[&str] = &["__cast_array", "__cast_object", "gmp_pow2"];
 /// this engine implements. Same authority as `function_exists`, so the two can
 /// never disagree about a name; see [`known_builtins`].
 pub(crate) fn function_resolves(name: &str) -> bool {
+    let name = name.strip_prefix('\\').unwrap_or(name);
     let lname = name.to_ascii_lowercase();
     !NOT_IN_PHP.contains(&lname.as_str()) && dispatches(&lname)
 }
@@ -96,6 +97,7 @@ pub(crate) fn is_library_function(name: &str) -> bool {
 /// is what a PHP program asks, and the two differ only by the handful of names
 /// that exist here but not in the reference.
 pub(crate) fn dispatches(name: &str) -> bool {
+    let name = name.strip_prefix('\\').unwrap_or(name);
     with_host(|h| h.function_defined(name))
         || known_builtins().contains(name.to_ascii_lowercase().as_str())
         // A `rust { … }` block's exports are registered at RUN time and are
@@ -157,7 +159,7 @@ pub(crate) fn callable_reason(v: &Value) -> Option<String> {
         if !matches!(target, Value::Str(_)) {
             return Some("first array member is not a valid class name or object".to_string());
         }
-        let class = with_host(|h| h.to_str(&target));
+        let class = crate::host::anchored_class(&with_host(|h| h.to_str(&target)));
         return class_reason(&class).or_else(|| method_reason(&class, &method, false));
     }
     // A non-array object is callable through `__invoke`; one without it is not a
@@ -175,7 +177,8 @@ pub(crate) fn callable_reason(v: &Value) -> Option<String> {
     };
     match s.as_str().split_once("::") {
         Some((class, method)) => {
-            class_reason(class).or_else(|| method_reason(class, method, false))
+            let class = crate::host::anchored_class(class);
+            class_reason(&class).or_else(|| method_reason(&class, method, false))
         }
         None => (!function_resolves(s.as_str()))
             .then(|| format!("function \"{s}\" not found or invalid function name")),

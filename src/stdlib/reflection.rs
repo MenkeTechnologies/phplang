@@ -74,7 +74,9 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             }
             let method = str_arg(args, 1);
             with_host(|h| {
-                let class = h.instance_class(&a).unwrap_or_else(|| h.to_str(&a));
+                let class = h
+                    .instance_class(&a)
+                    .unwrap_or_else(|| crate::host::unanchored(&h.to_str(&a)).to_string());
                 let lname = method.to_ascii_lowercase();
                 Value::bool(
                     h.class_has_method(&class, &method) && !h.spl_array_forwarder(&class, &lname),
@@ -142,7 +144,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
                 } else if matches!(a, Value::Undef) {
                     None
                 } else {
-                    Some(h.to_str(&a))
+                    Some(crate::host::unanchored(&h.to_str(&a)).to_string())
                 };
                 match class.and_then(|c| h.class_parent(&c)) {
                     Some(p) => Value::str(p),
@@ -332,7 +334,7 @@ fn class_of(h: &crate::host::PhpHost, a: &Value, allow_string: bool) -> Option<S
     }
     match a {
         Value::Str(_) if allow_string => {
-            let s = h.to_str(a);
+            let s = crate::host::unanchored(&h.to_str(a)).to_string();
             h.class_exists(&s).then_some(s)
         }
         _ => None,
@@ -350,7 +352,7 @@ fn resolve_named_class(h: &crate::host::PhpHost, a: &Value) -> Option<String> {
     }
     match a {
         Value::Str(_) => {
-            let s = h.to_str(a);
+            let s = crate::host::unanchored(&h.to_str(a)).to_string();
             h.class_exists(&s).then_some(s)
         }
         _ => None,

@@ -4,6 +4,27 @@
 //! `if`/`while`/`for`/`foreach`, function definition and call, and `echo`/`print`.
 //! Classes, traits, namespaces, closures, and references are later waves.
 
+/// The prefix that marks a function or constant name the parser could not settle:
+/// an UNQUALIFIED name written inside a namespace. PHP resolves those at run time
+/// (`ZEND_INIT_NS_FCALL_BY_NAME`, `IS_CONSTANT_UNQUALIFIED_IN_NAMESPACE`): the
+/// namespaced name first, then the global one. No PHP identifier can contain the
+/// byte, so a marked name never collides with a real one.
+pub const NS_FALLBACK: char = '\u{1}';
+
+/// `ns\name` marked as a run-time fallback to the global `name` — see
+/// [`NS_FALLBACK`].
+pub fn ns_fallback(qualified: &str) -> String {
+    format!("{NS_FALLBACK}{qualified}")
+}
+
+/// The `(namespaced, global)` pair a [`ns_fallback`] name stands for, or `None`
+/// for a name the parser settled.
+pub fn split_ns_fallback(name: &str) -> Option<(&str, &str)> {
+    let qualified = name.strip_prefix(NS_FALLBACK)?;
+    let global = qualified.rsplit('\\').next().unwrap_or(qualified);
+    Some((qualified, global))
+}
+
 /// A binary operator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinOp {

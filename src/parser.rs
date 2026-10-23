@@ -2,6 +2,7 @@
 
 use crate::ast::*;
 use crate::lexer::{self, Spanned, Tok};
+use std::collections::{HashMap, HashSet};
 
 /// The words PHP's scanner turns into keyword tokens rather than identifiers, in
 /// the canonical spelling a syntax error echoes back — lowercase for ordinary
@@ -252,6 +253,8 @@ pub fn parse_meta(src: &str) -> Result<(Vec<Stmt>, ParseMeta), ParseFail> {
         foreach_targets: Vec::new(),
         declare_warnings: Vec::new(),
         magic: MagicCtx::file_scope(),
+        imports: Imports::default(),
+        seen_classes: HashSet::new(),
     };
     let mut stmts = Vec::new();
     while !p.at_end() {
@@ -283,7 +286,11 @@ const FATAL_MARK: char = '\u{1}';
 /// expression that reads it, and a [`StrPart::Raw`] — `{$expr}`, `$a->p`, `$a[k]`
 /// — is lexed and parsed on its own, since each is a self-contained PHP
 /// expression. Anything left over after it means the recorded source was not one.
-fn resolve_interp_parts(parts: Vec<StrPart>) -> Result<Vec<InterpPart>, String> {
+fn resolve_interp_parts(
+    parts: Vec<StrPart>,
+    namespace: &str,
+    imports: &Imports,
+) -> Result<Vec<InterpPart>, String> {
     parts
         .into_iter()
         .map(|p| match p {
@@ -312,8 +319,14 @@ fn resolve_interp_parts(parts: Vec<StrPart>) -> Result<Vec<InterpPart>, String> 
                     declare_warnings: Vec::new(),
                     // An interpolation holds no declaration, so no magic
                     // constant it could contain would read anything but the
-                    // file scope this starts at.
-                    magic: MagicCtx::file_scope(),
+                    // file scope this starts at — save the namespace, which
+                    // (with the imports) is what the names in it resolve in.
+                    magic: MagicCtx {
+                        namespace: namespace.to_string(),
+                        ..MagicCtx::file_scope()
+                    },
+                    imports: imports.clone(),
+                    seen_classes: HashSet::new(),
                 };
                 let e = inner.expression()?;
                 if !inner.at_punct(";") {
@@ -376,6 +389,71 @@ struct Parser {
     /// The declaration the cursor is inside, as PHP's magic constants report it.
     /// Saved and restored around every construct that opens a new one.
     magic: MagicCtx,
+    /// The `use` imports in force, which every `namespace` declaration resets.
+    imports: Imports,
+    /// The lowercased fully qualified names of the classes this file declared
+    /// so far — what an import of the same name collides with
+    /// (`CG(file_context).seen_symbols`).
+    seen_classes: HashSet<String>,
+}
+
+/// The `use` imports in force (`FC(imports)`, `FC(imports_function)`,
+/// `FC(imports_const)`).
+#[derive(Default, Clone)]
+struct Imports {
+    /// Lowercased alias → fully qualified class (or namespace) name.
+    class: HashMap<String, String>,
+    /// Lowercased alias → fully qualified function name.
+    function: HashMap<String, String>,
+    /// Alias → fully qualified constant name. Case-sensitive, as constant names are.
+    constant: HashMap<String, String>,
+}
+
+/// How a name was written, which decides how it resolves.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NameKind {
+    /// `Foo` — imports first, then the current namespace (and, for a function
+    /// or constant, the global one at run time).
+    Unqualified,
+    /// `A\Foo` — the first segment may be an imported alias.
+    Qualified,
+    /// `\A\Foo` — exactly as written.
+    FullyQualified,
+    /// `namespace\Foo` — the current namespace, never an import.
+    Relative,
+}
+
+/// Which table a `use` import binds into.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ImportKind {
+    Class,
+    Function,
+    Const,
+}
+
+/// A name as written, without its leading `\` or `namespace\`.
+struct RawName {
+    text: String,
+    kind: NameKind,
+}
+
+/// The type names a declaration reads as built-in types rather than classes
+/// when written unqualified (`zend_lookup_builtin_type_by_name`, plus the
+/// three class-relative names).
+fn is_reserved_type_name(name: &str) -> bool {
+    [
+        "int", "float", "bool", "string", "array", "callable", "iterable", "object", "mixed",
+        "void", "null", "never", "false", "true", "static", "self", "parent",
+    ]
+    .iter()
+    .any(|t| name.eq_ignore_ascii_case(t))
+}
+
+/// `self`, `parent` and `static`, which no namespace or import ever qualifies.
+fn is_class_relative_name(name: &str) -> bool {
+    ["self", "parent", "static"]
+        .iter()
+        .any(|t| name.eq_ignore_ascii_case(t))
 }
 
 /// A name PHP's magic constants report, in the two shapes it can take.
@@ -953,6 +1031,124 @@ impl Parser {
                 self.toks.get(self.pos + 1),
                 Some(s) if matches!(s.tok, Tok::Ident(_)) && !s.space_before
             )
+    }
+
+    /// Whether the cursor is at `namespace\Name`, the namespace-relative form.
+    fn at_relative_name(&self) -> bool {
+        matches!(self.peek(), Some(Tok::Ident(kw)) if kw.eq_ignore_ascii_case("namespace"))
+            && matches!(self.toks.get(self.pos + 1), Some(s) if s.tok == Tok::Punct("\\") && !s.space_before)
+            && matches!(
+                self.toks.get(self.pos + 2),
+                Some(s) if matches!(s.tok, Tok::Ident(_)) && !s.space_before
+            )
+    }
+
+    /// Read a name as written — `Foo`, `A\Foo`, `\A\Foo` or `namespace\Foo` —
+    /// without resolving it.
+    fn raw_name(&mut self) -> Result<RawName, String> {
+        let mut kind = NameKind::Unqualified;
+        if self.at_name_anchor() {
+            self.pos += 1;
+            kind = NameKind::FullyQualified;
+        } else if self.at_relative_name() {
+            self.pos += 2;
+            kind = NameKind::Relative;
+        }
+        let mut text = match self.next() {
+            Some(Tok::Ident(n)) => n,
+            _ => return Err(self.syntax_error_at(self.pos - 1)),
+        };
+        self.raw_name_rest(&mut text);
+        if kind == NameKind::Unqualified && text.contains('\\') {
+            kind = NameKind::Qualified;
+        }
+        Ok(RawName { text, kind })
+    }
+
+    /// Append the `\Segment`s that continue the name already in `text`.
+    fn raw_name_rest(&mut self, text: &mut String) {
+        while self.at_name_join() {
+            self.pos += 1;
+            if let Some(Tok::Ident(n)) = self.next() {
+                text.push('\\');
+                text.push_str(&n);
+            }
+        }
+    }
+
+    /// `name` inside the current namespace (`zend_prefix_with_ns`).
+    fn ns_prefixed(&self, name: &str) -> String {
+        if self.magic.namespace.is_empty() {
+            name.to_string()
+        } else {
+            format!("{}\\{name}", self.magic.namespace)
+        }
+    }
+
+    /// A qualified name whose FIRST segment is an imported class or namespace
+    /// alias, with the alias substituted; `None` when it is not one.
+    fn import_prefixed(&self, name: &str) -> Option<String> {
+        let (first, rest) = name.split_once('\\')?;
+        let target = self.imports.class.get(&first.to_ascii_lowercase())?;
+        Some(format!("{target}\\{rest}"))
+    }
+
+    /// The fully qualified class a written name refers to
+    /// (`zend_resolve_class_name`). `self`, `parent` and `static` are left alone.
+    fn resolve_class(&self, raw: &RawName) -> String {
+        match raw.kind {
+            NameKind::FullyQualified => raw.text.clone(),
+            NameKind::Relative => self.ns_prefixed(&raw.text),
+            NameKind::Unqualified if is_class_relative_name(&raw.text) => raw.text.clone(),
+            NameKind::Unqualified => match self.imports.class.get(&raw.text.to_ascii_lowercase()) {
+                Some(target) => target.clone(),
+                None => self.ns_prefixed(&raw.text),
+            },
+            NameKind::Qualified => self
+                .import_prefixed(&raw.text)
+                .unwrap_or_else(|| self.ns_prefixed(&raw.text)),
+        }
+    }
+
+    /// A type as a declaration names it: a built-in type stays itself, anything
+    /// else is a class name.
+    fn resolve_type_name(&self, raw: &RawName) -> String {
+        if raw.kind == NameKind::Unqualified && is_reserved_type_name(&raw.text) {
+            raw.text.clone()
+        } else {
+            self.resolve_class(raw)
+        }
+    }
+
+    /// The function or constant a written name refers to
+    /// (`zend_resolve_non_class_name`). An unqualified name that no import
+    /// claims inside a namespace comes back marked with [`ns_fallback`]: which
+    /// of the two it means is a run-time question.
+    fn resolve_non_class(&self, raw: &RawName, imported: Option<&String>) -> String {
+        match raw.kind {
+            NameKind::FullyQualified => raw.text.clone(),
+            NameKind::Relative => self.ns_prefixed(&raw.text),
+            NameKind::Unqualified => match imported {
+                Some(target) => target.clone(),
+                None if self.magic.namespace.is_empty() => raw.text.clone(),
+                None => ns_fallback(&self.ns_prefixed(&raw.text)),
+            },
+            NameKind::Qualified => self
+                .import_prefixed(&raw.text)
+                .unwrap_or_else(|| self.ns_prefixed(&raw.text)),
+        }
+    }
+
+    /// [`Self::resolve_non_class`] for a function name.
+    fn resolve_function(&self, raw: &RawName) -> String {
+        let imported = self.imports.function.get(&raw.text.to_ascii_lowercase());
+        self.resolve_non_class(raw, imported)
+    }
+
+    /// [`Self::resolve_non_class`] for a constant name.
+    fn resolve_constant(&self, raw: &RawName) -> String {
+        let imported = self.imports.constant.get(&raw.text);
+        self.resolve_non_class(raw, imported)
     }
 
     /// The qualified name starting at token `idx`, spelled as the reference
@@ -1722,6 +1918,8 @@ impl Parser {
             Some(Tok::Ident(n)) => n,
             _ => return Err(self.syntax_error_expecting_at(self.pos - 1, Some("\"(\""))),
         };
+        // A function declared in a namespace is that namespace's: `A\f`.
+        let name = self.ns_prefixed(&name);
         let saved = self.enter_function(&name);
         let params = self.param_list()?;
         let ret = self.return_type()?;
@@ -1852,13 +2050,9 @@ impl Parser {
         Ok(StmtKind::Block(body.unwrap_or_default()))
     }
 
-    /// `namespace Name;` or `namespace Name { ... }`. phplang uses a flat
-    /// namespace (qualified CLASS names fold to their last segment), so the
-    /// declaration is accepted and the name discarded; a block form runs its
-    /// body inline.
-    ///
-    /// Constants do not fold — see `primary`, where `Foo\BAR` resolves as the
-    /// constant of that exact name.
+    /// `namespace Name;` or `namespace Name { ... }`. Every name the code after
+    /// it declares or refers to resolves inside `Name`, and the imports of the
+    /// namespace before it are dropped. The block form runs its body inline.
     fn namespace_stmt(&mut self) -> Result<StmtKind, String> {
         // The first namespace declaration must precede every statement but
         // `declare`; later ones may follow code of the namespace before them.
@@ -1873,23 +2067,18 @@ impl Parser {
         self.ns_seen = true;
         self.pos += 1; // namespace
         let named = matches!(self.peek(), Some(Tok::Ident(_))) || self.at_punct("\\");
+        let mut ns = String::new();
         if named {
-            // The FULL name is kept, unlike a class reference: `__NAMESPACE__`
-            // answers `A\B`, not the last segment the flat model folds to.
             self.eat_punct("\\");
-            let mut ns = match self.next() {
+            ns = match self.next() {
                 Some(Tok::Ident(n)) => n,
                 _ => return Err(self.syntax_error_at(self.pos - 1)),
             };
-            while self.at_name_join() {
-                self.pos += 1;
-                if let Some(Tok::Ident(n)) = self.next() {
-                    ns.push('\\');
-                    ns.push_str(&n);
-                }
-            }
-            self.magic.namespace = ns;
+            self.raw_name_rest(&mut ns);
         }
+        // `namespace { }` is the global namespace.
+        self.magic.namespace = ns;
+        self.imports = Imports::default();
         if self.at_punct("{") {
             Ok(StmtKind::Block(self.namespace_block()?))
         } else if !named {
@@ -1901,19 +2090,29 @@ impl Parser {
         }
     }
 
-    /// `use A\B\C [as D];` (also `use function …` / `use const …`) — a namespace
-    /// import. In the flat-namespace model the short name already resolves, so the
-    /// import is accepted and discarded (aliases via `as` are not remapped).
+    /// `use A\B\C [as D];` (also `use function …` / `use const …`, and the
+    /// group form `use A\{B, function f, const K as L}`) — a namespace import.
+    /// It binds the alias (the last segment unless `as` names one) for the rest
+    /// of the namespace (`zend_compile_use`).
     fn use_import_stmt(&mut self) -> Result<StmtKind, String> {
         self.pos += 1; // use
-        let kinded = self.eat_kw("function") || self.eat_kw("const");
+        let kind = if self.eat_kw("function") {
+            ImportKind::Function
+        } else if self.eat_kw("const") {
+            ImportKind::Const
+        } else {
+            ImportKind::Class
+        };
         loop {
-            if kinded && !matches!(self.peek(), Some(Tok::Ident(_))) && !self.at_punct("\\") {
+            if kind != ImportKind::Class
+                && !matches!(self.peek(), Some(Tok::Ident(_)))
+                && !self.at_punct("\\")
+            {
                 return Err(self.syntax_error_expecting(
                     "identifier or fully qualified name or namespaced name",
                 ));
             }
-            let _ = self.expect_type_name()?;
+            let prefix = self.raw_name()?.text;
             // `use A\B\{C, D as E, function f, const K};` — a group: the prefix
             // ends in a separator that is followed by `{`.
             if self.at_punct("\\") {
@@ -1930,13 +2129,17 @@ impl Parser {
                         break;
                     }
                     first = false;
-                    if !self.eat_kw("function") {
-                        self.eat_kw("const");
-                    }
-                    let _ = self.expect_type_name()?;
-                    if self.eat_kw("as") {
-                        self.next();
-                    }
+                    let member_kind = if self.eat_kw("function") {
+                        ImportKind::Function
+                    } else if self.eat_kw("const") {
+                        ImportKind::Const
+                    } else {
+                        kind
+                    };
+                    let line = self.line();
+                    let name = format!("{prefix}\\{}", self.raw_name()?.text);
+                    let alias = self.import_alias()?;
+                    self.add_import(member_kind, name, alias, line)?;
                     if !self.eat_punct(",") {
                         break;
                     }
@@ -1944,15 +2147,75 @@ impl Parser {
                 self.expect_closer("}")?;
                 break;
             }
-            if self.eat_kw("as") {
-                self.next(); // alias identifier — ignored
-            }
+            let line = self.line();
+            let alias = self.import_alias()?;
+            self.add_import(kind, prefix, alias, line)?;
             if !self.eat_punct(",") {
                 break;
             }
         }
         self.expect_listing(";", "\",\" or \";\"")?;
         Ok(StmtKind::Block(Vec::new()))
+    }
+
+    /// The `as Alias` after an imported name, if any. The alias is a plain
+    /// identifier: a reserved word there (`as static`) is a syntax error.
+    fn import_alias(&mut self) -> Result<Option<String>, String> {
+        if !self.eat_kw("as") {
+            return Ok(None);
+        }
+        match self.next() {
+            Some(Tok::Ident(a)) if reserved_spelling(&a).is_none() => Ok(Some(a)),
+            Some(Tok::Ident(_)) => {
+                Err(self.syntax_error_expecting_at(self.pos - 1, Some("identifier")))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Bind one import, refusing the clashes the reference refuses at compile
+    /// time: an alias already in use for the same kind of symbol, a class alias
+    /// that is a class-relative name, or one naming a class this file already
+    /// declared in the namespace.
+    fn add_import(
+        &mut self,
+        kind: ImportKind,
+        name: String,
+        alias: Option<String>,
+        line: u32,
+    ) -> Result<(), String> {
+        let alias = alias.unwrap_or_else(|| name.rsplit('\\').next().unwrap_or(&name).to_string());
+        let (word, key) = match kind {
+            ImportKind::Class => ("", alias.to_ascii_lowercase()),
+            ImportKind::Function => ("function ", alias.to_ascii_lowercase()),
+            ImportKind::Const => ("const ", alias.clone()),
+        };
+        let in_use =
+            || format!("Cannot use {word}{name} as {alias} because the name is already in use");
+        if kind == ImportKind::Class {
+            if is_class_relative_name(&alias) {
+                return Err(self.fatal_at(
+                    line,
+                    format!(
+                        "Cannot use {name} as {alias} because '{alias}' is a special class name"
+                    ),
+                ));
+            }
+            let local = self.ns_prefixed(&alias).to_ascii_lowercase();
+            if local != name.to_ascii_lowercase() && self.seen_classes.contains(&local) {
+                return Err(self.fatal_at(line, in_use()));
+            }
+        }
+        let table = match kind {
+            ImportKind::Class => &mut self.imports.class,
+            ImportKind::Function => &mut self.imports.function,
+            ImportKind::Const => &mut self.imports.constant,
+        };
+        if table.contains_key(&key) {
+            return Err(self.fatal_at(line, in_use()));
+        }
+        table.insert(key, name);
+        Ok(())
     }
 
     /// `const NAME = expr[, NAME2 = expr2]*;` — a global constant declaration.
@@ -1970,6 +2233,9 @@ impl Parser {
                 return Err(self.syntax_error_expecting("identifier"));
             };
             self.expect_closer("=")?;
+            // Declared in the enclosing namespace: `namespace A; const K = 1;`
+            // defines `A\K`.
+            let name = self.ns_prefixed(&name);
             decls.push((name, self.expression()?));
             if !self.eat_punct(",") {
                 break;
@@ -2027,24 +2293,11 @@ impl Parser {
         })
     }
 
-    /// A (possibly namespaced) class name in a `catch`. A leading `\` and any
-    /// `Ns\Name` segments are folded to the trailing bare name — the scaffold has
-    /// no namespaces, and the built-in exception classes are unqualified.
+    /// A class name — in a `catch`, `extends`, `implements`, a trait `use`,
+    /// `instanceof` — resolved against the current namespace and its imports.
     fn expect_type_name(&mut self) -> Result<String, String> {
-        if self.at_name_anchor() {
-            self.pos += 1;
-        }
-        let mut name = match self.next() {
-            Some(Tok::Ident(n)) => n,
-            _ => return Err(self.syntax_error_at(self.pos - 1)),
-        };
-        while self.at_name_join() {
-            self.pos += 1;
-            if let Some(Tok::Ident(n)) = self.next() {
-                name = n;
-            }
-        }
-        Ok(name)
+        let raw = self.raw_name()?;
+        Ok(self.resolve_class(&raw))
     }
 
     /// Whether the token `n` positions ahead of the cursor begins a type NAME —
@@ -2056,28 +2309,15 @@ impl Parser {
         )
     }
 
-    /// One possibly-qualified type name: `int`, `Foo`, `\Foo\Bar`, `Foo\Bar`.
-    ///
-    /// The qualification is CONSUMED but not kept — like every other class name in
-    /// this engine, which is flat-namespaced — so `\Foo\Bar` reads as `Bar`. That
-    /// matters only for rendering, since no qualified name is ever a scalar and so
-    /// no qualified name is ever enforced.
+    /// One possibly-qualified type name: `int`, `Foo`, `\Foo\Bar`, `Foo\Bar`. A
+    /// built-in type written unqualified stays itself; any other name is a class,
+    /// resolved like every class reference.
     fn qualified_type_name(&mut self) -> Result<String, String> {
-        if self.at_name_anchor() {
-            self.pos += 1;
+        if !self.at_name_anchor() && !matches!(self.peek(), Some(Tok::Ident(_))) {
+            return Err(self.syntax_error());
         }
-        let mut name = match self.next() {
-            Some(Tok::Ident(n)) => n,
-            _ => return Err(self.syntax_error()),
-        };
-        while self.at_name_join() {
-            self.pos += 1;
-            name = match self.next() {
-                Some(Tok::Ident(n)) => n,
-                _ => return Err(self.syntax_error()),
-            };
-        }
-        Ok(name)
+        let raw = self.raw_name()?;
+        Ok(self.resolve_type_name(&raw))
     }
 
     /// Parse a type as written in a declaration, or `None` when none is present.
@@ -2156,7 +2396,8 @@ impl Parser {
     /// the name, and an optional `= default` value. By-ref (`&`) and typed hints
     /// are accepted but not enforced in the scaffold.
     /// Consume any run of `#[Attr, Other(args)]` groups and return the attribute
-    /// names in source order, unqualified and with any leading `\` dropped.
+    /// names in source order, each resolved as a class name is — an attribute
+    /// IS a class, so `#[Deprecated]` inside `namespace A` names `A\Deprecated`.
     ///
     /// Attributes are declarative metadata: nothing here executes, and only their
     /// NAMES are kept, because the one attribute this engine acts on
@@ -2169,6 +2410,9 @@ impl Parser {
     /// an attributed declaration parsing at all.
     fn attributes(&mut self) -> Result<Vec<String>, String> {
         let mut names: Vec<String> = Vec::new();
+        // Whether each name in `names` was written with a leading `\`.
+        let mut anchored: Vec<bool> = Vec::new();
+        let mut anchor_next = false;
         self.last_deprecated = None;
         // Inside `#[\Deprecated(…)]`'s argument list: the arguments read so
         // far, the position of the next one, and the name a `name:` gave it.
@@ -2184,9 +2428,10 @@ impl Parser {
                     None => return Err("unterminated attribute".to_string()),
                     Some(Tok::Punct("(")) if depth == 1 => {
                         depth += 1;
-                        if names
+                        let last = names
                             .last()
-                            .is_some_and(|n| n.eq_ignore_ascii_case("Deprecated"))
+                            .map(|n| self.resolve_attribute(n, anchored.last() == Some(&true)));
+                        if last.is_some_and(|n| n.eq_ignore_ascii_case("Deprecated"))
                             && !expect_name
                         {
                             dep = Some((Deprecation::default(), 0, None));
@@ -2242,24 +2487,24 @@ impl Parser {
                         }
                     }
                     Some(Tok::Punct(",")) if depth == 1 => expect_name = true,
-                    // A namespace separator. The QUALIFICATION is kept, unlike
-                    // class names elsewhere in this engine: attribute names are
-                    // matched exactly, so `#[Foo\AllowDynamicProperties]` is a
-                    // user attribute and must NOT be mistaken for the engine's
-                    // global `#[AllowDynamicProperties]`. A leading `\` is not
-                    // qualification — it only anchors the global namespace.
+                    // A namespace separator: inside a name it is qualification,
+                    // which is kept — `#[Foo\AllowDynamicProperties]` is a user
+                    // attribute, not the engine's — and in front of one it
+                    // anchors the name to the global namespace.
                     Some(Tok::Punct("\\")) if depth == 1 => {
-                        if let Some(last) = names.last_mut() {
-                            if !expect_name {
-                                last.push('\\');
-                            }
+                        match names.last_mut() {
+                            Some(last) if !expect_name => last.push('\\'),
+                            _ => anchor_next = true,
                         }
                         expect_name = true;
                     }
                     Some(Tok::Ident(n)) if depth == 1 && expect_name => {
                         match names.last_mut() {
                             Some(last) if last.ends_with('\\') => last.push_str(&n),
-                            _ => names.push(n),
+                            _ => {
+                                names.push(n);
+                                anchored.push(std::mem::take(&mut anchor_next));
+                            }
                         }
                         expect_name = false;
                     }
@@ -2268,12 +2513,33 @@ impl Parser {
             }
         }
         // `#[\Deprecated]` with no argument list deprecates with no suffix.
+        let names: Vec<String> = names
+            .iter()
+            .zip(&anchored)
+            .map(|(n, &fq)| self.resolve_attribute(n, fq))
+            .collect();
         if self.last_deprecated.is_none()
             && names.iter().any(|n| n.eq_ignore_ascii_case("Deprecated"))
         {
             self.last_deprecated = Some(Deprecation::default());
         }
         Ok(names)
+    }
+
+    /// An attribute's class name as written — `anchored` when a `\` led it —
+    /// resolved against the namespace and imports.
+    fn resolve_attribute(&self, name: &str, anchored: bool) -> String {
+        let kind = if anchored {
+            NameKind::FullyQualified
+        } else if name.contains('\\') {
+            NameKind::Qualified
+        } else {
+            NameKind::Unqualified
+        };
+        self.resolve_class(&RawName {
+            text: name.to_string(),
+            kind,
+        })
     }
 
     fn param_list(&mut self) -> Result<Vec<Param>, String> {
@@ -2499,10 +2765,23 @@ impl Parser {
             Some(Tok::Ident(n)) => n,
             _ => return Err(self.syntax_error_expecting_at(self.pos - 1, Some("identifier"))),
         };
+        // Declared in the enclosing namespace, unless an import already claims
+        // the short name for a different class (`zend_compile_class_decl`).
+        let short = name;
+        let name = self.ns_prefixed(&short);
+        if let Some(import) = self.imports.class.get(&short.to_ascii_lowercase()) {
+            if !import.eq_ignore_ascii_case(&name) {
+                return Err(self.fatal_at(
+                    self.line(),
+                    format!("Cannot redeclare class {name} (previously declared as local import)"),
+                ));
+            }
+        }
+        self.seen_classes.insert(name.to_ascii_lowercase());
         // A backed enum names its scalar backing type after `:` (`enum E: string`).
         let mut enum_backing = None;
         if is_enum && self.eat_punct(":") {
-            enum_backing = Some(self.expect_type_name()?);
+            enum_backing = Some(self.raw_name()?.text);
         }
         // A trait's own name is not what `__CLASS__` answers inside it: its
         // methods run as members of whichever class used the trait, so that half
@@ -2944,16 +3223,17 @@ impl Parser {
     ) -> Result<(), String> {
         self.expect_punct("{")?;
         while !self.at_punct("}") && !self.at_end() {
-            let first = self.expect_type_name()?;
+            let first = self.raw_name()?;
             // `A::m` qualifies the method with its trait; a bare `m` does not.
             let (from, method) = if self.eat_punct("::") {
+                let first = self.resolve_class(&first);
                 let m = match self.next() {
                     Some(Tok::Ident(n)) => n,
                     _ => return Err(self.syntax_error_at(self.pos - 1)),
                 };
                 (Some(first), m)
             } else {
-                (None, first)
+                (None, first.text)
             };
             if self.eat_kw("insteadof") {
                 let mut losers = Vec::new();
@@ -3685,7 +3965,10 @@ impl Parser {
                     Some(Tok::Var(_))
                 ) =>
             {
-                let class = ClassRef::Name(name.clone());
+                let class = ClassRef::Name(self.resolve_class(&RawName {
+                    text: name.clone(),
+                    kind: NameKind::Unqualified,
+                }));
                 self.pos += 2;
                 Expr::StaticProp(class, self.expect_var()?)
             }
@@ -3715,16 +3998,26 @@ impl Parser {
     }
 
     fn primary(&mut self) -> Result<Expr, String> {
-        // A leading `\` is the global-namespace prefix. phplang has no namespaces,
-        // so `\Exception` / `\strlen(…)` are the same as the bare name — skip it.
+        // A leading `\` anchors a fully qualified name, and `namespace\` one
+        // relative to the current namespace. Either is consumed here and
+        // remembered, since how the name resolves depends on it.
+        let mut written = NameKind::Unqualified;
         if self.at_name_anchor() {
             self.pos += 1;
+            written = NameKind::FullyQualified;
+        } else if self.at_relative_name() {
+            self.pos += 2;
+            written = NameKind::Relative;
         }
         match self.next() {
             Some(Tok::Int(n)) => Ok(Expr::Int(n)),
             Some(Tok::Float(f)) => Ok(Expr::Float(f)),
             Some(Tok::Str(s)) => Ok(Expr::Str(s)),
-            Some(Tok::Interp(parts)) => Ok(Expr::Interp(resolve_interp_parts(parts)?)),
+            Some(Tok::Interp(parts)) => Ok(Expr::Interp(resolve_interp_parts(
+                parts,
+                &self.magic.namespace,
+                &self.imports,
+            )?)),
             Some(Tok::Var(n)) => Ok(Expr::Var(n)),
             // `$$x`, `$$$x`, `${expr}` — the sigil takes either a braced
             // expression or another variable, and nests, so `$$$x` is two
@@ -3831,23 +4124,23 @@ impl Parser {
                         line,
                     });
                 }
-                if self.at_name_anchor() {
-                    self.pos += 1; // optional global-namespace prefix
-                }
-                if let Some(class) = self.new_dynamic_class()? {
-                    let args = if self.eat_punct("(") {
-                        self.arg_list()?
-                    } else {
-                        Vec::new()
-                    };
-                    return Ok(Expr::NewDyn(Box::new(class), args));
-                }
-                let class = match self.next() {
-                    Some(Tok::Ident(n)) => n,
-                    _ => {
-                        return Err(self.syntax_error_expecting_at(self.pos - 1, Some("\"class\"")))
+                let written = self.at_name_anchor() || self.at_relative_name();
+                if !written {
+                    if let Some(class) = self.new_dynamic_class()? {
+                        let args = if self.eat_punct("(") {
+                            self.arg_list()?
+                        } else {
+                            Vec::new()
+                        };
+                        return Ok(Expr::NewDyn(Box::new(class), args));
                     }
-                };
+                }
+                if !written && !matches!(self.peek(), Some(Tok::Ident(_))) {
+                    self.pos += 1;
+                    return Err(self.syntax_error_expecting_at(self.pos - 1, Some("\"class\"")));
+                }
+                let raw = self.raw_name()?;
+                let class = self.resolve_class(&raw);
                 let args = if self.eat_punct("(") {
                     self.arg_list()?
                 } else {
@@ -3992,55 +4285,39 @@ impl Parser {
                 let name = magic_const_spelling(&kw).expect("guarded by the match arm above");
                 Ok(self.magic_const(name))
             }
-            // `namespace\name` — a name relative to the current namespace. The
-            // model is flat, so it is the name itself.
-            Some(Tok::Ident(kw)) if kw.eq_ignore_ascii_case("namespace") && self.at_name_join() => {
-                self.pos += 1;
-                self.primary()
-            }
             // Any other `namespace` in an expression is the keyword, which no
             // expression can begin with.
             Some(Tok::Ident(kw)) if kw.eq_ignore_ascii_case("namespace") => {
                 Err(self.syntax_error_at(self.pos - 1))
             }
             Some(Tok::Ident(name)) => {
-                // A `\`-qualified name — `Foo\BAR`, `A\B\C`. Any LEADING `\` was
-                // already eaten at the top of `primary`, which is what makes
-                // `\NOPE` the constant `NOPE` rather than `\NOPE`.
-                //
-                // A CONSTANT keeps the whole name: `Foo\BAR` is a constant
-                // literally called `Foo\BAR`, a different one from `BAR`, which
-                // is exactly what `define('Foo\BAR', …)` creates.
+                // A `\`-qualified name — `Foo\BAR`, `A\B\C`. Any LEADING `\` (or
+                // `namespace\`) was already eaten at the top of `primary`, and
+                // `written` says which.
                 let mut qualified = name.clone();
-                let mut qualified_segments = 0usize;
-                while self.at_name_join() {
-                    let Some(Tok::Ident(seg)) = self.toks.get(self.pos + 1).map(|s| &s.tok) else {
-                        break;
-                    };
-                    let seg = seg.clone();
-                    self.pos += 2; // `\` and the segment
-                    qualified.push('\\');
-                    qualified.push_str(&seg);
-                    qualified_segments += 1;
-                }
-                // A qualified CALL is left as the syntax error it already was.
-                // There is no answer here that is not a divergence: the
-                // reference resolves a qualified name relative to the current
-                // namespace, which this flat model does not track, so
-                // `namespace A; A\f()` is `A\A\f` (undefined) upstream. Folding
-                // to the last segment would return a value where the reference
-                // fatals — trading an error for a silently wrong answer — and
-                // keeping the full name would break `\A\f()`, which resolves
-                // today. Constants have no such conflict, so only they are
-                // resolved here. (A bare leading `\` consumes no segment and is
-                // unaffected, so `\strlen(…)` still calls `strlen`.)
-                if qualified_segments > 0 && self.at_punct("(") {
-                    return Err(self.syntax_error_at(self.pos));
+                self.raw_name_rest(&mut qualified);
+                let kind = match written {
+                    NameKind::Unqualified if qualified.contains('\\') => NameKind::Qualified,
+                    k => k,
+                };
+                let raw = RawName {
+                    text: qualified,
+                    kind,
+                };
+                // A name the language reads as a construct (`isset`, `eval`, …)
+                // is one only when written bare.
+                let construct = kind == NameKind::Unqualified;
+                // `Name::…` — the name is a class, and resolves like one; the
+                // postfix `::` arm turns this into the class reference.
+                if self.at_punct("::") {
+                    return Ok(Expr::ConstFetch(self.resolve_class(&raw)));
                 }
                 // A bareword followed by `(` is a function call.
                 if self.eat_punct("(") {
+                    let fname = self.resolve_function(&raw);
+                    let name = if construct { name } else { String::new() };
                     // `name(...)` — first-class callable syntax → a `Closure`.
-                    if let Some(fcc) = self.try_fcc(Expr::Str(name.clone()), false)? {
+                    if let Some(fcc) = self.try_fcc(Expr::Str(fname.clone()), false)? {
                         return Ok(fcc);
                     }
                     let args = {
@@ -4110,13 +4387,14 @@ impl Parser {
                     if name.eq_ignore_ascii_case("unset") {
                         return Ok(Expr::Unset(args));
                     }
-                    Ok(Expr::Call(name, args))
+                    Ok(Expr::Call(fname, args))
                 } else {
                     // `isset`, `unset`, `empty` and `eval` are constructs that
                     // cannot stand without their parenthesised operand.
-                    if ["isset", "unset", "empty", "eval"]
-                        .iter()
-                        .any(|k| name.eq_ignore_ascii_case(k))
+                    if construct
+                        && ["isset", "unset", "empty", "eval"]
+                            .iter()
+                            .any(|k| name.eq_ignore_ascii_case(k))
                     {
                         return Err(self.syntax_error_expecting("\"(\""));
                     }
@@ -4128,7 +4406,7 @@ impl Parser {
                     // The QUALIFIED name is what is looked up, so `Foo\BAR`
                     // reaches that same throw naming `Foo\BAR`, rather than
                     // quietly resolving some other constant.
-                    Ok(Expr::ConstFetch(qualified))
+                    Ok(Expr::ConstFetch(self.resolve_constant(&raw)))
                 }
             }
             _ => Err(self.syntax_error_at(self.pos - 1)),

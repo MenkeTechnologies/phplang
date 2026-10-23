@@ -93,7 +93,7 @@ pub const CORPUS: &[Entry] = &[
         "as",
         "Keyword",
         "foreach (expr as $v)\nuse A { m as [visibility] [alias]; }   //  trait adaptation\nuse Ns\\Name as Alias;   //  namespace import",
-        "Binds the current element inside a `foreach` header. In a trait adaptation block it binds a trait method under a second name, a new visibility, or both — `m as x;` adds `x` alongside `m`, `m as protected;` only re-marks `m`. In a namespace import the alias is accepted and discarded, because phplang resolves every name in one flat namespace.",
+        "Binds the current element inside a `foreach` header. In a trait adaptation block it binds a trait method under a second name, a new visibility, or both — `m as x;` adds `x` alongside `m`, `m as protected;` only re-marks `m`. In a namespace import it names the alias the imported name is bound to for the rest of the namespace.",
         "foreach ([9] as $k => $v) echo $k;   // => 0",
     ),
     (
@@ -163,7 +163,7 @@ pub const CORPUS: &[Entry] = &[
         "use",
         "Keyword",
         "function (…) use ($a, $b) { … }\nuse Ns\\Name [as Alias];\nuse T1, T2 [{ adaptations }];   //  inside a class body",
-        "Three unrelated roles. In a closure header it captures the named enclosing variables by value — DIVERGENCE: by-reference capture `use (&$v)` is rejected with a parse error rather than silently binding by value. As a statement it is a namespace import, accepted and discarded. Inside a class body it pulls the traits' members in, with an optional `{ … }` block of `insteadof`/`as` adaptations resolving collisions and binding extra names.",
+        "Three unrelated roles. In a closure header it captures the named enclosing variables by value — DIVERGENCE: by-reference capture `use (&$v)` is rejected with a parse error rather than silently binding by value. As a statement it is a namespace import — of a class or namespace, or with `use function` / `use const` of a function or constant — binding an alias (the last segment unless `as` names one) for the rest of the namespace; a second import under the same alias is a compile-time fatal. Inside a class body it pulls the traits' members in, with an optional `{ … }` block of `insteadof`/`as` adaptations resolving collisions and binding extra names.",
         "$n = 10; $f = function () use ($n) { return $n; }; echo $f();   // => 10",
     ),
     (
@@ -373,7 +373,7 @@ pub const CORPUS: &[Entry] = &[
         "namespace",
         "Keyword",
         "namespace Name;   //  or  namespace Name { … }",
-        "Accepted and discarded: phplang resolves every name in one flat namespace, folding a qualified name to its last segment. The block form runs its body inline.",
+        "Every name declared after it belongs to `Name` (`A\\f`, `A\\P`, `A\\K`), and every name referred to resolves inside it: a class name through the imports or the namespace, never the global table, while an unqualified function or constant tries the namespace first and the global one second, at run time. The imports of the namespace before it are dropped. The block form runs its body inline; `namespace { }` is the global namespace.",
         "namespace App; function f() { return 1; } echo f();   // => 1",
     ),
     (
@@ -521,7 +521,7 @@ pub const CORPUS: &[Entry] = &[
         "#[AllowDynamicProperties]",
         "Language construct",
         "#[AllowDynamicProperties] class C { … }",
-        "Opts a class out of the PHP 8.2 `Deprecated: Creation of dynamic property C::$p is deprecated` notice, which otherwise fires the first time a property no class in the chain declares is written. The opt-out is INHERITED by subclasses. `stdClass` is exempt without it, as is any property the class (or an ancestor) declares — including one promoted from a constructor parameter. The name is matched exactly, so a namespaced `#[Ns\\AllowDynamicProperties]` is a different, inert attribute.",
+        "Opts a class out of the PHP 8.2 `Deprecated: Creation of dynamic property C::$p is deprecated` notice, which otherwise fires the first time a property no class in the chain declares is written. The opt-out is INHERITED by subclasses. `stdClass` is exempt without it, as is any property the class (or an ancestor) declares — including one promoted from a constructor parameter. The name resolves like any class name, so inside a namespace it is written `#[\\AllowDynamicProperties]` or imported; an unqualified one there, or `#[Ns\\AllowDynamicProperties]`, is a different, inert attribute.",
         "#[AllowDynamicProperties] class C {} $c = new C; $c->x = 1; echo $c->x;   // => 1",
     ),
     (
@@ -578,7 +578,7 @@ pub const CORPUS: &[Entry] = &[
         "__NAMESPACE__",
         "Language construct",
         "__NAMESPACE__: string",
-        "The enclosing `namespace` declaration in full — `A\\B`, not the last segment a class reference folds to — and `\"\"` with no declaration. DIVERGENCE: phplang's namespaces are flat, so while this constant is exact, the class and function names around it stay unqualified where the reference qualifies them.",
+        "The enclosing `namespace` declaration in full — `A\\B` — and `\"\"` with no declaration or inside `namespace { }`.",
         "namespace A\\B; echo __NAMESPACE__;   // => A\\B",
     ),
     (
@@ -824,7 +824,7 @@ pub const CORPUS: &[Entry] = &[
         "\\",
         "Operator",
         "\\Name   Ns\\Name",
-        "The namespace separator. Because phplang uses one flat namespace, a leading `\\` is skipped and a qualified name folds to its last segment — `\\RuntimeException` and `App\\Util\\RuntimeException` both resolve to `RuntimeException`.",
+        "The namespace separator. A leading `\\` makes a name fully qualified (`\\RuntimeException` is the global class from inside any namespace); without one a qualified name is relative to the current namespace, unless its first segment is an imported alias, so `App\\Util\\X` written inside `App` is `App\\App\\Util\\X`. A name held in a string is always fully qualified and may carry the leading `\\`: `class_exists('\\A\\P')`.",
         "try { throw new \\Exception(\"x\"); } catch (\\Exception $e) { echo $e->getMessage(); }   // => x",
     ),
     (

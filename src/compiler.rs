@@ -423,6 +423,14 @@ pub struct Compiler {
     /// twice. The spelling is the DECLARED one: `function Foo(&$a)` called as
     /// `FOO(1)` is refused as `Foo()`.
     byref_user_fns: FxHashMap<String, ByRefFn>,
+    /// The lowercased name of every function this compilation declares
+    /// unconditionally — at the top level, or in a plain block there — which
+    /// an unqualified call written in a namespace is settled against before it
+    /// is left to run time (see [`NS_FALLBACK`]).
+    user_fns: FxHashSet<String>,
+    /// The functions it declares anywhere else (an `if`, a function body):
+    /// whether they exist is known only when the call runs.
+    cond_fns: FxHashSet<String>,
     /// Emit per-statement DAP line markers (`php --dap`). Off for normal runs so
     /// the compiled chunk carries zero extra ops.
     debug: bool,
@@ -527,6 +535,7 @@ fn compile_program(stmts: &[Stmt], debug: bool, prelude: bool) -> Result<Program
     // call site can write the callee's finals back even for forward references.
     c.seed_builtin_byref();
     c.collect_byref(stmts);
+    c.collect_top_fns(stmts);
     let mut b = ChunkBuilder::new();
     // The top level is a frame like any other, and it is where a script's hot
     // loop usually is, so its locals are offered for promotion too — but a
@@ -586,6 +595,7 @@ pub fn compile_nested(stmts: &[Stmt], start: Counters, source: &str) -> Result<P
     c.seed_loaded_byref();
     c.known_traits = host::with_host(|h| h.trait_defs());
     c.collect_byref(stmts);
+    c.collect_top_fns(stmts);
     let mut b = ChunkBuilder::new();
     let saved = c.enter_scope(Vec::new());
     c.compile_top_level(&mut b, stmts)?;
@@ -924,6 +934,49 @@ impl Compiler {
     /// Skipping is the safe direction: it forgoes an EARLIER diagnostic and
     /// leaves the call to fail exactly as it did before, whereas a wrong refusal
     /// would stop a program that works.
+    /// The function an unqualified call written in a namespace reaches, when
+    /// this compilation can tell: the namespaced function if it is declared
+    /// here or already loaded, else the global one if THAT exists. `None` for a
+    /// name the parser settled, and for one neither of whose readings exists
+    /// yet, which is left to [`ops::NS_FN_NAME`] at run time.
+    ///
+    /// Settling early is what keeps a namespaced `strlen($s)` exactly the call
+    /// it is at file scope — every by-reference slot, argument diagnostic and
+    /// specialised opcode is keyed by the callee's name.
+    fn settle_fn_name(&self, name: &str) -> Option<String> {
+        let (qualified, global) = split_ns_fallback(name)?;
+        let known = |n: &str| {
+            self.user_fns.contains(&n.to_ascii_lowercase())
+                || crate::stdlib::callable::dispatches(n)
+        };
+        if known(qualified) {
+            Some(qualified.to_string())
+        } else if self.cond_fns.contains(&qualified.to_ascii_lowercase()) {
+            None
+        } else if known(global) {
+            Some(global.to_string())
+        } else {
+            None
+        }
+    }
+
+    /// Push the name a call dispatches on: the literal, or — for an
+    /// unqualified name in a namespace that could not be settled — the
+    /// run-time choice between its two readings.
+    fn emit_fn_name(&mut self, b: &mut ChunkBuilder, name: &str) {
+        match split_ns_fallback(name) {
+            Some((qualified, _)) => {
+                let idx = b.add_constant(Value::str(qualified.to_string()));
+                b.emit(Op::LoadConst(idx), 0);
+                b.emit(Op::CallBuiltin(ops::NS_FN_NAME, 1), 0);
+            }
+            None => {
+                let idx = b.add_constant(Value::str(name.to_string()));
+                b.emit(Op::LoadConst(idx), 0);
+            }
+        }
+    }
+
     fn emit_call_name_check(&mut self, b: &mut ChunkBuilder, name: &str, argc: usize) {
         if name.starts_with("__") {
             return;
@@ -1229,12 +1282,28 @@ impl Compiler {
         Ok(self.loop_at_level(level))
     }
 
+    /// Record the functions `stmts` declares unconditionally (see
+    /// [`Compiler::user_fns`]). A plain `{ }` or `namespace { }` block at the
+    /// top level is still the top level.
+    fn collect_top_fns(&mut self, stmts: &[Stmt]) {
+        for s in stmts {
+            match &s.kind {
+                StmtKind::Function { name, .. } => {
+                    self.user_fns.insert(name.to_ascii_lowercase());
+                }
+                StmtKind::Block(body) => self.collect_top_fns(body),
+                _ => {}
+            }
+        }
+    }
+
     fn collect_byref(&mut self, stmts: &[Stmt]) {
         for s in stmts {
             match &s.kind {
                 StmtKind::Function {
                     name, params, body, ..
                 } => {
+                    self.cond_fns.insert(name.to_ascii_lowercase());
                     let positions: Vec<usize> = params
                         .iter()
                         .enumerate()
@@ -1680,11 +1749,8 @@ impl Compiler {
                 }
                 // Each default-value expression is lowered to its own tiny chunk,
                 // run in the callee frame when the argument is omitted (host).
-                let owner = if namespace.is_empty() {
-                    format!("{name}()")
-                } else {
-                    format!("{namespace}\\{name}()")
-                };
+                // The name is already the fully qualified one.
+                let owner = format!("{name}()");
                 let cparams = self.compile_params(params, &owner)?;
                 let mut fb = ChunkBuilder::new();
                 // A function body has its own loop scope: a break inside it must
@@ -1724,11 +1790,7 @@ impl Compiler {
                         locals,
                         // A named function's frame is named by the function.
                         closure_site: None,
-                        declared: Some(if namespace.is_empty() {
-                            name.clone()
-                        } else {
-                            format!("{namespace}\\{name}")
-                        }),
+                        declared: Some(name.clone()),
                         deprecated: deprecated.clone(),
                     },
                 ));
@@ -3004,11 +3066,7 @@ impl Compiler {
             } else {
                 finals.methods.remove(&m.name.to_ascii_lowercase());
             }
-            let owner = if decl.namespace.is_empty() {
-                format!("{}::{}()", decl.name, m.name)
-            } else {
-                format!("{}\\{}::{}()", decl.namespace, decl.name, m.name)
-            };
+            let owner = format!("{}::{}()", decl.name, m.name);
             let cparams = self.compile_params(&m.params, &owner)?;
             let mut mb = ChunkBuilder::new();
             // A method body has its own loop scope (as free functions do).
@@ -3761,6 +3819,13 @@ impl Compiler {
     // ── expressions ────────────────────────────────────────────────────────
 
     fn compile_expr(&mut self, b: &mut ChunkBuilder, e: &Expr) -> Result<(), String> {
+        // An unqualified call in a namespace whose callee this compilation can
+        // already name compiles as a call to that name.
+        if let Expr::Call(name, args) = e {
+            if let Some(settled) = self.settle_fn_name(name) {
+                return self.compile_expr(b, &Expr::Call(settled, args.clone()));
+            }
+        }
         // A chain containing a `?->` is lowered whole, so the short-circuit can
         // skip every link that follows it rather than only the one that spelled
         // it. Intercepted here rather than in the two nullsafe arms because the
@@ -3949,8 +4014,7 @@ impl Compiler {
             Expr::Call(name, args) if has_named(args) => {
                 // A call with any `name: value` argument. Push the function name
                 // then a `(name, value)` pair per argument for the host to rebind.
-                let idx = b.add_constant(Value::str(name.clone()));
-                b.emit(Op::LoadConst(idx), 0);
+                self.emit_fn_name(b, name);
                 self.emit_call_name_check(b, name, args.len());
                 self.compile_arg_pairs_for(b, name, args, None)?;
                 b.emit(
@@ -4067,8 +4131,7 @@ impl Compiler {
                     // Any `...$arr` argument switches to the spread dispatch: each
                     // argument is pushed as a `(is_spread, value)` pair so the host
                     // can flatten spread arrays into the positional argument list.
-                    let idx = b.add_constant(Value::str(name.clone()));
-                    b.emit(Op::LoadConst(idx), 0);
+                    self.emit_fn_name(b, name);
                     // An argument written BEFORE the first spread still lands in a
                     // known position, so a by-reference parameter there is judged
                     // exactly as in a call with no spread at all: `f(1, ...[2, 3])`
@@ -4136,8 +4199,7 @@ impl Compiler {
                     }
                     b.emit(Op::CallBuiltin(ops::MINMAX_FLF2, 3), self.cur_line);
                 } else {
-                    let idx = b.add_constant(Value::str(name.clone()));
-                    b.emit(Op::LoadConst(idx), 0);
+                    self.emit_fn_name(b, name);
                     self.emit_call_name_check(b, name, args.len());
                     let byref = self.byref_positions(name, args.len());
                     let diag = byref_diag_slots(name, args.len());
@@ -4621,11 +4683,18 @@ impl Compiler {
                 b.emit(Op::CallBuiltin(ops::THROW, 1), self.cur_line);
             }
             Expr::ConstFetch(name) => {
-                let idx = b.add_constant(Value::str(name.clone()));
+                // An unqualified constant in a namespace is looked up there
+                // first and globally second, at run time — constants are
+                // `define`d while the program runs.
+                let (name, op) = match split_ns_fallback(name) {
+                    Some((qualified, _)) => (qualified, ops::CONST_FETCH_NS),
+                    None => (name.as_str(), ops::CONST_FETCH),
+                };
+                let idx = b.add_constant(Value::str(name.to_string()));
                 b.emit(Op::LoadConst(idx), 0);
                 // Sited: an undefined constant throws from here, and the `Error`
                 // reports this op's line.
-                b.emit(Op::CallBuiltin(ops::CONST_FETCH, 1), self.cur_line);
+                b.emit(Op::CallBuiltin(op, 1), self.cur_line);
             }
             // A magic constant the parse could not settle: the affixes it carries
             // are compile-time literals, and only the piece between them is read
@@ -5906,7 +5975,17 @@ impl Compiler {
     ) -> Result<(), String> {
         let tmp = self.tmp_name("fcc");
         self.emit_set_var(b, &tmp, |c, b| {
-            c.compile_expr(b, callable)?;
+            // `f(...)` names its function the way a call would, so an
+            // unqualified name in a namespace resolves the way a call's does.
+            match callable {
+                Expr::Str(name) if split_ns_fallback(name).is_some() => {
+                    match c.settle_fn_name(name) {
+                        Some(settled) => c.compile_expr(b, &Expr::Str(settled))?,
+                        None => c.emit_fn_name(b, name),
+                    }
+                }
+                _ => c.compile_expr(b, callable)?,
+            }
             b.emit(
                 if instance {
                     Op::LoadTrue

@@ -58,7 +58,9 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
                     }
                 });
                 return Some(crate::host::class_const(
-                    resolved.as_deref().unwrap_or(class),
+                    resolved
+                        .as_deref()
+                        .unwrap_or(crate::host::unanchored(class)),
                     konst,
                 ));
             }

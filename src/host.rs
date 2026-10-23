@@ -497,6 +497,15 @@ pub mod ops {
     pub const GLOBALS_UNSET: u16 = 156;
     /// `[name] -> bool`. `isset($GLOBALS[name])`.
     pub const GLOBALS_ISSET: u16 = 157;
+    /// `[ns\name] -> name`. The function an UNQUALIFIED call written in a
+    /// namespace reaches (`ZEND_INIT_NS_FCALL_BY_NAME`): the namespaced one
+    /// when it exists, else the global one, else the namespaced name, which
+    /// the call then refuses as undefined.
+    pub const NS_FN_NAME: u16 = 158;
+    /// `[ns\NAME] -> value`. An unqualified constant written in a namespace:
+    /// the namespaced constant, else the global one, else `Error: Undefined
+    /// constant "ns\NAME"`.
+    pub const CONST_FETCH_NS: u16 = 159;
 }
 
 /// The capture name a `static` closure carries from its creation site.
@@ -1173,6 +1182,11 @@ pub struct PhpHost {
     /// Named constants (`PHP_EOL`, `M_PI`, user `define`s), keyed case-sensitively.
     /// Seeded with the standard predefined constants on every fresh host.
     constants: FxHashMap<String, Value>,
+    /// The namespaced constants (`A\B\K`) by [`const_key`] — their namespace
+    /// part lowercased — to the spelling they were defined under, which is the
+    /// key in `constants`. A namespace is case-insensitive and a constant's own
+    /// name is not, so `\a\b\K` reaches `A\B\K` and `A\B\k` does not.
+    const_ns_keys: FxHashMap<String, String>,
     /// The next resource number to hand out. Numbers are never reused.
     next_resource_id: i64,
     /// The `include`/`require`/`eval` constructs currently running, innermost
@@ -1611,6 +1625,7 @@ impl PhpHost {
             last_break_level: 1,
             try_defs: Vec::new(),
             constants: predefined_constants(),
+            const_ns_keys: FxHashMap::default(),
             next_resource_id: 1,
             includes: Vec::new(),
             included_files: Vec::new(),
@@ -1867,6 +1882,10 @@ impl PhpHost {
         let name = name.strip_prefix('\\').unwrap_or(name);
         self.constants
             .get(name)
+            .or_else(|| {
+                let written = self.const_ns_keys.get(&const_key(name))?;
+                self.constants.get(written)
+            })
             .cloned()
             .or_else(|| match name.to_ascii_lowercase().as_str() {
                 "true" => Some(Value::bool(true)),
@@ -1889,11 +1908,17 @@ impl PhpHost {
     /// the warning lives at this single write point rather than at either call
     /// site.
     pub fn const_define(&mut self, name: &str, value: Value) -> bool {
-        if self.constants.contains_key(name) {
+        let key = const_key(name);
+        if self.constants.contains_key(name) || self.const_ns_keys.contains_key(&key) {
+            // The reference names the constant by its registered key, whose
+            // namespace part is lowercased.
             self.warn(format!(
-                "Constant {name} already defined, this will be an error in PHP 9"
+                "Constant {key} already defined, this will be an error in PHP 9"
             ));
             return false;
+        }
+        if key.contains('\\') {
+            self.const_ns_keys.insert(key, name.to_string());
         }
         self.constants.insert(name.to_string(), value);
         true
@@ -4436,7 +4461,7 @@ impl PhpHost {
     /// here because most callers only need "is this name resolvable"; the
     /// reflection builtins ask [`Self::type_kind`] instead.
     pub fn class_exists(&self, name: &str) -> bool {
-        let lower = name.to_ascii_lowercase();
+        let lower = unanchored(name).to_ascii_lowercase();
         self.classes.contains_key(&lower) || builtin_type_kind(&lower).is_some()
     }
 
@@ -4446,7 +4471,7 @@ impl PhpHost {
     /// "is it declared at all" test: an `interface I {}` makes `class_exists('I')`
     /// FALSE in PHP even though the name resolves everywhere else.
     pub fn type_kind(&self, name: &str) -> Option<TypeKind> {
-        let lower = name.to_ascii_lowercase();
+        let lower = unanchored(name).to_ascii_lowercase();
         match self.classes.get(&lower) {
             Some(d) if d.is_trait => Some(TypeKind::Trait),
             Some(d) if d.is_interface => Some(TypeKind::Interface),
@@ -4550,6 +4575,7 @@ impl PhpHost {
 
     /// Whether a user function of the given name is defined (case-insensitive).
     pub fn function_defined(&self, name: &str) -> bool {
+        let name = name.strip_prefix('\\').unwrap_or(name);
         self.functions.contains_key(&name.to_ascii_lowercase())
     }
 
@@ -4581,7 +4607,7 @@ impl PhpHost {
     /// `target == "Throwable"` matches either exception root. The public form of
     /// the catch-matching walk, for `is_a`/`is_subclass_of`/`instanceof`.
     pub fn is_a_class(&self, class: &str, target: &str) -> bool {
-        self.catch_matches(class, target)
+        self.catch_matches(class, unanchored(target))
     }
 
     /// Method names visible on `class`, walking the parent chain (lowercased, as
@@ -8500,6 +8526,9 @@ pub enum Dispatch {
 }
 
 fn call_function_dispatched(name: &str, args: Vec<Value>, how: Dispatch) -> Result<Value, String> {
+    // A function name held in a string may carry the global-namespace `\`
+    // (`zend_init_dynamic_call_string`, `zend_is_callable_check_func`).
+    let name = name.strip_prefix('\\').unwrap_or(name);
     // Inline Rust FFI: the `rust { ... }` desugar emits `__rust_compile(b64,
     // line)`; compile + register the block's exported functions.
     if name == "__rust_compile" {
@@ -8534,6 +8563,16 @@ fn call_function_dispatched(name: &str, args: Vec<Value>, how: Dispatch) -> Resu
     }
     // A library function names itself in lower case in every message and trace
     // frame, however the call spelled it: `STRLEN([])` reports `strlen()`.
+    // A function that does not exist is reported as the call spelled it —
+    // `NoPe()`, `A\nope()` — since there is no declaration to name it. The
+    // engine's own `__` helpers dispatch without being listed, so they are
+    // left to the library's own refusal.
+    if !name.starts_with("__") && !crate::stdlib::callable::dispatches(name) {
+        // Frameless, as the library's own refusal is: nothing was entered.
+        let message = format!("Call to undefined function {name}()");
+        set_pending_throw(new_object("Error", vec![Value::str(message)])?);
+        return Ok(Value::Undef);
+    }
     call_library_throwing(&crate::argsig::lower_name(name), args, how)
 }
 
@@ -8756,6 +8795,8 @@ pub fn call_function_named(
     args: Vec<Value>,
     named: Vec<(String, Value)>,
 ) -> Result<Value, String> {
+    // A function name held in a string may carry the global-namespace `\`.
+    let name = name.strip_prefix('\\').unwrap_or(name);
     let def = with_host(|h| h.functions.get(&name.to_ascii_lowercase()).cloned());
     if let Some(def) = def {
         return invoke_with_locals(
@@ -9658,7 +9699,11 @@ pub(crate) fn callable_method(callee: &Value) -> Option<(String, String, Option<
         let method = with_host(|h| h.to_str(&pairs[1].1));
         return match with_host(|h| h.object_class(&target)) {
             Some(class) => Some((class, method, Some(target))),
-            None => Some((with_host(|h| h.to_str(&target)), method, None)),
+            None => Some((
+                anchored_class(&with_host(|h| h.to_str(&target))),
+                method,
+                None,
+            )),
         };
     }
     // A non-array object is callable exactly when its class defines `__invoke`.
@@ -9672,7 +9717,7 @@ pub(crate) fn callable_method(callee: &Value) -> Option<(String, String, Option<
     // `"Class::method"` — a static call spelled as one string.
     if let Value::Str(s) = callee {
         if let Some((class, method)) = s.as_str().split_once("::") {
-            return Some((class.to_string(), method.to_string(), None));
+            return Some((anchored_class(class), method.to_string(), None));
         }
     }
     None
@@ -11966,6 +12011,34 @@ fn builtin_type_parents(name: &str) -> &'static [&'static str] {
 /// The methods a built-in type declares, in PHP's spelling.
 fn builtin_type_methods(name: &str) -> &'static [&'static str] {
     builtin_type(name).map_or(&[][..], |(.., m)| *m)
+}
+
+/// The key a constant is registered under (`zend_register_constant`): the
+/// namespace part lowercased, the constant's own name as written.
+pub fn const_key(name: &str) -> String {
+    match name.rsplit_once('\\') {
+        Some((ns, short)) => format!("{}\\{short}", ns.to_ascii_lowercase()),
+        None => name.to_string(),
+    }
+}
+
+/// A class name held in a string, without the one leading `\` that anchors
+/// it to the global namespace — `zend_lookup_class_ex` accepts `'\A\P'` as
+/// `A\P`. A name the source wrote never carries it: the parser resolves those.
+pub fn unanchored(name: &str) -> &str {
+    name.strip_prefix('\\').unwrap_or(name)
+}
+
+/// [`unanchored`] where the stripped name is a declared class, else the name
+/// as written — for the lookups whose "not found" message quotes the string
+/// with its `\` intact (`$c::m()`, a `"\C::m"` callback).
+pub fn anchored_class(name: &str) -> String {
+    let bare = unanchored(name);
+    if bare.len() != name.len() && with_host(|h| h.class_exists(bare)) {
+        bare.to_string()
+    } else {
+        name.to_string()
+    }
 }
 
 /// A class name as a *message* shows it: everything up to the first NUL.

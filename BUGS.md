@@ -298,33 +298,30 @@ that nothing still holds it, and a promoted local in a running fusevm frame or a
 value on a VM stack is invisible to the host, so that is left alone rather than
 risk destroying a live object.
 
-## Namespaces are flat: a qualified name in an expression does not resolve
+## A namespaced function declared by a later `include` does not take over an unqualified call
 
 ```text
-$ php -r 'namespace A; class P {} echo get_class(new P);'
-A\P
-$ target/debug/php -r 'namespace A; class P {} echo get_class(new P);'
-P
-
-$ php -r 'namespace A { class P {} } namespace { var_dump(new A\P); }'
-object(A\P)#1 (0) {}
-$ target/debug/php -r '… same …'
-Parse error: syntax error, unexpected fully qualified name "\P", expecting ")"
-
-$ php -r 'namespace A; class P { const Z = 2; } echo \A\P::Z;'
-2
-$ target/debug/php -r '… same …'
-Fatal error: Uncaught Error: Class "A\P" not found
+$ cat inc.php
+<?php namespace A; function strlen($s) { return 99; }
+$ cat late.php
+<?php namespace A; function t() { return strlen("x"); } include __DIR__ . "/inc.php"; echo t();
+$ php late.php
+99
+$ target/debug/php late.php
+1
 ```
 
-Declarations take no namespace (a class or function is keyed by its short
-name), a qualified name in `new` or a call does not parse, and a qualified
-static reference is looked up under its full name, which nothing was declared
-as. `__NAMESPACE__`, `namespace\Name` and qualified constants work. Closing it
-is name resolution at compile time (the current namespace and the `use`
-imports) with declarations keyed by their fully qualified name, and the
-unqualified function/constant fallback to the global namespace at run time —
-the README lists it under NOT YET.
+An unqualified call written in a namespace is resolved at run time upstream
+(`ZEND_INIT_NS_FCALL_BY_NAME`): `A\strlen` if it exists by then, else the
+global `strlen`. phplang settles the call when it COMPILES it whenever either
+reading already exists — the namespaced function if this compilation declares
+it or it is loaded, otherwise the global one — because every by-reference
+slot, argument diagnostic and specialised opcode is keyed by the callee's name.
+Only a call neither of whose readings exists yet is left to run time. So a
+namespaced function that appears later, through an `include` or `eval`, does
+not shadow the global function for a call compiled before it. (One the same
+file declares conditionally IS left to run time, so `if (…) { function
+strlen() {} }` decides the call by whether the `if` ran.)
 
 ## A regex that backtracks catastrophically still matches
 
@@ -419,6 +416,10 @@ file's directory. The same value is what `get_include_path()` returns.
 | `function p(#[SensitiveParameter] $x) { throw new Exception; }` — the trace of the exception | `p(Object(SensitiveParameterValue))` | `p('secret')`: the attribute is parsed and dropped |
 | `echo E_STRICT;`; `PHP_BINARY` | `Deprecated: Constant E_STRICT is deprecated since 8.4, …`; the interpreter's path | no deprecation; `PHP_BINARY` is an undefined constant |
 | `class_implements("ArrayIterator")`, `("Exception")`, `("SplStack")` | `SeekableIterator, Traversable, Iterator, ArrayAccess, Serializable, Countable`; `Stringable, Throwable`; … | the lists come from the prelude's own `implements` clauses, so they lack `Serializable`/`Throwable` and differ in order. A user class gets the reference's order |
+| `class G extends Nope {}` — a class whose parent does not exist | `Error: Class "Nope" not found` when the declaration runs | the class is declared and the script goes on; only a missing TRAIT is refused |
+| `var_dump(function ($a) {})` | `object(Closure)#1 (4) { ["name"]=> … ["file"]=> … ["line"]=> … ["parameter"]=> … }` | `array(0) {}`: a closure dumps as an empty array |
+| `$c = '\\Nope'; new $c;` | `Error: Class "Nope" not found` — the leading `\` is dropped from the message | `Class "\\Nope" not found`: the name is quoted as written, which is right for `$c::m()` but not for `new` |
+| `call_user_func("NoPe")` — the trace of the callback `TypeError` | `#0 {main}` | `#0 Command line code(1): call_user_func('NoPe')` then `#1 {main}`: the refusal is framed by the library function |
 
 ## `...` unpacking: what is modelled and what is not
 

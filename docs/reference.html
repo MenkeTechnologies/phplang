@@ -117,7 +117,7 @@ foreach (expr as $key =&gt; [&amp;]$value) statement</code></pre>
           <pre><code class="lang-php">foreach (expr as $v)
 use A { m as [visibility] [alias]; }   //  trait adaptation
 use Ns\Name as Alias;   //  namespace import</code></pre>
-          <p>Binds the current element inside a `foreach` header. In a trait adaptation block it binds a trait method under a second name, a new visibility, or both — `m as x;` adds `x` alongside `m`, `m as protected;` only re-marks `m`. In a namespace import the alias is accepted and discarded, because phplang resolves every name in one flat namespace.</p>
+          <p>Binds the current element inside a `foreach` header. In a trait adaptation block it binds a trait method under a second name, a new visibility, or both — `m as x;` adds `x` alongside `m`, `m as protected;` only re-marks `m`. In a namespace import it names the alias the imported name is bound to for the rest of the namespace.</p>
           <pre><code class="lang-php">foreach ([9] as $k =&gt; $v) echo $k;   // =&gt; 0</code></pre>
         </article>
         <article class="doc-entry" id="doc-keyword-9">
@@ -187,7 +187,7 @@ function (params) [use (vars)] [: type] { body }   //  closure</code></pre>
           <pre><code class="lang-php">function (…) use ($a, $b) { … }
 use Ns\Name [as Alias];
 use T1, T2 [{ adaptations }];   //  inside a class body</code></pre>
-          <p>Three unrelated roles. In a closure header it captures the named enclosing variables by value — DIVERGENCE: by-reference capture `use (&amp;$v)` is rejected with a parse error rather than silently binding by value. As a statement it is a namespace import, accepted and discarded. Inside a class body it pulls the traits' members in, with an optional `{ … }` block of `insteadof`/`as` adaptations resolving collisions and binding extra names.</p>
+          <p>Three unrelated roles. In a closure header it captures the named enclosing variables by value — DIVERGENCE: by-reference capture `use (&amp;$v)` is rejected with a parse error rather than silently binding by value. As a statement it is a namespace import — of a class or namespace, or with `use function` / `use const` of a function or constant — binding an alias (the last segment unless `as` names one) for the rest of the namespace; a second import under the same alias is a compile-time fatal. Inside a class body it pulls the traits' members in, with an optional `{ … }` block of `insteadof`/`as` adaptations resolving collisions and binding extra names.</p>
           <pre><code class="lang-php">$n = 10; $f = function () use ($n) { return $n; }; echo $f();   // =&gt; 10</code></pre>
         </article>
         <article class="doc-entry" id="doc-keyword-19">
@@ -323,7 +323,7 @@ echo (new B)-&gt;g();   // =&gt; 1</code></pre>
         <article class="doc-entry" id="doc-keyword-38">
           <h3><a class="doc-anchor" href="#doc-keyword-38">#</a> <code>private</code></h3>
           <pre><code class="lang-php">private $prop;   private function m() { … }</code></pre>
-          <p>Marks a member reachable only from the declaring class. Enforced for both properties and methods. A property access from outside throws a catchable `Error: Cannot access private property C::$x`, naming the class that DECLARED it, unless the class defines the matching magic method (`__get`, `__set`, `__unset`), which is consulted first. `isset()` never throws here — an unreachable property is simply not set. A method call from outside throws the catchable `Error: Call to private method C::m() from global scope`, and it is raised before the call's ARGUMENTS run — a class with `__call` reaches the catch-all instead, for a private method just as for an absent one.</p>
+          <p>Marks a member reachable only from the declaring class. Enforced for both properties and methods. A property access from outside throws a catchable `Error: Cannot access private property C::$x`, naming the class that DECLARED it, unless the class defines the matching magic method (`__get`, `__set`, `__unset`), which is consulted first. `isset()` never throws here — an unreachable property is simply not set. A method call from outside throws the catchable `Error: Call to private method C::m() from global scope`, and it is raised before the call's ARGUMENTS run — a class with `__call` reaches the catch-all instead, for a private method just as for an absent one. `new` on a class whose constructor is private is refused the same way, before any constructor argument runs: `Error: Call to private K::__construct() from global scope`, naming the class that declared the constructor. Only that class may instantiate it — the static-factory idiom `static function make() { return new static; }`.</p>
           <pre><code class="lang-php">class C { private $x = 4; function get() { return $this-&gt;x; } }
 echo (new C)-&gt;get();   // =&gt; 4</code></pre>
         </article>
@@ -388,7 +388,7 @@ echo (new B)-&gt;f();   // =&gt; 9</code></pre>
         <article class="doc-entry" id="doc-keyword-48">
           <h3><a class="doc-anchor" href="#doc-keyword-48">#</a> <code>namespace</code></h3>
           <pre><code class="lang-php">namespace Name;   //  or  namespace Name { … }</code></pre>
-          <p>Accepted and discarded: phplang resolves every name in one flat namespace, folding a qualified name to its last segment. The block form runs its body inline.</p>
+          <p>Every name declared after it belongs to `Name` (`A\f`, `A\P`, `A\K`), and every name referred to resolves inside it: a class name through the imports or the namespace, never the global table, while an unqualified function or constant tries the namespace first and the global one second, at run time. The imports of the namespace before it are dropped. The block form runs its body inline; `namespace { }` is the global namespace.</p>
           <pre><code class="lang-php">namespace App; function f() { return 1; } echo f();   // =&gt; 1</code></pre>
         </article>
         <article class="doc-entry" id="doc-keyword-49">
@@ -510,7 +510,7 @@ echo (new B)-&gt;f();   // =&gt; 9</code></pre>
         <article class="doc-entry" id="doc-language-construct-14">
           <h3><a class="doc-anchor" href="#doc-language-construct-14">#</a> <code>#[AllowDynamicProperties]</code></h3>
           <pre><code class="lang-php">#[AllowDynamicProperties] class C { … }</code></pre>
-          <p>Opts a class out of the PHP 8.2 `Deprecated: Creation of dynamic property C::$p is deprecated` notice, which otherwise fires the first time a property no class in the chain declares is written. The opt-out is INHERITED by subclasses. `stdClass` is exempt without it, as is any property the class (or an ancestor) declares — including one promoted from a constructor parameter. The name is matched exactly, so a namespaced `#[Ns\AllowDynamicProperties]` is a different, inert attribute.</p>
+          <p>Opts a class out of the PHP 8.2 `Deprecated: Creation of dynamic property C::$p is deprecated` notice, which otherwise fires the first time a property no class in the chain declares is written. The opt-out is INHERITED by subclasses. `stdClass` is exempt without it, as is any property the class (or an ancestor) declares — including one promoted from a constructor parameter. The name resolves like any class name, so inside a namespace it is written `#[\AllowDynamicProperties]` or imported; an unqualified one there, or `#[Ns\AllowDynamicProperties]`, is a different, inert attribute.</p>
           <pre><code class="lang-php">#[AllowDynamicProperties] class C {} $c = new C; $c-&gt;x = 1; echo $c-&gt;x;   // =&gt; 1</code></pre>
         </article>
         <article class="doc-entry" id="doc-language-construct-15">
@@ -559,7 +559,7 @@ echo add(2, 3);   // =&gt; 5</code></pre>
         <article class="doc-entry" id="doc-language-construct-22">
           <h3><a class="doc-anchor" href="#doc-language-construct-22">#</a> <code>__NAMESPACE__</code></h3>
           <pre><code class="lang-php">__NAMESPACE__: string</code></pre>
-          <p>The enclosing `namespace` declaration in full — `A\B`, not the last segment a class reference folds to — and `""` with no declaration. DIVERGENCE: phplang's namespaces are flat, so while this constant is exact, the class and function names around it stay unqualified where the reference qualifies them.</p>
+          <p>The enclosing `namespace` declaration in full — `A\B` — and `""` with no declaration or inside `namespace { }`.</p>
           <pre><code class="lang-php">namespace A\B; echo __NAMESPACE__;   // =&gt; A\B</code></pre>
         </article>
         <article class="doc-entry" id="doc-language-construct-23">
@@ -785,7 +785,7 @@ $f = strlen(...); echo $f("abcd");   // =&gt; 4</code></pre>
         <article class="doc-entry" id="doc-operator-35">
           <h3><a class="doc-anchor" href="#doc-operator-35">#</a> <code>\</code></h3>
           <pre><code class="lang-php">\Name   Ns\Name</code></pre>
-          <p>The namespace separator. Because phplang uses one flat namespace, a leading `\` is skipped and a qualified name folds to its last segment — `\RuntimeException` and `App\Util\RuntimeException` both resolve to `RuntimeException`.</p>
+          <p>The namespace separator. A leading `\` makes a name fully qualified (`\RuntimeException` is the global class from inside any namespace); without one a qualified name is relative to the current namespace, unless its first segment is an imported alias, so `App\Util\X` written inside `App` is `App\App\Util\X`. A name held in a string is always fully qualified and may carry the leading `\`: `class_exists('\A\P')`.</p>
           <pre><code class="lang-php">try { throw new \Exception("x"); } catch (\Exception $e) { echo $e-&gt;getMessage(); }   // =&gt; x</code></pre>
         </article>
         <article class="doc-entry" id="doc-operator-36">
