@@ -274,3 +274,48 @@ fn hash_update_file_failures() {
         "{out}"
     );
 }
+
+#[test]
+fn hash_init_options_seed_the_context_and_survive_hash_copy() {
+    // php 8.5.12: the same digests `hash()` gives under the same options.
+    assert_eq!(
+        run(r#"<?php $c = hash_init("xxh64", 0, "", ["seed" => 42]);
+                     hash_update($c, "a"); hash_update($c, "bc");
+                     echo hash_final($c), "|";
+                     $c = hash_init("murmur3f", 0, "", ["seed" => 42]); hash_update($c, "abc");
+                     $d = hash_copy($c); $e = clone $c;
+                     echo hash_final($c), "|", hash_final($d), "|", hash_final($e), "|";
+                     $c = hash_init("xxh128", 0, "", ["secret" => str_repeat("k", 200)]);
+                     hash_update($c, "x"); echo hash_final($c);"#),
+        "13c1d910702770e6|0d85089fb3cff7d67510712b42353d30|\
+         0d85089fb3cff7d67510712b42353d30|0d85089fb3cff7d67510712b42353d30|\
+         637fa8fc44440c9a478375bcda64718a"
+    );
+    assert_eq!(
+        caught(r#"hash_init("xxh128", 0, "", ["secret" => "abc"]);"#),
+        "Error: xxh128: Secret length must be >= 136 bytes, 3 bytes passed"
+    );
+    let out =
+        run(r#"<?php $c = hash_init("murmur3a", 0, "", ["seed" => "z"]); echo hash_final($c);"#);
+    assert!(
+        out.contains(
+            "Deprecated: hash_init(): Passing a seed of a type other than int is deprecated \
+             because it is the same as setting the seed to 0"
+        ) && out.ends_with("00000000"),
+        "{out}"
+    );
+}
+
+#[test]
+fn hmac_context_over_ripemd160() {
+    assert_eq!(
+        run(r#"<?php $c = hash_init("ripemd160", HASH_HMAC, "key");
+                     hash_update($c, "da"); hash_update($c, "ta"); echo hash_final($c);"#),
+        "ce21db67993ef780d55c61bde46dcf53ecf0e138"
+    );
+    assert_eq!(
+        caught(r#"hash_init("xxh64", HASH_HMAC, "k");"#),
+        "ValueError: hash_init(): Argument #1 ($algo) must be a cryptographic hashing \
+         algorithm if HMAC is requested"
+    );
+}

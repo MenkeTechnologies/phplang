@@ -26,6 +26,31 @@ comment above it.
 
 ---
 
+## Round 31: the rest of ext/hash
+
+Measured under `PHP 8.5.12 (cli)`; pinned in `tests/stdlib_hash.rs`,
+`tests/stdlib_hash_context.rs` and `tests/stdlib_hashext.rs`.
+
+* `md2`, `ripemd128`/`160`/`256`/`320`, `whirlpool`, `tiger128,3`/`160,3`/`192,3`,
+  `gost`, `gost-crypto`, `murmur3a`/`c`/`f`, `xxh32`, `xxh64`, `xxh3` and `xxh128`
+  join `hash`, `hash_file`, `hash_init` and (the cryptographic ones) `hash_hmac`,
+  `hash_hmac_file` and `hash_pbkdf2`, in the reference's `hash_algos()` order.
+  `hash_hmac_algos()` exists. Still missing: `tiger*,4`, `snefru*`, `haval*`.
+* The `$options` array of `hash`, `hash_file` and `hash_init`: `seed` for
+  `murmur3*` and `xxh*` (narrowed to 32 bits where the C init narrows it), and
+  `secret` for `xxh3`/`xxh128`, with the reference's deprecations, its
+  256-byte truncation warning and its two `Error`s. `hash_copy` and `clone`
+  carry the seed or secret. `murmur3f` is ported from `PMurHash128.c` because
+  its seed is 64 bits.
+* `md5_file`, `sha1_file`, `hash_file` and `hash_hmac_file` diagnose a path as
+  `hash_update_file` already did: an empty path is `ValueError: Path must not
+  be empty`, an unopenable one the `Failed to open stream` warning, a directory
+  the `Read of 8192 bytes failed` notice. They were a silent `false`, and
+  `tests/stdlib_hashext.rs` (`md5_file_missing_returns_false`) pinned the
+  silence; it now pins the warning.
+
+---
+
 ## Round 30: iconv
 
 Measured under `PHP 8.5.12 (cli)` linking libiconv 1.11; pinned in

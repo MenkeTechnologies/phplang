@@ -95,10 +95,16 @@ fn hash_file_sha256_and_binary_roundtrip() {
 
 #[test]
 fn md5_file_missing_returns_false() {
-    // A path that does not exist yields PHP false (rendered as empty by echo).
-    let path = temp_path("missing");
-    let src = format!(r#"<?php var_dump(md5_file("{}"));"#, php_path(&path));
-    assert_eq!(run(&src).trim(), "bool(false)");
+    // A path that does not exist is the stream layer's warning, then PHP false
+    // (php 8.5.12).
+    let path = php_path(&temp_path("missing"));
+    let out = run(&format!(r#"<?php var_dump(md5_file("{path}"));"#));
+    assert!(
+        out.contains(&format!(
+            "Warning: md5_file({path}): Failed to open stream: No such file or directory"
+        )) && out.ends_with("bool(false)\n"),
+        "{out}"
+    );
 }
 
 #[test]
@@ -239,4 +245,56 @@ fn random_bytes_length_and_error() {
                catch (ValueError $e) { echo get_class($e), "|", $e->getMessage(); }"#),
         "ValueError|random_bytes(): Argument #1 ($length) must be greater than 0"
     );
+}
+
+#[test]
+fn file_digests_diagnose_an_unreadable_path_as_the_stream_layer_does() {
+    // php 8.5.12, for every one-shot file digest: an empty path throws, a
+    // directory opens but cannot be read (a notice), and both give `false`.
+    let dir = php_path(&std::env::temp_dir());
+    for (fname, call) in [
+        ("md5_file", "md5_file(%)"),
+        ("sha1_file", "sha1_file(%)"),
+        ("hash_file", r#"hash_file("md5", %)"#),
+        ("hash_hmac_file", r#"hash_hmac_file("md5", %, "k")"#),
+    ] {
+        let empty = call.replace('%', r#""""#);
+        assert_eq!(
+            run(&format!(
+                "<?php try {{ {empty}; }} catch (ValueError $e) {{ echo $e->getMessage(); }}"
+            )),
+            "Path must not be empty",
+            "{fname}"
+        );
+        let on_dir = call.replace('%', &format!(r#""{dir}""#));
+        let out = run(&format!("<?php var_dump({on_dir});"));
+        assert!(
+            out.contains(&format!(
+                "Notice: {fname}(): Read of 8192 bytes failed with errno=21 Is a directory"
+            )) && out.ends_with("bool(false)\n"),
+            "{fname}: {out}"
+        );
+    }
+}
+
+#[test]
+fn hash_file_reads_options_after_opening_the_file() {
+    let path = temp_path("hfopt");
+    std::fs::write(&path, "hello world").unwrap();
+    let p = php_path(&path);
+    // php 8.5.12: the seeded digest of the file bytes, the same as `hash()`'s.
+    let out = run(&format!(
+        r#"<?php echo hash_file("xxh64", "{p}", false, ["seed" => 7]), "|", hash("xxh64", "hello world", false, ["seed" => 7]), "|", hash_file("ripemd160", "{p}");"#
+    ));
+    std::fs::remove_file(&path).ok();
+    assert_eq!(
+        out,
+        "e3188f1f1023e4d0|e3188f1f1023e4d0|98c615784ccb5fe5936fbc0cbe9dfdb408d92f0f"
+    );
+    // A missing file is `false` before the conflicting options are looked at.
+    let missing = php_path(&temp_path("hfoptmissing"));
+    let out = run(&format!(
+        r#"<?php var_dump(hash_file("xxh3", "{missing}", false, ["seed" => 1, "secret" => "s"]));"#
+    ));
+    assert!(out.ends_with("bool(false)\n"), "{out}");
 }

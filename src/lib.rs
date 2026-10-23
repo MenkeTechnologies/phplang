@@ -298,6 +298,8 @@ const HASH_PRELUDE: &str = r#"
 final class HashContext {
     private string $algo = "";
     private ?string $key = null;
+    private ?int $seed = null;
+    private ?string $secret = null;
     private string $data = "";
     private bool $finalized = false;
     private function __construct() {}

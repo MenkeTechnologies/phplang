@@ -2,8 +2,10 @@
 //! `src/stdlib/mod.rs`. `dispatch` returns `None` for names it does not handle.
 //!
 //! Digests are produced by the vetted RustCrypto crates (`md-5`, `sha1`,
-//! `sha2`) and `crc32fast`; no crypto is hand-rolled here (only the thin HMAC
-//! construction and the CRC-32/BZIP2 variant, which no dependency provides).
+//! `sha2`, `md2`, `ripemd`, `whirlpool`, `tiger`, `gost94`), `crc32fast`,
+//! `xxhash-rust` and `murmur3`. Hand-written here: the thin HMAC construction,
+//! MD4, SHA-3, the small checksums, and MurmurHash3 x64_128 (whose 64-bit
+//! seed the `murmur3` crate cannot take).
 //!
 //! Byte model: phplang strings are UTF-8 `String`s, so a hash's input is read
 //! as the UTF-8 bytes of the argument (matching the core `bin2hex`), and a
@@ -22,7 +24,8 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         "crc32" => Ok(Value::int(crc32b(&input_bytes(args, 0)) as i64)),
         "hash" => php_hash(args),
         "hash_hmac" => php_hash_hmac(args),
-        "hash_algos" => Ok(hash_algos()),
+        "hash_algos" => Ok(algo_names(|_| true)),
+        "hash_hmac_algos" => Ok(algo_names(|a| a.block.is_some())),
         _ => return None,
     })
 }
@@ -57,8 +60,11 @@ fn php_hash(args: &[Value]) -> Result<Value, String> {
     let algo = str_arg(args, 0).to_ascii_lowercase();
     let data = input_bytes(args, 1);
     let raw = bool_arg(args, 2);
-    match digest_bytes(&algo, &data) {
-        Some(b) => Ok(wrap(b, raw)),
+    match find(&algo) {
+        Some(a) => {
+            let init = read_options("hash", a.name, &arg(args, 3))?;
+            Ok(wrap(digest_with(a, &data, &init), raw))
+        }
         // PHP 8 throws a ValueError with this exact message for an unknown algo
         // (replacing the PHP 7 "Unknown hashing algorithm" wording).
         None => Err(throws(
@@ -107,6 +113,7 @@ const fn algo(name: &'static str, digest: fn(&[u8]) -> Vec<u8>, block: Option<us
 /// (the reference's relative order). The single table `hash`, `hash_hmac`,
 /// `hash_file`, `hash_pbkdf2` and `hash_algos` all read.
 pub(crate) const ALGOS: &[Algo] = &[
+    algo("md2", crate_digest::<md2::Md2>, Some(16)),
     algo("md4", md4_bytes, Some(64)),
     algo("md5", md5_bytes, Some(64)),
     algo("sha1", sha1_bytes, Some(64)),
@@ -120,6 +127,23 @@ pub(crate) const ALGOS: &[Algo] = &[
     algo("sha3-256", |d| sha3(d, 32), Some(136)),
     algo("sha3-384", |d| sha3(d, 48), Some(104)),
     algo("sha3-512", |d| sha3(d, 64), Some(72)),
+    algo("ripemd128", crate_digest::<ripemd::Ripemd128>, Some(64)),
+    algo("ripemd160", crate_digest::<ripemd::Ripemd160>, Some(64)),
+    algo("ripemd256", crate_digest::<ripemd::Ripemd256>, Some(64)),
+    algo("ripemd320", crate_digest::<ripemd::Ripemd320>, Some(64)),
+    algo("whirlpool", crate_digest::<whirlpool::Whirlpool>, Some(64)),
+    // tigerN,3: the leading N/8 bytes of the 3-pass Tiger digest
+    // (`PHP_TIGER_DIGEST`). The 4-pass variants and snefru are not implemented.
+    algo("tiger128,3", |d| tiger3(d, 16), Some(64)),
+    algo("tiger160,3", |d| tiger3(d, 20), Some(64)),
+    algo("tiger192,3", |d| tiger3(d, 24), Some(64)),
+    // gost: GOST R 34.11-94 under the test S-box; gost-crypto under CryptoPro's.
+    algo("gost", crate_digest::<gost94::Gost94Test>, Some(32)),
+    algo(
+        "gost-crypto",
+        crate_digest::<gost94::Gost94CryptoPro>,
+        Some(32),
+    ),
     algo("adler32", |d| adler32(d).to_be_bytes().to_vec(), None),
     // crc32: PHP's non-reflected CRC-32/BZIP2 variant, rendered in reversed
     // (little-endian) byte order — a long-standing quirk that distinguishes it
@@ -133,6 +157,13 @@ pub(crate) const ALGOS: &[Algo] = &[
     algo("fnv164", |d| fnv64(d, false).to_be_bytes().to_vec(), None),
     algo("fnv1a64", |d| fnv64(d, true).to_be_bytes().to_vec(), None),
     algo("joaat", |d| joaat(d).to_be_bytes().to_vec(), None),
+    algo("murmur3a", |d| murmur3a(d, 0), None),
+    algo("murmur3c", |d| murmur3c(d, 0), None),
+    algo("murmur3f", |d| murmur3f(d, 0), None),
+    algo("xxh32", |d| xxh32(d, 0), None),
+    algo("xxh64", |d| xxh64(d, 0), None),
+    algo("xxh3", |d| xxh3(d, &Init::Default), None),
+    algo("xxh128", |d| xxh128(d, &Init::Default), None),
 ];
 
 /// The registered digest named `name` (already lowercased).
@@ -140,16 +171,12 @@ pub(crate) fn find(name: &str) -> Option<&'static Algo> {
     ALGOS.iter().find(|a| a.name == name)
 }
 
-/// Digest by algorithm name; `None` for an unknown algorithm.
-pub(crate) fn digest_bytes(algo: &str, data: &[u8]) -> Option<Vec<u8>> {
-    find(algo).map(|a| (a.digest)(data))
-}
-
-/// `hash_algos()`: the names in [`ALGOS`], in order.
-fn hash_algos() -> Value {
+/// `hash_algos()` / `hash_hmac_algos()`: the names in [`ALGOS`] that `keep`
+/// accepts, in order (`hash_hmac_algos` lists the cryptographic ones).
+fn algo_names(keep: fn(&Algo) -> bool) -> Value {
     with_host(|h| {
         let arr = h.new_array();
-        for a in ALGOS {
+        for a in ALGOS.iter().filter(|a| keep(a)) {
             h.arr_push_auto(&arr, Value::str(a.name.to_string()));
         }
         arr
@@ -449,4 +476,241 @@ fn joaat(data: &[u8]) -> u32 {
     h = h.wrapping_add(h << 3);
     h ^= h >> 11;
     h.wrapping_add(h << 15)
+}
+
+/// One-shot digest through any RustCrypto `Digest` (the `md2`, `ripemd`,
+/// `whirlpool` and `gost94` crates).
+fn crate_digest<D: sha2::Digest>(data: &[u8]) -> Vec<u8> {
+    D::digest(data).to_vec()
+}
+
+/// 3-pass Tiger, truncated to `len` bytes as `PHP_TIGER_DIGEST` copies the
+/// state out for `tiger128,3` / `tiger160,3`.
+fn tiger3(data: &[u8], len: usize) -> Vec<u8> {
+    let mut d = crate_digest::<tiger::Tiger>(data);
+    d.truncate(len);
+    d
+}
+
+// ── The seeded families: `murmur3*` and `xxh*` ────────────────────────────────
+//
+// These are the only algorithms whose ext/hash `hash_init` op reads the
+// `$options` array (`hash_murmur.c`, `hash_xxhash.c`). Every digest is written
+// as `XXH*_canonicalFromHash` / the murmur finals write it: each state word
+// big-endian, first word first.
+
+/// What `$options` initialised a seeded algorithm's state with.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Init {
+    /// No usable option: seed 0 (and the default secret for `xxh3`/`xxh128`).
+    Default,
+    /// `["seed" => int]`, still the PHP int; each algorithm narrows it.
+    Seed(i64),
+    /// `["secret" => string]` for `xxh3`/`xxh128`, at most 256 bytes.
+    Secret(Vec<u8>),
+}
+
+/// `XXH3_SECRET_SIZE_MIN`: the shortest secret xxHash accepts.
+const XXH3_SECRET_SIZE_MIN: usize = 136;
+
+/// `PHP_XXH3_SECRET_SIZE_MAX`: the bytes of a secret the context keeps.
+const XXH3_SECRET_SIZE_MAX: usize = 256;
+
+/// Port of the `$options` handling of `PHP_MURMUR3{A,C,F}_Init`,
+/// `PHP_XXH{32,64}_Init` and `_PHP_XXH3_Init`. `fname` names the PHP function
+/// the deprecations are reported against; `options` is the array (or undef
+/// when the argument was not given). Algorithms that take no options ignore it.
+pub(crate) fn read_options(fname: &str, algo: &str, options: &Value) -> Result<Init, String> {
+    let pairs = with_host(|h| h.array_pairs(options)).unwrap_or_default();
+    let find_opt = |name: &str| {
+        pairs
+            .iter()
+            .find(|(k, _)| matches!(k, Value::Str(_)) && with_host(|h| h.to_str(k)) == name)
+            .map(|(_, v)| v.clone())
+    };
+    let deprecated = |why: &str| {
+        with_host(|h| h.deprecated(format!("{fname}(): Passing a {why}")));
+    };
+    match algo {
+        "murmur3a" | "murmur3c" | "murmur3f" | "xxh32" | "xxh64" => match find_opt("seed") {
+            Some(Value::Int(n)) => Ok(Init::Seed(n)),
+            Some(_) => {
+                deprecated(
+                    "seed of a type other than int is deprecated because it is the same \
+                     as setting the seed to 0",
+                );
+                Ok(Init::Default)
+            }
+            None => Ok(Init::Default),
+        },
+        "xxh3" | "xxh128" => {
+            let seed = find_opt("seed");
+            let secret = find_opt("secret");
+            if seed.is_some() && secret.is_some() {
+                return Err(throws(
+                    "Error",
+                    format!(
+                        "{algo}: Only one of seed or secret is to be passed for initialization"
+                    ),
+                ));
+            }
+            match seed {
+                Some(Value::Int(n)) => return Ok(Init::Seed(n)),
+                Some(_) => {
+                    deprecated("seed of a type other than int is deprecated because it is ignored")
+                }
+                None => {}
+            }
+            let Some(secret) = secret else {
+                return Ok(Init::Default);
+            };
+            if !matches!(secret, Value::Str(_)) {
+                deprecated(
+                    "secret of a type other than string is deprecated because it implicitly \
+                     converts to a string, potentially hiding bugs",
+                );
+            }
+            let mut bytes = crate::bytes::to_bytes(&with_host(|h| h.to_str(&secret))).into_owned();
+            if bytes.len() < XXH3_SECRET_SIZE_MIN {
+                return Err(throws(
+                    "Error",
+                    format!(
+                        "{algo}: Secret length must be >= {} bytes, {} bytes passed",
+                        XXH3_SECRET_SIZE_MIN,
+                        bytes.len()
+                    ),
+                ));
+            }
+            if bytes.len() > XXH3_SECRET_SIZE_MAX {
+                bytes.truncate(XXH3_SECRET_SIZE_MAX);
+                with_host(|h| {
+                    h.warn(format!(
+                        "{fname}(): {algo}: Secret content exceeding {XXH3_SECRET_SIZE_MAX} bytes discarded"
+                    ))
+                });
+            }
+            Ok(Init::Secret(bytes))
+        }
+        _ => Ok(Init::Default),
+    }
+}
+
+/// Digest `data` with `algo` from the state `init` describes.
+pub(crate) fn digest_with(algo: &Algo, data: &[u8], init: &Init) -> Vec<u8> {
+    let seed = match init {
+        Init::Seed(n) => *n,
+        _ => 0,
+    };
+    match algo.name {
+        // Every seed is narrowed the way its C init narrows `Z_LVAL`.
+        "murmur3a" => murmur3a(data, seed as u32),
+        "murmur3c" => murmur3c(data, seed as u32),
+        "murmur3f" => murmur3f(data, seed as u64),
+        "xxh32" => xxh32(data, seed as u32),
+        "xxh64" => xxh64(data, seed as u64),
+        "xxh3" => xxh3(data, init),
+        "xxh128" => xxh128(data, init),
+        _ => (algo.digest)(data),
+    }
+}
+
+/// MurmurHash3 x86_32 (`murmur3a`).
+fn murmur3a(data: &[u8], seed: u32) -> Vec<u8> {
+    let h = murmur3::murmur3_32(&mut &data[..], seed).expect("reading a slice cannot fail");
+    h.to_be_bytes().to_vec()
+}
+
+/// MurmurHash3 x86_128 (`murmur3c`): h1..h4, each big-endian.
+fn murmur3c(data: &[u8], seed: u32) -> Vec<u8> {
+    let h = murmur3::murmur3_x86_128(&mut &data[..], seed).expect("reading a slice cannot fail");
+    (0..4)
+        .flat_map(|i| ((h >> (32 * i)) as u32).to_be_bytes())
+        .collect()
+}
+
+/// MurmurHash3 x64_128 (`murmur3f`): h1, h2, each big-endian. Ported from
+/// `ext/hash/murmur/PMurHash128.c` rather than taken from the `murmur3` crate,
+/// because `PHP_MURMUR3FInit` seeds both state words with the full 64-bit
+/// `Z_LVAL` and the crate's seed is 32 bits.
+fn murmur3f(data: &[u8], seed: u64) -> Vec<u8> {
+    const C1: u64 = 0x87c3_7b91_1142_53d5;
+    const C2: u64 = 0x4cf5_ad43_2745_937f;
+    let mix_k1 = |k: u64| k.wrapping_mul(C1).rotate_left(31).wrapping_mul(C2);
+    let mix_k2 = |k: u64| k.wrapping_mul(C2).rotate_left(33).wrapping_mul(C1);
+    let fmix = |mut k: u64| {
+        k ^= k >> 33;
+        k = k.wrapping_mul(0xff51_afd7_ed55_8ccd);
+        k ^= k >> 33;
+        k = k.wrapping_mul(0xc4ce_b9fe_1a85_ec53);
+        k ^ (k >> 33)
+    };
+    let le = |bytes: &[u8]| {
+        bytes
+            .iter()
+            .rev()
+            .fold(0u64, |acc, &b| acc << 8 | u64::from(b))
+    };
+    let (mut h1, mut h2) = (seed, seed);
+    let mut blocks = data.chunks_exact(16);
+    for block in &mut blocks {
+        h1 ^= mix_k1(le(&block[..8]));
+        h1 = h1
+            .rotate_left(27)
+            .wrapping_add(h2)
+            .wrapping_mul(5)
+            .wrapping_add(0x52dc_e729);
+        h2 ^= mix_k2(le(&block[8..]));
+        h2 = h2
+            .rotate_left(31)
+            .wrapping_add(h1)
+            .wrapping_mul(5)
+            .wrapping_add(0x3849_5ab5);
+    }
+    let tail = blocks.remainder();
+    if tail.len() > 8 {
+        h2 ^= mix_k2(le(&tail[8..]));
+    }
+    if !tail.is_empty() {
+        h1 ^= mix_k1(le(&tail[..tail.len().min(8)]));
+    }
+    h1 ^= data.len() as u64;
+    h2 ^= data.len() as u64;
+    h1 = h1.wrapping_add(h2);
+    h2 = h2.wrapping_add(h1);
+    h1 = fmix(h1);
+    h2 = fmix(h2);
+    h1 = h1.wrapping_add(h2);
+    h2 = h2.wrapping_add(h1);
+    [h1.to_be_bytes(), h2.to_be_bytes()].concat()
+}
+
+fn xxh32(data: &[u8], seed: u32) -> Vec<u8> {
+    xxhash_rust::xxh32::xxh32(data, seed).to_be_bytes().to_vec()
+}
+
+fn xxh64(data: &[u8], seed: u64) -> Vec<u8> {
+    xxhash_rust::xxh64::xxh64(data, seed).to_be_bytes().to_vec()
+}
+
+fn xxh3(data: &[u8], init: &Init) -> Vec<u8> {
+    use xxhash_rust::xxh3;
+    match init {
+        Init::Default => xxh3::xxh3_64(data),
+        Init::Seed(n) => xxh3::xxh3_64_with_seed(data, *n as u64),
+        Init::Secret(s) => xxh3::xxh3_64_with_secret(data, s),
+    }
+    .to_be_bytes()
+    .to_vec()
+}
+
+/// XXH3-128, canonical form: the high 64 bits first.
+fn xxh128(data: &[u8], init: &Init) -> Vec<u8> {
+    use xxhash_rust::xxh3;
+    match init {
+        Init::Default => xxh3::xxh3_128(data),
+        Init::Seed(n) => xxh3::xxh3_128_with_seed(data, *n as u64),
+        Init::Secret(s) => xxh3::xxh3_128_with_secret(data, s),
+    }
+    .to_be_bytes()
+    .to_vec()
 }

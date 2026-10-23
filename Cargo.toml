@@ -101,6 +101,16 @@ md-5 = "0.10"
 sha1 = "0.10"
 sha2 = "0.10"
 crc32fast = "1"
+# The ext/hash digests that the RustCrypto set above lacks: RIPEMD, Whirlpool,
+# Tiger (3 passes), MD2 and GOST R 34.11-94; xxHash and MurmurHash3 are the
+# non-cryptographic `xxh*` / `murmur3*` families.
+ripemd = "0.1"
+whirlpool = "0.10"
+tiger = "0.2"
+md2 = "0.10"
+gost94 = "0.10"
+xxhash-rust = { version = "0.8", features = ["xxh32", "xxh64", "xxh3"] }
+murmur3 = "0.5"
 hex = "0.4"
 urlencoding = "2"
 # Arbitrary-precision decimal arithmetic for the `bcmath` functions.

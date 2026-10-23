@@ -178,8 +178,11 @@ fn hash_hmac_long_key() {
 fn hash_algos_list() {
     assert_eq!(
         run(r#"<?php echo implode(",", hash_algos());"#),
-        "md4,md5,sha1,sha224,sha256,sha384,sha512/224,sha512/256,sha512,sha3-224,sha3-256,\
-         sha3-384,sha3-512,adler32,crc32,crc32b,crc32c,fnv132,fnv1a32,fnv164,fnv1a64,joaat"
+        "md2,md4,md5,sha1,sha224,sha256,sha384,sha512/224,sha512/256,sha512,sha3-224,\
+         sha3-256,sha3-384,sha3-512,ripemd128,ripemd160,ripemd256,ripemd320,whirlpool,\
+         tiger128,3,tiger160,3,tiger192,3,gost,gost-crypto,adler32,crc32,crc32b,crc32c,\
+         fnv132,fnv1a32,fnv164,fnv1a64,joaat,murmur3a,murmur3c,murmur3f,xxh32,xxh64,xxh3,\
+         xxh128"
     );
     assert_eq!(
         run(r#"<?php echo in_array("sha512", hash_algos()) ? "y":"n";"#),
@@ -292,4 +295,216 @@ fn hmac_refuses_non_cryptographic_algorithms() {
             format!("{f}(): Argument #1 ($algo) must be a valid cryptographic hashing algorithm")
         );
     }
+}
+
+#[test]
+fn hash_hmac_algos_lists_the_cryptographic_algorithms() {
+    // php 8.5.12 lists these same 26 first, then the `tiger*,4`, `snefru*` and
+    // `haval*` variants this engine does not implement.
+    assert_eq!(
+        run(r#"<?php echo implode(",", hash_hmac_algos());"#),
+        "md2,md4,md5,sha1,sha224,sha256,sha384,sha512/224,sha512/256,sha512,sha3-224,\
+         sha3-256,sha3-384,sha3-512,ripemd128,ripemd160,ripemd256,ripemd320,whirlpool,\
+         tiger128,3,tiger160,3,tiger192,3,gost,gost-crypto"
+    );
+}
+
+#[test]
+fn ripemd_whirlpool_tiger_gost_murmur_xxh_digests_match_reference() {
+    // (algo, input, digest) read off reference php 8.5.12. The 135-byte input
+    // spans more than one block of every algorithm here and leaves a tail, so
+    // the block loop, the padding and (for murmur/xxh) the tail mix all run.
+    let long = "x".repeat(135);
+    let cases: &[(&str, &str, &str)] = &[
+        ("md2", "", "8350e5a3e24c153df2275c9f80692773"),
+        ("md2", "hello", "a9046c73e00331af68917d3804f70655"),
+        ("md2", &long, "ba29fc236ad56995c87c664c4274f828"),
+        ("ripemd128", "", "cdf26213a150dc3ecb610f18f6b38b46"),
+        ("ripemd128", "hello", "789d569f08ed7055e94b4289a4195012"),
+        ("ripemd128", &long, "56d40d9c8894f0ce35faff99000d0908"),
+        ("ripemd160", "", "9c1185a5c5e9fc54612808977ee8f548b2258d31"),
+        ("ripemd160", "hello", "108f07b8382412612c048d07d13f814118445acd"),
+        ("ripemd160", &long, "db84a5b8cd2d38b8c9d6538f612e405d61bbd04d"),
+        ("ripemd256", "", "02ba4c4e5f8ecd1877fc52d64d30e37a2d9774fb1e5d026380ae0168e3c5522d"),
+        ("ripemd256", "hello", "cc1d2594aece0a064b7aed75a57283d9490fd5705ed3d66bf9adfe3a58b25de5"),
+        ("ripemd256", &long, "124cb6caa1e47b075a2febabaec7e159f2ad4b9233a31b94d0de39e0c5b9f42e"),
+        ("ripemd320", "", "22d65d5661536cdc75c1fdf5c6de7b41b9f27325ebc61e8557177d705a0ec880151c3a32a00899b8"),
+        ("ripemd320", "hello", "eb0cf45114c56a8421fbcb33430fa22e0cd607560a88bbe14ce70bdf59bf55b11a3906987c487992"),
+        ("ripemd320", &long, "925d5dd4b13d94fcf9b6ed8852aacef3f3210fdbbe025b3ff6b3028a69b6ab8a7af4a27942f80495"),
+        ("whirlpool", "", "19fa61d75522a4669b44e39c1d2e1726c530232130d407f89afee0964997f7a73e83be698b288febcf88e3e03c4f0757ea8964e59b63d93708b138cc42a66eb3"),
+        ("whirlpool", "hello", "0a25f55d7308eca6b9567a7ed3bd1b46327f0f1ffdc804dd8bb5af40e88d78b88df0d002a89e2fdbd5876c523f1b67bc44e9f87047598e7548298ea1c81cfd73"),
+        ("whirlpool", &long, "afbff24ecfb53fe1e1b2c772c04915280d6a61fdf222e6a5522a14621987fa4f6efb4d4e78573bbf3e7aefdce33705061de770ccfea97a0ac3abfe09e1954704"),
+        ("tiger128,3", "", "3293ac630c13f0245f92bbb1766e1616"),
+        ("tiger128,3", "hello", "2cfd7f6f336288a7f2741b9bf874388a"),
+        ("tiger128,3", &long, "416083809a44df0960f34d0f364dbd0d"),
+        ("tiger160,3", "", "3293ac630c13f0245f92bbb1766e16167a4e5849"),
+        ("tiger160,3", "hello", "2cfd7f6f336288a7f2741b9bf874388a54026639"),
+        ("tiger160,3", &long, "416083809a44df0960f34d0f364dbd0dcbd2fe73"),
+        ("tiger192,3", "", "3293ac630c13f0245f92bbb1766e16167a4e58492dde73f3"),
+        ("tiger192,3", "hello", "2cfd7f6f336288a7f2741b9bf874388a54026639cadb7bf2"),
+        ("tiger192,3", &long, "416083809a44df0960f34d0f364dbd0dcbd2fe731db54c74"),
+        ("gost", "", "ce85b99cc46752fffee35cab9a7b0278abb4c2d2055cff685af4912c49490f8d"),
+        ("gost", "hello", "a7eb5d08ddf2363f1ea0317a803fcef81d33863c8b2f9f6d7d14951d229f4567"),
+        ("gost", &long, "497baa4dee8d364d4c3b76cc210c6c2cb15bb98aeb5f60c95840ded58d1b8f56"),
+        ("gost-crypto", "", "981e5f3ca30c841487830f84fb433e13ac1101569b9c13584ac483234cd656c0"),
+        ("gost-crypto", "hello", "92ea6ddbaf40020df3651f278fd7151217a24aa8d22ebd2519cfd4d89e6450ea"),
+        ("gost-crypto", &long, "da12e14e188c6f28ea3d4deb4933a5cc8fca9a8885b47311e21ceafdccd4b8ab"),
+        ("murmur3a", "", "00000000"),
+        ("murmur3a", "hello", "248bfa47"),
+        ("murmur3a", &long, "21f4f36d"),
+        ("murmur3c", "", "00000000000000000000000000000000"),
+        ("murmur3c", "hello", "2b2444a0db91def79adb31b69adb31b6"),
+        ("murmur3c", &long, "e6180fcb7c9c337d42ffddad42046bc1"),
+        ("murmur3f", "", "00000000000000000000000000000000"),
+        ("murmur3f", "hello", "cbd8a7b341bd9b025b1e906a48ae1d19"),
+        ("murmur3f", &long, "55cf37cda30cf67cf5922319f2228fca"),
+        ("xxh32", "", "02cc5d05"),
+        ("xxh32", "hello", "fb0077f9"),
+        ("xxh32", &long, "47fc636f"),
+        ("xxh64", "", "ef46db3751d8e999"),
+        ("xxh64", "hello", "26c7827d889f6da3"),
+        ("xxh64", &long, "7aa3b5401fc03189"),
+        ("xxh3", "", "2d06800538d394c2"),
+        ("xxh3", "hello", "9555e8555c62dcfd"),
+        ("xxh3", &long, "e154f968d7eb7a39"),
+        ("xxh128", "", "99aa06d3014798d86001c324468d497f"),
+        ("xxh128", "hello", "b5e9c1ad071b3e7fc779cfaa5e523818"),
+        ("xxh128", &long, "b646d8f568690ac09ddf0324e8c213ba"),
+    ];
+    for (algo, input, expected) in cases {
+        let src = format!("<?php echo hash('{algo}', '{input}');");
+        assert_eq!(run(&src), *expected, "hash({algo}, {input:?})");
+    }
+}
+
+#[test]
+fn hmac_and_pbkdf2_over_ripemd_whirlpool_tiger_gost() {
+    // The HMAC block sizes are ext/hash's: 16 for md2, 32 for gost, 64 for the
+    // rest. The 300-byte key is longer than every block, so it is pre-hashed.
+    let long_key = "k".repeat(300);
+    let cases: &[(&str, &str, &str, &str)] = &[
+        ("md2", "dfea6346b255d0a4da8a597c3f1a99fc", "c9737acdb74869033da7338558d25386", "e38ae910ce15f15e91af9fa308e39a5872c8eb9a"),
+        ("ripemd160", "1e145b01da19d9b9fc95086d8352d2483cf8af4f", "5ec4daa0f0b4a6bf202e3f23354b538b24c9ab7b", "872082fba2e5e614e84d9290769acc835cdf6bf3"),
+        ("ripemd320", "d813deb95596f4adcad31b16851c4af9c6ef9c13adb49f47c2f0f663b0fe4a7c7163e5ef922f2b5d", "ba0e6f56672a524d98133e57db79c75d4d59dee3b76876b4c5fc2e672aa200af860575da2033e4cf", "634f15464c33cff047e700fcd654ebca762ab274"),
+        ("whirlpool", "1ee909beed9c6b00e02f8f7a379a49bb91412730bea51c86b6312b75e4f71f865a140fa82852c3db5cf6099beda82b59677a60ef149319b0d2a67082d80ccb97", "b3eb0298e461d6d80fd294b13417198e0b98ca01a6bead92a75b22cf50c440af7c8179df16fefec326161104699c8a1fc887b980c0083b87480a5f1eb35861fb", "8cb2f6f2593c27e03acb5a68cad09097b7a1c238"),
+        ("tiger192,3", "77641c3371aa5a2511a878312a3338de9d04dc58aa5ab03e", "7b4acc20d1e6784b0c1b7ddc3235f7f82e79fe55a9bbcedc", "2ea3a8aeeab181e12009971b7de988fc1a7c167f"),
+        ("gost", "aad9c21c2434a4a20eddf3a8dd5d5de201b2ad1e3ebdcff57a7b2dced7ffb818", "5b89f5d6fbc2510fc585a2b49f6de6d004943e9d2e23e6fccd2775bed7666d9f", "83d63fc3f469c55bf9afa265748b74dc3e8df54a"),
+        ("gost-crypto", "f0a882bb3cecab67cb455a2ce711ac9648b91c339c24bf52691b40daa8ead6e4", "6ed6d2617447db82929c39a626853f634ef0b41fd36d56753ac568254525dbf6", "6eddfe39108b4fc084c614ac10ae69ebe11207b1"),
+    ];
+    for (algo, short, long, derived) in cases {
+        let src = format!(
+            "<?php echo hash_hmac('{algo}', 'data', 'k'), '|', hash_hmac('{algo}', 'data', '{long_key}'), '|', hash_pbkdf2('{algo}', 'pw', 'salt', 3, 40);"
+        );
+        assert_eq!(run(&src), format!("{short}|{long}|{derived}"), "{algo}");
+    }
+}
+
+#[test]
+fn murmur_and_xxh_read_the_seed_option() {
+    // php 8.5.12. Each seed is narrowed as its C init narrows `Z_LVAL`: murmur3a,
+    // murmur3c and xxh32 to 32 bits (so -1 and 2**40 differ from 42 but 2**40
+    // is seed 0), murmur3f, xxh64, xxh3 and xxh128 keep all 64.
+    let cases: &[(&str, &str, &str, &str)] = &[
+        ("murmur3a", "4e4f1e68", "fc80c2af", "b3dd93fa"),
+        (
+            "murmur3c",
+            "5bcf0fbe8741bbe98741bbe98741bbe9",
+            "d110201cb5400af6b5400af6b5400af6",
+            "75cdc6d1a2b006a5a2b006a5a2b006a5",
+        ),
+        (
+            "murmur3f",
+            "0d85089fb3cff7d67510712b42353d30",
+            "eb585078eed87597b99b158c7b34431b",
+            "e31430ed32eb7e9c44bfab8765602d99",
+        ),
+        ("xxh32", "0147abfe", "b22b1420", "32d153ff"),
+        (
+            "xxh64",
+            "13c1d910702770e6",
+            "28306e589cc02176",
+            "86a3a26f1058d383",
+        ),
+        (
+            "xxh3",
+            "d8438def21bbdcc3",
+            "291c3db09146c9c9",
+            "b721c5e458954479",
+        ),
+        (
+            "xxh128",
+            "4bc24859f045e0b4d8438def21bbdcc3",
+            "c3e8eb7686bbf97d291c3db09146c9c9",
+            "fca6ac31fd276414b721c5e458954479",
+        ),
+    ];
+    for (algo, s42, s_neg1, s_2_40) in cases {
+        let src = format!(
+            r#"<?php foreach ([42, -1, 2 ** 40] as $s) echo hash("{algo}", "abc", false, ["seed" => $s]), "|";"#
+        );
+        assert_eq!(run(&src), format!("{s42}|{s_neg1}|{s_2_40}|"), "{algo}");
+    }
+    // Algorithms without a seeded init ignore the option entirely.
+    assert_eq!(
+        run(r#"<?php echo hash("md5", "abc", false, ["seed" => 42]);"#),
+        "900150983cd24fb0d6963f7d28e17f72"
+    );
+}
+
+#[test]
+fn a_seed_that_is_not_an_int_is_deprecated() {
+    // The two wordings are the reference's: murmur and xxh32/64 fall back to
+    // seed 0, xxh3/xxh128 ignore the option.
+    let out = run(r#"<?php echo hash("xxh32", "abc", false, ["seed" => "42"]), "|";"#);
+    assert!(
+        out.contains(
+            "Deprecated: hash(): Passing a seed of a type other than int is deprecated \
+             because it is the same as setting the seed to 0"
+        ) && out.ends_with("32d153ff|"),
+        "{out}"
+    );
+    let out = run(r#"<?php echo hash("xxh3", "abc", false, ["seed" => 1.5]), "|";"#);
+    assert!(
+        out.contains(
+            "Deprecated: hash(): Passing a seed of a type other than int is deprecated \
+             because it is ignored"
+        ) && out.ends_with("78af5f94892f3950|"),
+        "{out}"
+    );
+}
+
+#[test]
+fn xxh3_and_xxh128_read_the_secret_option() {
+    // php 8.5.12: a secret of 136 bytes or more replaces the default one; more
+    // than 256 is cut to 256 with a warning, so a 300-byte secret digests as its
+    // first 256 bytes.
+    assert_eq!(
+        run(
+            r#"<?php echo hash("xxh3", "abc", false, ["secret" => str_repeat("x", 136)]), "|",
+                     hash("xxh128", "abc", false, ["secret" => str_repeat("x", 136)]);"#
+        ),
+        "fd6e986c28fac4d3|42d23058767a303ffd6e986c28fac4d3"
+    );
+    let out = run(
+        r#"<?php echo hash("xxh128", "abc", false, ["secret" => str_repeat("y", 300)]) ===
+                     hash("xxh128", "abc", false, ["secret" => str_repeat("y", 256)]) ? "same" : "differ";"#,
+    );
+    assert!(
+        out.contains("Warning: hash(): xxh128: Secret content exceeding 256 bytes discarded")
+            && out.ends_with("same"),
+        "{out}"
+    );
+    let caught = |opts: &str| {
+        run(&format!(
+            r#"<?php try {{ hash("xxh3", "abc", false, {opts}); }} catch (Error $e) {{ echo get_class($e), ": ", $e->getMessage(); }}"#
+        ))
+    };
+    assert_eq!(
+        caught(r#"["secret" => "short"]"#),
+        "Error: xxh3: Secret length must be >= 136 bytes, 5 bytes passed"
+    );
+    assert_eq!(
+        caught(r#"["secret" => str_repeat("x", 136), "seed" => 1]"#),
+        "Error: xxh3: Only one of seed or secret is to be passed for initialization"
+    );
 }

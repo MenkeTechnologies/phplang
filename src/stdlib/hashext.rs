@@ -4,12 +4,9 @@
 //! chain; see `src/stdlib/mod.rs`. `dispatch` returns `None` for names it does
 //! not handle.
 //!
-//! Digests reuse the vetted RustCrypto crates (`md-5`, `sha1`, `sha2`) and
-//! `crc32fast`; no cryptographic primitive is hand-rolled. The only local
-//! constructions are the thin HMAC wrapper (RFC 2104) and the PBKDF2 loop (RFC
-//! 2898), both of which layer over those crate digests — the module cannot call
-//! the equivalents in `src/stdlib/hash.rs` because they are private to that
-//! module, so the minimal wrappers are duplicated here.
+//! Every digest, the HMAC construction and the `$options` seeding come from
+//! `src/stdlib/hash.rs` (`ALGOS`, `hmac`, `read_options`, `digest_with`); the
+//! only construction local to this module is the PBKDF2 loop (RFC 2898).
 //!
 //! Byte model: file contents are hashed as the raw bytes on disk (`std::fs::read`),
 //! which is byte-faithful for binary files — unlike routing the bytes back
@@ -21,7 +18,7 @@
 use crate::host::with_host;
 use crate::stdlib::common::{arg, int_arg, str_arg, throws};
 use crate::stdlib::fileres::{read as stream_read, strerror};
-use crate::stdlib::hash::{digest_bytes, find, hmac, md5_bytes, sha1_bytes};
+use crate::stdlib::hash::{digest_with, find, hmac, md5_bytes, read_options, sha1_bytes, Init};
 use fusevm::Value;
 
 /// The digest function paired with its HMAC block size.
@@ -36,8 +33,8 @@ fn hmac_algo(algo: &str) -> Option<HmacAlgo> {
 /// Dispatch a `hashext`-category PHP function by lowercased name.
 pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
     Some(match name {
-        "md5_file" => file_digest_fn(md5_bytes, args),
-        "sha1_file" => file_digest_fn(sha1_bytes, args),
+        "md5_file" => file_digest_fn("md5_file", md5_bytes, args),
+        "sha1_file" => file_digest_fn("sha1_file", sha1_bytes, args),
         "hash_file" => hash_file(args),
         "hash_hmac_file" => hash_hmac_file(args),
         "hash_equals" => Ok(Value::bool(hash_equals(args))),
@@ -68,21 +65,47 @@ fn wrap(bytes: Vec<u8>, raw: bool) -> Value {
     }
 }
 
-/// Read a file's raw bytes; `None` on any I/O error (open/read failure).
-fn read_file(path: &str) -> Option<Vec<u8>> {
-    std::fs::read(path).ok()
+/// Read a file's raw bytes for `fname` as the plain-files stream wrapper
+/// reports it: an empty path is its `ValueError`; an unopenable one is its
+/// `Failed to open stream` warning and `None`; a directory opens but cannot be
+/// read, which is the `Read of 8192 bytes failed` notice and `None`.
+fn read_file(fname: &str, path: &str) -> Result<Option<Vec<u8>>, String> {
+    if path.is_empty() {
+        return Err(throws("ValueError", "Path must not be empty"));
+    }
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(e) if std::path::Path::new(path).is_dir() => {
+            with_host(|h| {
+                h.notice(format!(
+                    "{fname}(): Read of 8192 bytes failed with errno=21 {}",
+                    strerror(&e)
+                ))
+            });
+            Ok(None)
+        }
+        Err(e) => {
+            with_host(|h| {
+                h.warn(format!(
+                    "{fname}({path}): Failed to open stream: {}",
+                    strerror(&e)
+                ))
+            });
+            Ok(None)
+        }
+    }
 }
 
 /// Shared body of `md5_file`/`sha1_file`: read arg 0, hash, honor `raw_output`
 /// at arg 1. Returns PHP `false` when the file cannot be read (PHP emits a
 /// warning and returns `false`).
-fn file_digest_fn(f: fn(&[u8]) -> Vec<u8>, args: &[Value]) -> Result<Value, String> {
+fn file_digest_fn(fname: &str, f: fn(&[u8]) -> Vec<u8>, args: &[Value]) -> Result<Value, String> {
     let path = str_arg(args, 0);
     let raw = bool_arg(args, 1);
-    match read_file(&path) {
-        Some(bytes) => Ok(wrap(f(&bytes), raw)),
-        None => Ok(Value::bool(false)),
-    }
+    Ok(match read_file(fname, &path)? {
+        Some(bytes) => wrap(f(&bytes), raw),
+        None => Value::bool(false),
+    })
 }
 
 /// `hash_file(algo, filename, binary = false)`. Validates the algorithm before
@@ -92,21 +115,21 @@ fn hash_file(args: &[Value]) -> Result<Value, String> {
     let algo = str_arg(args, 0).to_ascii_lowercase();
     let path = str_arg(args, 1);
     let raw = bool_arg(args, 2);
-    if find(&algo).is_none() {
+    let Some(a) = find(&algo) else {
         // PHP 8 ValueError text (mirrors the core `hash()` wording).
         return Err(throws(
             "ValueError",
             "hash_file(): Argument #1 ($algo) must be a valid hashing algorithm",
         ));
-    }
-    let bytes = match read_file(&path) {
+    };
+    let bytes = match read_file("hash_file", &path)? {
         Some(b) => b,
         None => return Ok(Value::bool(false)),
     };
-    Ok(wrap(
-        digest_bytes(&algo, &bytes).expect("algo checked above"),
-        raw,
-    ))
+    // `php_hash_do_hash` opens the stream before it initialises the context,
+    // so an unreadable file is `false` before any option is looked at.
+    let init = read_options("hash_file", a.name, &arg(args, 3))?;
+    Ok(wrap(digest_with(a, &bytes, &init), raw))
 }
 
 /// `hash_hmac_file(algo, filename, key, binary = false)`. Validates the
@@ -127,7 +150,7 @@ fn hash_hmac_file(args: &[Value]) -> Result<Value, String> {
             ));
         }
     };
-    let bytes = match read_file(&path) {
+    let bytes = match read_file("hash_hmac_file", &path)? {
         Some(b) => b,
         None => return Ok(Value::bool(false)),
     };
@@ -368,9 +391,16 @@ fn hash_init(args: &[Value]) -> Result<Value, String> {
     } else {
         Value::Undef
     };
+    let (seed, secret) = match read_options("hash_init", algo.name, &arg(args, 3))? {
+        Init::Default => (Value::Undef, Value::Undef),
+        Init::Seed(n) => (Value::int(n), Value::Undef),
+        Init::Secret(s) => (Value::Undef, Value::str(crate::bytes::from_bytes(&s))),
+    };
     let props = vec![
         ("algo".to_string(), Value::str(algo.name.to_string())),
         ("key".to_string(), key),
+        ("seed".to_string(), seed),
+        ("secret".to_string(), secret),
         ("data".to_string(), Value::str(String::new())),
         ("finalized".to_string(), Value::bool(false)),
     ];
@@ -452,33 +482,13 @@ fn hash_update_stream(args: &[Value]) -> Result<Value, String> {
 fn hash_update_file(args: &[Value]) -> Result<Value, String> {
     let ctx = context_arg("hash_update_file", args)?;
     let path = str_arg(args, 1);
-    if path.is_empty() {
-        return Err(throws("ValueError", "Path must not be empty"));
-    }
-    match std::fs::read(&path) {
-        Ok(bytes) => {
+    Ok(match read_file("hash_update_file", &path)? {
+        Some(bytes) => {
             context_feed(&ctx, &bytes);
-            Ok(Value::bool(true))
+            Value::bool(true)
         }
-        Err(e) if std::path::Path::new(&path).is_dir() => {
-            with_host(|h| {
-                h.notice(format!(
-                    "hash_update_file(): Read of 8192 bytes failed with errno=21 {}",
-                    strerror(&e)
-                ))
-            });
-            Ok(Value::bool(false))
-        }
-        Err(e) => {
-            with_host(|h| {
-                h.warn(format!(
-                    "hash_update_file({path}): Failed to open stream: {}",
-                    strerror(&e)
-                ))
-            });
-            Ok(Value::bool(false))
-        }
-    }
+        None => Value::bool(false),
+    })
 }
 
 /// `hash_final(context, binary = false)`: the digest — or the HMAC, when the
@@ -488,7 +498,7 @@ fn hash_update_file(args: &[Value]) -> Result<Value, String> {
 fn hash_final(args: &[Value]) -> Result<Value, String> {
     let ctx = context_arg("hash_final", args)?;
     let raw = bool_arg(args, 1);
-    let (algo_name, key, data) = with_host(|h| {
+    let (algo_name, key, init, data) = with_host(|h| {
         let key = match h.prop_get(&ctx, "key") {
             Value::Undef => None,
             k => Some(crate::bytes::to_bytes(&h.to_str(&k)).into_owned()),
@@ -500,12 +510,17 @@ fn hash_final(args: &[Value]) -> Result<Value, String> {
             .collect();
         h.prop_set(&ctx, "data", Value::str(String::new()));
         h.prop_set(&ctx, "finalized", Value::bool(true));
-        (h.to_str(&h.prop_get(&ctx, "algo")), key, data)
+        let init = match (h.prop_get(&ctx, "seed"), h.prop_get(&ctx, "secret")) {
+            (Value::Int(n), _) => Init::Seed(n),
+            (_, Value::Str(s)) => Init::Secret(crate::bytes::to_bytes(&s).into_owned()),
+            _ => Init::Default,
+        };
+        (h.to_str(&h.prop_get(&ctx, "algo")), key, init, data)
     });
     let algo = find(&algo_name).expect("hash_init only stores a registered algorithm");
     let digest = match (key, algo.block) {
         (Some(key), Some(block)) => hmac(block, algo.digest, &key, &data),
-        _ => (algo.digest)(&data),
+        _ => digest_with(algo, &data, &init),
     };
     Ok(wrap(digest, raw))
 }
@@ -516,7 +531,7 @@ fn hash_final(args: &[Value]) -> Result<Value, String> {
 fn hash_copy(args: &[Value]) -> Result<Value, String> {
     let ctx = context_arg("hash_copy", args)?;
     Ok(with_host(|h| {
-        let props = ["algo", "key", "data", "finalized"]
+        let props = ["algo", "key", "seed", "secret", "data", "finalized"]
             .iter()
             .map(|name| (name.to_string(), h.prop_get(&ctx, name)))
             .collect();

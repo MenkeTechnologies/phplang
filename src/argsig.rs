@@ -566,7 +566,7 @@ use Def::{Bool, EmptyArray, Float, Int, Null, Required, Str, Unknown};
 /// default in this generated table is a literal too.
 #[allow(clippy::approx_constant)]
 static SIGS: &[(&str, Sig)] = &[
-    // generated: 613 functions
+    // generated: 614 functions
     (
         "abs",
         Sig {
@@ -3406,6 +3406,14 @@ static SIGS: &[(&str, Sig)] = &[
                 p("key", Required, "string"),
                 p("binary", Bool(false), "bool"),
             ],
+            variadic: false,
+        },
+    ),
+    (
+        "hash_hmac_algos",
+        Sig {
+            req: 0,
+            params: &[],
             variadic: false,
         },
     ),

@@ -1777,249 +1777,259 @@ $o = new C; unset($o-&gt;zz);   // =&gt; unset:zz</code></pre>
           <p>Flag wrapping a scalar result in an array. DIVERGENCE: not implemented.</p>
         </article>
         <article class="doc-entry" id="doc-predefined-constant-173">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-173">#</a> <code>MB_CASE_UPPER</code></h3>
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-173">#</a> <code>ICONV_IMPL</code></h3>
+          <pre><code class="lang-php">ICONV_IMPL: string = "libiconv"</code></pre>
+          <p>The iconv implementation the reference build links, whose `//TRANSLIT` table `iconv()` reproduces.</p>
+        </article>
+        <article class="doc-entry" id="doc-predefined-constant-174">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-174">#</a> <code>ICONV_VERSION</code></h3>
+          <pre><code class="lang-php">ICONV_VERSION: string = "1.11"</code></pre>
+          <p>The version of that implementation.</p>
+        </article>
+        <article class="doc-entry" id="doc-predefined-constant-175">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-175">#</a> <code>MB_CASE_UPPER</code></h3>
           <pre><code class="lang-php">MB_CASE_UPPER: int = 0</code></pre>
           <p>`mb_convert_case()` mode uppercasing the whole string. Also the fallback for any unrecognized mode.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-174">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-174">#</a> <code>MB_CASE_LOWER</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-176">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-176">#</a> <code>MB_CASE_LOWER</code></h3>
           <pre><code class="lang-php">MB_CASE_LOWER: int = 1</code></pre>
           <p>`mb_convert_case()` mode lowercasing the whole string.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-175">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-175">#</a> <code>MB_CASE_TITLE</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-177">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-177">#</a> <code>MB_CASE_TITLE</code></h3>
           <pre><code class="lang-php">MB_CASE_TITLE: int = 2</code></pre>
           <p>`mb_convert_case()` mode title-casing each run of letters. PHP's `_SIMPLE` variants (3-5) are not distinguished and fall into the uppercase branch.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-176">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-176">#</a> <code>FILE_USE_INCLUDE_PATH</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-178">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-178">#</a> <code>FILE_USE_INCLUDE_PATH</code></h3>
           <pre><code class="lang-php">FILE_USE_INCLUDE_PATH: int = 1</code></pre>
           <p>Flag asking the file functions to search the include path. DIVERGENCE: not honoured — phplang has no include path.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-177">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-177">#</a> <code>FILE_APPEND</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-179">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-179">#</a> <code>FILE_APPEND</code></h3>
           <pre><code class="lang-php">FILE_APPEND: int = 8</code></pre>
           <p>`file_put_contents()` flag appending instead of truncating. This is the one flag that function honours.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-178">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-178">#</a> <code>FILE_IGNORE_NEW_LINES</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-180">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-180">#</a> <code>FILE_IGNORE_NEW_LINES</code></h3>
           <pre><code class="lang-php">FILE_IGNORE_NEW_LINES: int = 2</code></pre>
           <p>`file()` flag stripping the trailing `\n` (and a preceding `\r`) from each line. Honoured.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-179">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-179">#</a> <code>FILE_SKIP_EMPTY_LINES</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-181">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-181">#</a> <code>FILE_SKIP_EMPTY_LINES</code></h3>
           <pre><code class="lang-php">FILE_SKIP_EMPTY_LINES: int = 4</code></pre>
           <p>`file()` flag dropping empty lines. Honoured.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-180">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-180">#</a> <code>FILE_NO_DEFAULT_CONTEXT</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-182">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-182">#</a> <code>FILE_NO_DEFAULT_CONTEXT</code></h3>
           <pre><code class="lang-php">FILE_NO_DEFAULT_CONTEXT: int = 16</code></pre>
           <p>Stream-context flag. Defined for compatibility; phplang has no stream contexts.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-181">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-181">#</a> <code>LOCK_SH</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-183">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-183">#</a> <code>LOCK_SH</code></h3>
           <pre><code class="lang-php">LOCK_SH: int = 1</code></pre>
           <p>Shared advisory lock. DIVERGENCE: there is no `flock()` in this build and `file_put_contents` ignores `LOCK_EX`, so no locking happens anywhere.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-182">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-182">#</a> <code>LOCK_EX</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-184">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-184">#</a> <code>LOCK_EX</code></h3>
           <pre><code class="lang-php">LOCK_EX: int = 2</code></pre>
           <p>Exclusive advisory lock. Accepted by `file_put_contents` and silently ignored.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-183">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-183">#</a> <code>LOCK_UN</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-185">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-185">#</a> <code>LOCK_UN</code></h3>
           <pre><code class="lang-php">LOCK_UN: int = 3</code></pre>
           <p>Lock release. Defined for compatibility only.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-184">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-184">#</a> <code>LOCK_NB</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-186">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-186">#</a> <code>LOCK_NB</code></h3>
           <pre><code class="lang-php">LOCK_NB: int = 4</code></pre>
           <p>Non-blocking lock flag. Defined for compatibility only.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-185">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-185">#</a> <code>SEEK_SET</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-187">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-187">#</a> <code>SEEK_SET</code></h3>
           <pre><code class="lang-php">SEEK_SET: int = 0</code></pre>
           <p>`fseek` whence: from the start of the stream.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-186">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-186">#</a> <code>SEEK_CUR</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-188">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-188">#</a> <code>SEEK_CUR</code></h3>
           <pre><code class="lang-php">SEEK_CUR: int = 1</code></pre>
           <p>`fseek` whence: from the current position.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-187">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-187">#</a> <code>SEEK_END</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-189">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-189">#</a> <code>SEEK_END</code></h3>
           <pre><code class="lang-php">SEEK_END: int = 2</code></pre>
           <p>`fseek` whence: from the end of the stream.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-188">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-188">#</a> <code>SCANDIR_SORT_ASCENDING</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-190">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-190">#</a> <code>SCANDIR_SORT_ASCENDING</code></h3>
           <pre><code class="lang-php">SCANDIR_SORT_ASCENDING: int = 0</code></pre>
           <p>`scandir()` sort order, ascending. The default; sorting is Rust byte order, not PHP's locale collation.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-189">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-189">#</a> <code>SCANDIR_SORT_DESCENDING</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-191">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-191">#</a> <code>SCANDIR_SORT_DESCENDING</code></h3>
           <pre><code class="lang-php">SCANDIR_SORT_DESCENDING: int = 1</code></pre>
           <p>`scandir()` sort order, descending. Honoured.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-190">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-190">#</a> <code>SCANDIR_SORT_NONE</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-192">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-192">#</a> <code>SCANDIR_SORT_NONE</code></h3>
           <pre><code class="lang-php">SCANDIR_SORT_NONE: int = 2</code></pre>
           <p>`scandir()` mode leaving the entries unsorted. DIVERGENCE: not recognized — the result is always sorted.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-191">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-191">#</a> <code>PATHINFO_DIRNAME</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-193">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-193">#</a> <code>PATHINFO_DIRNAME</code></h3>
           <pre><code class="lang-php">PATHINFO_DIRNAME: int = 1</code></pre>
           <p>`pathinfo()` selector returning just the directory component as a string.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-192">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-192">#</a> <code>PATHINFO_BASENAME</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-194">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-194">#</a> <code>PATHINFO_BASENAME</code></h3>
           <pre><code class="lang-php">PATHINFO_BASENAME: int = 2</code></pre>
           <p>`pathinfo()` selector returning just the final component.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-193">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-193">#</a> <code>PATHINFO_EXTENSION</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-195">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-195">#</a> <code>PATHINFO_EXTENSION</code></h3>
           <pre><code class="lang-php">PATHINFO_EXTENSION: int = 4</code></pre>
           <p>`pathinfo()` selector returning the text after the last dot.</p>
           <pre><code class="lang-php">echo pathinfo("a/b.txt", PATHINFO_EXTENSION);   // =&gt; txt</code></pre>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-194">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-194">#</a> <code>PATHINFO_FILENAME</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-196">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-196">#</a> <code>PATHINFO_FILENAME</code></h3>
           <pre><code class="lang-php">PATHINFO_FILENAME: int = 8</code></pre>
           <p>`pathinfo()` selector returning the basename with its extension removed.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-195">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-195">#</a> <code>PATHINFO_ALL</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-197">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-197">#</a> <code>PATHINFO_ALL</code></h3>
           <pre><code class="lang-php">PATHINFO_ALL: int = 15</code></pre>
           <p>`pathinfo()` selector returning the full associative array. This is what a call with no second argument produces.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-196">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-196">#</a> <code>ENT_NOQUOTES</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-198">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-198">#</a> <code>ENT_NOQUOTES</code></h3>
           <pre><code class="lang-php">ENT_NOQUOTES: int = 0</code></pre>
           <p>HTML-entity flag leaving both quote characters alone. Read by `get_html_translation_table()`; `htmlspecialchars()` itself ignores its flags argument.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-197">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-197">#</a> <code>ENT_COMPAT</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-199">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-199">#</a> <code>ENT_COMPAT</code></h3>
           <pre><code class="lang-php">ENT_COMPAT: int = 2</code></pre>
           <p>HTML-entity flag converting double quotes only.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-198">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-198">#</a> <code>ENT_QUOTES</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-200">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-200">#</a> <code>ENT_QUOTES</code></h3>
           <pre><code class="lang-php">ENT_QUOTES: int = 3</code></pre>
           <p>HTML-entity flag converting both quote characters. The default for `get_html_translation_table()`.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-199">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-199">#</a> <code>ENT_HTML401</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-201">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-201">#</a> <code>ENT_HTML401</code></h3>
           <pre><code class="lang-php">ENT_HTML401: int = 0</code></pre>
           <p>Document-type bit selecting HTML 4.01. DIVERGENCE: the doctype bits are not read, so the single quote is always emitted as `&amp;#039;`.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-200">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-200">#</a> <code>ENT_HTML5</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-202">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-202">#</a> <code>ENT_HTML5</code></h3>
           <pre><code class="lang-php">ENT_HTML5: int = 48</code></pre>
           <p>Document-type bit selecting HTML 5. Not honoured.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-201">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-201">#</a> <code>ENT_XML1</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-203">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-203">#</a> <code>ENT_XML1</code></h3>
           <pre><code class="lang-php">ENT_XML1: int = 16</code></pre>
           <p>Document-type bit selecting XML 1. Not honoured.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-202">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-202">#</a> <code>ENT_XHTML</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-204">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-204">#</a> <code>ENT_XHTML</code></h3>
           <pre><code class="lang-php">ENT_XHTML: int = 32</code></pre>
           <p>Document-type bit selecting XHTML. Not honoured.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-203">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-203">#</a> <code>ENT_SUBSTITUTE</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-205">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-205">#</a> <code>ENT_SUBSTITUTE</code></h3>
           <pre><code class="lang-php">ENT_SUBSTITUTE: int = 8</code></pre>
           <p>Flag replacing invalid code unit sequences with U+FFFD — part of the default flags, which is why `htmlspecialchars("a\xffb")` is `a�b`.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-204">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-204">#</a> <code>ENT_IGNORE</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-206">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-206">#</a> <code>ENT_IGNORE</code></h3>
           <pre><code class="lang-php">ENT_IGNORE: int = 4</code></pre>
           <p>Flag discarding invalid code unit sequences. Without it or `ENT_SUBSTITUTE`, a subject that is not valid UTF-8 encodes to the empty string.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-205">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-205">#</a> <code>M_PI</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-207">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-207">#</a> <code>M_PI</code></h3>
           <pre><code class="lang-php">M_PI: float = 3.141592653589793</code></pre>
           <p>The ratio of a circle's circumference to its diameter. `pi()` returns the same value.</p>
           <pre><code class="lang-php">echo round(M_PI, 4);   // =&gt; 3.1416</code></pre>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-206">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-206">#</a> <code>M_E</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-208">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-208">#</a> <code>M_E</code></h3>
           <pre><code class="lang-php">M_E: float = 2.718281828459045</code></pre>
           <p>Euler's number, the base of the natural logarithm.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-207">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-207">#</a> <code>M_SQRT2</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-209">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-209">#</a> <code>M_SQRT2</code></h3>
           <pre><code class="lang-php">M_SQRT2: float = 1.4142135623730951</code></pre>
           <p>The square root of 2.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-208">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-208">#</a> <code>M_SQRT1_2</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-210">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-210">#</a> <code>M_SQRT1_2</code></h3>
           <pre><code class="lang-php">M_SQRT1_2: float = 0.7071067811865476</code></pre>
           <p>The square root of 1/2.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-209">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-209">#</a> <code>M_SQRT3</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-211">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-211">#</a> <code>M_SQRT3</code></h3>
           <pre><code class="lang-php">M_SQRT3: float = 1.7320508075688772</code></pre>
           <p>The square root of 3.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-210">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-210">#</a> <code>M_2_SQRTPI</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-212">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-212">#</a> <code>M_2_SQRTPI</code></h3>
           <pre><code class="lang-php">M_2_SQRTPI: float = 1.1283791670955126</code></pre>
           <p>Two divided by the square root of pi.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-211">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-211">#</a> <code>M_SQRTPI</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-213">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-213">#</a> <code>M_SQRTPI</code></h3>
           <pre><code class="lang-php">M_SQRTPI: float = 1.7724538509055159</code></pre>
           <p>The square root of pi.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-212">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-212">#</a> <code>M_PI_2</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-214">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-214">#</a> <code>M_PI_2</code></h3>
           <pre><code class="lang-php">M_PI_2: float = 1.5707963267948966</code></pre>
           <p>Pi divided by 2.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-213">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-213">#</a> <code>M_PI_4</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-215">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-215">#</a> <code>M_PI_4</code></h3>
           <pre><code class="lang-php">M_PI_4: float = 0.7853981633974483</code></pre>
           <p>Pi divided by 4.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-214">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-214">#</a> <code>M_1_PI</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-216">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-216">#</a> <code>M_1_PI</code></h3>
           <pre><code class="lang-php">M_1_PI: float = 0.3183098861837907</code></pre>
           <p>One divided by pi.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-215">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-215">#</a> <code>M_2_PI</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-217">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-217">#</a> <code>M_2_PI</code></h3>
           <pre><code class="lang-php">M_2_PI: float = 0.6366197723675814</code></pre>
           <p>Two divided by pi.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-216">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-216">#</a> <code>M_LN2</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-218">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-218">#</a> <code>M_LN2</code></h3>
           <pre><code class="lang-php">M_LN2: float = 0.6931471805599453</code></pre>
           <p>The natural logarithm of 2.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-217">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-217">#</a> <code>M_LN10</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-219">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-219">#</a> <code>M_LN10</code></h3>
           <pre><code class="lang-php">M_LN10: float = 2.302585092994046</code></pre>
           <p>The natural logarithm of 10.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-218">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-218">#</a> <code>M_LOG2E</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-220">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-220">#</a> <code>M_LOG2E</code></h3>
           <pre><code class="lang-php">M_LOG2E: float = 1.4426950408889634</code></pre>
           <p>The base-2 logarithm of e.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-219">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-219">#</a> <code>M_LOG10E</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-221">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-221">#</a> <code>M_LOG10E</code></h3>
           <pre><code class="lang-php">M_LOG10E: float = 0.4342944819032518</code></pre>
           <p>The base-10 logarithm of e.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-220">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-220">#</a> <code>M_EULER</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-222">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-222">#</a> <code>M_EULER</code></h3>
           <pre><code class="lang-php">M_EULER: float = 0.5772156649015329</code></pre>
           <p>The Euler-Mascheroni constant.</p>
         </article>
-        <article class="doc-entry" id="doc-predefined-constant-221">
-          <h3><a class="doc-anchor" href="#doc-predefined-constant-221">#</a> <code>HASH_HMAC</code></h3>
+        <article class="doc-entry" id="doc-predefined-constant-223">
+          <h3><a class="doc-anchor" href="#doc-predefined-constant-223">#</a> <code>HASH_HMAC</code></h3>
           <pre><code class="lang-php">HASH_HMAC: int = 1</code></pre>
           <p>The `hash_init()` flag that makes the context HMAC its input under the key argument.</p>
           <pre><code class="lang-php">$c = hash_init("sha256", HASH_HMAC, "k"); echo get_class($c);   // =&gt; HashContext</code></pre>
@@ -3664,8 +3674,8 @@ strtr(string $string, string $from, string $to): string</code></pre>
         </article>
         <article class="doc-entry" id="doc-multibyte-strings-28">
           <h3><a class="doc-anchor" href="#doc-multibyte-strings-28">#</a> <code>mb_convert_encoding</code></h3>
-          <pre><code class="lang-php">mb_convert_encoding(string $string, string $to_encoding): string</code></pre>
-          <p>Maps unrepresentable characters to `?`: everything at or above U+0080 for `ASCII`, above U+00FF for `ISO-8859-1`/`Latin-1`. `UTF-8` returns the string unchanged; any OTHER target raises `ValueError: mb_convert_encoding(): Argument #2 ($to_encoding) must be a valid encoding, "…" given`. DIVERGENCE: `$from_encoding` is ignored, true single-byte output is impossible in a UTF-8 runtime, and the array form is unsupported.</p>
+          <pre><code class="lang-php">mb_convert_encoding(array|string $string, string $to_encoding, array|string|null $from_encoding = null): array|string|false</code></pre>
+          <p>Converts between `UTF-8`, `ASCII` and `ISO-8859-1`/`Latin-1`, writing `?` for a character the target cannot hold and for each maximal invalid subpart of the input. `$from_encoding` is one charset, or a candidate list (array or comma-separated) of which the first the bytes are valid in is used. Any OTHER target raises `ValueError: mb_convert_encoding(): Argument #2 ($to_encoding) must be a valid encoding, "…" given`. DIVERGENCE: only those three charsets convert — another source charset is read as UTF-8 — and an array `$string` is unsupported.</p>
           <pre><code class="lang-php">echo mb_convert_encoding("héllo", "ASCII");   // =&gt; h?llo</code></pre>
         </article>
         <article class="doc-entry" id="doc-multibyte-strings-29">
@@ -4714,14 +4724,50 @@ echo implode(",", array_keys($a));   // =&gt; a,b</code></pre>
         <article class="doc-entry" id="doc-encoding-8">
           <h3><a class="doc-anchor" href="#doc-encoding-8">#</a> <code>utf8_encode</code></h3>
           <pre><code class="lang-php">utf8_encode(string $string): string</code></pre>
-          <p>The deprecated Latin-1 to UTF-8 shim (`Deprecated: Function utf8_encode() is deprecated since 8.2` on every call): each BYTE is widened to the codepoint of the same value. Exact for ASCII; already-multibyte input is widened byte by byte into mojibake, which is what real PHP does to the same byte sequence.</p>
+          <p>The deprecated Latin-1 to UTF-8 shim (`Deprecated: Function utf8_encode() is deprecated since 8.2` on every call): each BYTE is widened to the codepoint of the same value, so `"\xE9"` becomes `é` and already-multibyte input becomes mojibake, as in the reference.</p>
           <pre><code class="lang-php">echo utf8_encode("abc");   // =&gt; abc</code></pre>
         </article>
         <article class="doc-entry" id="doc-encoding-9">
           <h3><a class="doc-anchor" href="#doc-encoding-9">#</a> <code>utf8_decode</code></h3>
           <pre><code class="lang-php">utf8_decode(string $string): string</code></pre>
-          <p>The deprecated UTF-8 to Latin-1 shim (`Deprecated: Function utf8_decode() is deprecated since 8.2` on every call): each codepoint at or below U+00FF is narrowed to one byte and anything above becomes `?`. DIVERGENCE: the byte string is then re-widened one Latin-1 character per byte, so a Latin-1-representable argument round-trips to ITSELF rather than shrinking — `utf8_decode("é")` is still `"é"` and `strlen()` of it is still 2. Only codepoints above U+00FF actually change.</p>
-          <pre><code class="lang-php">echo utf8_decode("héllo"), "|", utf8_decode("€");   // =&gt; héllo|?</code></pre>
+          <p>The deprecated UTF-8 to Latin-1 shim (`Deprecated: Function utf8_decode() is deprecated since 8.2` on every call): each codepoint at or below U+00FF is narrowed to its one byte, and one above it — or an invalid UTF-8 unit, grouped as `htmlspecialchars` groups them — becomes `?`.</p>
+          <pre><code class="lang-php">echo bin2hex(utf8_decode("é")), "|", utf8_decode("€");   // =&gt; e9|?</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-encoding-10">
+          <h3><a class="doc-anchor" href="#doc-encoding-10">#</a> <code>iconv</code></h3>
+          <pre><code class="lang-php">iconv(string $from_encoding, string $to_encoding, string $string): string|false</code></pre>
+          <p>Converts between UTF-8, ASCII, ISO-8859-1, ISO-8859-15, CP1252, UTF-16/UCS-2 and UTF-32/UCS-4, under every name the reference's libiconv accepts for them (`LATIN1`, `UNICODELITTLE`, `UCS-2-INTERNAL`, …). Plain `UTF-16`/`UTF-32` write a big-endian BOM and read one anywhere in the input. What the platform libiconv does beyond the charsets is measured off the reference by `scripts/gen_iconv_tables.php`: its 8-bit converters spell a character they lack even without `//TRANSLIT` (`Œ` → `OE` in ISO-8859-1), and `//TRANSLIT` adds its transliterations (`é` → `'e` in ASCII, `€` → `EUR`). `//IGNORE` on the target drops what is left and skips input bytes that cannot start a character. A character the target cannot hold, or input not valid in the source charset, is `false` with `Notice: iconv(): Detected an illegal character in input string` (`an incomplete multibyte character` for a sequence cut short at the end). An unknown charset is `false` with `Warning: iconv(): Wrong encoding, conversion from "X" to "Y" is not allowed`. DIVERGENCE: other charsets are unknown, and every transliteration is spelled in full where the reference's libiconv 1.11 garbles some multi-character `//TRANSLIT` results (16 × `€` to ASCII comes back with `?` in places 7 and 14).</p>
+          <pre><code class="lang-php">echo iconv("UTF-8", "ASCII//TRANSLIT", "café");   // =&gt; caf'e</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-encoding-11">
+          <h3><a class="doc-anchor" href="#doc-encoding-11">#</a> <code>iconv_strlen</code></h3>
+          <pre><code class="lang-php">iconv_strlen(string $string, ?string $encoding = null): int|false</code></pre>
+          <p>The number of characters in `$string` decoded from `$encoding` (UTF-8 by default). Input that does not decode is `false` with `Notice: iconv_strlen(): Detected an illegal character in input string`.</p>
+          <pre><code class="lang-php">echo iconv_strlen("héllo");   // =&gt; 5</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-encoding-12">
+          <h3><a class="doc-anchor" href="#doc-encoding-12">#</a> <code>iconv_substr</code></h3>
+          <pre><code class="lang-php">iconv_substr(string $string, int $offset, ?int $length = null, ?string $encoding = null): string|false</code></pre>
+          <p>`substr` by character rather than byte, with the same negative `$offset`/`$length` rules.</p>
+          <pre><code class="lang-php">echo iconv_substr("héllo", 1, 2);   // =&gt; él</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-encoding-13">
+          <h3><a class="doc-anchor" href="#doc-encoding-13">#</a> <code>iconv_strpos</code></h3>
+          <pre><code class="lang-php">iconv_strpos(string $haystack, string $needle, int $offset = 0, ?string $encoding = null): int|false</code></pre>
+          <p>The character position of the first `$needle` at or after `$offset` (negative counts from the end). An empty needle or an offset outside the haystack is a `ValueError`.</p>
+          <pre><code class="lang-php">echo iconv_strpos("héllo", "l");   // =&gt; 2</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-encoding-14">
+          <h3><a class="doc-anchor" href="#doc-encoding-14">#</a> <code>iconv_strrpos</code></h3>
+          <pre><code class="lang-php">iconv_strrpos(string $haystack, string $needle, ?string $encoding = null): int|false</code></pre>
+          <p>The character position of the last `$needle`, `false` when absent or empty.</p>
+          <pre><code class="lang-php">echo iconv_strrpos("héllo", "l");   // =&gt; 3</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-encoding-15">
+          <h3><a class="doc-anchor" href="#doc-encoding-15">#</a> <code>iconv_get_encoding</code></h3>
+          <pre><code class="lang-php">iconv_get_encoding(string $type = "all"): array|string|false</code></pre>
+          <p>The `iconv.*_encoding` settings, all `UTF-8` (the reference's defaults); `"all"` returns the three as an array keyed `input_encoding`, `output_encoding`, `internal_encoding`.</p>
+          <pre><code class="lang-php">echo iconv_get_encoding("internal_encoding");   // =&gt; UTF-8</code></pre>
         </article>
       </section>
 
@@ -4793,8 +4839,8 @@ echo implode(",", array_keys($a));   // =&gt; a,b</code></pre>
         </article>
         <article class="doc-entry" id="doc-hashing-4">
           <h3><a class="doc-anchor" href="#doc-hashing-4">#</a> <code>hash</code></h3>
-          <pre><code class="lang-php">hash(string $algo, string $data, bool $binary = false): string</code></pre>
-          <p>Digests the data with `md4`, `md5`, `sha1`, `sha224`, `sha256`, `sha384`, `sha512/224`, `sha512/256`, `sha512`, `sha3-224`, `sha3-256`, `sha3-384`, `sha3-512`, `adler32`, `crc32`, `crc32b`, `crc32c`, `fnv132`, `fnv1a32`, `fnv164`, `fnv1a64` or `joaat`. DIVERGENCE: the reference's other algorithms (`md2`, `ripemd*`, `whirlpool`, `tiger*`, `snefru*`, `gost*`, `haval*`, `murmur3*`, `xxh*`) are not implemented and throw as unknown. An unknown name throws `ValueError: hash(): Argument #1 ($algo) must be a valid hashing algorithm`. PHP 8.1's `$options` array does not exist.</p>
+          <pre><code class="lang-php">hash(string $algo, string $data, bool $binary = false, array $options = []): string</code></pre>
+          <p>Digests the data with any algorithm `hash_algos()` lists: the MD, SHA-1/2/3, RIPEMD, Whirlpool, 3-pass Tiger and GOST digests, the `adler32`/`crc32*`/`fnv*`/`joaat` checksums, and the `murmur3*`/`xxh*` hashes. `$options` is read by `murmur3*` and `xxh*` only: `seed` (an int; any other type is the reference's `Deprecated:` and seed 0, or for `xxh3`/`xxh128` ignored), and for `xxh3`/`xxh128` a `secret` string of at least 136 bytes (more than 256 is truncated with a warning; `seed` and `secret` together are an `Error`). An unknown name throws `ValueError: hash(): Argument #1 ($algo) must be a valid hashing algorithm`. DIVERGENCE: `tiger*,4`, `snefru`, `snefru256` and `haval*` are not implemented and throw as unknown.</p>
           <pre><code class="lang-php">echo hash("sha256", "");   // =&gt; e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855</code></pre>
         </article>
         <article class="doc-entry" id="doc-hashing-5">
@@ -4806,8 +4852,14 @@ echo implode(",", array_keys($a));   // =&gt; a,b</code></pre>
         <article class="doc-entry" id="doc-hashing-6">
           <h3><a class="doc-anchor" href="#doc-hashing-6">#</a> <code>hash_algos</code></h3>
           <pre><code class="lang-php">hash_algos(): array</code></pre>
-          <p>The implemented algorithms, in the reference's relative order. DIVERGENCE: the reference lists more (see `hash`), so the count differs.</p>
+          <p>The implemented algorithms, in the reference's relative order. DIVERGENCE: the reference also lists `tiger*,4`, `snefru`, `snefru256` and the fifteen `haval*` variants (see `hash`), so the count differs.</p>
           <pre><code class="lang-php">echo in_array("sha3-256", hash_algos()) ? "yes" : "no";   // =&gt; yes</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-hashing-7">
+          <h3><a class="doc-anchor" href="#doc-hashing-7">#</a> <code>hash_hmac_algos</code></h3>
+          <pre><code class="lang-php">hash_hmac_algos(): array</code></pre>
+          <p>The algorithms `hash_hmac`, `hash_hmac_file`, `hash_pbkdf2` and `hash_init` with `HASH_HMAC` accept: `hash_algos()` without the checksums and the `murmur3*`/`xxh*` hashes, in the same order. DIVERGENCE: as for `hash_algos`, the unimplemented `tiger*,4`, `snefru*` and `haval*` are absent.</p>
+          <pre><code class="lang-php">echo in_array("ripemd160", hash_hmac_algos()) ? "yes" : "no";   // =&gt; yes</code></pre>
         </article>
       </section>
 
@@ -4816,22 +4868,22 @@ echo implode(",", array_keys($a));   // =&gt; a,b</code></pre>
         <article class="doc-entry" id="doc-hashing-files-and-key-derivation-1">
           <h3><a class="doc-anchor" href="#doc-hashing-files-and-key-derivation-1">#</a> <code>md5_file</code></h3>
           <pre><code class="lang-php">md5_file(string $filename, bool $binary = false): string|false</code></pre>
-          <p>MD5 of the file's RAW bytes read straight off disk, so unlike the string functions this is byte-faithful for binary files. Any I/O error returns `false` with no warning.</p>
+          <p>MD5 of the file's RAW bytes read straight off disk, so unlike the string functions this is byte-faithful for binary files. An empty path is `ValueError: Path must not be empty`; a file that cannot be opened is the stream layer's `Failed to open stream` warning and `false`, a directory its `Read of 8192 bytes failed` notice and `false`.</p>
         </article>
         <article class="doc-entry" id="doc-hashing-files-and-key-derivation-2">
           <h3><a class="doc-anchor" href="#doc-hashing-files-and-key-derivation-2">#</a> <code>sha1_file</code></h3>
           <pre><code class="lang-php">sha1_file(string $filename, bool $binary = false): string|false</code></pre>
-          <p>SHA-1 of the file's raw bytes, returning `false` on any I/O error.</p>
+          <p>SHA-1 of the file's raw bytes. An unreadable path is diagnosed as for `md5_file` and returns `false`.</p>
         </article>
         <article class="doc-entry" id="doc-hashing-files-and-key-derivation-3">
           <h3><a class="doc-anchor" href="#doc-hashing-files-and-key-derivation-3">#</a> <code>hash_file</code></h3>
-          <pre><code class="lang-php">hash_file(string $algo, string $filename, bool $binary = false): string|false</code></pre>
-          <p>Validates the algorithm BEFORE touching the filesystem, matching PHP. It accepts every algorithm `hash()` does. An unreadable file returns `false`.</p>
+          <pre><code class="lang-php">hash_file(string $algo, string $filename, bool $binary = false, array $options = []): string|false</code></pre>
+          <p>Validates the algorithm BEFORE touching the filesystem, matching PHP. It accepts every algorithm and `$options` `hash()` does; the options are read after the file is opened, as the reference reads them. An unreadable path is diagnosed as for `md5_file` and returns `false`.</p>
         </article>
         <article class="doc-entry" id="doc-hashing-files-and-key-derivation-4">
           <h3><a class="doc-anchor" href="#doc-hashing-files-and-key-derivation-4">#</a> <code>hash_hmac_file</code></h3>
           <pre><code class="lang-php">hash_hmac_file(string $algo, string $filename, string $key, bool $binary = false): string|false</code></pre>
-          <p>HMACs the file's raw bytes under the key. It accepts the same algorithms as `hash_hmac`, validated before the read; an unreadable file returns `false`.</p>
+          <p>HMACs the file's raw bytes under the key. It accepts the same algorithms as `hash_hmac`, validated before the read; an unreadable path is diagnosed as for `md5_file` and returns `false`.</p>
         </article>
         <article class="doc-entry" id="doc-hashing-files-and-key-derivation-5">
           <h3><a class="doc-anchor" href="#doc-hashing-files-and-key-derivation-5">#</a> <code>hash_equals</code></h3>
@@ -4853,7 +4905,7 @@ echo implode(",", array_keys($a));   // =&gt; a,b</code></pre>
         <article class="doc-entry" id="doc-hashing-files-and-key-derivation-8">
           <h3><a class="doc-anchor" href="#doc-hashing-files-and-key-derivation-8">#</a> <code>hash_init</code></h3>
           <pre><code class="lang-php">hash_init(string $algo, int $flags = 0, string $key = "", array $options = []): HashContext</code></pre>
-          <p>Opens an incremental hashing context for any algorithm `hash()` accepts; with `HASH_HMAC` in `$flags` the context HMACs under `$key`, which must then be a cryptographic algorithm and a non-empty key. The three refusals are the reference's `ValueError`s. `var_dump` and `print_r` show the context's `algo`. DIVERGENCE: the context accumulates its input and digests it at `hash_final` rather than streaming it, so feeding it gigabytes holds them in memory; `serialize` writes phplang's own state, not the reference's digest-internal array; two contexts compare `==` by algorithm and state where the reference compares them equal.</p>
+          <p>Opens an incremental hashing context for any algorithm `hash()` accepts; `$options` seeds a `murmur3*`/`xxh*` context exactly as it does for `hash()`, and `hash_copy` carries the seed or secret; with `HASH_HMAC` in `$flags` the context HMACs under `$key`, which must then be a cryptographic algorithm and a non-empty key. The three refusals are the reference's `ValueError`s. `var_dump` and `print_r` show the context's `algo`. DIVERGENCE: the context accumulates its input and digests it at `hash_final` rather than streaming it, so feeding it gigabytes holds them in memory; `serialize` writes phplang's own state, not the reference's digest-internal array; two contexts compare `==` by algorithm and state where the reference compares them equal.</p>
           <pre><code class="lang-php">$c = hash_init("sha256"); hash_update($c, "ab"); hash_update($c, "c"); echo hash_final($c);   // =&gt; ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad</code></pre>
         </article>
         <article class="doc-entry" id="doc-hashing-files-and-key-derivation-9">
