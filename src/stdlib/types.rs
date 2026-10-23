@@ -122,7 +122,8 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         }
         "unserialize" => {
             let s = with_host(|h| h.to_str(&arg(args, 0)));
-            let bytes = s.as_bytes();
+            let raw = crate::bytes::to_bytes(&s);
+            let bytes: &[u8] = &raw;
             let total = bytes.len();
             // An empty payload is the one malformed input PHP rejects silently.
             if total == 0 {
@@ -353,7 +354,7 @@ fn php_serialize_body(
         Value::Int(n) => format!("i:{n};"),
         Value::Float(f) => format!("d:{};", serialize_float(*f)),
         // Length is the byte length, matching PHP's binary-safe strings.
-        Value::Str(s) => format!("s:{}:\"{}\";", s.len(), s),
+        Value::Str(s) => format!("s:{}:\"{}\";", crate::bytes::byte_len(s), s),
         // `php_var_serialize_intern`'s IS_RESOURCE arm writes `i:0;`.
         Value::Obj(_) if h.is_stream(v) => "i:0;".to_string(),
         Value::Obj(_) if h.is_array(v) => {
@@ -414,7 +415,7 @@ fn php_serialize_object(
     let mut out = format!("O:{}:\"{class}\":{}:{{", class.len(), props.len());
     for (name, val) in props {
         let key = mangled_prop_key(h, &class, &name);
-        out.push_str(&format!("s:{}:\"{key}\";", key.len()));
+        out.push_str(&format!("s:{}:\"{key}\";", crate::bytes::byte_len(&key)));
         out.push_str(&php_serialize_seen(h, &val, seen));
     }
     out.push('}');
@@ -787,7 +788,7 @@ impl<'a> Parser<'a> {
                 let bytes = &self.b[self.pos..end];
                 self.pos = end;
                 self.eat(b"\";")?;
-                Some(Value::str(String::from_utf8_lossy(bytes).into_owned()))
+                Some(Value::str(crate::bytes::from_bytes(bytes)))
             }
             b'a' => {
                 self.eat(b"a:")?;
@@ -935,7 +936,7 @@ impl<'a> Parser<'a> {
         let bytes = &self.b[self.pos..end];
         self.pos = end;
         self.eat(b"\"")?;
-        Some(String::from_utf8_lossy(bytes).into_owned())
+        Some(crate::bytes::from_bytes(bytes))
     }
 }
 

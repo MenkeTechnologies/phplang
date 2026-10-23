@@ -906,6 +906,21 @@ impl<'a> Lexer<'a> {
     // ── helpers ──────────────────────────────────────────────────────────────
 
     fn push(&mut self, tok: Tok) {
+        // A `\xHH`/`\NNN` escape may have left raw bytes that, together, are
+        // a character: the literal is stored canonically (see `crate::bytes`).
+        let tok = match tok {
+            Tok::Str(s) => Tok::Str(crate::bytes::canonical(s)),
+            Tok::Interp(parts) => Tok::Interp(
+                parts
+                    .into_iter()
+                    .map(|p| match p {
+                        StrPart::Lit(s) => StrPart::Lit(crate::bytes::canonical(s)),
+                        other => other,
+                    })
+                    .collect(),
+            ),
+            other => other,
+        };
         self.out.push(Spanned {
             tok,
             line: self.line,
@@ -941,11 +956,7 @@ impl<'a> Lexer<'a> {
             .count()
     }
 
-    /// `\xHH` — one or two hex digits. `self.pos` is on the `x`.
-    ///
-    /// The scaffold stores strings as Rust `String`, so a byte at or above 0x80
-    /// is appended as that Unicode scalar (its UTF-8 encoding) rather than the
-    /// single raw byte PHP would store.
+    /// `\xHH` — one or two hex digits, one BYTE. `self.pos` is on the `x`.
     fn read_hex_escape(&mut self, lit: &mut String) {
         self.pos += 1; // past `x`
         let n = self.hex_digits_at(self.pos);
@@ -954,8 +965,8 @@ impl<'a> Lexer<'a> {
             .map(|b| *b as char)
             .collect();
         self.pos += n;
-        if let Some(c) = u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
-            lit.push(c);
+        if let Ok(b) = u8::from_str_radix(&hex, 16) {
+            lit.push_str(&crate::bytes::from_bytes(&[b]));
         }
     }
 
@@ -977,7 +988,11 @@ impl<'a> Lexer<'a> {
             .collect();
         self.pos = close + 1;
         if let Some(c) = u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
-            lit.push(c);
+            // Its UTF-8 bytes, stored as `crate::bytes` stores any bytes — a
+            // character in the escape range is four escaped bytes.
+            lit.push_str(&crate::bytes::from_bytes(
+                c.encode_utf8(&mut [0u8; 4]).as_bytes(),
+            ));
         }
     }
 
@@ -996,11 +1011,8 @@ impl<'a> Lexer<'a> {
             .collect();
         self.pos += n;
         // PHP truncates an out-of-range octal escape to a byte.
-        if let Some(c) = u32::from_str_radix(&oct, 8)
-            .ok()
-            .and_then(|v| char::from_u32(v & 0xff))
-        {
-            lit.push(c);
+        if let Ok(v) = u32::from_str_radix(&oct, 8) {
+            lit.push_str(&crate::bytes::from_bytes(&[(v & 0xff) as u8]));
         }
     }
 

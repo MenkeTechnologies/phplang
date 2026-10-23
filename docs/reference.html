@@ -1930,12 +1930,12 @@ $o = new C; unset($o-&gt;zz);   // =&gt; unset:zz</code></pre>
         <article class="doc-entry" id="doc-predefined-constant-203">
           <h3><a class="doc-anchor" href="#doc-predefined-constant-203">#</a> <code>ENT_SUBSTITUTE</code></h3>
           <pre><code class="lang-php">ENT_SUBSTITUTE: int = 8</code></pre>
-          <p>Flag replacing invalid code unit sequences with U+FFFD. Not honoured; phplang strings are always valid UTF-8.</p>
+          <p>Flag replacing invalid code unit sequences with U+FFFD — part of the default flags, which is why `htmlspecialchars("a\xffb")` is `a�b`.</p>
         </article>
         <article class="doc-entry" id="doc-predefined-constant-204">
           <h3><a class="doc-anchor" href="#doc-predefined-constant-204">#</a> <code>ENT_IGNORE</code></h3>
           <pre><code class="lang-php">ENT_IGNORE: int = 4</code></pre>
-          <p>Flag discarding invalid code unit sequences. Not honoured, for the same reason as `ENT_SUBSTITUTE`.</p>
+          <p>Flag discarding invalid code unit sequences. Without it or `ENT_SUBSTITUTE`, a subject that is not valid UTF-8 encodes to the empty string.</p>
         </article>
         <article class="doc-entry" id="doc-predefined-constant-205">
           <h3><a class="doc-anchor" href="#doc-predefined-constant-205">#</a> <code>M_PI</code></h3>
@@ -2668,7 +2668,7 @@ $h = new H; $h-&gt;insert(3); $h-&gt;insert(9); echo $h-&gt;extract();   // =&gt
         <article class="doc-entry" id="doc-core-library-strings-13">
           <h3><a class="doc-anchor" href="#doc-core-library-strings-13">#</a> <code>strrev</code></h3>
           <pre><code class="lang-php">strrev(string $string): string</code></pre>
-          <p>Reverses the string by CHARACTER, not by byte. DIVERGENCE: PHP reverses bytes, which corrupts multibyte text; this version leaves each character intact.</p>
+          <p>Reverses the string's BYTES, as PHP does — a multibyte character comes out with its bytes reversed.</p>
           <pre><code class="lang-php">echo strrev("abc");   // =&gt; cba</code></pre>
         </article>
         <article class="doc-entry" id="doc-core-library-strings-14">
@@ -2680,7 +2680,7 @@ $h = new H; $h-&gt;insert(3); $h-&gt;insert(9); echo $h-&gt;extract();   // =&gt
         <article class="doc-entry" id="doc-core-library-strings-15">
           <h3><a class="doc-anchor" href="#doc-core-library-strings-15">#</a> <code>substr</code></h3>
           <pre><code class="lang-php">substr(string $string, int $offset, ?int $length = null): string</code></pre>
-          <p>A substring counted in CHARACTERS. A negative offset counts from the end and a negative length omits that many trailing characters. DIVERGENCE: PHP's `substr` uses byte offsets, so results differ on multibyte input. It never returns `false`.</p>
+          <p>A substring counted in BYTES. A negative offset counts from the end and a negative length omits that many trailing bytes; a cut through a multibyte character keeps its bytes. It never returns `false`.</p>
           <pre><code class="lang-php">echo substr("hello", 1, 3);   // =&gt; ell</code></pre>
         </article>
         <article class="doc-entry" id="doc-core-library-strings-16">
@@ -2770,7 +2770,7 @@ $h = new H; $h-&gt;insert(3); $h-&gt;insert(9); echo $h-&gt;extract();   // =&gt
         <article class="doc-entry" id="doc-core-library-strings-30">
           <h3><a class="doc-anchor" href="#doc-core-library-strings-30">#</a> <code>chr</code></h3>
           <pre><code class="lang-php">chr(int $codepoint): string</code></pre>
-          <p>The one-character string for a byte value, reduced modulo 256 so any integer is accepted — a value outside `0..=255` raises `Deprecated: chr(): Providing a value not in-between 0 and 255 is deprecated…` first. DIVERGENCE: the result is that CODEPOINT, so `chr(233)` yields a two-byte UTF-8 `é` rather than PHP's single 0xE9 byte.</p>
+          <p>The one-character string for a byte value, reduced modulo 256 so any integer is accepted — a value outside `0..=255` raises `Deprecated: chr(): Providing a value not in-between 0 and 255 is deprecated…` first. The result is that one BYTE: `strlen(chr(233))` is 1.</p>
           <pre><code class="lang-php">echo chr(65);   // =&gt; A</code></pre>
         </article>
         <article class="doc-entry" id="doc-core-library-strings-31">
@@ -2794,7 +2794,7 @@ $h = new H; $h-&gt;insert(3); $h-&gt;insert(9); echo $h-&gt;extract();   // =&gt
         <article class="doc-entry" id="doc-core-library-strings-34">
           <h3><a class="doc-anchor" href="#doc-core-library-strings-34">#</a> <code>bin2hex</code></h3>
           <pre><code class="lang-php">bin2hex(string $string): string</code></pre>
-          <p>Two lowercase hex digits per byte of the string's UTF-8 encoding.</p>
+          <p>Two lowercase hex digits per byte of the string.</p>
           <pre><code class="lang-php">echo bin2hex("AB");   // =&gt; 4142</code></pre>
         </article>
         <article class="doc-entry" id="doc-core-library-strings-35">
@@ -3292,7 +3292,7 @@ min(array $values): mixed</code></pre>
         <article class="doc-entry" id="doc-strings-5">
           <h3><a class="doc-anchor" href="#doc-strings-5">#</a> <code>count_chars</code></h3>
           <pre><code class="lang-php">count_chars(string $string, int $mode = 0): array|string</code></pre>
-          <p>Per-byte histogram. Mode 0 reports all 256 counters, 1 only the non-zero ones, 2 only the zero ones; modes 3 and 4 return a STRING of the bytes that did / did not occur. A `$mode` outside 0-4 throws `ValueError`. DIVERGENCE: modes 3 and 4 can name bytes above 0x7F, which this engine's UTF-8 strings widen to two bytes each (see BUGS.md).</p>
+          <p>Per-byte histogram. Mode 0 reports all 256 counters, 1 only the non-zero ones, 2 only the zero ones; modes 3 and 4 return a STRING of the bytes that did / did not occur. A `$mode` outside 0-4 throws `ValueError`.</p>
           <pre><code class="lang-php">print_r(count_chars("aab", 3));   // =&gt; ab</code></pre>
         </article>
         <article class="doc-entry" id="doc-strings-6">
@@ -3400,7 +3400,7 @@ strtr(string $string, string $from, string $to): string</code></pre>
         <article class="doc-entry" id="doc-strings-23">
           <h3><a class="doc-anchor" href="#doc-strings-23">#</a> <code>chunk_split</code></h3>
           <pre><code class="lang-php">chunk_split(string $string, int $length = 76, string $separator = "\r\n"): string</code></pre>
-          <p>Appends the separator after every `$length` units. DIVERGENCE: chunking counts CODEPOINTS, not bytes as PHP does, so multibyte input chunks differently. A non-positive length throws `ValueError: chunk_split(): Argument #2 ($length) must be greater than 0`.</p>
+          <p>Appends the separator after every `$length` bytes. A non-positive length throws `ValueError: chunk_split(): Argument #2 ($length) must be greater than 0`.</p>
           <pre><code class="lang-php">echo chunk_split("abcdef", 2, "-");   // =&gt; ab-cd-ef-</code></pre>
         </article>
         <article class="doc-entry" id="doc-strings-24">
@@ -4776,13 +4776,13 @@ echo implode(",", array_keys($a));   // =&gt; a,b</code></pre>
         <article class="doc-entry" id="doc-hashing-1">
           <h3><a class="doc-anchor" href="#doc-hashing-1">#</a> <code>md5</code></h3>
           <pre><code class="lang-php">md5(string $string, bool $binary = false): string</code></pre>
-          <p>MD5 of the argument's UTF-8 bytes, as 32 lowercase hex characters. DIVERGENCE: `$binary` returns the digest mapped one Latin-1 character per byte, so `strlen()` of it is not 16 whenever a digest byte reaches 0x80.</p>
+          <p>MD5 of the argument's bytes, as 32 lowercase hex characters, or the 16 raw digest bytes with `$binary`.</p>
           <pre><code class="lang-php">echo md5("abc");   // =&gt; 900150983cd24fb0d6963f7d28e17f72</code></pre>
         </article>
         <article class="doc-entry" id="doc-hashing-2">
           <h3><a class="doc-anchor" href="#doc-hashing-2">#</a> <code>sha1</code></h3>
           <pre><code class="lang-php">sha1(string $string, bool $binary = false): string</code></pre>
-          <p>SHA-1 as 40 lowercase hex characters, with the same raw-output caveat as `md5` when `$binary` is truthy.</p>
+          <p>SHA-1 as 40 lowercase hex characters, or the 20 raw digest bytes when `$binary` is truthy.</p>
           <pre><code class="lang-php">echo sha1("abc");   // =&gt; a9993e364706816aba3e25717850c26c9cd0d89d</code></pre>
         </article>
         <article class="doc-entry" id="doc-hashing-3">
@@ -4848,7 +4848,7 @@ echo implode(",", array_keys($a));   // =&gt; a,b</code></pre>
         <article class="doc-entry" id="doc-hashing-files-and-key-derivation-7">
           <h3><a class="doc-anchor" href="#doc-hashing-files-and-key-derivation-7">#</a> <code>random_bytes</code></h3>
           <pre><code class="lang-php">random_bytes(int $length): string</code></pre>
-          <p>DIVERGENCE — NOT A CSPRNG. No OS-entropy dependency is available to this crate, so the bytes come from a SplitMix64 generator seeded from wall-clock nanoseconds XOR the process id. Use it for tests and filler only, never for keys, tokens, or salts. Output is the Latin-1 raw mapping, so `strlen()` exceeds `$length` whenever a generated byte reaches 0x80. A length below 1 throws `ValueError: random_bytes(): Argument #1 ($length) must be greater than 0`. DIVERGENCE: a length above 16 MiB is refused with a `ValueError` too (PHP instead attempts the allocation and dies on the memory limit).</p>
+          <p>DIVERGENCE — NOT A CSPRNG. No OS-entropy dependency is available to this crate, so the bytes come from a SplitMix64 generator seeded from wall-clock nanoseconds XOR the process id. Use it for tests and filler only, never for keys, tokens, or salts. The result is `$length` raw bytes. A length below 1 throws `ValueError: random_bytes(): Argument #1 ($length) must be greater than 0`. DIVERGENCE: a length above 16 MiB is refused with a `ValueError` too (PHP instead attempts the allocation and dies on the memory limit).</p>
         </article>
         <article class="doc-entry" id="doc-hashing-files-and-key-derivation-8">
           <h3><a class="doc-anchor" href="#doc-hashing-files-and-key-derivation-8">#</a> <code>hash_init</code></h3>
@@ -4877,7 +4877,7 @@ echo implode(",", array_keys($a));   // =&gt; a,b</code></pre>
         <article class="doc-entry" id="doc-hashing-files-and-key-derivation-12">
           <h3><a class="doc-anchor" href="#doc-hashing-files-and-key-derivation-12">#</a> <code>hash_final</code></h3>
           <pre><code class="lang-php">hash_final(HashContext $context, bool $binary = false): string</code></pre>
-          <p>The digest of everything fed so far — the HMAC, for a context opened with `HASH_HMAC` — as lowercase hex, or raw bytes with `$binary` (see `hash()` for the raw-byte string model). The context is then finalized: `hash_update`, `hash_final` and `hash_copy` on it are the reference's `TypeError`.</p>
+          <p>The digest of everything fed so far — the HMAC, for a context opened with `HASH_HMAC` — as lowercase hex, or raw bytes with `$binary`. The context is then finalized: `hash_update`, `hash_final` and `hash_copy` on it are the reference's `TypeError`.</p>
           <pre><code class="lang-php">$c = hash_init("sha256", HASH_HMAC, "key"); hash_update($c, "The quick brown fox jumps over the lazy dog"); echo hash_final($c);   // =&gt; f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8</code></pre>
         </article>
         <article class="doc-entry" id="doc-hashing-files-and-key-derivation-13">
@@ -5264,7 +5264,7 @@ echo $f-&gt;call(new C);   // =&gt; 8</code></pre>
         <article class="doc-entry" id="doc-filesystem-1">
           <h3><a class="doc-anchor" href="#doc-filesystem-1">#</a> <code>file_get_contents</code></h3>
           <pre><code class="lang-php">file_get_contents(string $filename): string|false</code></pre>
-          <p>Reads the whole file and returns it as a string, or `false` on any I/O error with no warning. DIVERGENCE: `$use_include_path`, `$context`, `$offset`, and `$length` are never read — a partial read is not possible — and the lossy UTF-8 conversion makes it binary-unsafe.</p>
+          <p>Reads the file's bytes and returns them as a string, or `false` on any I/O error with no warning. `$offset` counts from the start (from the end when negative) and `$length` caps what follows; a negative `$length` is a `ValueError`. DIVERGENCE: `$use_include_path` and `$context` are never read.</p>
           <pre><code class="lang-php">file_put_contents("/tmp/php_ref.txt", "hi"); echo file_get_contents("/tmp/php_ref.txt");   // =&gt; hi</code></pre>
         </article>
         <article class="doc-entry" id="doc-filesystem-2">
@@ -5283,7 +5283,7 @@ echo count(file("/tmp/php_ref.txt", FILE_IGNORE_NEW_LINES));   // =&gt; 2</code>
         <article class="doc-entry" id="doc-filesystem-4">
           <h3><a class="doc-anchor" href="#doc-filesystem-4">#</a> <code>readfile</code></h3>
           <pre><code class="lang-php">readfile(string $filename): int|false</code></pre>
-          <p>Writes the file's contents to output and returns the RAW byte count read from disk — which can exceed the length of what was emitted, since the text goes through the lossy conversion. `$use_include_path` and `$context` are not read.</p>
+          <p>Writes the file's bytes to output and returns how many there were. `$use_include_path` and `$context` are not read.</p>
           <pre><code class="lang-php">file_put_contents("/tmp/php_ref.txt", "hi"); echo readfile("/tmp/php_ref.txt");   // =&gt; hi2</code></pre>
         </article>
         <article class="doc-entry" id="doc-filesystem-5">
@@ -5496,7 +5496,7 @@ echo count(file("/tmp/php_ref.txt", FILE_IGNORE_NEW_LINES));   // =&gt; 2</code>
         <article class="doc-entry" id="doc-file-streams-3">
           <h3><a class="doc-anchor" href="#doc-file-streams-3">#</a> <code>fread</code></h3>
           <pre><code class="lang-php">fread(resource $stream, int $length): string|false</code></pre>
-          <p>Copies up to `$length` bytes from the cursor and advances it. A read that gets fewer bytes than asked for sets end-of-file. A `$length` below 1 is a `ValueError`. DIVERGENCE: the bytes pass through a lossy UTF-8 conversion, so the read is not binary-safe.</p>
+          <p>Copies up to `$length` bytes from the cursor and advances it. A read that gets fewer bytes than asked for sets end-of-file. A `$length` below 1 is a `ValueError`.</p>
           <pre><code class="lang-php">file_put_contents("/tmp/php_ref_s.txt", "abcdef");
 $f = fopen("/tmp/php_ref_s.txt", "r"); echo fread($f, 3); fclose($f);   // =&gt; abc</code></pre>
         </article>
@@ -5787,7 +5787,7 @@ echo implode(",", $a), "|", implode(",", $b);   // =&gt; 1,2,3|a,b,c</code></pre
         <article class="doc-entry" id="doc-misc-28">
           <h3><a class="doc-anchor" href="#doc-misc-28">#</a> <code>pack</code></h3>
           <pre><code class="lang-php">pack(string $format, mixed ...$values): string</code></pre>
-          <p>A port of ext/standard/pack.c: every format code (`a A Z h H c C s S n v i I l L N V q Q J P f g G d e E x X @`), repeat counts and `*`, and its warnings and `ValueError`s. Bytes come out one per character, as `chr` makes them, so a byte of 0x80 or more is two bytes in this UTF-8 runtime (see BUGS.md).</p>
+          <p>A port of ext/standard/pack.c: every format code (`a A Z h H c C s S n v i I l L N V q Q J P f g G d e E x X @`), repeat counts and `*`, and its warnings and `ValueError`s. The result is the packed bytes.</p>
           <pre><code class="lang-php">echo bin2hex(pack("nv", 0x1234, 0x1234));   // =&gt; 12343412</code></pre>
         </article>
         <article class="doc-entry" id="doc-misc-29">

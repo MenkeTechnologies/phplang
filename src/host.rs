@@ -1569,7 +1569,7 @@ impl Visiting {
 /// which is why the reference never emits invalid UTF-8 here.
 fn escape_trace_string(s: &str) -> String {
     const VK_ESCAPE: u8 = 0x1b;
-    let bytes = s.as_bytes();
+    let bytes = &*crate::bytes::to_bytes(s);
     let cut = bytes.len().min(15);
     let mut out = String::new();
     for &c in &bytes[..cut] {
@@ -2258,7 +2258,7 @@ impl PhpHost {
         } else {
             use std::io::Write;
             let mut out = std::io::stdout();
-            let _ = out.write_all(s.as_bytes());
+            let _ = out.write_all(&crate::bytes::to_bytes(s));
         }
     }
 
@@ -4982,7 +4982,7 @@ impl PhpHost {
             buf.push_str(s);
         } else {
             use std::io::Write;
-            let _ = std::io::stdout().write_all(s.as_bytes());
+            let _ = std::io::stdout().write_all(&crate::bytes::to_bytes(s));
         }
     }
 
@@ -6279,7 +6279,7 @@ impl PhpHost {
             // PHP string offsets are byte-indexed and accept negatives (`$s[-1]`
             // is the last byte). An out-of-range offset yields `Undef`, so
             // `isset($s[i])` is false there (a plain read still echoes as "").
-            let bytes = s.as_bytes();
+            let bytes = &*crate::bytes::to_bytes(s);
             let len = bytes.len() as i64;
             let StrOffset::At(mut i, _) = classify_string_offset(key) else {
                 return Value::Undef;
@@ -6289,7 +6289,7 @@ impl PhpHost {
             }
             if i >= 0 && i < len {
                 let b = i as usize;
-                return Value::str(String::from_utf8_lossy(&bytes[b..b + 1]).into_owned());
+                return Value::str(crate::bytes::from_bytes(&bytes[b..b + 1]));
             }
         }
         Value::Undef
@@ -6463,7 +6463,7 @@ impl PhpHost {
         if replacement.len() > 1 {
             self.warn("Only the first byte will be assigned to the string offset");
         }
-        let byte = replacement.as_bytes()[0];
+        let byte = (&*crate::bytes::to_bytes(&replacement))[0];
 
         let len = cur.len() as i64;
         let idx = if off < 0 {
@@ -6477,12 +6477,12 @@ impl PhpHost {
             off as usize
         };
 
-        let mut bytes = cur.as_bytes().to_vec();
+        let mut bytes = (*crate::bytes::to_bytes(cur)).to_vec();
         if idx >= bytes.len() {
             bytes.resize(idx + 1, b' ');
         }
         bytes[idx] = byte;
-        Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
+        Ok(Some(crate::bytes::from_bytes(&bytes)))
     }
 
     /// `$var[] = val` append on the named scope variable, auto-vivifying.
@@ -7192,7 +7192,10 @@ pub fn is_superglobal(name: &str) -> bool {
     // by-name variable access — it was 3% of a `foreach` profile — and the
     // answer is almost always no, which one byte settles for every name that
     // does not begin like a superglobal.
-    if !matches!(name.as_bytes().first(), Some(b'_' | b'G' | b'a')) {
+    if !matches!(
+        (*crate::bytes::to_bytes(name)).first(),
+        Some(b'_' | b'G' | b'a')
+    ) {
         return false;
     }
     matches!(
@@ -7375,6 +7378,8 @@ fn predefined_constants() -> FxHashMap<String, Value> {
     si("JSON_ERROR_CTRL_CHAR", 3);
     si("JSON_ERROR_SYNTAX", 4);
     si("JSON_ERROR_UTF8", 5);
+    si("JSON_INVALID_UTF8_IGNORE", 1_048_576);
+    si("JSON_INVALID_UTF8_SUBSTITUTE", 2_097_152);
     si("JSON_ERROR_RECURSION", 6);
     si("JSON_ERROR_INF_OR_NAN", 7);
     si("JSON_ERROR_UNSUPPORTED_TYPE", 8);
@@ -8627,7 +8632,14 @@ fn call_function_dispatched(name: &str, args: Vec<Value>, how: Dispatch) -> Resu
         set_pending_throw(new_object("Error", vec![Value::str(message)])?);
         return Ok(Value::Undef);
     }
-    call_library_throwing(&crate::argsig::lower_name(name), args, how)
+    // A string a library function builds by joining pieces that carry raw
+    // bytes is stored canonically (see `crate::bytes`).
+    match call_library_throwing(&crate::argsig::lower_name(name), args, how) {
+        Ok(Value::Str(s)) if crate::bytes::has_raw(&s) => {
+            Ok(Value::str(crate::bytes::canonical(s.as_str().to_string())))
+        }
+        other => other,
+    }
 }
 
 /// Call a standard-library function, turning a tagged argument error into the
@@ -11966,7 +11978,7 @@ const PHP_SPACE: &[char] = &[' ', '\t', '\n', '\r', '\x0b', '\x0c'];
 /// while a bare `"."` is not.
 fn scan_php_number(s: &str) -> Option<(Value, usize, bool)> {
     let t = s.trim_start_matches(PHP_SPACE);
-    let b = t.as_bytes();
+    let b = &*crate::bytes::to_bytes(t);
     let mut i = 0;
     if i < b.len() && (b[i] == b'+' || b[i] == b'-') {
         i += 1;
@@ -12047,7 +12059,7 @@ fn parse_php_number(s: &str) -> Value {
 /// front prepends a character of the same class as the one it left — `a`, `A` or
 /// `1`.
 fn increment_alnum_string(s: &str) -> String {
-    let mut b = s.as_bytes().to_vec();
+    let mut b = (*crate::bytes::to_bytes(s)).to_vec();
     let mut i = b.len();
     let mut carry = false;
     while i > 0 {
@@ -12088,7 +12100,7 @@ fn increment_alnum_string(s: &str) -> String {
         };
         b.insert(0, lead);
     }
-    String::from_utf8_lossy(&b).into_owned()
+    crate::bytes::from_bytes(&b)
 }
 
 /// The `zend_long` an `int` parameter receives in coercive mode, without the
@@ -12119,7 +12131,7 @@ pub fn is_numeric_string(s: &str) -> bool {
 /// round-trip test `n.to_string() == **s`, which allocated a `String` for every
 /// numeric-looking key just to compare it, is gone.
 pub fn canonical_int_key(s: &str) -> Option<i64> {
-    let b = s.as_bytes();
+    let b = &*crate::bytes::to_bytes(s);
     let digits = match b.first()? {
         b'-' => &b[1..],
         _ => b,
@@ -12812,7 +12824,7 @@ pub fn run_include(kind: crate::ast::IncludeKind, path: &Value) -> Result<Value,
         std::fs::read(&target)
     };
     let src = match read {
-        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+        Ok(bytes) => crate::bytes::from_bytes(&bytes),
         Err(e) => {
             let shown = if target.is_dir() {
                 std::fs::canonicalize(&target)

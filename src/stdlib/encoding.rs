@@ -25,10 +25,9 @@ fn deprecated_function(name: &str) {
     });
 }
 
-/// Materialize a byte slice as a PHP string, one byte per Latin-1 `char`
-/// (matches the runtime's `chr`).
+/// Materialize a byte slice as a PHP string (see `crate::bytes`).
 fn bytes_to_str(bytes: &[u8]) -> String {
-    bytes.iter().map(|&b| b as char).collect()
+    crate::bytes::from_bytes(bytes)
 }
 
 /// Reverse lookup for base64 decoding, ported from PHP's `base64_reverse_table`:
@@ -325,8 +324,8 @@ fn uudecode(src: &[u8]) -> Option<Vec<u8>> {
 pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
     let strict = || args.len() > 1 && crate::host::with_host(|h| h.is_truthy(&arg(args, 1)));
     let v = match name {
-        "base64_encode" => Value::str(STANDARD.encode(str_arg(args, 0).as_bytes())),
-        "base64_decode" => match base64_decode_ex(str_arg(args, 0).as_bytes(), strict()) {
+        "base64_encode" => Value::str(STANDARD.encode(bytes_arg(args, 0))),
+        "base64_decode" => match base64_decode_ex(&bytes_arg(args, 0), strict()) {
             Some(bytes) => Value::str(bytes_to_str(&bytes)),
             None => Value::bool(false),
         },
@@ -350,14 +349,10 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
                 }
             }
         }
-        "quoted_printable_encode" => {
-            Value::str(bytes_to_str(&qp_encode(str_arg(args, 0).as_bytes())))
-        }
-        "quoted_printable_decode" => {
-            Value::str(bytes_to_str(&qp_decode(str_arg(args, 0).as_bytes())))
-        }
-        "convert_uuencode" => Value::str(bytes_to_str(&uuencode(str_arg(args, 0).as_bytes()))),
-        "convert_uudecode" => match uudecode(str_arg(args, 0).as_bytes()) {
+        "quoted_printable_encode" => Value::str(bytes_to_str(&qp_encode(&bytes_arg(args, 0)))),
+        "quoted_printable_decode" => Value::str(bytes_to_str(&qp_decode(&bytes_arg(args, 0)))),
+        "convert_uuencode" => Value::str(bytes_to_str(&uuencode(&bytes_arg(args, 0)))),
+        "convert_uudecode" => match uudecode(&bytes_arg(args, 0)) {
             Some(bytes) => Value::str(bytes_to_str(&bytes)),
             None => Value::bool(false),
         },

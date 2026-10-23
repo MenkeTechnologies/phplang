@@ -100,7 +100,7 @@ fn mb_str_split(args: &[Value]) -> Result<Value, String> {
 /// `MB_CASE_UPPER` (0), `MB_CASE_LOWER` (1) or `MB_CASE_TITLE` (2), passed either
 /// as the integer or (phplang has no constant table) as the constant name string.
 fn mb_convert_case(args: &[Value]) -> String {
-    let s = str_arg(args, 0);
+    let s = crate::bytes::mb_text(&str_arg(args, 0)).into_owned();
     match resolve_mode(&arg(args, 1)) {
         1 => s.to_lowercase(),
         2 => title_case(&s),
@@ -275,7 +275,10 @@ fn mb_substr_count(args: &[Value]) -> Result<Value, String> {
 
 /// Return `(haystack, needle)` as codepoint vectors, case-folded when `ci`.
 fn ci_pair(args: &[Value], ci: bool) -> (Vec<char>, Vec<char>) {
-    let (h, n) = (str_arg(args, 0), str_arg(args, 1));
+    let (h, n) = (
+        crate::bytes::mb_text(&str_arg(args, 0)).into_owned(),
+        crate::bytes::mb_text(&str_arg(args, 1)).into_owned(),
+    );
     if ci {
         (fold_chars(&h), fold_chars(&n))
     } else {
@@ -670,6 +673,8 @@ fn mb_check_encoding(args: &[Value]) -> bool {
     };
     match enc.as_str() {
         "ASCII" => s.is_ascii(),
+        // A raw byte (see `crate::bytes`) is exactly a byte that is not UTF-8.
+        "UTF-8" => !crate::bytes::has_raw(&s),
         _ => true,
     }
 }

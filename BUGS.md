@@ -96,44 +96,21 @@ Only a program that explicitly raises `$depth` above 1024 AND feeds it a
 document nested that deep can observe it; at the reference's own default of 512
 the two agree. Removing the cap requires an iterative parser.
 
-## A non-ASCII byte cannot be represented
-
-`Value::Str` is a Rust `String`, so every string is valid UTF-8 and a lone byte
-above 0x7F becomes a two-byte codepoint.
+## A regex that needs the backtracking engine sees a raw byte as four
 
 ```text
-$ php -r 'var_dump(chr(-1));'                 => string(1) "\xff"
-$ target/debug/php -r 'var_dump(chr(-1));'    => string(2) "ÿ"
+$ php -r 'var_dump(preg_match("/(?<=a)\\xff/", "a\xff"));'              => int(1)
+$ target/debug/php -r 'var_dump(preg_match("/(?<=a)\\xff/", "a\xff"));' => int(0)
 ```
 
-The `chr()` deprecation for an out-of-range value IS emitted; only the byte
-width differs. This is architectural and affects `chr`, `strpbrk` on a
-mid-character match, and any other path that would produce a raw byte. Already
-recorded in the `chr` corpus entry as a DIVERGENCE.
-
-Further members of this family, measured in round 8 while porting the string
-functions around them. All four are the SAME root cause — there is no binary
-string type — and none can be fixed inside the function:
-
-```text
-$ php -r 'var_dump(quoted_printable_decode("h=C3=A9llo"));'              => string(6) "héllo"
-$ target/debug/php -r 'var_dump(quoted_printable_decode("h=C3=A9llo"));' => string(8) "hÃ©llo"
-
-$ php -r 'var_dump(strlen(hex2bin("c3a9")), strlen(base64_decode("w6k=")));'              => int(2) int(2)
-$ target/debug/php -r 'var_dump(strlen(hex2bin("c3a9")), strlen(base64_decode("w6k=")));' => int(4) int(4)
-
-$ php -r 'var_dump(strlen(count_chars("aab", 4)));'              => int(254)
-$ target/debug/php -r 'var_dump(strlen(count_chars("aab", 4)));' => int(510)
-```
-
-`pack()` and `unpack()` are in the same family: a packed byte of 0x80 or more
-is two bytes here, so `pack("q", -5)` round-trips through `unpack` wrongly while
-every byte below 0x80 is exact.
-
-`count_chars` modes 3 and 4 are the clearest case: their whole contract is to
-name bytes, and 128 of the 256 possible ones widen. Modes 0-2 and every
-ASCII-subject call are exact. Closing this needs `Value::Str` to become a byte
-string, which is an engine-wide change, not a library one.
+Strings are byte strings (`src/bytes.rs`): a byte that is not part of valid
+UTF-8 is stored as one private-use escape character and read back as that
+byte everywhere the string is measured, indexed, hashed, packed, matched or
+written. The one engine that still reads the stored text is `fancy-regex`, the
+fallback for a pattern with look-around, a backreference, an atomic group or a
+possessive quantifier: it matches over `&str`, where an escaped byte is a
+four-byte character, so such a pattern does not see the byte it names. A
+pattern the `regex` crate compiles (every other one) matches bytes exactly.
 
 ---
 

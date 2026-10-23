@@ -96,7 +96,12 @@ fn main() -> ExitCode {
     // No file and non-interactive stdin: run stdin as a script. The reference
     // names it `Standard input code` rather than `Command line code`, which is
     // what every diagnostic and `__FILE__` in it quote.
-    let src = std::io::read_to_string(std::io::stdin()).unwrap_or_default();
+    let src = {
+        use std::io::Read;
+        let mut b = Vec::new();
+        let _ = std::io::stdin().read_to_end(&mut b);
+        phplang::bytes::from_bytes(&b)
+    };
     match phplang::eval_stdin_cli(&src, &cli.argv) {
         Ok(v) => ran(v),
         Err(e) => fail(&e),
@@ -118,7 +123,9 @@ fn fmt_params(params: &[phplang::host::Param]) -> String {
 }
 
 fn dump(file: &str) -> Result<(), String> {
-    let src = std::fs::read_to_string(file).map_err(|e| format!("cannot read {file}: {e}"))?;
+    let src = std::fs::read(file)
+        .map(|b| phplang::bytes::from_bytes(&b))
+        .map_err(|e| format!("cannot read {file}: {e}"))?;
     let prog = phplang::compile(&src)?;
     // Bytecode dump is explicit user-requested output.
     println!("== main ==\n{:#?}", prog.main.ops);
@@ -135,7 +142,9 @@ fn dump(file: &str) -> Result<(), String> {
 /// `--dump-tokens`: print the lexer token stream (after `rust { }` desugaring),
 /// one `line:col  Tok` per line.
 fn dump_tokens(file: &str) -> Result<(), String> {
-    let src = std::fs::read_to_string(file).map_err(|e| format!("cannot read {file}: {e}"))?;
+    let src = std::fs::read(file)
+        .map(|b| phplang::bytes::from_bytes(&b))
+        .map_err(|e| format!("cannot read {file}: {e}"))?;
     let src = phplang::rust_ffi::desugar(&src);
     for t in phplang::lexer::lex(&src)? {
         println!("{}\t{:?}", t.line, t.tok);
@@ -145,7 +154,9 @@ fn dump_tokens(file: &str) -> Result<(), String> {
 
 /// `--dump-ast`: print the parsed PHP AST.
 fn dump_ast(file: &str) -> Result<(), String> {
-    let src = std::fs::read_to_string(file).map_err(|e| format!("cannot read {file}: {e}"))?;
+    let src = std::fs::read(file)
+        .map(|b| phplang::bytes::from_bytes(&b))
+        .map_err(|e| format!("cannot read {file}: {e}"))?;
     let stmts = phplang::parser::parse(&src)?;
     println!("{stmts:#?}");
     Ok(())
@@ -154,7 +165,9 @@ fn dump_ast(file: &str) -> Result<(), String> {
 /// `--disasm`: print a fusevm bytecode disassembly of the main chunk and every
 /// compiled function, via the shared `fusevm::Chunk::disassemble`.
 fn disasm(file: &str) -> Result<(), String> {
-    let src = std::fs::read_to_string(file).map_err(|e| format!("cannot read {file}: {e}"))?;
+    let src = std::fs::read(file)
+        .map(|b| phplang::bytes::from_bytes(&b))
+        .map_err(|e| format!("cannot read {file}: {e}"))?;
     let prog = phplang::compile(&src)?;
     println!("; php fusevm — main\n{}", prog.main.disassemble());
     for (name, f) in &prog.functions {
@@ -172,7 +185,9 @@ fn disasm(file: &str) -> Result<(), String> {
 /// predicates, so the answer comes from the compiler that would have done the
 /// work. The programs own output precedes the report.
 fn tiers(file: &str) -> Result<(), String> {
-    let src = std::fs::read_to_string(file).map_err(|e| format!("cannot read {file}: {e}"))?;
+    let src = std::fs::read(file)
+        .map(|b| phplang::bytes::from_bytes(&b))
+        .map_err(|e| format!("cannot read {file}: {e}"))?;
     println!("{}", phplang::tiers::report(&src)?);
     Ok(())
 }

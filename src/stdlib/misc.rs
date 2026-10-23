@@ -571,7 +571,7 @@ pub(crate) fn csv_fields_value(fields: Option<Vec<Vec<u8>>>) -> Value {
         None => make_list(vec![Value::Undef]),
         Some(fs) => make_list(
             fs.into_iter()
-                .map(|f| Value::str(String::from_utf8_lossy(&f).into_owned()))
+                .map(|f| Value::str(crate::bytes::from_bytes(&f)))
                 .collect(),
         ),
     }
@@ -1327,12 +1327,10 @@ fn str_word_count(args: &[Value]) -> Result<Value, String> {
         }
         if p > start {
             match format {
-                1 => words.push(Value::str(
-                    String::from_utf8_lossy(&bytes[start..p]).into_owned(),
-                )),
+                1 => words.push(Value::str(crate::bytes::from_bytes(&bytes[start..p]))),
                 2 => pairs.push((
                     Value::int(start as i64),
-                    Value::str(String::from_utf8_lossy(&bytes[start..p]).into_owned()),
+                    Value::str(crate::bytes::from_bytes(&bytes[start..p])),
                 )),
                 _ => count += 1,
             }
@@ -1683,7 +1681,7 @@ fn php_pack(args: &[Value]) -> Result<Value, String> {
                     ));
                 }
                 if arg < 0 {
-                    arg = str_arg(argv, currentarg as usize).len() as i64;
+                    arg = crate::bytes::byte_len(&str_arg(argv, currentarg as usize)) as i64;
                     if code == b'Z' {
                         arg += 1;
                     }
@@ -1767,7 +1765,8 @@ fn php_pack(args: &[Value]) -> Result<Value, String> {
         let n = arg.max(0) as usize;
         match code {
             b'a' | b'A' | b'Z' => {
-                let s = crate::host::with_host(|h| h.to_str(&next())).into_bytes();
+                let s = crate::bytes::to_bytes(&crate::host::with_host(|h| h.to_str(&next())))
+                    .into_owned();
                 let cp = if code == b'Z' { n.saturating_sub(1) } else { n };
                 let fill = if code == b'A' { b' ' } else { 0 };
                 let start = out.len();
@@ -1776,7 +1775,8 @@ fn php_pack(args: &[Value]) -> Result<Value, String> {
                 out[start..start + k].copy_from_slice(&s[..k]);
             }
             b'h' | b'H' => {
-                let s = crate::host::with_host(|h| h.to_str(&next())).into_bytes();
+                let s = crate::bytes::to_bytes(&crate::host::with_host(|h| h.to_str(&next())))
+                    .into_owned();
                 let mut count = n;
                 if count > s.len() {
                     let c = code as char;
@@ -1843,15 +1843,13 @@ fn php_pack(args: &[Value]) -> Result<Value, String> {
             _ => {}
         }
     }
-    Ok(Value::str(
-        out.iter().map(|&b| b as char).collect::<String>(),
-    ))
+    Ok(bytes_value(&out))
 }
 
 /// `PHP_FUNCTION(unpack)`.
 fn php_unpack(args: &[Value]) -> Result<Value, String> {
     let format = str_arg(args, 0).into_bytes();
-    let data = str_arg(args, 1).into_bytes();
+    let data = bytes_arg(args, 1);
     let offset = if args.len() > 2 { int_arg(args, 2) } else { 0 };
     if offset < 0 || offset > data.len() as i64 {
         return Err(throws(
@@ -1940,9 +1938,9 @@ fn php_unpack(args: &[Value]) -> Result<Value, String> {
                 let key = if name.is_empty() {
                     Value::int(i + 1)
                 } else if repetitions == 1 {
-                    Value::str(String::from_utf8_lossy(name).into_owned())
+                    Value::str(crate::bytes::from_bytes(name))
                 } else {
-                    Value::str(format!("{}{}", String::from_utf8_lossy(name), i + 1))
+                    Value::str(format!("{}{}", crate::bytes::from_bytes(name), i + 1))
                 };
                 let at = inputpos.max(0) as usize;
                 let bytes = |n: usize| -> [u8; 8] {
@@ -1950,8 +1948,6 @@ fn php_unpack(args: &[Value]) -> Result<Value, String> {
                     b[..n].copy_from_slice(&input[at..at + n]);
                     b
                 };
-                let latin1 =
-                    |b: &[u8]| Value::str(b.iter().map(|&x| x as char).collect::<String>());
                 let val = match ty {
                     b'a' | b'A' | b'Z' => {
                         let mut len = inputlen - inputpos;
@@ -1973,7 +1969,7 @@ fn php_unpack(args: &[Value]) -> Result<Value, String> {
                                 s = &s[..z];
                             }
                         }
-                        Some(latin1(s))
+                        Some(bytes_value(s))
                     }
                     b'h' | b'H' => {
                         let mut len = (inputlen - inputpos) * 2;

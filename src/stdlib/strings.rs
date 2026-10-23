@@ -48,7 +48,8 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         "strtok" => strtok(args),
         "similar_text" => {
             let (a, b) = (str_arg(args, 0), str_arg(args, 1));
-            let common = similar_text_bytes(a.as_bytes(), b.as_bytes());
+            let common =
+                similar_text_bytes(&crate::bytes::to_bytes(&a), &crate::bytes::to_bytes(&b));
             // `$percent` is a by-reference OUT parameter. PHP computes it as the
             // single expression `sim * 200.0 / (len(a) + len(b))`; splitting that
             // into a divide and a multiply rounds differently in the last bit.
@@ -81,9 +82,9 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             ))
         }
         "strip_tags" => strip_tags(args),
-        "mb_strlen" => Value::int(str_arg(args, 0).chars().count() as i64),
-        "mb_strtoupper" => Value::str(str_arg(args, 0).to_uppercase()),
-        "mb_strtolower" => Value::str(str_arg(args, 0).to_lowercase()),
+        "mb_strlen" => Value::int(crate::bytes::mb_text(&str_arg(args, 0)).chars().count() as i64),
+        "mb_strtoupper" => Value::str(crate::bytes::mb_text(&str_arg(args, 0)).to_uppercase()),
+        "mb_strtolower" => Value::str(crate::bytes::mb_text(&str_arg(args, 0)).to_lowercase()),
         "mb_substr" => Value::str(mb_substr(args)),
         _ => return None,
     };
@@ -110,7 +111,7 @@ fn substr_count(args: &[Value]) -> Result<Value, String> {
             format!("substr_count(): Argument #{argno} (${name}) must be contained in argument #1 ($haystack)"),
         )
     };
-    let bytes = hay.as_bytes();
+    let bytes = &*crate::bytes::to_bytes(&hay);
     let len = bytes.len() as i64;
     let mut start = int_arg(args, 2);
     if start < 0 {
@@ -136,7 +137,7 @@ fn substr_count(args: &[Value]) -> Result<Value, String> {
     // PHP strings are byte-oriented; count non-overlapping needle matches over
     // the byte window so multibyte haystacks never slice mid-UTF-8-char.
     let slice = &bytes[start..end];
-    let nb = needle.as_bytes();
+    let nb = &*crate::bytes::to_bytes(&needle);
     let mut count = 0i64;
     let mut i = 0;
     while i + nb.len() <= slice.len() {
@@ -177,11 +178,12 @@ fn strstr(args: &[Value], ci: bool) -> Value {
 fn strrchr(args: &[Value]) -> Value {
     let hay = str_arg(args, 0);
     let needle = str_arg(args, 1);
-    let Some(&c) = needle.as_bytes().first() else {
+    let Some(&c) = (*crate::bytes::to_bytes(&needle)).first() else {
         return Value::bool(false);
     };
-    match hay.bytes().rposition(|b| b == c) {
-        Some(i) => Value::str(hay[i..].to_string()),
+    let hb = crate::bytes::to_bytes(&hay);
+    match hb.iter().rposition(|&b| b == c) {
+        Some(i) => Value::str(crate::bytes::from_bytes(&hb[i..])),
         None => Value::bool(false),
     }
 }
@@ -241,7 +243,7 @@ fn str_step(args: &[Value], up: bool) -> Result<Value, String> {
         }
         b.remove(0);
     }
-    Ok(Value::str(String::from_utf8(b).unwrap_or_default()))
+    Ok(Value::str(crate::bytes::from_bytes(&b)))
 }
 
 fn strpbrk(args: &[Value]) -> Value {
@@ -251,8 +253,13 @@ fn strpbrk(args: &[Value]) -> Value {
     // character — `strpbrk("é", "©")` matches the shared trailing 0xA9. Slicing
     // the `&str` at that index panics, so cut the byte vector instead and let
     // the lossy conversion produce what the reference's byte string shows.
-    match s.bytes().position(|b| set.as_bytes().contains(&b)) {
-        Some(i) => Value::str(String::from_utf8_lossy(&s.as_bytes()[i..]).into_owned()),
+    match crate::bytes::to_bytes(&s)
+        .iter()
+        .position(|b| (*crate::bytes::to_bytes(&set)).contains(b))
+    {
+        Some(i) => Value::str(crate::bytes::from_bytes(
+            &(&*crate::bytes::to_bytes(&s))[i..],
+        )),
         None => Value::bool(false),
     }
 }
@@ -263,7 +270,7 @@ fn strpbrk(args: &[Value]) -> Value {
 fn strspn(args: &[Value], want: bool) -> Value {
     let subject = str_arg(args, 0);
     let mask = str_arg(args, 1);
-    let bytes = subject.as_bytes();
+    let bytes = &*crate::bytes::to_bytes(&subject);
     let len = bytes.len() as i64;
     let mut start = int_arg(args, 2);
     if start < 0 {
@@ -283,7 +290,7 @@ fn strspn(args: &[Value], want: bool) -> Value {
     };
     let n = bytes[start..end]
         .iter()
-        .take_while(|b| mask.as_bytes().contains(b) == want)
+        .take_while(|b| (*crate::bytes::to_bytes(&mask)).contains(b) == want)
         .count();
     Value::int(n as i64)
 }
@@ -310,10 +317,13 @@ fn checked_offset(func: &str, hay_len: usize, raw: i64) -> Result<i64, String> {
 fn strpos_ci(args: &[Value]) -> Result<Value, String> {
     let hay = str_arg(args, 0);
     let needle = str_arg(args, 1);
-    let off = checked_offset("stripos", hay.len(), int_arg(args, 2))? as usize;
+    let off = checked_offset("stripos", crate::bytes::byte_len(&hay), int_arg(args, 2))? as usize;
     // Byte-oriented search: slice the byte view so a multibyte offset can't panic.
     Ok(
-        match ci_find_bytes(&hay.as_bytes()[off..], needle.as_bytes()) {
+        match ci_find_bytes(
+            &(&*crate::bytes::to_bytes(&hay))[off..],
+            &crate::bytes::to_bytes(&needle),
+        ) {
             Some(i) => Value::int((off + i) as i64),
             None => Value::bool(false),
         },
@@ -327,7 +337,7 @@ fn strpos_ci(args: &[Value]) -> Result<Value, String> {
 fn strrpos(args: &[Value], ci: bool) -> Result<Value, String> {
     let hay = str_arg(args, 0);
     let needle = str_arg(args, 1);
-    let len = hay.len();
+    let len = crate::bytes::byte_len(&hay);
     let func = if ci { "strripos" } else { "strrpos" };
     // Validated BEFORE the empty-needle shortcut: `strrpos("abc", "", 10)` is an
     // offset error, not `strlen($haystack)`.
@@ -339,26 +349,35 @@ fn strrpos(args: &[Value], ci: bool) -> Result<Value, String> {
     }
     // Determine the inclusive window [lo, hi] where a match may START.
     let (lo, hi) = if off >= 0 {
-        (off as usize, len.saturating_sub(needle.len()))
+        (
+            off as usize,
+            len.saturating_sub(crate::bytes::byte_len(&needle)),
+        )
     } else {
         // Negative offset: the match may start no later than len+off (PHP's
         // stop-this-many-bytes-from-the-end semantics), independent of needle len.
         let hi = (len as i64 + off).max(0) as usize;
-        (0, hi.min(len.saturating_sub(needle.len())))
+        (
+            0,
+            hi.min(len.saturating_sub(crate::bytes::byte_len(&needle))),
+        )
     };
     if lo > len {
         return Ok(Value::bool(false));
     }
     let eq = |i: usize| {
-        let w = &hay.as_bytes()[i..i + needle.len()];
+        let w = &(&*crate::bytes::to_bytes(&hay))[i..i + crate::bytes::byte_len(&needle)];
         if ci {
-            w.eq_ignore_ascii_case(needle.as_bytes())
+            w.eq_ignore_ascii_case(&crate::bytes::to_bytes(&needle))
         } else {
-            w == needle.as_bytes()
+            w == (&*crate::bytes::to_bytes(&needle))
         }
     };
     Ok(
-        match (lo..=hi).rev().find(|&i| i + needle.len() <= len && eq(i)) {
+        match (lo..=hi)
+            .rev()
+            .find(|&i| i + crate::bytes::byte_len(&needle) <= len && eq(i))
+        {
             Some(i) => Value::int(i as i64),
             None => Value::bool(false),
         },
@@ -380,8 +399,8 @@ fn strncasecmp(args: &[Value]) -> Result<Value, String> {
         ));
     }
     let n = n_raw as usize;
-    let ab = &a.as_bytes()[..n.min(a.len())];
-    let bb = &b.as_bytes()[..n.min(b.len())];
+    let ab = &(&*crate::bytes::to_bytes(&a))[..n.min(crate::bytes::byte_len(&a))];
+    let bb = &(&*crate::bytes::to_bytes(&b))[..n.min(crate::bytes::byte_len(&b))];
     let la: Vec<u8> = ab.iter().map(|c| c.to_ascii_lowercase()).collect();
     let lb: Vec<u8> = bb.iter().map(|c| c.to_ascii_lowercase()).collect();
     // PHP returns `memcmp`'s value: the difference of the first differing byte,
@@ -399,11 +418,14 @@ fn strtr(args: &[Value]) -> Value {
     if args.len() >= 3 && !matches!(arg(args, 2), Value::Undef) {
         let from = str_arg(args, 1);
         let to = str_arg(args, 2);
-        let n = from.len().min(to.len());
-        let (fb, tb) = (from.as_bytes(), to.as_bytes());
-        let out: Vec<u8> = s
-            .bytes()
-            .map(|b| {
+        let (fb, tb) = (
+            (&*crate::bytes::to_bytes(&from)),
+            (&*crate::bytes::to_bytes(&to)),
+        );
+        let n = fb.len().min(tb.len());
+        let out: Vec<u8> = crate::bytes::to_bytes(&s)
+            .iter()
+            .map(|&b| {
                 fb[..n]
                     .iter()
                     .position(|&x| x == b)
@@ -411,7 +433,7 @@ fn strtr(args: &[Value]) -> Value {
                     .unwrap_or(b)
             })
             .collect();
-        return Value::str(String::from_utf8_lossy(&out).into_owned());
+        return Value::str(crate::bytes::from_bytes(&out));
     }
     // 2-arg map form.
     let all = with_host(|h| h.array_pairs(&arg(args, 1)).unwrap_or_default())
@@ -423,16 +445,25 @@ fn strtr(args: &[Value]) -> Value {
     if !s.is_empty() && all.iter().any(|(k, _)| k.is_empty()) {
         with_host(|h| h.warn("strtr(): Ignoring replacement of empty string"));
     }
-    let mut pairs: Vec<(String, String)> = all.into_iter().filter(|(k, _)| !k.is_empty()).collect();
+    let mut pairs: Vec<(Vec<u8>, Vec<u8>)> = all
+        .into_iter()
+        .filter(|(k, _)| !k.is_empty())
+        .map(|(k, v)| {
+            (
+                crate::bytes::to_bytes(&k).into_owned(),
+                crate::bytes::to_bytes(&v).into_owned(),
+            )
+        })
+        .collect();
     // Longest keys win at each position.
     pairs.sort_by_key(|p| std::cmp::Reverse(p.0.len()));
-    let bytes = s.as_bytes();
-    let mut out: Vec<u8> = Vec::with_capacity(s.len());
+    let bytes = &*crate::bytes::to_bytes(&s);
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
     let mut i = 0;
     'outer: while i < bytes.len() {
         for (k, v) in &pairs {
-            if bytes[i..].starts_with(k.as_bytes()) {
-                out.extend_from_slice(v.as_bytes());
+            if bytes[i..].starts_with(k) {
+                out.extend_from_slice(v);
                 i += k.len();
                 continue 'outer;
             }
@@ -442,18 +473,18 @@ fn strtr(args: &[Value]) -> Value {
         out.push(bytes[i]);
         i += 1;
     }
-    Value::str(String::from_utf8_lossy(&out).into_owned())
+    Value::str(crate::bytes::from_bytes(&out))
 }
 
 /// One splice: replace `l` bytes of `s` starting at `f` with `replace`, where
 /// `f` and `l` have already been clamped by [`substr_replace_bounds`].
 fn substr_splice(s: &str, replace: &str, f: usize, l: usize) -> String {
-    let sb = s.as_bytes();
+    let sb = &*crate::bytes::to_bytes(s);
     let mut out: Vec<u8> = Vec::with_capacity(sb.len() - l + replace.len());
     out.extend_from_slice(&sb[..f]);
-    out.extend_from_slice(replace.as_bytes());
+    out.extend_from_slice(&crate::bytes::to_bytes(replace));
     out.extend_from_slice(&sb[f + l..]);
-    String::from_utf8_lossy(&out).into_owned()
+    crate::bytes::from_bytes(&out)
 }
 
 /// Clamp a raw `$offset`/`$length` pair against a subject length, exactly as
@@ -535,11 +566,11 @@ fn substr_replace(args: &[Value]) -> Result<Value, String> {
             str_arg(args, 1)
         };
         let l = if len_is_null {
-            s.len() as i64
+            crate::bytes::byte_len(&s) as i64
         } else {
             int_arg(args, 3)
         };
-        let (f, l) = substr_replace_bounds(s.len(), int_arg(args, 2), l);
+        let (f, l) = substr_replace_bounds(crate::bytes::byte_len(&s), int_arg(args, 2), l);
         return Ok(Value::str(substr_splice(&s, &replace, f, l)));
     }
 
@@ -564,13 +595,15 @@ fn substr_replace(args: &[Value]) -> Result<Value, String> {
             as_int(&from_v)
         };
         let raw_len = if is_arr_len {
-            lens.get(i).map(|v| v.to_int()).unwrap_or(s.len() as i64)
+            lens.get(i)
+                .map(|v| v.to_int())
+                .unwrap_or(crate::bytes::byte_len(&s) as i64)
         } else if !len_is_null {
             as_int(&len_v)
         } else {
-            s.len() as i64
+            crate::bytes::byte_len(&s) as i64
         };
-        let (f, l) = substr_replace_bounds(s.len(), raw_from, raw_len);
+        let (f, l) = substr_replace_bounds(crate::bytes::byte_len(&s), raw_from, raw_len);
         let replace = if is_arr_repl {
             repls
                 .get(i)
@@ -631,11 +664,11 @@ fn chunk_split(args: &[Value]) -> Result<Value, String> {
     };
     // `$length` counts bytes, as everywhere in PHP's string family.
     let mut out: Vec<u8> = Vec::with_capacity(body.len() + end.len());
-    for chunk in body.as_bytes().chunks(length as usize) {
+    for chunk in (*crate::bytes::to_bytes(&body)).chunks(length as usize) {
         out.extend_from_slice(chunk);
-        out.extend_from_slice(end.as_bytes());
+        out.extend_from_slice(&crate::bytes::to_bytes(&end));
     }
-    Ok(Value::str(String::from_utf8_lossy(&out).into_owned()))
+    Ok(Value::str(crate::bytes::from_bytes(&out)))
 }
 
 fn quotemeta(s: &str) -> String {
@@ -704,9 +737,9 @@ fn addcslashes(args: &[Value]) -> Value {
     if s.is_empty() || what.is_empty() {
         return Value::str(s);
     }
-    let flags = with_host(|h| charmask(h, what.as_bytes(), "addcslashes"));
+    let flags = with_host(|h| charmask(h, &crate::bytes::to_bytes(&what), "addcslashes"));
     let mut out: Vec<u8> = Vec::with_capacity(s.len());
-    for &c in s.as_bytes() {
+    for &c in &*crate::bytes::to_bytes(&s) {
         if flags[c as usize] {
             if !(32..=126).contains(&c) {
                 out.push(b'\\');
@@ -726,7 +759,7 @@ fn addcslashes(args: &[Value]) -> Value {
         }
         out.push(c);
     }
-    Value::str(String::from_utf8_lossy(&out).into_owned())
+    Value::str(crate::bytes::from_bytes(&out))
 }
 
 /// Port of `php_stripcslashes` (php-src 8.5 `ext/standard/string.c:3749`) — the
@@ -735,7 +768,7 @@ fn addcslashes(args: &[Value]) -> Value {
 /// escape yields the escaped character itself, so `\z` is `z`.
 fn stripcslashes(args: &[Value]) -> Value {
     let s = str_arg(args, 0);
-    let b = s.as_bytes();
+    let b = &*crate::bytes::to_bytes(&s);
     let n = b.len();
     let mut out: Vec<u8> = Vec::with_capacity(n);
     let mut i = 0;
@@ -787,7 +820,7 @@ fn stripcslashes(args: &[Value]) -> Value {
         }
         i += 1;
     }
-    Value::str(String::from_utf8_lossy(&out).into_owned())
+    Value::str(crate::bytes::from_bytes(&out))
 }
 
 // ── count_chars ──────────────────────────────────────────────────────────────
@@ -807,7 +840,7 @@ fn count_chars(args: &[Value]) -> Result<Value, String> {
         ));
     }
     let mut chars = [0i64; 256];
-    for &b in s.as_bytes() {
+    for &b in &*crate::bytes::to_bytes(&s) {
         chars[b as usize] += 1;
     }
     if mode >= 3 {
@@ -818,7 +851,7 @@ fn count_chars(args: &[Value]) -> Result<Value, String> {
         let bytes: Vec<u8> = (0..=255u8)
             .filter(|&i| (chars[i as usize] == 0) == want_zero)
             .collect();
-        return Ok(Value::str(String::from_utf8_lossy(&bytes).into_owned()));
+        return Ok(Value::str(crate::bytes::from_bytes(&bytes)));
     }
     Ok(make_map(
         (0..256)
@@ -863,13 +896,13 @@ fn strtok(args: &[Value]) -> Value {
         str_arg(args, 0)
     };
     let mut table = [false; 256];
-    for &d in delims.as_bytes() {
+    for &d in &*crate::bytes::to_bytes(&delims) {
         table[d as usize] = true;
     }
     if two_arg {
         with_host(|h| h.set_strtok_state(Some((subject.clone(), 0))));
     }
-    let b = subject.as_bytes();
+    let b = &*crate::bytes::to_bytes(&subject);
     if pos >= b.len() {
         return Value::bool(false);
     }
@@ -885,7 +918,7 @@ fn strtok(args: &[Value]) -> Value {
     while pos < b.len() && !table[b[pos] as usize] {
         pos += 1;
     }
-    let token = String::from_utf8_lossy(&b[tok_start..pos]).into_owned();
+    let token = crate::bytes::from_bytes(&b[tok_start..pos]);
     with_host(|h| h.set_strtok_state(Some((subject, pos + 1))));
     Value::str(token)
 }
@@ -1219,8 +1252,8 @@ fn strip_tags(args: &[Value]) -> Value {
             None => h.to_str(v).to_ascii_lowercase().into_bytes(),
         })),
     };
-    let out = strip_tags_ex(subject.as_bytes(), allow.as_deref());
-    Value::str(String::from_utf8_lossy(&out).into_owned())
+    let out = strip_tags_ex(&crate::bytes::to_bytes(&subject), allow.as_deref());
+    Value::str(crate::bytes::from_bytes(&out))
 }
 
 // ── distance metrics ─────────────────────────────────────────────────────────
@@ -1259,8 +1292,8 @@ fn levenshtein(args: &[Value]) -> Value {
     let cins = args.get(2).map(crate::host::long_of).unwrap_or(1);
     let crep = args.get(3).map(crate::host::long_of).unwrap_or(1);
     let cdel = args.get(4).map(crate::host::long_of).unwrap_or(1);
-    let ab = a.as_bytes();
-    let bb = b.as_bytes();
+    let ab = &*crate::bytes::to_bytes(&a);
+    let bb = &*crate::bytes::to_bytes(&b);
     let (n, m) = (ab.len(), bb.len());
     // Single-row DP; row[j] is the distance to bb[..j].
     //
@@ -1565,7 +1598,7 @@ fn scan_int_field(s: &[u8], p: &mut usize, width: usize, mut base: u32) -> Optio
         buf.pop();
         *p -= 1;
     }
-    Some((String::from_utf8_lossy(&buf).into_owned(), base))
+    Some((crate::bytes::from_bytes(&buf), base))
 }
 
 /// Port of the float DFA (`scanf.c:1061`). Returns the collected literal, or
@@ -1629,7 +1662,7 @@ fn scan_float_field(s: &[u8], p: &mut usize, width: usize) -> Option<String> {
             *p -= 1;
         }
     }
-    Some(String::from_utf8_lossy(&buf).into_owned())
+    Some(crate::bytes::from_bytes(&buf))
 }
 
 /// The outcome of one scan: the value produced per specifier index (`None` for a
@@ -1658,7 +1691,7 @@ fn sscanf(args: &[Value]) -> Result<Value, String> {
     // format BEFORE any input is read, so both of these fire even on input that
     // could never have matched.
     if num_vars > 0 {
-        let nspecs = parse_scan_format(fmt.as_bytes())
+        let nspecs = parse_scan_format(&crate::bytes::to_bytes(&fmt))
             .iter()
             .filter(|it| matches!(it, ScanItem::Conv(s) if !s.suppress))
             .count();
@@ -1675,7 +1708,11 @@ fn sscanf(args: &[Value]) -> Result<Value, String> {
             ));
         }
     }
-    let r = sscanf_scan(input.as_bytes(), fmt.as_bytes(), num_vars);
+    let r = sscanf_scan(
+        &crate::bytes::to_bytes(&input),
+        &crate::bytes::to_bytes(&fmt),
+        num_vars,
+    );
 
     // Nothing converted AND the input ran out: `scan_set_error_return`
     // (`scanf.c:1184`) replaces the whole answer.
@@ -1784,7 +1821,7 @@ fn sscanf_scan(input: &[u8], fmt: &[u8], num_vars: usize) -> ScanResult {
                             }
                             return r;
                         };
-                        let (neg, body) = match digits.as_bytes().first() {
+                        let (neg, body) = match (*crate::bytes::to_bytes(&digits)).first() {
                             Some(b'-') => (true, &digits[1..]),
                             Some(b'+') => (false, &digits[1..]),
                             _ => (false, digits.as_str()),
@@ -1834,7 +1871,7 @@ fn sscanf_scan(input: &[u8], fmt: &[u8], num_vars: usize) -> ScanResult {
                                 break;
                             }
                         }
-                        Value::str(String::from_utf8_lossy(&input[start..p]).into_owned())
+                        Value::str(crate::bytes::from_bytes(&input[start..p]))
                     }
                     b'[' => {
                         let set = spec.set.as_ref();
@@ -1851,7 +1888,7 @@ fn sscanf_scan(input: &[u8], fmt: &[u8], num_vars: usize) -> ScanResult {
                             // zero-length match.
                             return r;
                         }
-                        Value::str(String::from_utf8_lossy(&input[start..p]).into_owned())
+                        Value::str(crate::bytes::from_bytes(&input[start..p]))
                     }
                     _ => return r,
                 };
@@ -1869,7 +1906,7 @@ fn sscanf_scan(input: &[u8], fmt: &[u8], num_vars: usize) -> ScanResult {
 
 /// `mb_substr($str, $start, $length = null)`: codepoint-aware `substr`.
 fn mb_substr(args: &[Value]) -> String {
-    let s = str_arg(args, 0);
+    let s = crate::bytes::mb_text(&str_arg(args, 0)).into_owned();
     let chars: Vec<char> = s.chars().collect();
     let len = chars.len() as i64;
     let mut start = int_arg(args, 1);
@@ -1901,7 +1938,10 @@ fn is_truthy(v: &Value) -> bool {
 
 /// ASCII case-insensitive search over `&str`: index of the first match of `needle`.
 fn ci_find(hay: &str, needle: &str) -> Option<usize> {
-    ci_find_bytes(hay.as_bytes(), needle.as_bytes())
+    ci_find_bytes(
+        &crate::bytes::to_bytes(hay),
+        &crate::bytes::to_bytes(needle),
+    )
 }
 
 /// ASCII case-insensitive byte search: index of the first match of `nb` in `hb`.

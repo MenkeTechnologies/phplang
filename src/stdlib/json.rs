@@ -525,7 +525,7 @@ impl<'a, 'h> Parser<'a, 'h> {
                     // bytes present.
                     let len = utf8_len(c);
                     let end = (self.pos + len).min(self.b.len());
-                    out.push_str(&String::from_utf8_lossy(&self.b[self.pos..end]));
+                    out.push_str(&crate::bytes::from_bytes(&self.b[self.pos..end]));
                     self.pos = end;
                 }
             }

@@ -59,7 +59,7 @@ fn push_pct(out: &mut String, b: u8) {
 /// `urlencode`: RFC 1738, space becomes `+`, `~` is escaped.
 fn urlencode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
-    for &b in s.as_bytes() {
+    for &b in &*crate::bytes::to_bytes(s) {
         if is_unreserved_url(b) {
             out.push(b as char);
         } else if b == b' ' {
@@ -74,7 +74,7 @@ fn urlencode(s: &str) -> String {
 /// `rawurlencode`: RFC 3986, space becomes `%20`, `~` is preserved.
 fn rawurlencode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
-    for &b in s.as_bytes() {
+    for &b in &*crate::bytes::to_bytes(s) {
         if is_unreserved_raw(b) {
             out.push(b as char);
         } else {
@@ -88,7 +88,7 @@ fn rawurlencode(s: &str) -> String {
 /// space (`rawurldecode` leaves `+` literal). A `%` not followed by two hex
 /// digits is emitted verbatim, matching PHP.
 fn percent_decode(s: &str, plus_to_space: bool) -> String {
-    let b = s.as_bytes();
+    let b = &*crate::bytes::to_bytes(s);
     let mut out: Vec<u8> = Vec::with_capacity(b.len());
     let mut i = 0;
     while i < b.len() {
@@ -113,7 +113,7 @@ fn percent_decode(s: &str, plus_to_space: bool) -> String {
             }
         }
     }
-    String::from_utf8_lossy(&out).into_owned()
+    crate::bytes::from_bytes(&out)
 }
 
 /// Hex digit value for one ASCII byte, or `None` if not `[0-9A-Fa-f]`.
@@ -429,7 +429,7 @@ fn replace_ctrl(bytes: &[u8]) -> String {
         .iter()
         .map(|&c| if c < 0x20 || c == 0x7f { b'_' } else { c })
         .collect();
-    String::from_utf8_lossy(&mapped).into_owned()
+    crate::bytes::from_bytes(&mapped)
 }
 
 /// First index of `ch` in `b[start..end]`, else `None`.
@@ -484,7 +484,7 @@ enum Stage {
 /// Faithful port of `ext/standard/url.c:php_url_parse_ex2`. Returns `None` for
 /// the inputs PHP rejects as `false` (bad/empty authority, out-of-range port).
 fn php_url_parse(input: &str) -> Option<UrlParts> {
-    let b = input.as_bytes();
+    let b = &*crate::bytes::to_bytes(input);
     let ue = b.len();
     let mut r = UrlParts::default();
     let mut s: usize = 0;

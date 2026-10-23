@@ -69,6 +69,13 @@ source ──▶ lexer ──▶ parser ──▶ compiler ──▶ fusevm::Chu
 
 - **Scalars** (`int`, `float`, `bool`, `string`, `null`) ride through the VM as
   native `fusevm::Value`s.
+- **Strings are byte strings.** A byte that is not part of valid UTF-8 is held
+  as one private-use escape character inside the Rust string (`src/bytes.rs`)
+  and read back as that byte by everything that measures, indexes, hashes,
+  packs, matches or writes a string, so `chr(255)`, `hex2bin`, raw digests,
+  `pack`, binary files and non-UTF-8 scripts are byte-exact; text costs nothing
+  extra. Joins that rebuild a valid character from raw bytes are re-derived, so
+  `chr(0xC3) . chr(0xA9) === "é"`.
 - **Arrays** are heap objects in `PhpHost`; they travel as `Value::Obj(u32)`
   handles into that heap.
 - **Arithmetic** `+ - *` lowers to native fusevm ops so the JIT can trace hot

@@ -11,6 +11,7 @@ pub mod argtypes;
 pub mod ast;
 pub mod banner;
 pub mod builtins;
+pub mod bytes;
 pub mod cli;
 pub mod compiler;
 pub mod corpus;
@@ -2815,7 +2816,9 @@ pub fn eval_stdin_cli(src: &str, args: &[String]) -> Result<Value, String> {
 
 /// [`eval_file`] for the CLI — see [`eval_cli`].
 pub fn eval_file_cli(path: &str, args: &[String]) -> Result<Value, String> {
-    let src = std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?;
+    let src = std::fs::read(path)
+        .map(|b| crate::bytes::from_bytes(&b))
+        .map_err(|e| format!("cannot read {path}: {e}"))?;
     host::reset_host();
     set_script_name(path);
     // `$argv[0]` is the path AS WRITTEN on the command line, where the diagnostic
@@ -2826,7 +2829,9 @@ pub fn eval_file_cli(path: &str, args: &[String]) -> Result<Value, String> {
 
 /// Read and run a `.php` file on a fresh host.
 pub fn eval_file(path: &str) -> Result<Value, String> {
-    let src = std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?;
+    let src = std::fs::read(path)
+        .map(|b| crate::bytes::from_bytes(&b))
+        .map_err(|e| format!("cannot read {path}: {e}"))?;
     host::reset_host();
     set_script_name(path);
     run_program(compile(&src)?)
@@ -2845,7 +2850,9 @@ fn set_script_name(path: &str) {
 /// Read and run a `.php` file under the DAP debugger (per-statement line markers,
 /// tracing JIT disabled so the markers fire).
 pub fn eval_file_debug(path: &str) -> Result<Value, String> {
-    let src = std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?;
+    let src = std::fs::read(path)
+        .map(|b| crate::bytes::from_bytes(&b))
+        .map_err(|e| format!("cannot read {path}: {e}"))?;
     let prog = compile_debug(&src)?;
     host::reset_host();
     set_script_name(path);

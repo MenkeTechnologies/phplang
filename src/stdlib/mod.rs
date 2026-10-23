@@ -98,6 +98,16 @@ pub(crate) mod common {
         with_host(|h| h.to_str(&arg(args, i)))
     }
 
+    /// The BYTES of the `i`-th argument's string cast (see `crate::bytes`).
+    pub fn bytes_arg(args: &[Value], i: usize) -> Vec<u8> {
+        crate::bytes::to_bytes(&str_arg(args, i)).into_owned()
+    }
+
+    /// A PHP string holding exactly `b`.
+    pub fn bytes_value(b: &[u8]) -> Value {
+        Value::str(crate::bytes::from_bytes(b))
+    }
+
     /// PHP integer cast of the `i`-th argument.
     pub fn int_arg(args: &[Value], i: usize) -> i64 {
         with_host(|h| h.to_number(&arg(args, i)).to_int())

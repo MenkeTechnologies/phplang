@@ -58,17 +58,11 @@ fn bool_arg(args: &[Value], i: usize) -> bool {
     with_host(|h| h.is_truthy(&arg(args, i)))
 }
 
-/// Wrap raw digest bytes into a PHP `Value`: lowercase hex, or a Latin-1 binary
-/// string when `raw` is set.
-///
-/// String-model limitation (identical to `src/stdlib/hash.rs`): phplang strings
-/// are UTF-8 `String`s, so a `raw = true` digest is mapped byte→codepoint
-/// (Latin-1). Any digest byte >= 0x80 becomes a multi-byte UTF-8 codepoint, so
-/// `strlen()` on a raw digest counts UTF-8 bytes, not digest bytes. The hex path
-/// (default) is fully faithful.
+/// Wrap raw digest bytes into a PHP `Value`: lowercase hex, or the binary string
+/// itself when `raw` is set.
 fn wrap(bytes: Vec<u8>, raw: bool) -> Value {
     if raw {
-        Value::str(bytes.iter().map(|&b| char::from(b)).collect::<String>())
+        Value::str(crate::bytes::from_bytes(&bytes))
     } else {
         Value::str(hex::encode(bytes))
     }
@@ -120,7 +114,7 @@ fn hash_file(args: &[Value]) -> Result<Value, String> {
 fn hash_hmac_file(args: &[Value]) -> Result<Value, String> {
     let algo = str_arg(args, 0).to_ascii_lowercase();
     let path = str_arg(args, 1);
-    let key = str_arg(args, 2).into_bytes();
+    let key = crate::bytes::to_bytes(&str_arg(args, 2)).into_owned();
     let raw = bool_arg(args, 3);
     let (f, block_size) = match hmac_algo(&algo) {
         Some(pair) => pair,
@@ -145,8 +139,8 @@ fn hash_hmac_file(args: &[Value]) -> Result<Value, String> {
 /// not treated as secret, matching PHP), otherwise accumulates a byte XOR so the
 /// running time does not depend on the position of the first difference.
 fn hash_equals(args: &[Value]) -> bool {
-    let known = str_arg(args, 0).into_bytes();
-    let user = str_arg(args, 1).into_bytes();
+    let known = crate::bytes::to_bytes(&str_arg(args, 0)).into_owned();
+    let user = crate::bytes::to_bytes(&str_arg(args, 1)).into_owned();
     if known.len() != user.len() {
         return false;
     }
@@ -166,8 +160,8 @@ fn hash_equals(args: &[Value]) -> bool {
 /// rendered as `2 * digest_size` hex chars).
 fn hash_pbkdf2(args: &[Value]) -> Result<Value, String> {
     let algo = str_arg(args, 0).to_ascii_lowercase();
-    let password = str_arg(args, 1).into_bytes();
-    let salt = str_arg(args, 2).into_bytes();
+    let password = crate::bytes::to_bytes(&str_arg(args, 1)).into_owned();
+    let salt = crate::bytes::to_bytes(&str_arg(args, 2)).into_owned();
     let iterations = int_arg(args, 3);
     let length = int_arg(args, 4);
     let raw = bool_arg(args, 5);
@@ -423,7 +417,7 @@ fn context_feed(ctx: &Value, bytes: &[u8]) {
 /// `hash_update(context, data)`: feed a PHP string's bytes. Always `true`.
 fn hash_update(args: &[Value]) -> Result<Value, String> {
     let ctx = context_arg("hash_update", args)?;
-    context_feed(&ctx, str_arg(args, 1).as_bytes());
+    context_feed(&ctx, &crate::bytes::to_bytes(&str_arg(args, 1)));
     Ok(Value::bool(true))
 }
 
@@ -497,7 +491,7 @@ fn hash_final(args: &[Value]) -> Result<Value, String> {
     let (algo_name, key, data) = with_host(|h| {
         let key = match h.prop_get(&ctx, "key") {
             Value::Undef => None,
-            k => Some(h.to_str(&k).into_bytes()),
+            k => Some(crate::bytes::to_bytes(&h.to_str(&k)).into_owned()),
         };
         let data: Vec<u8> = h
             .to_str(&h.prop_get(&ctx, "data"))

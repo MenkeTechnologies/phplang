@@ -252,7 +252,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             match read(name, &res, |s| Some(s.read(usize::MAX))) {
                 Some(b) => {
                     let n = b.len();
-                    with_host(|h| h.write_out(&String::from_utf8_lossy(&b)));
+                    with_host(|h| h.write_out(&crate::bytes::from_bytes(&b)));
                     Value::int(n as i64)
                 }
                 None => Value::int(0),
@@ -260,7 +260,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         }
         "fwrite" | "fputs" => {
             let res = arg(args, 0);
-            let mut data = str_arg(args, 1).into_bytes();
+            let mut data = crate::bytes::to_bytes(&str_arg(args, 1)).into_owned();
             if matches!(args.get(2), Some(v) if !matches!(v, Value::Undef)) {
                 let len = int_arg(args, 2).max(0) as usize;
                 data.truncate(len);
@@ -349,7 +349,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
 
 /// A byte buffer read off a stream, as a PHP string.
 fn bytes_value(b: Vec<u8>) -> Value {
-    Value::str(String::from_utf8_lossy(&b).into_owned())
+    Value::str(crate::bytes::from_bytes(&b))
 }
 
 /// The reference's wording for an I/O failure: `strerror(errno)`, without the
@@ -445,8 +445,8 @@ pub fn write_bytes(fname: &str, res: &Value, data: &[u8]) -> Option<usize> {
         return None;
     }
     match kind {
-        StreamKind::Stdout => with_host(|h| h.write_stdout_direct(&String::from_utf8_lossy(data))),
-        StreamKind::Output => with_host(|h| h.write_out(&String::from_utf8_lossy(data))),
+        StreamKind::Stdout => with_host(|h| h.write_stdout_direct(&crate::bytes::from_bytes(data))),
+        StreamKind::Output => with_host(|h| h.write_out(&crate::bytes::from_bytes(data))),
         StreamKind::Stderr => crate::host::PhpHost::write_err(data),
         _ => {
             with_host(|h| h.stream_write(res, data));
@@ -584,7 +584,7 @@ pub fn flush(res: &Value) {
 
 /// One line off an open stream, for `fscanf`.
 pub fn read_line(fname: &str, res: &Value) -> Option<String> {
-    read(fname, res, |s| s.gets(None)).map(|b| String::from_utf8_lossy(&b).into_owned())
+    read(fname, res, |s| s.gets(None)).map(|b| crate::bytes::from_bytes(&b))
 }
 
 /// `fstat($stream)`. A plain file and a standard stream report the real
@@ -729,13 +729,13 @@ fn fputcsv(args: &[Value]) -> Result<Value, String> {
     let escape = csv_escape_arg("fputcsv", args, 4)?;
     let eol = match args.get(5) {
         None | Some(Value::Undef) => b"\n".to_vec(),
-        Some(_) => str_arg(args, 5).into_bytes(),
+        Some(_) => crate::bytes::to_bytes(&str_arg(args, 5)).into_owned(),
     };
     let fields = with_host(|h| h.array_pairs(&arg(args, 1))).unwrap_or_default();
     let count = fields.len();
     let mut line: Vec<u8> = Vec::new();
     for (i, (_, v)) in fields.into_iter().enumerate() {
-        let field = with_host(|h| h.to_str_diag(&v)).into_bytes();
+        let field = crate::bytes::to_bytes(&with_host(|h| h.to_str_diag(&v))).into_owned();
         let needs = |c: u8| field.contains(&c);
         if needs(delimiter)
             || needs(enclosure)

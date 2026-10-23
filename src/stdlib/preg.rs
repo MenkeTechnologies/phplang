@@ -117,7 +117,7 @@ use regex::bytes::{Regex, RegexBuilder};
 /// Decode a matched byte slice back to a `String`. Subjects are UTF-8, but a
 /// byte-mode match may land mid-codepoint, so decode lossily.
 fn bstr(b: &[u8]) -> String {
-    String::from_utf8_lossy(b).into_owned()
+    crate::bytes::from_bytes(b)
 }
 
 // PHP preg_split flag bits.
@@ -165,6 +165,8 @@ pub const PREG_INTERNAL_ERROR: i64 = 1;
 /// `PREG_BACKTRACK_LIMIT_ERROR` — a run-time failure, not a compile-time one:
 /// the pattern was fine, the subject made the backtracking engine give up.
 pub const PREG_BACKTRACK_LIMIT_ERROR: i64 = 2;
+/// `PREG_BAD_UTF8_ERROR` — a `/u` pattern met a subject that is not UTF-8.
+pub const PREG_BAD_UTF8_ERROR: i64 = 4;
 
 /// The `preg_last_error_msg()` text for an error code.
 fn error_msg(code: i64) -> &'static str {
@@ -354,6 +356,8 @@ pub(crate) struct Pattern {
     engine: Engine,
     /// `A`: each match attempt must begin exactly at the offset it starts from.
     anchored: bool,
+    /// `u`: PCRE's UTF mode, which refuses a subject that is not UTF-8.
+    utf: bool,
     /// The body handed to the builder, in the engines' own syntax.
     body: String,
     flags: Flags,
@@ -811,6 +815,7 @@ fn compile(pattern: &str) -> Result<Pattern, PatternError> {
     Ok(Pattern {
         engine,
         anchored,
+        utf: unicode,
         body: translated,
         flags,
         notempty: std::cell::OnceCell::new(),
@@ -1129,6 +1134,16 @@ fn brace_quantifier(c: &[char], open: usize) -> Option<(Option<u64>, Option<u64>
 /// is what makes it observable across calls: a successful compile clears it even
 /// when the match then fails, so `preg_last_error()` reports the LAST pattern
 /// the engine compiled and not the last one that failed.
+/// Whether `re` refuses `subject` before matching: in UTF mode a subject that
+/// is not valid UTF-8 is `PREG_BAD_UTF8_ERROR` (see `crate::bytes`).
+fn bad_utf8(re: &Pattern, subject: &str) -> bool {
+    if re.utf && crate::bytes::has_raw(subject) {
+        with_host(|h| h.set_preg_error(PREG_BAD_UTF8_ERROR));
+        return true;
+    }
+    false
+}
+
 pub(crate) fn compile_for(func: &str, pat: &str) -> Option<Rc<Pattern>> {
     // The OUTCOME is memoized, and its side effects are replayed on every call.
     // That is what keeps an invalid pattern warning each time it is used rather
@@ -1351,11 +1366,14 @@ fn preg_match(args: &[Value]) -> Result<Value, String> {
     let Some(re) = compile_for("preg_match", &pat) else {
         return Ok(Value::bool(false));
     };
+    if bad_utf8(&re, &subject) {
+        return Ok(Value::bool(false));
+    }
     // Checked AFTER the pattern compiles, so a bad pattern still reports itself.
     let Some(from) = start_offset(args.get(4), subject.len()) else {
         return bad_offset(args);
     };
-    match re.captures_first_from(subject.as_bytes(), from) {
+    match re.captures_first_from(&crate::bytes::to_bytes(&subject), from) {
         Some(caps) => {
             if args.len() > 2 {
                 fill_out(&args[2], 2, caps_trimmed(&caps, &re.group_names(), fmt));
@@ -1404,6 +1422,9 @@ fn preg_match_all(args: &[Value]) -> Result<Value, String> {
     let Some(re) = compile_for("preg_match_all", &pat) else {
         return Ok(Value::bool(false));
     };
+    if bad_utf8(&re, &subject) {
+        return Ok(Value::bool(false));
+    }
     let names = re.group_names();
     let fmt = CellFmt::from_flags(flags);
     let Some(from) = start_offset(args.get(4), subject.len()) else {
@@ -1413,7 +1434,7 @@ fn preg_match_all(args: &[Value]) -> Result<Value, String> {
     // PREG_SET_ORDER truncates each set THERE (its rows are ragged), while
     // PREG_PATTERN_ORDER keeps every column at full width.
     let all: Vec<(Vec<Value>, usize)> = re
-        .captures_all_from(subject.as_bytes(), from)
+        .captures_all_from(&crate::bytes::to_bytes(&subject), from)
         .iter()
         .map(|c| (caps_values(c, fmt), fmt.row_end(c)))
         .collect();
@@ -1579,9 +1600,12 @@ fn preg_replace_common(args: &[Value], func: &str, is_filter: bool) -> Result<Va
     // `php_pcre_replace_array`: an array of replacements pairs up with the
     // patterns, and a pattern past its end replaces with "".
     let apply = |s: &str, count: &mut i64| -> Option<String> {
-        let mut cur: Vec<u8> = s.as_bytes().to_vec();
+        let mut cur: Vec<u8> = crate::bytes::to_bytes(s).to_vec();
         for (idx, p) in pats.iter().enumerate() {
             let re = compile_for(func, p)?;
+            if bad_utf8(&re, &crate::bytes::from_bytes(&cur)) {
+                return None;
+            }
             let repl = if repl_is_array {
                 repls.get(idx).cloned().unwrap_or_default()
             } else {
@@ -1589,7 +1613,7 @@ fn preg_replace_common(args: &[Value], func: &str, is_filter: bool) -> Result<Va
             };
             cur = replace_one(
                 &re,
-                translate_replacement(&repl).as_bytes(),
+                &crate::bytes::to_bytes(&translate_replacement(&repl)),
                 &cur,
                 limit,
                 count,
@@ -1735,7 +1759,7 @@ fn replace_all_cb(
     fmt: CellFmt,
     count: &mut i64,
 ) -> Result<String, String> {
-    let bytes = s.as_bytes();
+    let bytes = &crate::bytes::to_bytes(s);
     let names = re.group_names();
     let mut out: Vec<u8> = Vec::new();
     let mut last = 0;
@@ -1751,7 +1775,7 @@ fn replace_all_cb(
         if crate::host::unwinding() {
             return Ok(String::new());
         }
-        out.extend_from_slice(with_host(|h| h.to_str(&ret)).as_bytes());
+        out.extend_from_slice(&crate::bytes::to_bytes(&with_host(|h| h.to_str(&ret))));
         last = whole.end();
     }
     out.extend_from_slice(&bytes[last..]);
@@ -1768,6 +1792,9 @@ fn preg_split(args: &[Value]) -> Result<Value, String> {
     let Some(re) = compile_for("preg_split", &pat) else {
         return Ok(Value::bool(false));
     };
+    if bad_utf8(&re, &subject) {
+        return Ok(Value::bool(false));
+    }
 
     let no_empty = flags & SPLIT_NO_EMPTY != 0;
     let delim_capture = flags & SPLIT_DELIM_CAPTURE != 0;
@@ -1780,7 +1807,7 @@ fn preg_split(args: &[Value]) -> Result<Value, String> {
         limit as usize
     };
 
-    let bytes = subject.as_bytes();
+    let bytes = &crate::bytes::to_bytes(&subject);
     // `(text, offset)`. Offset is `-1` for a non-participating captured
     // delimiter (PHP's PREG_SPLIT_OFFSET_CAPTURE convention).
     let mut pieces: Vec<(String, i64)> = Vec::new();
@@ -1866,7 +1893,7 @@ fn preg_grep(args: &[Value]) -> Result<Value, String> {
     let mut kept: Vec<(Value, Value)> = Vec::new();
     for (k, v) in pairs {
         let s = with_host(|h| h.to_str(&v));
-        if re.is_match(s.as_bytes()) != invert {
+        if re.is_match(&crate::bytes::to_bytes(&s)) != invert {
             kept.push((k, v));
         }
     }

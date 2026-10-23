@@ -2363,14 +2363,14 @@ pub const CORPUS: &[Entry] = &[
         "ENT_SUBSTITUTE",
         "Predefined constant",
         "ENT_SUBSTITUTE: int = 8",
-        "Flag replacing invalid code unit sequences with U+FFFD. Not honoured; phplang strings are always valid UTF-8.",
+        "Flag replacing invalid code unit sequences with U+FFFD — part of the default flags, which is why `htmlspecialchars(\"a\\xffb\")` is `a\u{FFFD}b`.",
         "",
     ),
     (
         "ENT_IGNORE",
         "Predefined constant",
         "ENT_IGNORE: int = 4",
-        "Flag discarding invalid code unit sequences. Not honoured, for the same reason as `ENT_SUBSTITUTE`.",
+        "Flag discarding invalid code unit sequences. Without it or `ENT_SUBSTITUTE`, a subject that is not valid UTF-8 encodes to the empty string.",
         "",
     ),
     (
@@ -2999,7 +2999,7 @@ pub const CORPUS: &[Entry] = &[
         "strrev",
         "Core library — strings",
         "strrev(string $string): string",
-        "Reverses the string by CHARACTER, not by byte. DIVERGENCE: PHP reverses bytes, which corrupts multibyte text; this version leaves each character intact.",
+        "Reverses the string's BYTES, as PHP does — a multibyte character comes out with its bytes reversed.",
         "echo strrev(\"abc\");   // => cba",
     ),
     (
@@ -3013,7 +3013,7 @@ pub const CORPUS: &[Entry] = &[
         "substr",
         "Core library — strings",
         "substr(string $string, int $offset, ?int $length = null): string",
-        "A substring counted in CHARACTERS. A negative offset counts from the end and a negative length omits that many trailing characters. DIVERGENCE: PHP's `substr` uses byte offsets, so results differ on multibyte input. It never returns `false`.",
+        "A substring counted in BYTES. A negative offset counts from the end and a negative length omits that many trailing bytes; a cut through a multibyte character keeps its bytes. It never returns `false`.",
         "echo substr(\"hello\", 1, 3);   // => ell",
     ),
     (
@@ -3118,7 +3118,7 @@ pub const CORPUS: &[Entry] = &[
         "chr",
         "Core library — strings",
         "chr(int $codepoint): string",
-        "The one-character string for a byte value, reduced modulo 256 so any integer is accepted — a value outside `0..=255` raises `Deprecated: chr(): Providing a value not in-between 0 and 255 is deprecated…` first. DIVERGENCE: the result is that CODEPOINT, so `chr(233)` yields a two-byte UTF-8 `é` rather than PHP's single 0xE9 byte.",
+        "The one-character string for a byte value, reduced modulo 256 so any integer is accepted — a value outside `0..=255` raises `Deprecated: chr(): Providing a value not in-between 0 and 255 is deprecated…` first. The result is that one BYTE: `strlen(chr(233))` is 1.",
         "echo chr(65);   // => A",
     ),
     (
@@ -3146,7 +3146,7 @@ pub const CORPUS: &[Entry] = &[
         "bin2hex",
         "Core library — strings",
         "bin2hex(string $string): string",
-        "Two lowercase hex digits per byte of the string's UTF-8 encoding.",
+        "Two lowercase hex digits per byte of the string.",
         "echo bin2hex(\"AB\");   // => 4142",
     ),
     (
@@ -3719,7 +3719,7 @@ pub const CORPUS: &[Entry] = &[
         "count_chars",
         "Strings",
         "count_chars(string $string, int $mode = 0): array|string",
-        "Per-byte histogram. Mode 0 reports all 256 counters, 1 only the non-zero ones, 2 only the zero ones; modes 3 and 4 return a STRING of the bytes that did / did not occur. A `$mode` outside 0-4 throws `ValueError`. DIVERGENCE: modes 3 and 4 can name bytes above 0x7F, which this engine's UTF-8 strings widen to two bytes each (see BUGS.md).",
+        "Per-byte histogram. Mode 0 reports all 256 counters, 1 only the non-zero ones, 2 only the zero ones; modes 3 and 4 return a STRING of the bytes that did / did not occur. A `$mode` outside 0-4 throws `ValueError`.",
         "print_r(count_chars(\"aab\", 3));   // => ab",
     ),
     (
@@ -3845,7 +3845,7 @@ pub const CORPUS: &[Entry] = &[
         "chunk_split",
         "Strings",
         "chunk_split(string $string, int $length = 76, string $separator = \"\\r\\n\"): string",
-        "Appends the separator after every `$length` units. DIVERGENCE: chunking counts CODEPOINTS, not bytes as PHP does, so multibyte input chunks differently. A non-positive length throws `ValueError: chunk_split(): Argument #2 ($length) must be greater than 0`.",
+        "Appends the separator after every `$length` bytes. A non-positive length throws `ValueError: chunk_split(): Argument #2 ($length) must be greater than 0`.",
         "echo chunk_split(\"abcdef\", 2, \"-\");   // => ab-cd-ef-",
     ),
     (
@@ -5345,10 +5345,7 @@ pub const CORPUS: &[Entry] = &[
         "json_decode(\"{\"); echo json_last_error_msg();   // => Syntax error",
     ),
     // ══ Encoding (stdlib::encoding) ═════════════════════════════════════════
-    // These functions decode to one Latin-1 CHARACTER per byte, because a
-    // phplang string is always valid UTF-8 and cannot hold a raw byte at or above
-    // 0x80. ASCII payloads round-trip exactly; binary payloads do not, and
-    // `strlen()` of such a result exceeds the true byte count.
+    // These functions produce and consume BYTES (see `crate::bytes`).
     (
         "base64_encode",
         "Encoding",
@@ -5467,14 +5464,14 @@ pub const CORPUS: &[Entry] = &[
         "md5",
         "Hashing",
         "md5(string $string, bool $binary = false): string",
-        "MD5 of the argument's UTF-8 bytes, as 32 lowercase hex characters. DIVERGENCE: `$binary` returns the digest mapped one Latin-1 character per byte, so `strlen()` of it is not 16 whenever a digest byte reaches 0x80.",
+        "MD5 of the argument's bytes, as 32 lowercase hex characters, or the 16 raw digest bytes with `$binary`.",
         "echo md5(\"abc\");   // => 900150983cd24fb0d6963f7d28e17f72",
     ),
     (
         "sha1",
         "Hashing",
         "sha1(string $string, bool $binary = false): string",
-        "SHA-1 as 40 lowercase hex characters, with the same raw-output caveat as `md5` when `$binary` is truthy.",
+        "SHA-1 as 40 lowercase hex characters, or the 20 raw digest bytes when `$binary` is truthy.",
         "echo sha1(\"abc\");   // => a9993e364706816aba3e25717850c26c9cd0d89d",
     ),
     (
@@ -5552,7 +5549,7 @@ pub const CORPUS: &[Entry] = &[
         "random_bytes",
         "Hashing — files and key derivation",
         "random_bytes(int $length): string",
-        "DIVERGENCE — NOT A CSPRNG. No OS-entropy dependency is available to this crate, so the bytes come from a SplitMix64 generator seeded from wall-clock nanoseconds XOR the process id. Use it for tests and filler only, never for keys, tokens, or salts. Output is the Latin-1 raw mapping, so `strlen()` exceeds `$length` whenever a generated byte reaches 0x80. A length below 1 throws `ValueError: random_bytes(): Argument #1 ($length) must be greater than 0`. DIVERGENCE: a length above 16 MiB is refused with a `ValueError` too (PHP instead attempts the allocation and dies on the memory limit).",
+        "DIVERGENCE — NOT A CSPRNG. No OS-entropy dependency is available to this crate, so the bytes come from a SplitMix64 generator seeded from wall-clock nanoseconds XOR the process id. Use it for tests and filler only, never for keys, tokens, or salts. The result is `$length` raw bytes. A length below 1 throws `ValueError: random_bytes(): Argument #1 ($length) must be greater than 0`. DIVERGENCE: a length above 16 MiB is refused with a `ValueError` too (PHP instead attempts the allocation and dies on the memory limit).",
         "",
     ),
     // Incremental hashing. A `HashContext` (a prelude class, `src/lib.rs`)
@@ -5590,7 +5587,7 @@ pub const CORPUS: &[Entry] = &[
         "hash_final",
         "Hashing — files and key derivation",
         "hash_final(HashContext $context, bool $binary = false): string",
-        "The digest of everything fed so far — the HMAC, for a context opened with `HASH_HMAC` — as lowercase hex, or raw bytes with `$binary` (see `hash()` for the raw-byte string model). The context is then finalized: `hash_update`, `hash_final` and `hash_copy` on it are the reference's `TypeError`.",
+        "The digest of everything fed so far — the HMAC, for a context opened with `HASH_HMAC` — as lowercase hex, or raw bytes with `$binary`. The context is then finalized: `hash_update`, `hash_final` and `hash_copy` on it are the reference's `TypeError`.",
         "$c = hash_init(\"sha256\", HASH_HMAC, \"key\"); hash_update($c, \"The quick brown fox jumps over the lazy dog\"); echo hash_final($c);   // => f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8",
     ),
     (
@@ -6025,15 +6022,14 @@ pub const CORPUS: &[Entry] = &[
         "enum S: string { case A = \"a\"; } echo S::A->value;   // => a",
     ),
     // ══ Filesystem (stdlib::fileio) ════════════════════════════════════════
-    // Path-based operations. Every read converts with `from_utf8_lossy`, so these
-    // functions are NOT binary-safe: a byte sequence that is not valid UTF-8
-    // becomes U+FFFD. No `$context` argument is read anywhere in this module,
-    // because phplang has no stream contexts.
+    // Path-based operations, binary-safe: a file's bytes are the string's. No
+    // `$context` argument is read anywhere in this module, because phplang has no
+    // stream contexts.
     (
         "file_get_contents",
         "Filesystem",
         "file_get_contents(string $filename): string|false",
-        "Reads the whole file and returns it as a string, or `false` on any I/O error with no warning. DIVERGENCE: `$use_include_path`, `$context`, `$offset`, and `$length` are never read — a partial read is not possible — and the lossy UTF-8 conversion makes it binary-unsafe.",
+        "Reads the file's bytes and returns them as a string, or `false` on any I/O error with no warning. `$offset` counts from the start (from the end when negative) and `$length` caps what follows; a negative `$length` is a `ValueError`. DIVERGENCE: `$use_include_path` and `$context` are never read.",
         "file_put_contents(\"/tmp/php_ref.txt\", \"hi\"); echo file_get_contents(\"/tmp/php_ref.txt\");   // => hi",
     ),
     (
@@ -6054,7 +6050,7 @@ pub const CORPUS: &[Entry] = &[
         "readfile",
         "Filesystem",
         "readfile(string $filename): int|false",
-        "Writes the file's contents to output and returns the RAW byte count read from disk — which can exceed the length of what was emitted, since the text goes through the lossy conversion. `$use_include_path` and `$context` are not read.",
+        "Writes the file's bytes to output and returns how many there were. `$use_include_path` and `$context` are not read.",
         "file_put_contents(\"/tmp/php_ref.txt\", \"hi\"); echo readfile(\"/tmp/php_ref.txt\");   // => hi2",
     ),
     (
@@ -6321,7 +6317,7 @@ pub const CORPUS: &[Entry] = &[
         "fread",
         "File streams",
         "fread(resource $stream, int $length): string|false",
-        "Copies up to `$length` bytes from the cursor and advances it. A read that gets fewer bytes than asked for sets end-of-file. A `$length` below 1 is a `ValueError`. DIVERGENCE: the bytes pass through a lossy UTF-8 conversion, so the read is not binary-safe.",
+        "Copies up to `$length` bytes from the cursor and advances it. A read that gets fewer bytes than asked for sets end-of-file. A `$length` below 1 is a `ValueError`.",
         "file_put_contents(\"/tmp/php_ref_s.txt\", \"abcdef\");\n$f = fopen(\"/tmp/php_ref_s.txt\", \"r\"); echo fread($f, 3); fclose($f);   // => abc",
     ),
     (
@@ -6651,7 +6647,7 @@ pub const CORPUS: &[Entry] = &[
         "pack",
         "Misc",
         "pack(string $format, mixed ...$values): string",
-        "A port of ext/standard/pack.c: every format code (`a A Z h H c C s S n v i I l L N V q Q J P f g G d e E x X @`), repeat counts and `*`, and its warnings and `ValueError`s. Bytes come out one per character, as `chr` makes them, so a byte of 0x80 or more is two bytes in this UTF-8 runtime (see BUGS.md).",
+        "A port of ext/standard/pack.c: every format code (`a A Z h H c C s S n v i I l L N V q Q J P f g G d e E x X @`), repeat counts and `*`, and its warnings and `ValueError`s. The result is the packed bytes.",
         "echo bin2hex(pack(\"nv\", 0x1234, 0x1234));   // => 12343412",
     ),
     (

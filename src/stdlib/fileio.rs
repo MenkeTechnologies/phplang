@@ -523,19 +523,45 @@ fn read_whole(fname: &str, path: &str) -> Option<Vec<u8>> {
 pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
     let v: Value = match name {
         // ── whole-file read/write ──────────────────────────────────────────
-        "file_get_contents" => match read_whole(name, &str_arg(args, 0)) {
-            Some(bytes) => Value::str(String::from_utf8_lossy(&bytes).into_owned()),
-            None => f(),
-        },
+        "file_get_contents" => {
+            let length = match args.get(4) {
+                Some(v) if !matches!(v, Value::Undef) => Some(int_arg(args, 4)),
+                _ => None,
+            };
+            if length.is_some_and(|l| l < 0) {
+                return Some(Err(throws(
+                    "ValueError",
+                    "file_get_contents(): Argument #5 ($length) must be greater than or equal to 0",
+                )));
+            }
+            match read_whole(name, &str_arg(args, 0)) {
+                Some(bytes) => {
+                    // `$offset` counts from the start, or from the end when
+                    // negative; `$length` caps what follows it.
+                    let offset = if args.len() > 3 { int_arg(args, 3) } else { 0 };
+                    let len = bytes.len() as i64;
+                    let start = if offset < 0 {
+                        (len + offset).max(0)
+                    } else {
+                        offset.min(len)
+                    } as usize;
+                    let end = length.map_or(bytes.len(), |l| (start + l as usize).min(bytes.len()));
+                    Value::str(crate::bytes::from_bytes(&bytes[start..end]))
+                }
+                None => f(),
+            }
+        }
         "file_put_contents" => {
             let path = str_arg(args, 0);
             let data = put_data_string(args);
             let append = has_append_flag(&arg(args, 2));
             if fileres::is_php_url(&path) {
-                return Some(Ok(match fileres::write_url(name, &path, data.as_bytes()) {
-                    Some(n) => Value::int(n as i64),
-                    None => f(),
-                }));
+                return Some(Ok(
+                    match fileres::write_url(name, &path, &crate::bytes::to_bytes(&data)) {
+                        Some(n) => Value::int(n as i64),
+                        None => f(),
+                    },
+                ));
             }
             let res = if append {
                 use std::io::Write;
@@ -543,14 +569,14 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
                     .create(true)
                     .append(true)
                     .open(&path)
-                    .and_then(|mut fh| fh.write_all(data.as_bytes()))
+                    .and_then(|mut fh| fh.write_all(&crate::bytes::to_bytes(&data)))
             } else {
-                fs::write(&path, data.as_bytes())
+                fs::write(&path, crate::bytes::to_bytes(&data))
             };
             match res {
                 Ok(()) => {
                     fileres::note_file_opened();
-                    Value::int(data.len() as i64)
+                    Value::int(crate::bytes::byte_len(&data) as i64)
                 }
                 Err(e) => {
                     fileres::warn_open_failed(name, &path, &e);
@@ -563,7 +589,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             let (ignore_nl, skip_empty) = file_flags(&arg(args, 1));
             match read_whole(name, &path).ok_or(()) {
                 Ok(bytes) => {
-                    let text = String::from_utf8_lossy(&bytes);
+                    let text = crate::bytes::from_bytes(&bytes);
                     let mut lines: Vec<Value> = Vec::new();
                     for line in text.split_inclusive('\n') {
                         if skip_empty && line.trim_end_matches(['\r', '\n']).is_empty() {
@@ -585,7 +611,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             let path = str_arg(args, 0);
             match read_whole(name, &path).ok_or(()) {
                 Ok(bytes) => {
-                    let s = String::from_utf8_lossy(&bytes).into_owned();
+                    let s = crate::bytes::from_bytes(&bytes);
                     with_host(|h| h.write_out(&s));
                     Value::int(bytes.len() as i64)
                 }

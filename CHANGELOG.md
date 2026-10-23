@@ -26,6 +26,42 @@ comment above it.
 
 ---
 
+## Round 29: byte strings
+
+`Value::Str` is a Rust `String`, so a byte at or above 0x80 that is not part of
+valid UTF-8 used to become a two-byte codepoint (`strlen(chr(255))` was 2) or
+`U+FFFD`. PHP strings are byte strings, and now so are phplang's. Measured
+under `PHP 8.5.12 (cli)`; pinned in `tests/byte_strings.rs`.
+
+* `src/bytes.rs` stores a byte string as valid UTF-8 text with every stray
+  byte as one escape character in `U+10FF80..=U+10FFFF` (a genuine character
+  in that range is stored as its four escaped bytes, so the mapping is a
+  bijection). Concatenation and every library function's string result are
+  re-derived when they carry escapes, so `chr(0xC3) . chr(0xA9) === "é"` and
+  such a key finds the `"é"` element.
+* Producers: `"\xFF"` / `"\377"` escapes, script and included files that are
+  not UTF-8, stdin, `chr`, `hex2bin`, `base64_decode`, raw digests (`md5`,
+  `sha1`, `hash`, `hash_hmac`, `hash_final` with `$binary`), `random_bytes`,
+  `pack`, `quoted_printable_decode`, `urldecode`, `unserialize`, file and
+  stream reads.
+* Consumers count and index bytes: `strlen`, `substr` (it counted characters),
+  `strrev` (it reversed characters), `ord`, `$s[$i]`, `bin2hex`, `str_pad`,
+  `strtr`, `strpos` and friends, `sprintf` widths, precisions and `%c`, the
+  hashes, `base64_encode`, `urlencode`, `unpack`, `serialize` lengths,
+  `var_dump` lengths, `ucwords`, output, `file_put_contents`, `fwrite`, and
+  every byte regex (`/u` refuses a non-UTF-8 subject with
+  `PREG_BAD_UTF8_ERROR`).
+* Invalid UTF-8 is handled as the reference handles it: `json_encode` fails
+  with `Malformed UTF-8 characters` unless `JSON_INVALID_UTF8_IGNORE` or
+  `JSON_INVALID_UTF8_SUBSTITUTE` (both now defined) say otherwise, and partial
+  output writes `null`; `htmlspecialchars` substitutes U+FFFD (the default
+  `ENT_SUBSTITUTE`), drops under `ENT_IGNORE`, and is otherwise empty;
+  `mb_check_encoding` refuses it; the `mb_*` functions read each maximal
+  invalid run as one `?` character.
+* `file_get_contents` honours `$offset` and `$length`.
+
+---
+
 ## Round 28: the Reflection API
 
 `new ReflectionClass(…)` and the rest were `Class "ReflectionClass" not

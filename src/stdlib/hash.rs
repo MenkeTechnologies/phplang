@@ -29,7 +29,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
 
 /// Byte string of the `i`-th argument (UTF-8 bytes of the PHP string cast).
 fn input_bytes(args: &[Value], i: usize) -> Vec<u8> {
-    str_arg(args, i).into_bytes()
+    crate::bytes::to_bytes(&str_arg(args, i)).into_owned()
 }
 
 /// PHP boolean truthiness of the `i`-th argument, defaulting to false.
@@ -37,20 +37,11 @@ fn bool_arg(args: &[Value], i: usize) -> bool {
     with_host(|h| h.is_truthy(&arg(args, i)))
 }
 
-/// Wrap raw digest bytes into a PHP `Value`: lowercase hex, or a Latin-1
-/// binary string when `raw` is set.
-///
-/// String-model limitation: phplang strings are UTF-8 `String`s, so a
-/// `raw_output = true` digest is mapped byte→codepoint (Latin-1). Any digest
-/// byte >= 0x80 becomes a multi-byte UTF-8 codepoint, so `strlen()` on a raw
-/// digest counts UTF-8 bytes, not digest bytes — e.g. `strlen(md5("", true))`
-/// is not 16 whenever the digest contains a high byte (the raw md5 of "" starts
-/// with 0xd4). A faithful fix needs a byte-string type at the VM level, which
-/// phplang does not have; the hex path (default) is fully faithful. `ord`/`chr`
-/// round-trip per byte because they share this same Latin-1 model.
+/// Wrap raw digest bytes into a PHP `Value`: lowercase hex, or the binary
+/// string itself when `raw` is set.
 fn wrap(bytes: Vec<u8>, raw: bool) -> Value {
     if raw {
-        Value::str(bytes.iter().map(|&b| char::from(b)).collect::<String>())
+        Value::str(crate::bytes::from_bytes(&bytes))
     } else {
         Value::str(hex::encode(bytes))
     }
