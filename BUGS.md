@@ -393,7 +393,6 @@ file's directory. The same value is what `get_include_path()` returns.
 | `function p(#[SensitiveParameter] $x) { throw new Exception; }` — the trace of the exception | `p(Object(SensitiveParameterValue))` | `p('secret')`: the attribute is parsed and dropped |
 | `echo E_STRICT;`; `PHP_BINARY` | `Deprecated: Constant E_STRICT is deprecated since 8.4, …`; the interpreter's path | no deprecation; `PHP_BINARY` is an undefined constant |
 | `class_implements("ArrayIterator")`, `("Exception")`, `("SplStack")` | `SeekableIterator, Traversable, Iterator, ArrayAccess, Serializable, Countable`; `Stringable, Throwable`; … | the lists come from the prelude's own `implements` clauses, so they lack `Serializable`/`Throwable` and differ in order. A user class gets the reference's order |
-| `class C extends B {} class B extends A {} class A {}`; `echo class_exists("B") ? 1 : 0; class B extends A {} class A {}` — a declaration the reference cannot bind early | `Error: Class "B" not found` (C's parent is not linked yet when C's declaration runs); `0` | the declaration links and `1`: every top-level type is loaded before the program runs, so only a parent no compilation declares is looked up (and autoloaded) where the declaration stands |
 | `$f = function () { static $n = 0; }; var_dump($f);` — a closure's `static` variables | listed under `["static"]` beside its `use` captures (`["n"]=> int(0)`) | only the `use` captures are listed: the compiled `static` slots are not tied to the closure value |
 
 ## `...` unpacking: what is modelled and what is not

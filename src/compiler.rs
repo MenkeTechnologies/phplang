@@ -1465,9 +1465,9 @@ impl Compiler {
     /// `class B extends A {} class A {} class B {}`, the fatal names the SECOND
     /// `B` as the one previously declared: it was bound first.
     ///
-    /// Only the order matters to this engine, which loads every type before
-    /// the program runs whichever way the reference binds it; what the
-    /// simulation decides is which declaration a redeclaration is reported at.
+    /// The engine follows it: an early-bound type is loaded before the program
+    /// runs, and every other one is declared by its statement
+    /// (`ops::DECLARE_CLASS`), so it does not exist above it.
     fn early_bind(&mut self, stmts: &[Stmt]) {
         if self.prelude {
             return;
@@ -1873,6 +1873,18 @@ impl Compiler {
                 let before = self.classes.len();
                 self.compile_class(b, decl)?;
                 if self.classes.len() > before {
+                    // A type the reference cannot bind early does not exist
+                    // until its declaration runs: `new B` above `class B
+                    // implements I {}` is `Class "B" not found`.
+                    if !early && !self.prelude {
+                        self.defer_declaration(
+                            b,
+                            |c| &mut c.classes,
+                            ops::DECLARE_CLASS,
+                            std::slice::from_ref(&decl.namespace),
+                            line,
+                        );
+                    }
                     self.check_finals(b, decl, early, line)?;
                 }
             }

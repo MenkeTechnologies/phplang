@@ -57,6 +57,11 @@ found`. They are now PHP-written prelude classes over the engine's metadata
   value of a static property `$method`.
 * A class that implements no interface of its own lists the ones it inherits
   in reverse, as the reference does (`class_implements`, `getInterfaceNames`).
+* A top-level type the reference cannot bind early — one that implements an
+  interface, uses a trait, is an enum, or extends a class not yet bound — is
+  declared where its declaration stands, not before the program runs:
+  `class_exists("C")` above `class C implements I {}` is `false`, and `new C`
+  there is `Class "C" not found`. Pinned in `tests/parity_round28.rs`.
 
 ---
 

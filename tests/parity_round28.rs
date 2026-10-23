@@ -227,3 +227,14 @@ fn a_variable_static_method_name_calls_the_method() {
     let src = r##"<?php class A { static function s($x) { return "s$x"; } protected static function p() { return "p"; } static function q() { $m = "p"; return static::$m() . self::$m(); } } class B extends A { static $v = "s"; } $m = "s"; $c = "A"; echo A::$m(1), $c::$m(2), B::q(), (new B)::$m(3);"##;
     assert_eq!(run(src), r##"s1s2pps3"##);
 }
+
+#[test]
+fn a_type_the_reference_cannot_bind_early_is_declared_where_it_stands() {
+    let src = r##"<?php echo class_exists("B") ? 1 : 0, class_exists("A") ? 1 : 0, interface_exists("I") ? 1 : 0, class_exists("C") ? 1 : 0, enum_exists("E") ? 1 : 0; class B extends A {} class A {} interface I {} class C implements I {} enum E { case X; } echo class_exists("B") ? 1 : 0, class_exists("C") ? 1 : 0, enum_exists("E") ? 1 : 0, "\n"; try { new D; } catch (Error $e) { echo $e->getMessage(), "\n"; } class D implements I {} echo get_class(new D);"##;
+    assert_eq!(
+        run(src),
+        r##"01100111
+Class "D" not found
+D"##
+    );
+}
