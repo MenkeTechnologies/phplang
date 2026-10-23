@@ -246,7 +246,8 @@ end-to-end (see `tests/basic.rs`):
   that has). Names held in strings are fully qualified and
   may carry a leading `\` (`class_exists('\A\P')`, `call_user_func('\A\f')`).
   **Autoloading**: `spl_autoload_register` (with `$prepend`, duplicates kept
-  once), `spl_autoload_unregister`, `spl_autoload_functions` and
+  once, and the default `spl_autoload` / `spl_autoload_extensions` when no
+  callback is given), `spl_autoload_unregister`, `spl_autoload_functions` and
   `spl_autoload_call`; a class, interface, trait or enum that is not declared
   yet is handed to the loaders by `new`, static calls, constants and
   properties, a declaration's `extends`/`implements`, `unserialize` and the

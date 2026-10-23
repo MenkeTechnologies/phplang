@@ -107,3 +107,41 @@ fn a_class_no_loader_supplies_is_still_not_found() {
         "[Nope]Class \"Nope\" not found\n[Nope2]Class \"Nope2\" not found\n[Nope3]Class \"Nope3\" not found\n"
     );
 }
+
+#[test]
+fn the_default_spl_autoload_includes_the_lowercased_class_file() {
+    // `spl_autoload_register()` with no callback registers `spl_autoload`,
+    // which looks for `<lowercased class, \ as />.inc` then `.php` along the
+    // include path (`.`, the working directory).
+    let dir = std::env::temp_dir().join(format!("phplang_spl_autoload_{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("app")).unwrap();
+    std::fs::write(
+        dir.join("app/box.php"),
+        "<?php\nnamespace App;\nclass Box { }\necho \"[loaded box]\";\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("widget.inc"),
+        "<?php\nclass Widget {}\necho \"[inc]\";\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("main.php"),
+        "<?php\nspl_autoload_register();\nvar_dump(spl_autoload_functions());\n\
+         echo get_class(new App\\Box), \"\\n\", get_class(new Widget), \"\\n\";\n\
+         var_dump(class_exists(\"Nope\"), spl_autoload_extensions());\n\
+         spl_autoload_extensions(\".php\");\nvar_dump(spl_autoload_extensions());\n",
+    )
+    .unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_php"))
+        .arg("main.php")
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "array(1) {\n  [0]=>\n  string(12) \"spl_autoload\"\n}\n[loaded box]App\\Box\n[inc]Widget\n\
+         bool(false)\nstring(9) \".inc,.php\"\nstring(4) \".php\"\n"
+    );
+}

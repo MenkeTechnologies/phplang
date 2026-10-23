@@ -52,6 +52,11 @@ Measured under `PHP 8.5.11 (cli)`; pinned in `tests/parity_round28.rs`.
   the reference's `ZEND_INIT_USER_CALL` does.
 * `new ("\C")` with a constant class name drops the leading `\` from the
   name it reports missing; `new $c` keeps it, as before.
+* `spl_autoload_register()` with no callback registers the default
+  `spl_autoload`, which lowercases the class name, turns `\` into `/`, and
+  includes (once) the first of `<name>.inc` / `<name>.php` found along the
+  include path; `spl_autoload_extensions()` reads and sets the extension list.
+  Pinned in `tests/autoload.rs`.
 
 ---
 

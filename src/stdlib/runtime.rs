@@ -216,9 +216,8 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         // `spl_autoload_register(?callable $callback = null, bool $throw = true,
         // bool $prepend = false)`: add a loader to the chain `autoload` runs.
         // `$throw` is ignored — registration always throws on a bad callback —
-        // and saying `false` draws the reference's notice. A null callback would
-        // register the default `spl_autoload`, which is not implemented, so it
-        // registers nothing.
+        // and saying `false` draws the reference's notice. A null callback
+        // registers the default `spl_autoload`.
         "spl_autoload_register" => {
             let throw = args.get(1).is_none_or(|v| with_host(|h| h.is_truthy(v)));
             if !throw {
@@ -230,10 +229,11 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
                 });
             }
             let prepend = args.get(2).is_some_and(|v| with_host(|h| h.is_truthy(v)));
-            match arg(args, 0) {
-                Value::Undef => {}
-                callback => with_host(|h| h.autoload_register(callback, prepend)),
-            }
+            let callback = match arg(args, 0) {
+                Value::Undef => Value::str("spl_autoload".to_string()),
+                callback => callback,
+            };
+            with_host(|h| h.autoload_register(callback, prepend));
             Value::bool(true)
         }
         // `spl_autoload_unregister(callable $callback)`: whether it was registered.
@@ -247,6 +247,26 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
                 h.arr_push_auto(&out, l);
             }
             out
+        }),
+        // `spl_autoload(string $class, ?string $file_extensions = null)`: the
+        // default loader — see `host::spl_autoload`.
+        "spl_autoload" => {
+            let exts = match args.get(1) {
+                None | Some(Value::Undef) => None,
+                Some(v) => Some(with_host(|h| h.to_str(v))),
+            };
+            if let Err(e) = crate::host::spl_autoload(&str_arg(args, 0), exts.as_deref()) {
+                return Some(Err(e));
+            }
+            Value::Undef
+        }
+        // `spl_autoload_extensions(?string $file_extensions = null)`: the
+        // extensions `spl_autoload` tries, set first when one is given.
+        "spl_autoload_extensions" => with_host(|h| {
+            if let Some(v) = args.first().filter(|v| !matches!(v, Value::Undef)) {
+                h.autoload_extensions = h.to_str(v);
+            }
+            Value::str(h.autoload_extensions.clone())
         }),
         // `spl_autoload_call(string $class)`: run the chain for `$class`.
         "spl_autoload_call" => {

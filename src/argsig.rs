@@ -5408,10 +5408,29 @@ static SIGS: &[(&str, Sig)] = &[
         },
     ),
     (
+        "spl_autoload",
+        Sig {
+            req: 1,
+            params: &[
+                p("class", Required, "string"),
+                p("file_extensions", Null, "?string"),
+            ],
+            variadic: false,
+        },
+    ),
+    (
         "spl_autoload_call",
         Sig {
             req: 1,
             params: &[p("class", Required, "string")],
+            variadic: false,
+        },
+    ),
+    (
+        "spl_autoload_extensions",
+        Sig {
+            req: 0,
+            params: &[p("file_extensions", Null, "?string")],
             variadic: false,
         },
     ),

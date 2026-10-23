@@ -7350,7 +7350,7 @@ pub const CORPUS: &[Entry] = &[
         "spl_autoload_register",
         "Runtime and diagnostics",
         "spl_autoload_register(?callable $callback = null, bool $throw = true, bool $prepend = false): bool",
-        "Adds `$callback` to the autoload chain (at the front with `$prepend`); a callable already in it is not added again. When a class, interface, trait or enum that does not exist is needed — `new`, a static call, constant or property, `extends`/`implements`, `class_exists()` and the other lookups that autoload — each loader is called with the name (no leading `\\`) until it exists. A loader that throws ends the chain with its exception. `$throw = false` is ignored with a notice. DIVERGENCE: a null `$callback` (the default `spl_autoload`) registers nothing.",
+        "Adds `$callback` to the autoload chain (at the front with `$prepend`); a callable already in it is not added again. When a class, interface, trait or enum that does not exist is needed — `new`, a static call, constant or property, `extends`/`implements`, `class_exists()` and the other lookups that autoload — each loader is called with the name (no leading `\\`) until it exists. A loader that throws ends the chain with its exception. `$throw = false` is ignored with a notice. A null `$callback` registers the default `spl_autoload`.",
         "spl_autoload_register(fn($c) => eval(\"class $c {}\")); echo get_class(new Lazy);   // => Lazy",
     ),
     (
@@ -7366,6 +7366,20 @@ pub const CORPUS: &[Entry] = &[
         "spl_autoload_functions(): array",
         "The registered autoloaders, in the order they are called.",
         "spl_autoload_register('strlen'); var_dump(spl_autoload_functions() === ['strlen']);   // => bool(true)",
+    ),
+    (
+        "spl_autoload",
+        "Runtime and diagnostics",
+        "spl_autoload(string $class, ?string $file_extensions = null): void",
+        "The default autoloader: the class name lowercased with `\\` turned into `/`, each of `$file_extensions` (else `spl_autoload_extensions()`) appended in turn and looked up along the include path, and the first file found included once.",
+        "",
+    ),
+    (
+        "spl_autoload_extensions",
+        "Runtime and diagnostics",
+        "spl_autoload_extensions(?string $file_extensions = null): string",
+        "The comma-separated extensions `spl_autoload` tries — `.inc,.php` until a call sets them.",
+        "echo spl_autoload_extensions();   // => .inc,.php",
     ),
     (
         "spl_autoload_call",

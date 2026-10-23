@@ -1200,6 +1200,9 @@ pub struct PhpHost {
     /// for the class it is loading gets `false`, not a recursion
     /// (`EG(in_autoload)`).
     autoloading: FxHashSet<String>,
+    /// `spl_autoload_extensions()`: what the default `spl_autoload` appends to
+    /// a class name to find its file.
+    pub autoload_extensions: String,
     /// The callee each unqualified namespaced call site settled on the first
     /// time it ran, keyed by the site's compiled key — the reference's
     /// per-opline runtime cache slot, which is why a namespaced function
@@ -1646,6 +1649,7 @@ impl PhpHost {
             const_ns_keys: FxHashMap::default(),
             autoloaders: Vec::new(),
             autoloading: FxHashSet::default(),
+            autoload_extensions: ".inc,.php".to_string(),
             ns_call_sites: FxHashMap::default(),
             next_resource_id: 1,
             includes: Vec::new(),
@@ -12746,6 +12750,26 @@ fn resolve_include(name: &str) -> std::path::PathBuf {
         }
     }
     p.to_path_buf()
+}
+
+/// `spl_autoload($class, $file_extensions)`, the default autoloader: the
+/// class name lowercased, `\` turned into `/`, each extension tried along the
+/// include path, and the first file found included once
+/// (`spl_autoload` in `ext/spl/php_spl.c`).
+pub fn spl_autoload(class: &str, extensions: Option<&str>) -> Result<(), String> {
+    let exts = match extensions {
+        Some(e) => e.to_string(),
+        None => with_host(|h| h.autoload_extensions.clone()),
+    };
+    let stem = unanchored(class).to_ascii_lowercase().replace('\\', "/");
+    for ext in exts.split(',') {
+        let file = format!("{stem}{ext}");
+        if resolve_include(&file).is_file() {
+            run_include(crate::ast::IncludeKind::IncludeOnce, &Value::str(file))?;
+            return Ok(());
+        }
+    }
+    Ok(())
 }
 
 /// `include`/`require`/`include_once`/`require_once`.
