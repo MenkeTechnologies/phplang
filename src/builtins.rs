@@ -510,7 +510,7 @@ fn b_scall_named(vm: &mut VM, argc: u8) -> Value {
 fn b_new_alloc(vm: &mut VM, _: u8) -> Value {
     let class = pop_name(vm);
     mark_frame_line(vm);
-    match host::alloc_object(&class) {
+    match host::new_alloc(&class) {
         Ok(v) => bubbled(vm, v),
         Err(e) => fail_or_throw(vm, e),
     }

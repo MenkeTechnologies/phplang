@@ -26,6 +26,29 @@ comment above it.
 
 ---
 
+## Constructor visibility
+
+`new` checks the constructor's visibility as `ZEND_NEW` does, through
+`zend_std_get_constructor`. Measured under `PHP 8.5.12 (cli)`; pinned in
+`tests/visibility.rs`.
+
+* `class K { private function __construct() {} } new K;` is the reference's
+  catchable `Error: Call to private K::__construct() from global scope`, with
+  the `protected` and `from scope C` variants. The message names the class
+  that DECLARED the constructor (`new C` over a `C extends P` names `P`), a
+  private one is callable only from that class — a subclass is refused even
+  for `new` of itself — and a protected one from anywhere on its inheritance
+  line. `new static` / `new self` in a static factory, and a closure bound into
+  the class, are allowed as before.
+* The check runs before a single constructor argument is evaluated, after the
+  abstract/interface/enum refusal, and applies to `new $name` as well.
+  `unserialize` and the other paths that build an instance without its
+  constructor are unaffected.
+* `Call to private method K::m() from scope Z` spells the scope as the class
+  was declared; from a closure inside a method it used to come out lowercased.
+
+---
+
 ## Round 26: SPL arrays, weak references, serialization refusals, magic writes
 
 Measured under `PHP 8.5.11 (cli)`; pinned in `tests/parity_round26.rs`.

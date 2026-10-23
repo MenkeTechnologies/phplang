@@ -342,7 +342,11 @@ end-to-end (see `tests/basic.rs`):
 - **Call errors throw.** `Call to undefined method C::m()`, `Call to undefined
   function f()` and `Call to private method C::m() from global scope` are all
   catchable `Error`s, with the trace starting at the call site (no frame is
-  invented for the callee that does not exist).
+  invented for the callee that does not exist). `new` on a class whose
+  constructor is private or protected is refused the same way — `Call to
+  private K::__construct() from global scope`, naming the declaring class —
+  before any constructor argument runs, so the static-factory idiom (`new
+  static` inside the class) is the only way in.
 - **`ArrayAccess`** — `$o[k]`, `$o[k] = v`, `$o[] = v`, `isset($o[k])` and
   `unset($o[k])` dispatch to `offsetGet`/`offsetSet`/`offsetExists`/`offsetUnset`
   on any class implementing it. `isset()` asks `offsetExists` and nothing else;

@@ -5644,12 +5644,41 @@ impl PhpHost {
             Visibility::Protected => "protected",
             Visibility::Public => unreachable!(),
         };
-        let scope = match self.current_class_ctx() {
-            Some(c) => format!("scope {c}"),
-            None => "global scope".to_string(),
-        };
         Err(format!(
-            "Call to {vname} method {class}::{method}() from {scope}"
+            "Call to {vname} method {class}::{method}() from {}",
+            self.scope_display()
+        ))
+    }
+
+    /// The calling scope as a message names it: `global scope`, or `scope C`
+    /// in the class's declared spelling.
+    fn scope_display(&self) -> String {
+        match self.current_class_ctx() {
+            Some(c) => format!("scope {}", self.class_display_name(&c.to_ascii_lowercase())),
+            None => "global scope".to_string(),
+        }
+    }
+
+    /// Why `new class` is refused by its constructor's visibility, worded as
+    /// `zend_std_get_constructor` words it (`Call to private K::__construct()
+    /// from global scope` — no `method`, and the class is the one that DECLARED
+    /// the constructor). `None` when there is no constructor or the calling
+    /// scope may call it: a private one only from the declaring class, a
+    /// protected one from anywhere on its inheritance line.
+    pub fn constructor_access_error(&self, class: &str) -> Option<String> {
+        let (declaring, vis) = self.declaring_method_vis(class, "__construct")?;
+        if self.visibility_allows(vis, &declaring) {
+            return None;
+        }
+        let vname = match vis {
+            Visibility::Private => "private",
+            Visibility::Protected => "protected",
+            Visibility::Public => unreachable!(),
+        };
+        Some(format!(
+            "Call to {vname} {}::__construct() from {}",
+            self.class_display_name(&declaring),
+            self.scope_display()
         ))
     }
 
@@ -10187,6 +10216,23 @@ pub fn alloc_object(class: &str) -> Result<Value, String> {
     Ok(obj)
 }
 
+/// `new` as the program wrote it: [`alloc_object`] after `ZEND_NEW`'s
+/// constructor-visibility check, which the reference makes before a single
+/// constructor argument is evaluated. The abstract/interface/enum refusal
+/// comes first, as `object_init_ex` runs before `get_constructor`.
+/// `unserialize` and the other paths that build an instance without its
+/// constructor call [`alloc_object`] directly and skip the check.
+pub fn new_alloc(class: &str) -> Result<Value, String> {
+    let refused = with_host(|h| {
+        h.class_instantiation_error(class)
+            .or_else(|| h.constructor_access_error(class))
+    });
+    if let Some(e) = refused {
+        return Err(crate::builtins::throws_bare("Error", e));
+    }
+    alloc_object(class)
+}
+
 /// The second half of `new`: run the constructor, if one exists anywhere in
 /// the chain, over the allocated instance.
 pub fn construct_object(
@@ -10215,7 +10261,7 @@ pub fn new_object_named(
     args: Vec<Value>,
     named: Vec<(String, Value)>,
 ) -> Result<Value, String> {
-    let obj = alloc_object(class)?;
+    let obj = new_alloc(class)?;
     construct_object(&obj, class, args, named)?;
     Ok(obj)
 }

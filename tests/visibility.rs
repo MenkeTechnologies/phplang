@@ -429,3 +429,132 @@ $e = new E; foreach ($e as $k => $v) echo "$k=$v "; $e->it(); (new F)->it2();"#
         "b=2 in:a in:p in:b f:p f:b "
     );
 }
+
+// ── constructors ─────────────────────────────────────────────────────────────
+//
+// `ZEND_NEW` asks `zend_std_get_constructor` for the constructor the calling
+// scope may see, BEFORE any constructor argument is evaluated. The message has
+// no `method` word and names the class that DECLARED the constructor.
+// Transcripts from the reference `php` 8.5.12.
+
+#[test]
+fn private_constructor_refused_from_global_scope() {
+    assert_eq!(
+        caught(r#"class K { private function __construct() {} } new K;"#),
+        "Error|Call to private K::__construct() from global scope"
+    );
+    // The class operand may be dynamic; the check is the same.
+    assert_eq!(
+        caught(r#"class K { private function __construct() {} } $n = "K"; new $n;"#),
+        "Error|Call to private K::__construct() from global scope"
+    );
+}
+
+#[test]
+fn inherited_protected_constructor_names_the_declaring_class() {
+    let src = r#"<?php class P { protected function __construct() { echo "P ctor\n"; } }
+        class C extends P {}
+        class D { private function __construct() {} }
+        class E extends D {}
+        foreach ([fn() => new P, fn() => new C, fn() => new E] as $f) {
+            try { $f(); } catch (Error $e) { echo $e->getMessage(), "\n"; }
+        }"#;
+    assert_eq!(
+        run(src),
+        "Call to protected P::__construct() from global scope\n\
+         Call to protected P::__construct() from global scope\n\
+         Call to private D::__construct() from global scope\n"
+    );
+}
+
+#[test]
+fn constructor_refusal_names_the_calling_scope() {
+    // A private constructor is callable only from the class that declared it:
+    // a subclass is refused even for `new` of ITSELF, and is named as the scope.
+    let src = r#"<?php class K { private function __construct() {} }
+        class S extends K { private function __construct() {} static function mk() { return new K; } static function mk2() { return new S; } }
+        class T extends K { static function mk() { return new K; } static function mk2() { return new T; } }
+        class O { function f() { return new K; } }
+        foreach ([fn() => S::mk(), fn() => S::mk2(), fn() => T::mk(), fn() => T::mk2(), fn() => (new O)->f()] as $f) {
+            try { echo get_class($f()), "\n"; } catch (Error $e) { echo $e->getMessage(), "\n"; }
+        }"#;
+    assert_eq!(
+        run(src),
+        "Call to private K::__construct() from scope S\n\
+         S\n\
+         Call to private K::__construct() from scope T\n\
+         Call to private K::__construct() from scope T\n\
+         Call to private K::__construct() from scope O\n"
+    );
+}
+
+#[test]
+fn constructor_visibility_allows_the_scopes_the_reference_allows() {
+    // The static-factory idiom: `new static` / `new self` / `new K` inside the
+    // declaring class; a protected constructor from anywhere on its line; a
+    // closure bound into the class's scope.
+    let src = r#"<?php class K { private function __construct() {} static function make() { return new static; } static function mk2() { return new self; } static function mk3() { return new K; } }
+        class P { protected function __construct() { echo "P ctor\n"; } }
+        class C extends P { static function mk() { return new P; } static function mk4() { return new static; } }
+        var_dump(K::make() instanceof K, K::mk2() instanceof K, K::mk3() instanceof K);
+        var_dump(C::mk() instanceof P, C::mk4() instanceof C);
+        $b = Closure::bind(function() { return new K; }, null, K::class);
+        var_dump($b() instanceof K);"#;
+    assert_eq!(
+        run(src),
+        "bool(true)\nbool(true)\nbool(true)\nP ctor\nP ctor\nbool(true)\nbool(true)\nbool(true)\n"
+    );
+}
+
+#[test]
+fn constructor_visibility_is_checked_before_the_arguments_run() {
+    let src = r#"<?php class K { private function __construct($x) {} }
+        function arg() { echo "ARG RAN\n"; return 1; }
+        try { new K(arg()); } catch (Error $e) { echo $e->getMessage(), "\n"; }
+        try { new K(x: arg()); } catch (Error $e) { echo $e->getMessage(), "\n"; }"#;
+    assert_eq!(
+        run(src),
+        "Call to private K::__construct() from global scope\n\
+         Call to private K::__construct() from global scope\n"
+    );
+}
+
+#[test]
+fn instantiability_is_refused_before_constructor_visibility() {
+    // `object_init_ex` runs before `get_constructor`: an abstract class with a
+    // private constructor reports the abstract refusal.
+    assert_eq!(
+        caught(r#"abstract class A { private function __construct() {} } new A;"#),
+        "Error|Cannot instantiate abstract class A"
+    );
+    // A direct call to the constructor is an ordinary method call, with the
+    // ordinary wording.
+    assert_eq!(
+        caught(
+            r#"class K { private function __construct() {} static function mk() { return new static; } } K::mk()->__construct();"#
+        ),
+        "Error|Call to private method K::__construct() from global scope"
+    );
+}
+
+#[test]
+fn an_uncaught_constructor_access_error_renders_as_a_fatal_block() {
+    assert_eq!(
+        output_of(r#"<?php class K { private function __construct() {} } echo "pre\n"; new K; echo "post\n";"#),
+        "pre\n\nFatal error: Uncaught Error: Call to private K::__construct() from global scope in \
+         Command line code:1\nStack trace:\n#0 {main}\n  thrown in Command line code \
+         on line 1\n"
+    );
+}
+
+#[test]
+fn method_access_error_spells_the_scope_as_declared() {
+    // A closure inside a method runs in its class's scope, and the message
+    // spells that class as it was declared (it used to come out lowercased).
+    assert_eq!(
+        caught(
+            r#"class K { private static function s() { return 2; } } class Zed { function f() { return (function() { return K::s(); })(); } } (new Zed)->f();"#
+        ),
+        "Error|Call to private method K::s() from scope Zed"
+    );
+}
