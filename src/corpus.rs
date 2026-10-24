@@ -3961,6 +3961,20 @@ pub const CORPUS: &[Entry] = &[
         "echo strip_tags(\"<p>hi</p>\");   // => hi",
     ),
     (
+        "escapeshellarg",
+        "Strings",
+        "escapeshellarg(string $arg): string",
+        "A port of `php_escape_shell_arg` (POSIX): the argument single-quoted, each `'` written `'\\''`. Bytes are walked as `php_mblen` reads them in a UTF-8 locale — a multibyte character is copied whole, a byte that begins none is dropped, and a character cut off at the end of the argument is carried into the next escape call, as the reference's persistent `mbstate_t` carries it. A NUL byte is a `ValueError`.",
+        "echo escapeshellarg(\"it's\");   // => 'it'\\''s'",
+    ),
+    (
+        "escapeshellcmd",
+        "Strings",
+        "escapeshellcmd(string $command): string",
+        "A port of `php_escape_shell_cmd` (POSIX): each of ``#&;`|*?~<>^()[]{}$\\`` and newline gets a backslash; a quote does not when a matching quote follows it, and a later quote of the same kind closes that pair. Multibyte handling and the NUL refusal are `escapeshellarg`'s.",
+        "echo escapeshellcmd(\"ls; rm\");   // => ls\\; rm",
+    ),
+    (
         "mb_strlen",
         "Strings",
         "mb_strlen(string $string): int",

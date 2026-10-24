@@ -593,3 +593,46 @@ Class [ <user> class A ] {
 "##
     );
 }
+#[test]
+fn escapeshellarg_quotes_and_walks_utf8_as_mblen_does() {
+    let src = r##"<?php foreach (["", "abc", "it's", "a'b'c", "é", "\xC3a", "a\xFFb", "x\xE2\x82y", "\xED\xA0\x80", "\xF0\x9F\x98\x80", "a b;c|d", "\u{10FFFF}"] as $s) { echo bin2hex(escapeshellarg($s)), "\n"; } echo bin2hex(escapeshellarg("a\xF0\x9F\x98")), " ", bin2hex(escapeshellarg("b")), " ", bin2hex(escapeshellarg("\xC3")), " ", bin2hex(escapeshellarg("q")), " ", bin2hex(escapeshellarg("\xA9z")), "\n"; try { escapeshellarg("a\0b"); } catch (ValueError $e) { echo $e->getMessage(), "\n"; }"##;
+    assert_eq!(
+        run(src),
+        r##"2727
+2761626327
+276974275c27277327
+2761275c272762275c27276327
+27c3a927
+276127
+27616227
+27787927
+2727
+27f09f988027
+276120623b637c6427
+27f48fbfbf27
+27619f27 276227 2727 2727 27a97a27
+escapeshellarg(): Argument #1 ($arg) must not contain any null bytes
+"##
+    );
+}
+
+#[test]
+fn escapeshellcmd_escapes_metacharacters_and_unpaired_quotes() {
+    let src = r##"<?php foreach (["", "ls -l", "echo 'a'", "echo 'a", "a\"b\"c", "a\"b'c\"", "#&;`|*?~<>^()[]{}\$\\\n", "é\xC3\xFF", "'\"'\"", "x'y'z'", "rm -rf ."] as $s) { echo bin2hex(escapeshellcmd($s)), "\n"; } try { escapeshellcmd("a\0b"); } catch (ValueError $e) { echo $e->getMessage(), "\n"; }"##;
+    assert_eq!(
+        run(src),
+        r##"
+6c73202d6c
+6563686f20276127
+6563686f205c2761
+6122622263
+6122625c276322
+5c235c265c3b5c605c7c5c2a5c3f5c7e5c3c5c3e5c5e5c285c295c5b5c5d5c7b5c7d5c245c5c5c0a
+c3a9
+275c22275c22
+782779277a5c27
+726d202d7266202e
+escapeshellcmd(): Argument #1 ($command) must not contain any null bytes
+"##
+    );
+}

@@ -82,6 +82,8 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             ))
         }
         "strip_tags" => strip_tags(args),
+        "escapeshellarg" => return Some(escapeshellarg(args)),
+        "escapeshellcmd" => return Some(escapeshellcmd(args)),
         "mb_strlen" => Value::int(crate::bytes::mb_text(&str_arg(args, 0)).chars().count() as i64),
         // Results built from decoded characters are stored back as text.
         "mb_strtoupper" => text_value(&crate::bytes::mb_text(&str_arg(args, 0)).to_uppercase()),
@@ -1948,6 +1950,161 @@ fn mb_substr(args: &[Value]) -> String {
     chars[start..(start + count).min(chars.len())]
         .iter()
         .collect()
+}
+
+// ── shell escaping ───────────────────────────────────────────────────────────
+
+thread_local! {
+    /// `BG(mblen_state)`: the bytes of a character `php_mblen` saw begin at
+    /// the end of a buffer and still waits to complete. It outlives the call,
+    /// as the reference's `mbstate_t` does, so the next escape continues it.
+    static MBLEN_PENDING: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// A new request starts with no pending character.
+pub fn reset_mblen_state() {
+    MBLEN_PENDING.with(|p| p.borrow_mut().clear());
+}
+
+/// The byte length of the UTF-8 character `lead` begins, or `None` for a byte
+/// that begins none.
+fn utf8_seq_len(lead: u8) -> Option<usize> {
+    match lead {
+        0x00..=0x7F => Some(1),
+        0xC2..=0xDF => Some(2),
+        0xE0..=0xEF => Some(3),
+        0xF0..=0xF4 => Some(4),
+        _ => None,
+    }
+}
+
+/// Whether `b` may follow the bytes `seq` in a well-formed UTF-8 character:
+/// a trail byte, narrowed after `E0`, `ED`, `F0` and `F4` so that overlong
+/// forms, surrogates and code points past U+10FFFF are refused.
+fn utf8_may_follow(seq: &[u8], b: u8) -> bool {
+    let range = match (seq.len(), seq[0]) {
+        (1, 0xE0) => 0xA0..=0xBF,
+        (1, 0xED) => 0x80..=0x9F,
+        (1, 0xF0) => 0x90..=0xBF,
+        (1, 0xF4) => 0x80..=0x8F,
+        _ => 0x80..=0xBF,
+    };
+    range.contains(&b)
+}
+
+/// `php_mblen` — `mbrlen` over the persistent state — in a UTF-8 locale, as
+/// the reference measured: the bytes of `s` that complete the next character
+/// (`1` for ASCII), `-1` for an invalid byte (a pending character stays
+/// pending), or `-2` when `s` ends inside a character, which becomes pending.
+fn php_mblen(s: &[u8]) -> isize {
+    MBLEN_PENDING.with(|p| {
+        let mut pending = p.borrow_mut();
+        let mut seq = pending.clone();
+        for (i, &b) in s.iter().enumerate() {
+            if seq.is_empty() {
+                match utf8_seq_len(b) {
+                    Some(1) => return 1,
+                    Some(_) => seq.push(b),
+                    None => return -1,
+                }
+            } else if utf8_may_follow(&seq, b) {
+                seq.push(b);
+            } else {
+                return -1;
+            }
+            if seq.len() == utf8_seq_len(seq[0]).unwrap_or(1) {
+                pending.clear();
+                return i as isize + 1;
+            }
+        }
+        *pending = seq;
+        -2
+    })
+}
+
+/// The characters `php_escape_shell_arg` / `php_escape_shell_cmd` walk: each
+/// multibyte character copied whole, each single byte handed to `byte`, and a
+/// byte `php_mblen` refuses dropped.
+fn shell_walk(s: &[u8], mut byte: impl FnMut(&mut Vec<u8>, usize)) -> Vec<u8> {
+    let mut out = Vec::with_capacity(s.len() + 2);
+    let mut x = 0;
+    while x < s.len() {
+        let n = php_mblen(&s[x..]);
+        if n < 0 {
+            x += 1;
+        } else if n > 1 {
+            out.extend_from_slice(&s[x..x + n as usize]);
+            x += n as usize;
+        } else {
+            byte(&mut out, x);
+            x += 1;
+        }
+    }
+    out
+}
+
+/// The `Z_PARAM_PATH_STR` refusal of a string holding a NUL byte.
+fn shell_arg(args: &[Value], fname: &str, param: &str) -> Result<Vec<u8>, String> {
+    let b = bytes_arg(args, 0);
+    if b.contains(&0) {
+        return Err(throws(
+            "ValueError",
+            format!("{fname}(): Argument #1 (${param}) must not contain any null bytes"),
+        ));
+    }
+    Ok(b)
+}
+
+/// `escapeshellarg($arg)`: port of `php_escape_shell_arg` (ext/standard/exec.c,
+/// POSIX branch) — single-quoted, each `'` written `'\''`.
+fn escapeshellarg(args: &[Value]) -> Result<Value, String> {
+    let s = shell_arg(args, "escapeshellarg", "arg")?;
+    let mut out = vec![b'\''];
+    out.extend(shell_walk(&s, |o, x| {
+        if s[x] == b'\'' {
+            o.extend_from_slice(b"'\\'");
+        }
+        o.push(s[x]);
+    }));
+    out.push(b'\'');
+    Ok(bytes_value(&out))
+}
+
+/// `escapeshellcmd($command)`: port of `php_escape_shell_cmd`
+/// (ext/standard/exec.c, POSIX branch). Shell metacharacters get a backslash;
+/// a quote does not when a matching one follows it, and a later quote of the
+/// same kind closes that pair.
+fn escapeshellcmd(args: &[Value]) -> Result<Value, String> {
+    let s = shell_arg(args, "escapeshellcmd", "command")?;
+    if s.is_empty() {
+        return Ok(Value::str(""));
+    }
+    let mut p: Option<usize> = None;
+    let out = shell_walk(&s, |o, x| {
+        let c = s[x];
+        match c {
+            b'"' | b'\'' => {
+                if p.is_none() {
+                    p = s[x + 1..].iter().position(|&d| d == c).map(|i| x + 1 + i);
+                    if p.is_none() {
+                        o.push(b'\\');
+                    }
+                } else if p.is_some_and(|q| s[q] == c) {
+                    p = None;
+                } else {
+                    o.push(b'\\');
+                }
+                o.push(c);
+            }
+            b'#' | b'&' | b';' | b'`' | b'|' | b'*' | b'?' | b'~' | b'<' | b'>' | b'^' | b'('
+            | b')' | b'[' | b']' | b'{' | b'}' | b'$' | b'\\' | b'\n' | 0xFF => {
+                o.push(b'\\');
+                o.push(c);
+            }
+            _ => o.push(c),
+        }
+    });
+    Ok(bytes_value(&out))
 }
 
 // ── private helpers ──────────────────────────────────────────────────────────

@@ -83,6 +83,13 @@ Measured under `PHP 8.5.12 (cli)`; pinned in `tests/parity_round37.rs`.
   an enum's `name` / `value` properties in `getProperties()`, and the
   parameters and return types of an enum's `cases` / `from` / `tryFrom`. A
   trait member keeps the trait's doc comment in the class that uses it.
+* `escapeshellarg` and `escapeshellcmd` exist, ported from
+  ext/standard/exec.c (POSIX): the quoting, `escapeshellcmd`'s quote pairing,
+  and the `php_mblen` walk — a UTF-8 character copied whole, a byte that
+  begins none dropped, and a character cut off at the end of one argument
+  completed by the next call, as the reference's persistent `mbstate_t`
+  completes it (`escapeshellarg("\xC3")` leaves every later argument empty
+  until a trail byte arrives). A NUL byte is a `ValueError`.
 
 ---
 

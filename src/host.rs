@@ -7983,6 +7983,7 @@ pub fn with_host<R>(f: impl FnOnce(&mut PhpHost) -> R) -> R {
 pub fn reset_host() {
     CUR_GEN.with(|c| c.set(None));
     crate::stdlib::system::reset_lc_ctype();
+    crate::stdlib::strings::reset_mblen_state();
     set_warn_line(0);
     HOST.with(|h| *h.borrow_mut() = PhpHost::new());
 }
