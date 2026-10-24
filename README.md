@@ -74,8 +74,11 @@ source ──▶ lexer ──▶ parser ──▶ compiler ──▶ fusevm::Chu
   and read back as that byte by everything that measures, indexes, hashes,
   packs, matches or writes a string, so `chr(255)`, `hex2bin`, raw digests,
   `pack`, binary files and non-UTF-8 scripts are byte-exact; text costs nothing
-  extra. Joins that rebuild a valid character from raw bytes are re-derived, so
-  `chr(0xC3) . chr(0xA9) === "é"`.
+  extra. Joins that rebuild a valid character from raw bytes are re-derived at
+  the seam only, so `chr(0xC3) . chr(0xA9) === "é"` without re-decoding the whole string;
+  a character that is itself in the escape range is stored as its four bytes.
+  A differential fuzz (`tests/byte_string_fuzz.rs`) pins the model against the
+  reference.
 - **Arrays** are heap objects in `PhpHost`; they travel as `Value::Obj(u32)`
   handles into that heap.
 - **Arithmetic** `+ - *` lowers to native fusevm ops so the JIT can trace hot

@@ -31,6 +31,12 @@ const JSON_ERROR_NONE: i64 = 0;
 const JSON_ERROR_DEPTH: i64 = 1;
 const JSON_ERROR_CTRL_CHAR: i64 = 3;
 const JSON_ERROR_SYNTAX: i64 = 4;
+/// `JSON_ERROR_UTF8` — malformed UTF-8 in the document.
+const JSON_ERROR_UTF8: i64 = 5;
+/// `JSON_INVALID_UTF8_IGNORE` / `JSON_INVALID_UTF8_SUBSTITUTE`: what a string
+/// does with a byte that is not part of valid UTF-8.
+const JSON_INVALID_UTF8_IGNORE: i64 = 1_048_576;
+const JSON_INVALID_UTF8_SUBSTITUTE: i64 = 2_097_152;
 /// `JSON_ERROR_UNSUPPORTED_TYPE` — `json_encode` met a value with no JSON
 /// spelling (a resource).
 pub const JSON_ERROR_UNSUPPORTED_TYPE: i64 = 8;
@@ -197,8 +203,10 @@ fn json_decode(args: &[Value]) -> Result<Value, String> {
 
     set_last_error(JSON_ERROR_NONE);
     let parsed = crate::host::with_host(|h| {
-        let mut p = Parser::new(json.as_bytes(), depth, h);
+        let bytes = crate::bytes::to_bytes(&json);
+        let mut p = Parser::new(&bytes, depth, h);
         p.assoc = assoc;
+        p.bad_utf8 = flags & (JSON_INVALID_UTF8_IGNORE | JSON_INVALID_UTF8_SUBSTITUTE);
         p.bigint_as_string = flags & JSON_BIGINT_AS_STRING != 0;
         p.parse_document()
     });
@@ -228,7 +236,8 @@ fn json_validate(args: &[Value]) -> Result<Value, String> {
 
     set_last_error(JSON_ERROR_NONE);
     let ok = crate::host::with_host(|h| {
-        let mut p = Parser::new_validate(json.as_bytes(), depth, h);
+        let bytes = crate::bytes::to_bytes(&json);
+        let mut p = Parser::new_validate(&bytes, depth, h);
         match p.parse_document() {
             Ok(_) => true,
             Err(code) => {
@@ -259,6 +268,8 @@ struct Parser<'a, 'h> {
     /// `JSON_BIGINT_AS_STRING`: an integer literal too large for `int` decodes
     /// as the string of its digits instead of the nearest float.
     bigint_as_string: bool,
+    /// `JSON_INVALID_UTF8_IGNORE` / `_SUBSTITUTE` bits of `$flags`.
+    bad_utf8: i64,
     h: &'h mut PhpHost,
 }
 
@@ -272,6 +283,7 @@ impl<'a, 'h> Parser<'a, 'h> {
             build: true,
             assoc: true,
             bigint_as_string: false,
+            bad_utf8: 0,
             h,
         }
     }
@@ -286,6 +298,7 @@ impl<'a, 'h> Parser<'a, 'h> {
             build: false,
             assoc: true,
             bigint_as_string: false,
+            bad_utf8: 0,
             h,
         }
     }
@@ -321,7 +334,23 @@ impl<'a, 'h> Parser<'a, 'h> {
     }
 
     /// Parse a whole document: one value with only whitespace around it.
+    ///
+    /// A byte outside a string that does not begin valid UTF-8 is the
+    /// scanner's `ANY` rule, `JSON_ERROR_UTF8`, where a stray character that
+    /// IS valid UTF-8 is a syntax error.
     fn parse_document(&mut self) -> Result<Value, i64> {
+        match self.parse_document_value() {
+            Err(JSON_ERROR_SYNTAX)
+                if self.b.get(self.pos).is_some_and(|&c| c >= 0x80)
+                    && utf8_char_len(&self.b[self.pos..]).is_none() =>
+            {
+                Err(JSON_ERROR_UTF8)
+            }
+            other => other,
+        }
+    }
+
+    fn parse_document_value(&mut self) -> Result<Value, i64> {
         self.skip_ws();
         if self.pos >= self.b.len() {
             return Err(JSON_ERROR_SYNTAX);
@@ -490,44 +519,55 @@ impl<'a, 'h> Parser<'a, 'h> {
     /// (`JSON_ERROR_UTF16`).
     fn parse_string(&mut self) -> Result<String, i64> {
         self.pos += 1; // opening quote
-        let mut out = String::new();
+                       // Bytes, stored with `from_bytes` at the end: a `\u` escape may name a
+                       // character in the escape range, which must stay its four bytes.
+        let mut out: Vec<u8> = Vec::new();
         loop {
             let c = self.peek().ok_or(JSON_ERROR_SYNTAX)?;
             match c {
                 b'"' => {
                     self.pos += 1;
-                    return Ok(out);
+                    return Ok(crate::bytes::from_bytes(&out));
                 }
                 b'\\' => {
                     self.pos += 1;
                     let esc = self.peek().ok_or(JSON_ERROR_SYNTAX)?;
                     self.pos += 1;
                     match esc {
-                        b'"' => out.push('"'),
-                        b'\\' => out.push('\\'),
-                        b'/' => out.push('/'),
-                        b'b' => out.push('\u{0008}'),
-                        b'f' => out.push('\u{000C}'),
-                        b'n' => out.push('\n'),
-                        b'r' => out.push('\r'),
-                        b't' => out.push('\t'),
+                        b'"' => out.push(b'"'),
+                        b'\\' => out.push(b'\\'),
+                        b'/' => out.push(b'/'),
+                        b'b' => out.push(0x08),
+                        b'f' => out.push(0x0C),
+                        b'n' => out.push(b'\n'),
+                        b'r' => out.push(b'\r'),
+                        b't' => out.push(b'\t'),
                         b'u' => {
                             let cp = self.parse_hex4()?;
-                            self.push_unicode(cp, &mut out)?;
+                            let c = self.push_unicode(cp)?;
+                            out.extend_from_slice(c.encode_utf8(&mut [0u8; 4]).as_bytes());
                         }
                         _ => return Err(JSON_ERROR_SYNTAX),
                     }
                 }
                 c if c < 0x20 => return Err(JSON_ERROR_CTRL_CHAR),
-                _ => {
-                    // Copy one UTF-8 code point verbatim. The input is valid UTF-8
-                    // (a Rust String), so a lead byte always has its continuation
-                    // bytes present.
-                    let len = utf8_len(c);
-                    let end = (self.pos + len).min(self.b.len());
-                    out.push_str(&crate::bytes::from_bytes(&self.b[self.pos..end]));
-                    self.pos = end;
-                }
+                _ => match utf8_char_len(&self.b[self.pos..]) {
+                    // One well-formed character, copied verbatim.
+                    Some(len) => {
+                        out.extend_from_slice(&self.b[self.pos..self.pos + len]);
+                        self.pos += len;
+                    }
+                    // The scanner's `ANY` rule: one byte that is not part of
+                    // valid UTF-8, dropped or replaced as the flags say.
+                    None => {
+                        if self.bad_utf8 & JSON_INVALID_UTF8_SUBSTITUTE != 0 {
+                            out.extend_from_slice("\u{FFFD}".as_bytes());
+                        } else if self.bad_utf8 == 0 {
+                            return Err(JSON_ERROR_UTF8);
+                        }
+                        self.pos += 1;
+                    }
+                },
             }
         }
     }
@@ -546,9 +586,9 @@ impl<'a, 'h> Parser<'a, 'h> {
         Ok(val)
     }
 
-    /// Append a decoded `\uXXXX` code unit, combining a high surrogate with a
+    /// The character a decoded `\uXXXX` code unit names, combining a high surrogate with a
     /// following `\uXXXX` low surrogate into one code point.
-    fn push_unicode(&mut self, first: u32, out: &mut String) -> Result<(), i64> {
+    fn push_unicode(&mut self, first: u32) -> Result<char, i64> {
         if (0xD800..=0xDBFF).contains(&first) {
             // High surrogate: require a following \uDC00-\uDFFF low surrogate.
             if self.b.get(self.pos) == Some(&b'\\') && self.b.get(self.pos + 1) == Some(&b'u') {
@@ -556,8 +596,7 @@ impl<'a, 'h> Parser<'a, 'h> {
                 let low = self.parse_hex4()?;
                 if (0xDC00..=0xDFFF).contains(&low) {
                     let cp = 0x10000 + ((first - 0xD800) << 10) + (low - 0xDC00);
-                    out.push(char::from_u32(cp).ok_or(JSON_ERROR_UTF16)?);
-                    return Ok(());
+                    return char::from_u32(cp).ok_or(JSON_ERROR_UTF16);
                 }
                 return Err(JSON_ERROR_UTF16);
             }
@@ -567,8 +606,7 @@ impl<'a, 'h> Parser<'a, 'h> {
             // Unpaired low surrogate.
             return Err(JSON_ERROR_UTF16);
         }
-        out.push(char::from_u32(first).ok_or(JSON_ERROR_UTF16)?);
-        Ok(())
+        char::from_u32(first).ok_or(JSON_ERROR_UTF16)
     }
 
     /// Parse a JSON number: `-?(0|[1-9]\d*)(\.\d+)?([eE][+-]?\d+)?`. Integral
@@ -637,15 +675,16 @@ impl<'a, 'h> Parser<'a, 'h> {
     }
 }
 
-/// UTF-8 sequence length from a lead byte (defaults to 1 for continuation/junk).
-fn utf8_len(lead: u8) -> usize {
-    match lead {
-        0x00..=0x7F => 1,
-        0xC0..=0xDF => 2,
-        0xE0..=0xEF => 3,
-        0xF0..=0xF7 => 4,
-        _ => 1,
-    }
+/// The length of the well-formed UTF-8 character at the start of `b` (the
+/// scanner's `UTF8` class: no overlong forms, surrogates or code points past
+/// U+10FFFF), or `None` when its first byte does not begin one.
+fn utf8_char_len(b: &[u8]) -> Option<usize> {
+    let head = &b[..b.len().min(4)];
+    let valid = match std::str::from_utf8(head) {
+        Ok(s) => s,
+        Err(e) => std::str::from_utf8(&head[..e.valid_up_to()]).ok()?,
+    };
+    valid.chars().next().map(char::len_utf8)
 }
 
 /// Value of one ASCII hex digit, or `None`.

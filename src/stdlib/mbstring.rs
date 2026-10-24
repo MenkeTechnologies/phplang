@@ -26,10 +26,65 @@ use std::cell::RefCell;
 thread_local! {
     /// Configured internal encoding; PHP defaults to "UTF-8".
     static INTERNAL_ENCODING: RefCell<String> = RefCell::new("UTF-8".to_string());
+    /// Set while [`dispatch_decoded`] runs a function on already-decoded
+    /// arguments, so [`dispatch`] does not decode them a second time.
+    static DECODED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Functions that decode their string arguments to characters, print every
+/// invalid sequence as `?`, and return text — measured against the reference
+/// one by one (`mb_str_pad`, `mb_str_split` and `mb_ucfirst` copy an invalid
+/// sequence through instead and are not listed).
+const TEXT_FUNCTIONS: &[&str] = &[
+    "mb_convert_case",
+    "mb_stripos",
+    "mb_strripos",
+    "mb_substr_count",
+    "mb_scrub",
+    "mb_convert_kana",
+    "mb_strwidth",
+    "mb_trim",
+    "mb_ltrim",
+    "mb_rtrim",
+    "mb_strstr",
+    "mb_stristr",
+    "mb_strrchr",
+    "mb_strrichr",
+    "mb_strimwidth",
+    "mb_encode_numericentity",
+    "mb_decode_numericentity",
+];
+
+/// A [`TEXT_FUNCTIONS`] member run on its decoded arguments, its result stored
+/// as text.
+fn dispatch_decoded(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
+    // The decoded text of each string argument (a character in the escape
+    // range becomes itself), and the result stored back as text.
+    let text_args: Vec<Value> = args
+        .iter()
+        .map(|a| match a {
+            Value::Str(s) if crate::bytes::has_raw(s) => {
+                Value::str(crate::bytes::mb_text(s).into_owned())
+            }
+            other => other.clone(),
+        })
+        .collect();
+    DECODED.set(true);
+    let result = dispatch(name, &text_args);
+    DECODED.set(false);
+    result.map(|r| {
+        r.map(|v| match v {
+            Value::Str(s) => text_value(&s),
+            other => other,
+        })
+    })
 }
 
 /// Dispatch a `mbstring`-category PHP function by lowercased name.
 pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
+    if TEXT_FUNCTIONS.contains(&name) && !DECODED.get() {
+        return dispatch_decoded(name, args);
+    }
     let v = match name {
         "mb_str_split" => return Some(mb_str_split(args)),
         "mb_convert_case" => Value::str(mb_convert_case(args)),
@@ -86,10 +141,12 @@ fn mb_str_split(args: &[Value]) -> Result<Value, String> {
             "mb_str_split(): Argument #2 ($length) must be greater than 0",
         ));
     }
-    let chars: Vec<char> = s.chars().collect();
-    let out: Vec<Value> = chars
-        .chunks(length as usize)
-        .map(|c| Value::str(c.iter().collect::<String>()))
+    // An invalid sequence is one character, copied through as its bytes.
+    let bytes = crate::bytes::to_bytes(&s);
+    let units = crate::bytes::mb_units(&bytes);
+    let out: Vec<Value> = units
+        .chunks(usize::try_from(length).unwrap_or(usize::MAX))
+        .map(|c| Value::str(c.iter().map(|u| u.stored()).collect::<String>()))
         .collect();
     Ok(make_list(out))
 }
@@ -100,7 +157,7 @@ fn mb_str_split(args: &[Value]) -> Result<Value, String> {
 /// `MB_CASE_UPPER` (0), `MB_CASE_LOWER` (1) or `MB_CASE_TITLE` (2), passed either
 /// as the integer or (phplang has no constant table) as the constant name string.
 fn mb_convert_case(args: &[Value]) -> String {
-    let s = crate::bytes::mb_text(&str_arg(args, 0)).into_owned();
+    let s = str_arg(args, 0);
     match resolve_mode(&arg(args, 1)) {
         1 => s.to_lowercase(),
         2 => title_case(&s),
@@ -181,11 +238,104 @@ fn is_case_ignorable(c: char) -> bool {
 
 // ── searching / positions ────────────────────────────────────────────────────
 
+/// `mblen_table_utf8` (libmbfl/filters/mbfilter_utf8.c): the byte length
+/// mbstring steps over for each lead byte, whether or not what follows is
+/// valid.
+fn utf8_step(lead: u8) -> usize {
+    match lead {
+        0xC2..=0xDF => 2,
+        0xE0..=0xEF => 3,
+        0xF0..=0xF4 => 4,
+        _ => 1,
+    }
+}
+
+/// `mb_fast_strlen_utf8`: the bytes that are not continuation bytes.
+fn utf8_fast_len(b: &[u8]) -> usize {
+    b.iter().filter(|&&c| !(0x80..0xC0).contains(&c)).count()
+}
+
+/// Port of `offset_to_pointer_utf8` (ext/mbstring/mbstring.c): the byte
+/// position `offset` characters into `b[start..]` (from the end when
+/// negative), or `None` past either end.
+fn utf8_offset(b: &[u8], start: usize, offset: i64) -> Option<usize> {
+    if offset < 0 {
+        let mut pos = b.len();
+        let mut offset = offset;
+        while offset < 0 {
+            if pos <= start {
+                return None;
+            }
+            pos -= 1;
+            if !(0x80..0xC0).contains(&b[pos]) {
+                offset += 1;
+            }
+        }
+        Some(pos)
+    } else {
+        let mut pos = start;
+        for _ in 0..offset {
+            if pos >= b.len() {
+                return None;
+            }
+            pos += utf8_step(b[pos]);
+        }
+        Some(pos.min(b.len()))
+    }
+}
+
+/// Port of `mb_find_strpos` for UTF-8: a BYTE search (so a needle holding a
+/// stray byte matches inside a character), answered as the number of
+/// characters before the match as `mb_fast_strlen_utf8` counts them. `Err`
+/// is the offset error.
+fn mb_find_strpos(
+    hay: &[u8],
+    needle: &[u8],
+    offset: i64,
+    reverse: bool,
+) -> Result<Option<usize>, ()> {
+    let from = utf8_offset(hay, 0, offset).ok_or(())?;
+    if hay.len() < needle.len() {
+        return Ok(None);
+    }
+    let found = if !reverse {
+        crate::bytes::find(&hay[from..], needle).map(|i| i + from)
+    } else if offset >= 0 {
+        crate::bytes::rfind(&hay[from..], needle).map(|i| i + from)
+    } else {
+        // A negative offset is where the LAST match may start: step forward
+        // by the needle's length in characters to find where it may end.
+        let needle_len = utf8_fast_len(needle) as i64;
+        let end = utf8_offset(hay, from, needle_len).unwrap_or(hay.len());
+        crate::bytes::rfind(&hay[..end], needle)
+    };
+    Ok(found.map(|at| utf8_fast_len(&hay[..at])))
+}
+
+/// `mb_strpos` / `mb_strrpos` through [`mb_find_strpos`].
+fn find_strpos_call(args: &[Value], fname: &str, reverse: bool) -> Result<Value, String> {
+    let hay = crate::bytes::to_bytes(&str_arg(args, 0)).into_owned();
+    let needle = crate::bytes::to_bytes(&str_arg(args, 1)).into_owned();
+    match mb_find_strpos(&hay, &needle, int_arg(args, 2), reverse) {
+        Ok(Some(n)) => Ok(Value::int(n as i64)),
+        Ok(None) => Ok(Value::bool(false)),
+        Err(()) => Err(throws(
+            "ValueError",
+            format!(
+                "{fname}(): Argument #3 ($offset) must be contained in argument #1 ($haystack)"
+            ),
+        )),
+    }
+}
+
 /// `mb_strpos`/`mb_stripos($haystack, $needle, $offset = 0, $encoding = null)`:
 /// codepoint position of the first match of `$needle`, or `false`. `ci` selects
 /// the case-insensitive `mb_stripos`. PHP 8 raises a `ValueError` when `$offset`
 /// is outside `[-len, len]` (a negative offset counts from the end).
 fn mb_strpos(args: &[Value], ci: bool) -> Result<Value, String> {
+    if !ci {
+        return find_strpos_call(args, "mb_strpos", false);
+    }
     let (hay, needle) = ci_pair(args, ci);
     let len = hay.len() as i64;
     let off_raw = int_arg(args, 2);
@@ -218,6 +368,9 @@ fn mb_strpos(args: &[Value], ci: bool) -> Result<Value, String> {
 /// search that many characters from the end. `ci` selects `mb_strripos`. PHP 8
 /// raises a `ValueError` when `$offset` is outside `[-len, len]`.
 fn mb_strrpos(args: &[Value], ci: bool) -> Result<Value, String> {
+    if !ci {
+        return find_strpos_call(args, "mb_strrpos", true);
+    }
     let (hay, needle) = ci_pair(args, ci);
     let len = hay.len();
     let ilen = len as i64;
@@ -275,10 +428,7 @@ fn mb_substr_count(args: &[Value]) -> Result<Value, String> {
 
 /// Return `(haystack, needle)` as codepoint vectors, case-folded when `ci`.
 fn ci_pair(args: &[Value], ci: bool) -> (Vec<char>, Vec<char>) {
-    let (h, n) = (
-        crate::bytes::mb_text(&str_arg(args, 0)).into_owned(),
-        crate::bytes::mb_text(&str_arg(args, 1)).into_owned(),
-    );
+    let (h, n) = (str_arg(args, 0), str_arg(args, 1));
     if ci {
         (fold_chars(&h), fold_chars(&n))
     } else {
@@ -304,17 +454,21 @@ fn fold_chars(s: &str) -> Vec<char> {
 /// `STR_PAD_RIGHT` (1), `STR_PAD_LEFT` (0) and `STR_PAD_BOTH` (2) are accepted as
 /// integers or as their constant-name strings.
 fn mb_str_pad(args: &[Value]) -> Result<Value, String> {
-    let s: Vec<char> = str_arg(args, 0).chars().collect();
+    // Counted in mbstring characters; an invalid sequence is one, copied
+    // through as its bytes.
+    let subject = crate::bytes::to_bytes(&str_arg(args, 0)).into_owned();
+    let s = stored_units(&subject);
     let target = int_arg(args, 1);
     let pad_str = match args.get(2) {
         Some(v) if !matches!(v, Value::Undef) => str_arg(args, 2),
         _ => " ".to_string(),
     };
-    let pad: Vec<char> = pad_str.chars().collect();
+    let pad_bytes = crate::bytes::to_bytes(&pad_str).into_owned();
+    let pad = stored_units(&pad_bytes);
     let pad_type = resolve_pad_type(&arg(args, 3));
 
     if target <= s.len() as i64 {
-        return Ok(Value::str(s.into_iter().collect::<String>()));
+        return Ok(Value::str(s.concat()));
     }
     if pad.is_empty() {
         return Err(throws(
@@ -323,12 +477,12 @@ fn mb_str_pad(args: &[Value]) -> Result<Value, String> {
         ));
     }
     let total = target as usize - s.len();
-    let make = |n: usize| -> Vec<char> { pad.iter().cloned().cycle().take(n).collect() };
+    let make = |n: usize| -> Vec<String> { pad.iter().cloned().cycle().take(n).collect() };
 
     // NOT `with_capacity(target)`: `$length` is unbounded and reserving
     // `target * size_of::<char>()` bytes up front panicked with "capacity
     // overflow" before any padding was built.
-    let mut out: Vec<char> = Vec::new();
+    let mut out: Vec<String> = Vec::new();
     match pad_type {
         0 => {
             // STR_PAD_LEFT
@@ -349,7 +503,15 @@ fn mb_str_pad(args: &[Value]) -> Result<Value, String> {
             out.extend(make(total));
         }
     }
-    Ok(Value::str(out.into_iter().collect::<String>()))
+    Ok(Value::str(crate::bytes::canonical(out.concat())))
+}
+
+/// The mbstring characters of `b`, each in stored form.
+fn stored_units(b: &[u8]) -> Vec<String> {
+    crate::bytes::mb_units(b)
+        .into_iter()
+        .map(crate::bytes::MbUnit::stored)
+        .collect()
 }
 
 /// Resolve a `$pad_type` argument (STR_PAD_* integer or constant-name string).
@@ -375,8 +537,11 @@ fn resolve_pad_type(v: &Value) -> i64 {
 /// An empty string is a `ValueError`, not `false` — PHP 8 rejects it rather than
 /// answering a failure sentinel the way PHP 7 did.
 fn mb_ord(args: &[Value]) -> Result<Value, String> {
-    match str_arg(args, 0).chars().next() {
-        Some(c) => Ok(Value::int(c as i64)),
+    let bytes = crate::bytes::to_bytes(&str_arg(args, 0)).into_owned();
+    match crate::bytes::mb_units(&bytes).first() {
+        Some(crate::bytes::MbUnit::Char(c)) => Ok(Value::int(*c as i64)),
+        // An invalid first sequence has no code point.
+        Some(crate::bytes::MbUnit::Invalid(_)) => Ok(Value::bool(false)),
         None => Err(throws(
             "ValueError",
             "mb_ord(): Argument #1 ($string) must not be empty",
@@ -389,7 +554,7 @@ fn mb_ord(args: &[Value]) -> Result<Value, String> {
 fn mb_chr(args: &[Value]) -> Value {
     let cp = int_arg(args, 0);
     match u32::try_from(cp).ok().and_then(char::from_u32) {
-        Some(c) => Value::str(c.to_string()),
+        Some(c) => text_value(c.encode_utf8(&mut [0u8; 4])),
         None => Value::bool(false),
     }
 }
@@ -401,6 +566,9 @@ fn mb_chr(args: &[Value]) -> Value {
 fn mb_lcfirst(s: &str) -> String {
     let mut chars = s.chars();
     match chars.next() {
+        // A stored escape (an invalid sequence, or a character in the escape
+        // range, which has no case) is left as it is.
+        Some(first) if crate::bytes::has_raw(first.encode_utf8(&mut [0u8; 4])) => s.to_string(),
         Some(first) => first.to_lowercase().collect::<String>() + chars.as_str(),
         None => String::new(),
     }
@@ -411,6 +579,7 @@ fn mb_lcfirst(s: &str) -> String {
 fn mb_ucfirst(s: &str) -> String {
     let mut chars = s.chars();
     match chars.next() {
+        Some(first) if crate::bytes::has_raw(first.encode_utf8(&mut [0u8; 4])) => s.to_string(),
         Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
         None => String::new(),
     }
@@ -627,7 +796,7 @@ fn mb_convert_encoding(args: &[Value]) -> Result<Value, String> {
     };
     let valid_in = |cs: &str| match cs {
         "ASCII" => crate::bytes::to_bytes(&s).is_ascii(),
-        "UTF-8" => !crate::bytes::has_raw(&s),
+        "UTF-8" => crate::bytes::is_utf8(&s),
         _ => true,
     };
     let from = match candidates.as_slice() {
@@ -719,7 +888,7 @@ fn mb_check_encoding(args: &[Value]) -> bool {
     match enc.as_str() {
         "ASCII" => s.is_ascii(),
         // A raw byte (see `crate::bytes`) is exactly a byte that is not UTF-8.
-        "UTF-8" => !crate::bytes::has_raw(&s),
+        "UTF-8" => crate::bytes::is_utf8(&s),
         _ => true,
     }
 }

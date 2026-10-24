@@ -59,6 +59,12 @@ pub fn has_raw(s: &str) -> bool {
     s.as_bytes().contains(&0xF4) && s.chars().any(|c| unescape(c).is_some())
 }
 
+/// Whether the PHP bytes of `s` are valid UTF-8. Not the same as `!has_raw`: a
+/// character in the escape range is valid text stored as escaped bytes.
+pub fn is_utf8(s: &str) -> bool {
+    !has_raw(s) || std::str::from_utf8(&to_bytes(s)).is_ok()
+}
+
 /// The PHP bytes a stored string stands for.
 pub fn to_bytes(s: &str) -> Cow<'_, [u8]> {
     if !has_raw(s) {
@@ -122,6 +128,102 @@ fn push_text(out: &mut String, text: &str) {
     }
 }
 
+/// The stored form of TEXT — a Rust string whose characters are meant as
+/// themselves, such as a decoded entity, a JSON `\u` escape or an `mb_*`
+/// result. Only a character in the escape range needs work: it becomes its
+/// four escaped bytes, so it is not later read back as one byte.
+///
+/// Every producer that builds a string out of characters rather than bytes
+/// must pass it through here (or [`from_bytes`]); a raw `Value::str(text)` is
+/// only correct for text known to lie outside `U+10FF80..=U+10FFFF`.
+pub fn from_text(text: &str) -> Cow<'_, str> {
+    if !text.as_bytes().contains(&0xF4) || !text.chars().any(|c| unescape(c).is_some()) {
+        return Cow::Borrowed(text);
+    }
+    let mut out = String::with_capacity(text.len() * 2);
+    push_text(&mut out, text);
+    Cow::Owned(out)
+}
+
+/// The escape characters at the end of `s`, at most `max` of them: the byte
+/// offset where that run starts.
+fn trailing_escapes(s: &str, max: usize) -> usize {
+    let mut at = s.len();
+    for (i, c) in s.char_indices().rev().take(max) {
+        if unescape(c).is_none() {
+            break;
+        }
+        at = i;
+    }
+    at
+}
+
+/// The escape characters at the start of `s`, at most `max` of them: the byte
+/// length of that run.
+fn leading_escapes(s: &str, max: usize) -> usize {
+    s.char_indices()
+        .take(max)
+        .take_while(|&(_, c)| unescape(c).is_some())
+        .last()
+        .map_or(0, |(i, c)| i + c.len_utf8())
+}
+
+/// `x . y` for two canonical strings, in canonical form.
+///
+/// Only bytes at the seam can merge: a character that spans it has at most
+/// three bytes on either side, and every one of them is an escape (a valid
+/// character on either side is complete, and canonical text has no escaped
+/// byte that could still join one beside it). So the join re-derives at most
+/// the last three escapes of `x` and the first three of `y` — constant work,
+/// where re-deriving the whole result made appending to a binary string
+/// quadratic.
+pub fn concat(x: &str, y: &str) -> String {
+    let mut out = String::with_capacity(x.len() + y.len());
+    let tail = trailing_escapes(x, 3);
+    let head = leading_escapes(y, 3);
+    if tail == x.len() || head == 0 {
+        out.push_str(x);
+        out.push_str(y);
+        return out;
+    }
+    out.push_str(&x[..tail]);
+    let mut seam = to_bytes(&x[tail..]).into_owned();
+    seam.extend_from_slice(&to_bytes(&y[..head]));
+    out.push_str(&from_bytes(&seam));
+    out.push_str(&y[head..]);
+    out
+}
+
+/// The byte offset of the first `needle` in `hay` (an empty needle is found at
+/// 0).
+pub fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    memchr::memmem::find(hay, needle)
+}
+
+/// The byte offset of the last `needle` in `hay`.
+pub fn rfind(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    memchr::memmem::rfind(hay, needle)
+}
+
+/// `hay` with every non-overlapping `needle` (searched left to right) replaced
+/// by `rep`, and how many there were. An empty needle replaces nothing.
+pub fn replace(hay: &[u8], needle: &[u8], rep: &[u8]) -> (Vec<u8>, usize) {
+    if needle.is_empty() {
+        return (hay.to_vec(), 0);
+    }
+    let mut out = Vec::with_capacity(hay.len());
+    let mut last = 0;
+    let mut n = 0;
+    for at in memchr::memmem::find_iter(hay, needle) {
+        out.extend_from_slice(&hay[last..at]);
+        out.extend_from_slice(rep);
+        last = at + needle.len();
+        n += 1;
+    }
+    out.extend_from_slice(&hay[last..]);
+    (out, n)
+}
+
 /// `s` in canonical form: a string that carries escapes is re-derived from its
 /// bytes, which merges escaped bytes that now form valid UTF-8.
 pub fn canonical(s: String) -> String {
@@ -148,6 +250,38 @@ pub fn mb_text(s: &str) -> Cow<'_, str> {
         }
     }
     Cow::Owned(out)
+}
+
+/// One character of a string as mbstring's UTF-8 decoder splits it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MbUnit<'a> {
+    Char(char),
+    /// A maximal subpart that is not valid UTF-8, with its bytes.
+    Invalid(&'a [u8]),
+}
+
+impl MbUnit<'_> {
+    /// The unit's bytes in stored form.
+    pub fn stored(self) -> String {
+        match self {
+            MbUnit::Char(c) => from_text(c.encode_utf8(&mut [0u8; 4])).into_owned(),
+            MbUnit::Invalid(b) => from_bytes(b),
+        }
+    }
+}
+
+/// The characters of the byte string `b` as mbstring counts them, for the
+/// functions that copy an invalid sequence through rather than printing `?`
+/// (`mb_str_split`, `mb_str_pad`, `mb_ucfirst`).
+pub fn mb_units(b: &[u8]) -> Vec<MbUnit<'_>> {
+    let mut out = Vec::with_capacity(b.len());
+    for chunk in b.utf8_chunks() {
+        out.extend(chunk.valid().chars().map(MbUnit::Char));
+        if !chunk.invalid().is_empty() {
+            out.push(MbUnit::Invalid(chunk.invalid()));
+        }
+    }
+    out
 }
 
 /// One step of ext/standard's UTF-8 decoder (`php_next_utf8_char`), which
@@ -260,6 +394,68 @@ mod tests {
         assert_eq!(units(b"\xed\xa0\x80"), "?");
         assert_eq!(units(b"\xf4\x90\x80\x80"), "?");
         assert_eq!(units(b"\xf0\x9f\x98a\xc3\xa9"), "?a\u{e9}");
+    }
+
+    /// Byte strings over an alphabet chosen so that every way a seam can
+    /// merge occurs: leads of every length, trail bytes, the escape-range lead
+    /// `F4 8F`, stray bytes and ASCII.
+    fn alphabet_strings(max_len: usize) -> Vec<Vec<u8>> {
+        const ALPHA: [u8; 8] = [b'a', 0xC3, 0xA9, 0xE2, 0x82, 0xF4, 0x8F, 0xBF];
+        let mut all = vec![Vec::new()];
+        let mut layer = vec![Vec::new()];
+        for _ in 0..max_len {
+            layer = layer
+                .iter()
+                .flat_map(|s: &Vec<u8>| {
+                    ALPHA.iter().map(move |&b| {
+                        let mut t = s.clone();
+                        t.push(b);
+                        t
+                    })
+                })
+                .collect();
+            all.extend(layer.iter().cloned());
+        }
+        all
+    }
+
+    #[test]
+    fn concat_re_derives_only_the_seam() {
+        let strs = alphabet_strings(4);
+        let short: Vec<&Vec<u8>> = strs.iter().filter(|s| s.len() <= 3).collect();
+        for x in &strs {
+            let sx = from_bytes(x);
+            for y in &short {
+                let sy = from_bytes(y);
+                let whole = [x.as_slice(), y.as_slice()].concat();
+                assert_eq!(concat(&sx, &sy), from_bytes(&whole), "{x:02x?} . {y:02x?}");
+                assert_eq!(
+                    concat(&sy, &sx),
+                    from_bytes(&[y.as_slice(), x.as_slice()].concat())
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_short_byte_string_round_trips_uniquely() {
+        let strs = alphabet_strings(5);
+        let mut seen = std::collections::HashSet::new();
+        for b in &strs {
+            let s = from_bytes(b);
+            assert_eq!(to_bytes(&s).as_ref(), b.as_slice());
+            assert_eq!(canonical(s.clone()), s);
+            assert!(seen.insert(s), "two byte strings share a stored form");
+        }
+    }
+
+    #[test]
+    fn text_in_the_escape_range_is_stored_as_its_bytes() {
+        let text = "a\u{10FF80}\u{10FFFF}b";
+        let stored = from_text(text);
+        assert_eq!(to_bytes(&stored).as_ref(), text.as_bytes());
+        assert_eq!(stored, from_bytes(text.as_bytes()));
+        assert!(matches!(from_text("plain é"), Cow::Borrowed(_)));
     }
 
     #[test]

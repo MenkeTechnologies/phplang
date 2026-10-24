@@ -35,6 +35,19 @@ stops with a phplang-worded fatal of the same shape rather than silently
 truncating the exponent and returning `1`. The wording is ours and is marked as
 such in the source.
 
+## Declined: a `Vec<u8>`-backed string
+
+PHP strings are stored in `fusevm::Value::Str` (a Rust `String`) with every
+byte that is not part of valid UTF-8 as one private-use escape character
+(`src/bytes.rs`). Round 36 audited that model and closed every gap it found,
+but a real byte buffer cannot be built here: `Value` has no byte variant, and a
+byte string kept on the host heap behind `Value::Obj` would never be freed —
+that heap is an append-only arena — so every intermediate string of a loop
+would leak. It needs a byte variant in fusevm. The in-band form costs one
+obligation, which `bytes::from_text` serves: a producer that builds a string
+from CHARACTERS must store a character in `U+10FF80..=U+10FFFF` as its four
+bytes, or the engine reads it as one byte.
+
 ## Declined: unbounded user recursion
 
 ```text
@@ -348,7 +361,9 @@ file's directory. The same value is what `get_include_path()` returns.
 | `$g = function (&$x) {}; $g(5);` — a non-variable argument for a by-reference parameter of a closure or callable string | `Error: …could not be passed by reference` | the call runs; the check is made for named functions and methods whose declaration is visible to the compiler |
 | `var_dump(gmp_add(1, 2))`, `$a + $b` over GMP values, `gmp_setbit`, `gmp_clrbit`, `gmp_random_*`, `gmp_import`/`gmp_export` | `object(GMP)#1 (1) { ["num"]=> string(1) "3" }`; operator overloading | `string(1) "3"` — GMP values are decimal strings, so there is no object to dump, no operator overload (`+` over two big strings loses precision), and the by-reference and random functions that need one are absent. `GMP_VERSION` and the `GMP_MSW_FIRST` family are unseeded |
 | `hash("tiger192,4", "")`, `snefru`, `snefru256`, `haval128,3` … `haval256,5` | the digest | `ValueError: hash(): Argument #1 ($algo) must be a valid hashing algorithm`: these are the only reference algorithms not implemented, so `hash_algos()` and `hash_hmac_algos()` are the reference's lists without exactly them. The 4-pass Tiger cannot be built on the `tiger` crate, which runs three passes; snefru's and HAVAL's tables have no vetted dependency |
-| `ctype_alpha(chr(233))`, `ctype_alnum(255)` | follows the platform libc's locale tables (true on macOS, false on glibc) | always false for a byte at or above 0x80 — the glibc "C" locale |
+| `ctype_alpha(chr(233))`, `ctype_alnum(255)`, `str_word_count("\xE9t\xE9")`, `strnatcasecmp("\xC3", "\xFF")` | follows the platform libc's locale tables (true on macOS, false on glibc; the last is `1` on macOS, `-1` here) | always false for a byte at or above 0x80 — the glibc "C" locale |
+| `mb_convert_encoding("\xDB\xFF\xDF\xFF", "UTF-8", "UTF-16BE")`, `mb_convert_encoding($s, "UTF-16", "UTF-8")` | the converted string | `ValueError: … must be a valid encoding` (or `?` per byte from UCS-4): mbstring converts only between UTF-8, ASCII and ISO-8859-1 |
+| `escapeshellarg("é")`, `escapeshellcmd(…)` | `'é'` | `Call to undefined function` |
 | `assert_options(ASSERT_ACTIVE)`, `mt_srand(5, MT_RAND_PHP)` | the deprecated constants resolve (with a `Deprecated:` each) | `Undefined constant`: `ASSERT_*` and `MT_RAND_PHP` are not seeded and the legacy Mt19937 variant is not modelled |
 | `f(... 1)` where `f` does not exist | `Error: Call to undefined function f()` | `TypeError: Only arrays and Traversables can be unpacked` — the unpack is checked before the callee is resolved |
 | `Closure`/generator/enum-case handle numbers | `#N` counts them | see the object-handle entry below |

@@ -83,9 +83,10 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         }
         "strip_tags" => strip_tags(args),
         "mb_strlen" => Value::int(crate::bytes::mb_text(&str_arg(args, 0)).chars().count() as i64),
-        "mb_strtoupper" => Value::str(crate::bytes::mb_text(&str_arg(args, 0)).to_uppercase()),
-        "mb_strtolower" => Value::str(crate::bytes::mb_text(&str_arg(args, 0)).to_lowercase()),
-        "mb_substr" => Value::str(mb_substr(args)),
+        // Results built from decoded characters are stored back as text.
+        "mb_strtoupper" => text_value(&crate::bytes::mb_text(&str_arg(args, 0)).to_uppercase()),
+        "mb_strtolower" => text_value(&crate::bytes::mb_text(&str_arg(args, 0)).to_lowercase()),
+        "mb_substr" => text_value(&mb_substr(args)),
         _ => return None,
     };
     Some(Ok(v))
@@ -161,14 +162,18 @@ fn strstr(args: &[Value], ci: bool) -> Value {
     // haystack (and the empty string when $before_needle is set). `find("")` and
     // `ci_find` both yield `Some(0)` here, so no special-case is needed.
     let before = args.get(2).map(is_truthy).unwrap_or(false);
+    let (hay, needle) = (
+        crate::bytes::to_bytes(&hay),
+        crate::bytes::to_bytes(&needle),
+    );
     let found = if ci {
-        ci_find(&hay, &needle)
+        ci_find_bytes(&hay, &needle)
     } else {
-        hay.find(&needle)
+        crate::bytes::find(&hay, &needle)
     };
     match found {
-        Some(i) if before => Value::str(hay[..i].to_string()),
-        Some(i) => Value::str(hay[i..].to_string()),
+        Some(i) if before => Value::str(crate::bytes::from_bytes(&hay[..i])),
+        Some(i) => Value::str(crate::bytes::from_bytes(&hay[i..])),
         None => Value::bool(false),
     }
 }
@@ -347,6 +352,13 @@ fn strrpos(args: &[Value], ci: bool) -> Result<Value, String> {
     if needle.is_empty() {
         return Ok(Value::int(len as i64));
     }
+    // `PHP_FUNCTION(strripos)`'s one-byte shortcut stores the lowered needle
+    // in a `char` and compares it with an `unsigned char`, so a needle byte at
+    // or above 0x80 never matches on a signed-`char` target (x86-64, and
+    // Apple arm64 where the reference was measured).
+    if ci && matches!(*crate::bytes::to_bytes(&needle), [b] if b >= 0x80) {
+        return Ok(Value::bool(false));
+    }
     // Determine the inclusive window [lo, hi] where a match may START.
     let (lo, hi) = if off >= 0 {
         (
@@ -426,9 +438,11 @@ fn strtr(args: &[Value]) -> Value {
         let out: Vec<u8> = crate::bytes::to_bytes(&s)
             .iter()
             .map(|&b| {
+                // `php_strtr` fills a 256-entry table in order, so a byte
+                // listed twice in `$from` maps to its LAST partner.
                 fb[..n]
                     .iter()
-                    .position(|&x| x == b)
+                    .rposition(|&x| x == b)
                     .map(|idx| tb[idx])
                     .unwrap_or(b)
             })
@@ -662,11 +676,17 @@ fn chunk_split(args: &[Value]) -> Result<Value, String> {
         Some(v) if !matches!(v, Value::Undef) => str_arg(args, 2),
         _ => "\r\n".to_string(),
     };
-    // `$length` counts bytes, as everywhere in PHP's string family.
+    // `$length` counts bytes, as everywhere in PHP's string family. A
+    // string no longer than one chunk gets the ending once, the empty string
+    // included (`PHP_FUNCTION(chunk_split)`'s "to maintain BC" branch).
+    let (body, end) = (crate::bytes::to_bytes(&body), crate::bytes::to_bytes(&end));
     let mut out: Vec<u8> = Vec::with_capacity(body.len() + end.len());
-    for chunk in (*crate::bytes::to_bytes(&body)).chunks(length as usize) {
+    if body.is_empty() {
+        out.extend_from_slice(&end);
+    }
+    for chunk in body.chunks(usize::try_from(length).unwrap_or(usize::MAX)) {
         out.extend_from_slice(chunk);
-        out.extend_from_slice(&crate::bytes::to_bytes(&end));
+        out.extend_from_slice(&end);
     }
     Ok(Value::str(crate::bytes::from_bytes(&out)))
 }
@@ -1936,14 +1956,6 @@ fn is_truthy(v: &Value) -> bool {
     with_host(|h| h.is_truthy(v))
 }
 
-/// ASCII case-insensitive search over `&str`: index of the first match of `needle`.
-fn ci_find(hay: &str, needle: &str) -> Option<usize> {
-    ci_find_bytes(
-        &crate::bytes::to_bytes(hay),
-        &crate::bytes::to_bytes(needle),
-    )
-}
-
 /// ASCII case-insensitive byte search: index of the first match of `nb` in `hb`.
 /// Byte-oriented so callers can search multibyte haystacks without char-boundary
 /// panics (PHP's non-`mb_` string functions are all byte-oriented).
@@ -1958,19 +1970,20 @@ fn ci_find_bytes(hb: &[u8], nb: &[u8]) -> Option<usize> {
 }
 
 /// ASCII case-insensitive replace-all (non-overlapping, left to right): the
-/// `str_ireplace` pass for one needle, adding its matches to `count`.
-pub(crate) fn ci_replace(subject: &str, search: &str, replace: &str, count: &mut usize) -> String {
+/// `str_ireplace` pass for one needle over bytes, and how many it replaced.
+pub(crate) fn ci_replace(subject: &[u8], search: &[u8], replace: &[u8]) -> (Vec<u8>, usize) {
     if search.is_empty() {
-        return subject.to_string();
+        return (subject.to_vec(), 0);
     }
-    let mut out = String::with_capacity(subject.len());
+    let mut out = Vec::with_capacity(subject.len());
     let mut rest = subject;
-    while let Some(pos) = ci_find(rest, search) {
-        *count += 1;
-        out.push_str(&rest[..pos]);
-        out.push_str(replace);
+    let mut count = 0;
+    while let Some(pos) = ci_find_bytes(rest, search) {
+        count += 1;
+        out.extend_from_slice(&rest[..pos]);
+        out.extend_from_slice(replace);
         rest = &rest[pos + search.len()..];
     }
-    out.push_str(rest);
-    out
+    out.extend_from_slice(rest);
+    (out, count)
 }

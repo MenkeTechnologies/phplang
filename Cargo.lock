@@ -1053,6 +1053,7 @@ dependencies = [
  "lsp-types",
  "md-5",
  "md2",
+ "memchr",
  "murmur3",
  "nu-ansi-term",
  "num-bigint",

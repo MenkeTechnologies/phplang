@@ -9,6 +9,7 @@
 //! `Err`.
 
 use crate::host::{self, ops, with_host, PropAccess};
+use crate::stdlib::common::bytes_arg;
 use fusevm::{NumOp, NumericCall, Value, VM};
 
 /// Register `$f` for `$op`, wrapped so a diagnostic a user error handler takes
@@ -1856,10 +1857,7 @@ fn b_concat(vm: &mut VM, _: u8) -> Value {
     // length. This is the shape of most concatenations, including every
     // interpolation whose parts are already strings.
     if let (Value::Str(x), Value::Str(y)) = (&a, &b) {
-        let mut out = String::with_capacity(x.len() + y.len());
-        out.push_str(x);
-        out.push_str(y);
-        return Value::str(crate::bytes::canonical(out));
+        return Value::str(crate::bytes::concat(x, y));
     }
     // Both conversions happen outside the host borrow so an operand with
     // `__toString` can run it. String interpolation lowers to this op too.
@@ -1867,7 +1865,7 @@ fn b_concat(vm: &mut VM, _: u8) -> Value {
     if host::unwinding() {
         return Value::Undef;
     }
-    Value::str(crate::bytes::canonical(format!("{a}{b}")))
+    Value::str(crate::bytes::concat(&a, &b))
 }
 
 fn b_truthy(vm: &mut VM, _: u8) -> Value {
@@ -4126,7 +4124,14 @@ fn compare_objects(h: &host::PhpHost, a: &Value, b: &Value) -> i32 {
 }
 
 fn strcmp_i32(x: &str, y: &str) -> i32 {
-    match x.cmp(y) {
+    // Stored text orders as its bytes; an escaped byte does not (`"\xC3"` is
+    // stored above `"é"` but is a prefix of it), so those compare as bytes.
+    let order = if crate::bytes::has_raw(x) || crate::bytes::has_raw(y) {
+        crate::bytes::to_bytes(x).cmp(&crate::bytes::to_bytes(y))
+    } else {
+        x.cmp(y)
+    };
+    match order {
         std::cmp::Ordering::Less => -1,
         std::cmp::Ordering::Equal => 0,
         std::cmp::Ordering::Greater => 1,
@@ -4893,18 +4898,13 @@ pub fn call_library(name: &str, args: &[Value]) -> Result<Value, String> {
         // ── strings ──────────────────────────────────────────────────────
         "str_split" => with_host(|h| php_str_split(h, args))?,
         "str_pad" => with_host(|h| php_str_pad(h, args)).map(Value::str)?,
+        // Byte comparisons: `"\xA9"` is inside `"é"` and ends it.
         "str_contains" => {
-            with_host(|h| Value::bool(h.to_str(&arg(args, 0)).contains(&h.to_str(&arg(args, 1)))))
+            let (hay, needle) = (bytes_arg(args, 0), bytes_arg(args, 1));
+            Value::bool(crate::bytes::find(&hay, &needle).is_some())
         }
-        "str_starts_with" => with_host(|h| {
-            Value::bool(
-                h.to_str(&arg(args, 0))
-                    .starts_with(&h.to_str(&arg(args, 1))),
-            )
-        }),
-        "str_ends_with" => {
-            with_host(|h| Value::bool(h.to_str(&arg(args, 0)).ends_with(&h.to_str(&arg(args, 1)))))
-        }
+        "str_starts_with" => Value::bool(bytes_arg(args, 0).starts_with(&bytes_arg(args, 1))),
+        "str_ends_with" => Value::bool(bytes_arg(args, 0).ends_with(&bytes_arg(args, 1))),
         "ucwords" => with_host(|h| {
             let seps = match args.get(1) {
                 Some(v) if !matches!(v, Value::Undef) => h.to_str(v),
@@ -4927,19 +4927,22 @@ pub fn call_library(name: &str, args: &[Value]) -> Result<Value, String> {
             // An invalid UTF-8 unit (as `php_next_utf8_char` groups them):
             // U+FFFD under ENT_SUBSTITUTE (the default), dropped under
             // ENT_IGNORE, and otherwise the whole result is the empty string.
+            // The encoder works on decoded text, so the result is stored back
+            // as text (a character in the escape range stays four bytes).
             let s = if crate::bytes::has_raw(&s) {
-                let units = crate::bytes::php_utf8_units(&s).into_iter();
+                let units = crate::bytes::php_utf8_units(&s);
                 if flags & 8 != 0 {
-                    units.map(|u| u.unwrap_or('\u{FFFD}')).collect()
-                } else if flags & 4 != 0 {
-                    units.flatten().collect()
+                    units.into_iter().map(|u| u.unwrap_or('\u{FFFD}')).collect()
+                } else if flags & 4 != 0 || units.iter().all(Option::is_some) {
+                    units.into_iter().flatten().collect()
                 } else {
                     return Value::str(String::new());
                 }
             } else {
                 s
             };
-            Value::str(crate::stdlib::textx::html_encode(&s, flags, named))
+            let encoded = crate::stdlib::textx::html_encode(&s, flags, named);
+            Value::str(crate::bytes::from_text(&encoded).into_owned())
         }),
         "strcmp" => with_host(|h| {
             let (a, b) = (h.to_str(&arg(args, 0)), h.to_str(&arg(args, 1)));
@@ -5101,7 +5104,7 @@ pub fn call_library(name: &str, args: &[Value]) -> Result<Value, String> {
                     partial_error
                 };
                 crate::stdlib::json::set_last_error(code);
-                return Ok(with_host(|h| Value::str(php_json_encode(h, doc, flags, 0))));
+                return Ok(with_host(|h| json_text(php_json_encode(h, doc, flags, 0))));
             }
             let prepared = match prepared {
                 Ok(v) => v,
@@ -5138,7 +5141,7 @@ pub fn call_library(name: &str, args: &[Value]) -> Result<Value, String> {
                 code = 5;
             }
             crate::stdlib::json::set_last_error(code);
-            with_host(|h| Value::str(php_json_encode(h, &prepared, flags, 0)))
+            with_host(|h| json_text(php_json_encode(h, &prepared, flags, 0)))
         }
 
         // Extended standard library lives in `src/stdlib/*`, one module per
@@ -5766,19 +5769,24 @@ fn replace_all_pairs(
     ci: bool,
     count: &mut usize,
 ) -> String {
-    let mut cur = subject.to_string();
+    // Over bytes: a needle holding a stray byte (`"\xA9"`) matches inside a
+    // character of the subject (`"é"` is `C3 A9`), which a `str` search
+    // cannot see.
+    let mut cur = crate::bytes::to_bytes(subject).into_owned();
     for (needle, rep) in pairs {
-        if needle.is_empty() {
+        let (n, r) = (crate::bytes::to_bytes(needle), crate::bytes::to_bytes(rep));
+        if n.is_empty() {
             continue;
         }
-        if ci {
-            cur = crate::stdlib::strings::ci_replace(&cur, needle, rep, count);
-            continue;
-        }
-        *count += cur.matches(needle.as_str()).count();
-        cur = cur.replace(needle.as_str(), rep);
+        let (next, hits) = if ci {
+            crate::stdlib::strings::ci_replace(&cur, &n, &r)
+        } else {
+            crate::bytes::replace(&cur, &n, &r)
+        };
+        *count += hits;
+        cur = next;
     }
-    cur
+    crate::bytes::from_bytes(&cur)
 }
 
 fn php_implode(name: &str, args: &[Value]) -> Result<Value, String> {
@@ -5925,23 +5933,34 @@ fn php_explode(h: &mut host::PhpHost, args: &[Value]) -> Result<Value, String> {
         Some(v) if !matches!(v, Value::Undef) => v.to_int(),
         _ => i64::MAX,
     };
-    let mut parts: Vec<String> = if limit > 0 && limit != i64::MAX {
-        subject
-            .splitn(limit as usize, sep.as_str())
-            .map(str::to_string)
-            .collect()
-    } else {
-        subject.split(sep.as_str()).map(str::to_string).collect()
+    // Split on bytes, so a separator holding a stray byte splits inside a
+    // character of the subject as the reference does.
+    let (sep, whole) = (
+        crate::bytes::to_bytes(&sep),
+        crate::bytes::to_bytes(&subject),
+    );
+    // A zero limit is 1: everything in a single element.
+    let cap = match limit {
+        0 => 1,
+        1.. => usize::try_from(limit).unwrap_or(usize::MAX),
+        _ => usize::MAX,
     };
-    if limit == 0 {
-        // PHP treats a zero limit as 1: everything in a single element.
-        parts = vec![subject];
-    } else if limit < 0 {
-        let drop = (-limit) as usize;
+    let mut parts: Vec<&[u8]> = Vec::new();
+    let mut rest: &[u8] = &whole;
+    while parts.len() + 1 < cap {
+        let Some(at) = crate::bytes::find(rest, &sep) else {
+            break;
+        };
+        parts.push(&rest[..at]);
+        rest = &rest[at + sep.len()..];
+    }
+    parts.push(rest);
+    if limit < 0 {
+        let drop = limit.unsigned_abs() as usize;
         parts.truncate(parts.len().saturating_sub(drop));
     }
     for part in parts {
-        h.arr_push_auto(&arr, Value::str(part));
+        h.arr_push_auto(&arr, Value::str(crate::bytes::from_bytes(part)));
     }
     Ok(arr)
 }
@@ -6798,67 +6817,92 @@ fn pad_field(body: String, s: &FmtSpec, is_num: bool) -> String {
     }
 }
 
-/// `wordwrap($str, $width = 75, $break = "\n", $cut = false)`.
+/// `wordwrap($string, $width = 75, $break = "\n", $cut_long_words = false)`.
+///
+/// Port of `PHP_FUNCTION(wordwrap)` (ext/standard/string.c), over bytes: a
+/// single-byte break without cutting rewrites spaces in place; otherwise the
+/// text is copied with breaks inserted, an existing `$break` in the text
+/// resetting the line.
 fn php_wordwrap(h: &host::PhpHost, args: &[Value]) -> Result<Value, String> {
-    let text = h.to_str(&arg(args, 0));
-    let raw_width = args.get(1).map(crate::host::long_of).unwrap_or(75);
-    let cut_flag = args.get(3).map(|v| h.is_truthy(v)).unwrap_or(false);
-    // A zero width with cutting on has no answer — every word is longer than the
-    // line — and the reference refuses rather than looping or clamping.
-    if raw_width == 0 && cut_flag {
+    let text = crate::bytes::to_bytes(&h.to_str(&arg(args, 0))).into_owned();
+    let width = args.get(1).map(crate::host::long_of).unwrap_or(75);
+    let brk = match args.get(2) {
+        Some(v) => crate::bytes::to_bytes(&h.to_str(v)).into_owned(),
+        None => b"\n".to_vec(),
+    };
+    let docut = args.get(3).map(|v| h.is_truthy(v)).unwrap_or(false);
+    if text.is_empty() {
+        return Ok(Value::str(""));
+    }
+    if brk.is_empty() {
+        return Err(throws(
+            "ValueError",
+            "wordwrap(): Argument #3 ($break) must not be empty",
+        ));
+    }
+    if width == 0 && docut {
         return Err(throws(
             "ValueError",
             "wordwrap(): Argument #4 ($cut_long_words) cannot be true when \
              argument #2 ($width) is 0",
         ));
     }
-    let width = raw_width.max(1) as usize;
-    let brk = args
-        .get(2)
-        .map(|v| h.to_str(v))
-        .unwrap_or_else(|| "\n".to_string());
-    let cut = args.get(3).map(|v| h.is_truthy(v)).unwrap_or(false);
-
-    let mut out = String::new();
-    for (li, line) in text.split('\n').enumerate() {
-        if li > 0 {
-            out.push('\n');
-        }
-        let mut cur = 0usize; // chars on the current output line
-        let mut first = true;
-        for word in line.split(' ') {
-            let wlen = word.len();
-            if !first {
-                if cur + 1 + wlen <= width {
-                    out.push(' ');
-                    cur += 1;
-                } else {
-                    out.push_str(&brk);
-                    cur = 0;
+    let len = text.len() as i64;
+    let (mut laststart, mut lastspace) = (0i64, 0i64);
+    if brk.len() == 1 && !docut {
+        let mut out = text.clone();
+        for current in 0..len {
+            let c = text[current as usize];
+            if c == brk[0] {
+                laststart = current + 1;
+                lastspace = current + 1;
+            } else if c == b' ' {
+                if current - laststart >= width {
+                    out[current as usize] = brk[0];
+                    laststart = current + 1;
                 }
-            }
-            first = false;
-            if cut && wlen > width {
-                // Break the long word into width-sized pieces.
-                let chars: Vec<char> = word.chars().collect();
-                let mut idx = 0;
-                while idx < chars.len() {
-                    if cur == width {
-                        out.push_str(&brk);
-                        cur = 0;
-                    }
-                    let take = (width - cur).min(chars.len() - idx);
-                    out.extend(&chars[idx..idx + take]);
-                    cur += take;
-                    idx += take;
-                }
-            } else {
-                out.push_str(word);
-                cur += wlen;
+                lastspace = current;
+            } else if current - laststart >= width && laststart != lastspace {
+                out[lastspace as usize] = brk[0];
+                laststart = lastspace + 1;
             }
         }
+        return Ok(Value::str(crate::bytes::from_bytes(&out)));
     }
-    Ok(Value::str(out))
+    let span = |a: i64, b: i64| &text[a as usize..b as usize];
+    let mut out = Vec::with_capacity(text.len() + brk.len());
+    let mut current = 0i64;
+    while current < len {
+        let c = text[current as usize];
+        if c == brk[0] && text[current as usize..].starts_with(&brk) {
+            out.extend_from_slice(span(laststart, current + brk.len() as i64));
+            current += brk.len() as i64 - 1;
+            laststart = current + 1;
+            lastspace = current + 1;
+        } else if c == b' ' {
+            if current - laststart >= width {
+                out.extend_from_slice(span(laststart, current));
+                out.extend_from_slice(&brk);
+                laststart = current + 1;
+            }
+            lastspace = current;
+        } else if current - laststart >= width && docut && laststart >= lastspace {
+            out.extend_from_slice(span(laststart, current));
+            out.extend_from_slice(&brk);
+            laststart = current;
+            lastspace = current;
+        } else if current - laststart >= width && laststart < lastspace {
+            out.extend_from_slice(span(laststart, lastspace));
+            out.extend_from_slice(&brk);
+            laststart = lastspace + 1;
+            lastspace = laststart;
+        }
+        current += 1;
+    }
+    if laststart != current {
+        out.extend_from_slice(span(laststart, current));
+    }
+    Ok(Value::str(crate::bytes::from_bytes(&out)))
 }
 
 /// Tiny postfix-apply helper so integer→radix formatting reads left-to-right.
@@ -7319,15 +7363,16 @@ fn php_str_split(h: &mut host::PhpHost, args: &[Value]) -> Result<Value, String>
             "str_split(): Argument #2 ($length) must be greater than 0",
         ));
     }
-    let len = raw_len as usize;
-    let chars: Vec<char> = s.chars().collect();
+    let len = usize::try_from(raw_len).unwrap_or(usize::MAX);
+    // Chunks of BYTES: `str_split("é")` is two one-byte strings.
+    let bytes = crate::bytes::to_bytes(&s);
     let arr = h.new_array();
     // PHP 8.2 changed this: an empty subject is an EMPTY array, where PHP 8.1
     // and earlier answered `[""]`. Chunking an empty slice already yields no
     // chunks, so the case needs no arm of its own — it needed one only to
     // produce the old answer.
-    for chunk in chars.chunks(len) {
-        h.arr_push_auto(&arr, Value::str(chunk.iter().collect::<String>()));
+    for chunk in bytes.chunks(len) {
+        h.arr_push_auto(&arr, Value::str(crate::bytes::from_bytes(chunk)));
     }
     Ok(arr)
 }
@@ -8494,13 +8539,13 @@ fn count_recursive_seen(h: &mut host::PhpHost, v: &Value, seen: &mut host::Visit
 /// UTF-8 (see `crate::bytes`).
 fn has_invalid_utf8(h: &host::PhpHost, v: &Value) -> bool {
     match v {
-        Value::Str(s) => crate::bytes::has_raw(s),
+        Value::Str(s) => !crate::bytes::is_utf8(s),
         Value::Obj(_) if h.is_object(v) => h
             .object_props(v)
             .iter()
-            .any(|(k, val)| crate::bytes::has_raw(k) || has_invalid_utf8(h, val)),
+            .any(|(k, val)| !crate::bytes::is_utf8(k) || has_invalid_utf8(h, val)),
         Value::Obj(_) => h.array_pairs(v).unwrap_or_default().iter().any(|(k, val)| {
-            matches!(k, Value::Str(s) if crate::bytes::has_raw(s)) || has_invalid_utf8(h, val)
+            matches!(k, Value::Str(s) if !crate::bytes::is_utf8(s)) || has_invalid_utf8(h, val)
         }),
         _ => false,
     }
@@ -8733,7 +8778,7 @@ fn php_json_encode(h: &host::PhpHost, v: &Value, flags: i64, depth: usize) -> St
             Some(n) => n,
             // Only partial output reaches here with bad bytes and no flag
             // for them: the string is `null`.
-            None if crate::bytes::has_raw(s)
+            None if !crate::bytes::is_utf8(s)
                 && flags & (JSON_INVALID_UTF8_IGNORE | JSON_INVALID_UTF8_SUBSTITUTE) == 0 =>
             {
                 "null".to_string()
@@ -8786,6 +8831,12 @@ fn php_json_encode(h: &host::PhpHost, v: &Value, flags: i64, depth: usize) -> St
     }
 }
 
+/// The encoder writes decoded text (`JSON_UNESCAPED_UNICODE` copies a character
+/// through), so its document is stored as text.
+fn json_text(doc: String) -> Value {
+    Value::str(crate::bytes::from_text(&doc).into_owned())
+}
+
 /// JSON-escape `s`. By default PHP escapes `/` as `\/` and every non-ASCII
 /// character as a `\uXXXX` sequence (surrogate pairs above the BMP);
 /// `JSON_UNESCAPED_SLASHES` and `JSON_UNESCAPED_UNICODE` turn those off.
@@ -8798,22 +8849,26 @@ fn json_string(s: &str, flags: i64) -> String {
     let escape_slashes = flags & JSON_UNESCAPED_SLASHES == 0;
     let escape_unicode = flags & JSON_UNESCAPED_UNICODE == 0;
     let escape_terminators = flags & JSON_UNESCAPED_LINE_TERMINATORS == 0;
-    // Invalid UTF-8 is substituted or dropped per unit as `php_next_utf8_char`
-    // groups them: each unit becomes the one raw byte the loop below handles.
-    let units: String;
-    let s = if crate::bytes::has_raw(s) {
-        let raw = crate::bytes::from_bytes(&[0xFF]);
-        units = crate::bytes::php_utf8_units(s)
-            .into_iter()
-            .map(|u| u.map_or_else(|| raw.clone(), String::from))
-            .collect();
-        units.as_str()
+    // The decoded characters, with `None` for each invalid unit as
+    // `php_next_utf8_char` groups them (substituted or dropped below).
+    let units: Vec<Option<char>> = if crate::bytes::has_raw(s) {
+        crate::bytes::php_utf8_units(s)
     } else {
-        s
+        s.chars().map(Some).collect()
     };
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
-    for c in s.chars() {
+    for unit in units {
+        let Some(c) = unit else {
+            if flags & JSON_INVALID_UTF8_SUBSTITUTE != 0 {
+                out.push_str(if escape_unicode {
+                    "\\ufffd"
+                } else {
+                    "\u{FFFD}"
+                });
+            }
+            continue;
+        };
         match c {
             '<' if flags & JSON_HEX_TAG != 0 => out.push_str("\\u003C"),
             '>' if flags & JSON_HEX_TAG != 0 => out.push_str("\\u003E"),
@@ -8831,15 +8886,6 @@ fn json_string(s: &str, flags: i64) -> String {
             c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
             '\u{2028}' if escape_terminators => out.push_str("\\u2028"),
             '\u{2029}' if escape_terminators => out.push_str("\\u2029"),
-            c if crate::bytes::has_raw(c.encode_utf8(&mut [0u8; 4])) => {
-                if flags & JSON_INVALID_UTF8_SUBSTITUTE != 0 {
-                    if escape_unicode {
-                        out.push_str("\\ufffd");
-                    } else {
-                        out.push('\u{FFFD}');
-                    }
-                }
-            }
             c if escape_unicode && !c.is_ascii() => {
                 // Above the BMP JSON needs an explicit UTF-16 surrogate pair.
                 let mut buf = [0u16; 2];

@@ -152,7 +152,12 @@ fn str_natcmp(args: &[Value], fold_case: bool) -> Value {
 /// magnitude (longest run wins, ties by value); and a trailing non-matched
 /// character makes the longer string greater, so `strnatcmp("a ","a") === 1`.
 fn nat_cmp(a: &str, b: &str, fold_case: bool) -> Ordering {
-    strnat(a.as_bytes(), b.as_bytes(), fold_case).cmp(&0)
+    strnat(
+        &crate::bytes::to_bytes(a),
+        &crate::bytes::to_bytes(b),
+        fold_case,
+    )
+    .cmp(&0)
 }
 
 /// C `isspace` (used by `strnatcmp`): space, tab, newline, vertical tab, form
@@ -584,7 +589,7 @@ fn str_getcsv(args: &[Value]) -> Result<Value, String> {
     let delimiter = csv_char_arg("str_getcsv", args, 1, "separator", b',')?;
     let enclosure = csv_char_arg("str_getcsv", args, 2, "enclosure", b'"')?;
     let escape = csv_escape_arg("str_getcsv", args, 3)?;
-    let s = str_arg(args, 0).into_bytes();
+    let s = bytes_arg(args, 0);
     Ok(csv_fields_value(php_fgetcsv(
         delimiter,
         enclosure,
@@ -1275,7 +1280,7 @@ fn is_numeric_val(h: &host::PhpHost, v: &Value) -> bool {
 /// editing the core stub is out of scope for this module.
 fn str_word_count(args: &[Value]) -> Result<Value, String> {
     let s = str_arg(args, 0);
-    let bytes = s.as_bytes();
+    let bytes = &*crate::bytes::to_bytes(&s);
     let format = int_arg(args, 1);
     // Only 0 (count), 1 (list of words) and 2 (offset => word) exist.
     if !(0..=2).contains(&format) {
@@ -1301,7 +1306,8 @@ fn str_word_count(args: &[Value]) -> Result<Value, String> {
         });
     }
 
-    let mask = host::with_host(|h| charmask(h, charlist.as_bytes(), "str_word_count"));
+    let mask =
+        host::with_host(|h| charmask(h, &crate::bytes::to_bytes(&charlist), "str_word_count"));
     let is_word =
         |c: u8| c.is_ascii_alphabetic() || (has_cl && mask[c as usize]) || c == b'\'' || c == b'-';
 

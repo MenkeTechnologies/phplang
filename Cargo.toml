@@ -116,6 +116,7 @@ urlencoding = "2"
 # Arbitrary-precision decimal arithmetic for the `bcmath` functions.
 bigdecimal = "0.4"
 num-bigint = "0.4"
+memchr = "2"
 
 # Generators / `yield` are host-side stackful coroutines: a generator function's
 # body runs on its own native stack inside a `corosensei::Coroutine`, and `yield`

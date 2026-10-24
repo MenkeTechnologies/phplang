@@ -46,7 +46,7 @@ fn vfprintf(args: &[Value]) -> Result<Value, String> {
 /// Run `sprintf(...call_args)` and write the bytes to `$res`.
 fn write_formatted(fname: &str, res: &Value, call_args: Vec<Value>) -> Result<Value, String> {
     let s = crate::builtins::call_library("sprintf", &call_args)?;
-    let bytes = with_host(|h| h.to_str(&s)).into_bytes();
+    let bytes = crate::bytes::to_bytes(&with_host(|h| h.to_str(&s))).into_owned();
     let written = crate::stdlib::fileres::write_bytes(fname, res, &bytes);
     Ok(match written {
         Some(n) => Value::int(n as i64),
@@ -534,8 +534,10 @@ pub(crate) fn html_decode(s: &str, flags: i64, named: bool) -> String {
             }
         };
         match decoded {
+            // A decoded character is text: one in the escape range is stored
+            // as its four bytes (see `crate::bytes`).
             Some(ch) => {
-                out.push(ch);
+                out.push_str(&crate::bytes::from_text(ch.encode_utf8(&mut [0u8; 4])));
                 i = semi + 1;
             }
             None => {

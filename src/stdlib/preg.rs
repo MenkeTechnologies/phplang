@@ -772,11 +772,25 @@ fn compile(pattern: &str) -> Result<Pattern, PatternError> {
             }
         }
     }
+    if unicode {
+        if let Err((offset, msg)) = pcre2_valid_utf8(&crate::bytes::to_bytes(&body)) {
+            return Err(PatternError::Php(format!(
+                "Compilation failed: UTF-8 error: {msg} at offset {offset}"
+            )));
+        }
+    }
     let scanned = match scan_body(&body, no_auto_capture) {
         Ok(t) => t,
         Err(msg) => return Err(PatternError::Php(format!("Compilation failed: {msg}"))),
     };
-    let translated = scanned.text;
+    // The byte engine reads raw bytes as `\xHH` escapes; the backtracking
+    // engine matches text, so outside `/u` it keeps the body as written.
+    let spelled = spell_raw_bytes(&scanned.text, unicode);
+    let translated = if unicode {
+        spelled.clone()
+    } else {
+        scanned.text
+    };
     let flags = Flags {
         case_insensitive,
         multi_line,
@@ -796,7 +810,7 @@ fn compile(pattern: &str) -> Result<Pattern, PatternError> {
             re: std::cell::OnceCell::new(),
             notempty: std::cell::OnceCell::new(),
         });
-    let mut b = RegexBuilder::new(&translated);
+    let mut b = RegexBuilder::new(&spelled);
     b.case_insensitive(case_insensitive);
     b.multi_line(multi_line);
     b.dot_matches_new_line(dot_all);
@@ -821,6 +835,118 @@ fn compile(pattern: &str) -> Result<Pattern, PatternError> {
         notempty: std::cell::OnceCell::new(),
         dollar_nl,
     })
+}
+
+/// Port of the 8-bit branch of PCRE2's `valid_utf` (`pcre2_valid_utf.c`),
+/// which `/u` runs over a pattern before compiling it: the offset of the first
+/// invalid character and its `pcre2_error.c` message.
+fn pcre2_valid_utf8(b: &[u8]) -> Result<(), (usize, &'static str)> {
+    // `utf8_table4`: additional bytes after a lead in 0xC0..=0xFD.
+    let extra = |c: u8| match c {
+        0xC0..=0xDF => 1,
+        0xE0..=0xEF => 2,
+        0xF0..=0xF7 => 3,
+        0xF8..=0xFB => 4,
+        _ => 5,
+    };
+    let trail = |c: u8| c & 0xC0 == 0x80;
+    let mut p = 0;
+    while p < b.len() {
+        let c = b[p];
+        if c < 0x80 {
+            p += 1;
+            continue;
+        }
+        if c < 0xC0 {
+            return Err((p, "isolated byte with 0x80 bit set"));
+        }
+        if c >= 0xFE {
+            return Err((p, "illegal byte (0xfe or 0xff)"));
+        }
+        let ab = extra(c);
+        let left = b.len() - p - 1;
+        if left < ab {
+            const MISSING: [&str; 5] = [
+                "1 byte missing at end",
+                "2 bytes missing at end",
+                "3 bytes missing at end",
+                "4 bytes missing at end",
+                "5 bytes missing at end",
+            ];
+            return Err((p, MISSING[ab - left - 1]));
+        }
+        const TOP_BITS: [&str; 5] = [
+            "byte 2 top bits not 0x80",
+            "byte 3 top bits not 0x80",
+            "byte 4 top bits not 0x80",
+            "byte 5 top bits not 0x80",
+            "byte 6 top bits not 0x80",
+        ];
+        if let Some(i) = (1..=ab).find(|&i| !trail(b[p + i])) {
+            return Err((p, TOP_BITS[i - 1]));
+        }
+        let d = b[p + 1];
+        let fault = match ab {
+            1 if c & 0x3E == 0 => Some("overlong 2-byte sequence"),
+            2 if c == 0xE0 && d & 0x20 == 0 => Some("overlong 3-byte sequence"),
+            2 if c == 0xED && d >= 0xA0 => Some("code points 0xd800-0xdfff are not defined"),
+            3 if c == 0xF0 && d & 0x30 == 0 => Some("overlong 4-byte sequence"),
+            3 if c > 0xF4 || (c == 0xF4 && d > 0x8F) => {
+                Some("code points greater than 0x10ffff are not defined")
+            }
+            4 if c == 0xF8 && d & 0x38 == 0 => Some("overlong 5-byte sequence"),
+            5 if c == 0xFC && d & 0x3C == 0 => Some("overlong 6-byte sequence"),
+            4 => Some("5-byte character is not allowed (RFC 3629)"),
+            5 => Some("6-byte character is not allowed (RFC 3629)"),
+            _ => None,
+        };
+        if let Some(msg) = fault {
+            return Err((p, msg));
+        }
+        p += ab + 1;
+    }
+    Ok(())
+}
+
+/// A pattern body in stored form (see `crate::bytes`) re-spelled for the Rust
+/// engine, which reads it as text: without `/u` every byte at or above 0x80 is
+/// a `\xHH` byte escape (a literal `é` is its two bytes, as PCRE sees it); with
+/// `/u` (the body already checked valid) a character in the escape range is a
+/// `\x{…}` escape. A raw byte written after a lone backslash is that byte
+/// either way, so the backslash is dropped.
+fn spell_raw_bytes(body: &str, unicode: bool) -> String {
+    if !crate::bytes::has_raw(body) && (unicode || body.is_ascii()) {
+        return body.to_string();
+    }
+    let bytes = crate::bytes::to_bytes(body);
+    let mut out = String::with_capacity(bytes.len() * 2);
+    let escape = |out: &mut String, spelled: String| {
+        let run = out.len() - out.trim_end_matches('\\').len();
+        if run % 2 == 1 {
+            out.pop();
+        }
+        out.push_str(&spelled);
+    };
+    for chunk in bytes.utf8_chunks() {
+        for c in chunk.valid().chars() {
+            if c.is_ascii() {
+                out.push(c);
+            } else if !unicode {
+                for b in c.encode_utf8(&mut [0u8; 4]).bytes() {
+                    escape(&mut out, format!("\\x{b:02X}"));
+                }
+            } else if crate::bytes::has_raw(&crate::bytes::from_text(c.encode_utf8(&mut [0u8; 4])))
+            {
+                escape(&mut out, format!("\\x{{{:X}}}", c as u32));
+            } else {
+                out.push(c);
+            }
+        }
+        for b in chunk.invalid() {
+            escape(&mut out, format!("\\x{b:02X}"));
+        }
+    }
+    out
 }
 
 // ── pattern body: PCRE2 faults, and the PCRE→Rust differences ────────────────
@@ -898,6 +1024,26 @@ fn scan_body(body: &str, no_auto_capture: bool) -> Result<Scanned, String> {
                     }
                     repeatable = true;
                     i = stop;
+                    continue;
+                } else if matches!(c[i + 1], '<' | '>') {
+                    // PCRE: a backslash before punctuation is that character.
+                    // The Rust engine reads `\<` / `\>` as word boundaries.
+                    out.push(c[i + 1]);
+                } else if c[i + 1] == '0' {
+                    // `\0` and up to two more octal digits is a character code
+                    // (what `preg_quote` writes for NUL); the Rust engine has
+                    // no octal escapes.
+                    let digits = c[i + 2..]
+                        .iter()
+                        .take(2)
+                        .take_while(|d| ('0'..='7').contains(d))
+                        .count();
+                    let code = c[i + 1..i + 2 + digits]
+                        .iter()
+                        .fold(0u32, |acc, d| acc * 8 + d.to_digit(8).unwrap_or(0));
+                    out.push_str(&format!("\\x{{{code:02X}}}"));
+                    repeatable = true;
+                    i += 2 + digits;
                     continue;
                 } else {
                     out.push(c[i]);
@@ -1137,7 +1283,7 @@ fn brace_quantifier(c: &[char], open: usize) -> Option<(Option<u64>, Option<u64>
 /// Whether `re` refuses `subject` before matching: in UTF mode a subject that
 /// is not valid UTF-8 is `PREG_BAD_UTF8_ERROR` (see `crate::bytes`).
 fn bad_utf8(re: &Pattern, subject: &str) -> bool {
-    if re.utf && crate::bytes::has_raw(subject) {
+    if re.utf && !crate::bytes::is_utf8(subject) {
         with_host(|h| h.set_preg_error(PREG_BAD_UTF8_ERROR));
         return true;
     }

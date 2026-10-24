@@ -110,6 +110,12 @@ pub(crate) mod common {
         Value::str(crate::bytes::from_bytes(b))
     }
 
+    /// A PHP string holding TEXT — characters meant as themselves (see
+    /// [`crate::bytes::from_text`]).
+    pub fn text_value(text: &str) -> Value {
+        Value::str(crate::bytes::from_text(text).into_owned())
+    }
+
     /// PHP integer cast of the `i`-th argument.
     pub fn int_arg(args: &[Value], i: usize) -> i64 {
         with_host(|h| h.to_number(&arg(args, i)).to_int())

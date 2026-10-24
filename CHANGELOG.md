@@ -26,6 +26,89 @@ comment above it.
 
 ---
 
+## Round 36: the byte-string model audited
+
+Measured under `PHP 8.5.12 (cli)`; pinned in `tests/parity_round36.rs` and the
+differential fuzz `tests/byte_string_fuzz.rs` (seeded random byte strings —
+stray bytes, truncated sequences, overlong and surrogate forms, and the bytes
+of the escape-range characters, written whole, as halves joined at run time
+and as `"\u{…}"` — through length, hex, hashes, slicing, reversal, splitting,
+search and replace, joins, regexes, `sprintf`, padding, wrapping, array keys,
+`serialize`/`unserialize`, `var_export`, JSON and file I/O; frozen against
+the reference in `tests/data/byte_fuzz_expected.bin`).
+
+The codec itself is a bijection: `to_bytes(from_bytes(b)) == b` and distinct
+byte strings have distinct stored forms, checked exhaustively over every
+string of up to five bytes from an alphabet holding each kind of lead and
+trail byte. The model was nonetheless ambiguous IN USE: a stored escape
+character always means a byte, so any producer that wrote a character in
+`U+10FF80..=U+10FFFF` as text created a string the rest of the engine read as
+one byte (`mb_chr(0x10FFFF)`, `html_entity_decode("&#x10FFFF;")`,
+`json_decode('"􏿿"')` and `mb_substr` of such a character were
+`"\xFF"`), and every library function that searched or cut the Rust string
+rather than its bytes missed a stray-byte needle inside a character
+(`str_replace("\xA9", "X", "é")` replaced nothing) or panicked on a byte
+offset inside an escape (`strstr`, `stristr`, `str_ireplace`). The 160-case
+fuzz started at 160 of 160 cases diverging.
+
+* `src/bytes.rs` gains `from_text` (the stored form of text: an escape-range
+  character becomes its four escaped bytes), `is_utf8` (the bytes are valid
+  UTF-8 — not `!has_raw`, which an escape-range character also trips),
+  `mb_units`, byte `find`/`rfind`/`replace` (`memchr`), and `concat`, which
+  re-derives only the seam: at most three escapes either side can merge. A
+  binary string built by appending was quadratic in the whole string's
+  decode — 20 000 one-byte appends 35.1 s, 100 000 about 650 s; now 0.18 s
+  and 1.2 s (debug build; the reference takes 0.002 s, the rest is the
+  string copy every `.=` makes).
+* Byte-level now: `str_replace`/`str_ireplace` (including array search
+  lists), `explode`, `str_contains`/`str_starts_with`/`str_ends_with`,
+  `strstr`/`stristr`, `str_split`, `strnatcmp`/`strnatcasecmp`,
+  `str_word_count`, `str_getcsv`, `vfprintf`, and string ordering in `<`,
+  `<=>` and every `sort` (`"\xC3"` sorts before `"é"`).
+* `wordwrap` is a port of `PHP_FUNCTION(wordwrap)` over bytes (the old one
+  split on `\n` and spaces and counted characters; 3 000 random cases now
+  agree). `chunk_split("")` is the ending, as the reference's "maintain BC"
+  branch returns. `strtr($s, $from, $to)` maps a byte listed twice in `$from`
+  to its last partner. `strripos` with a one-byte needle at or above 0x80 is
+  `false`, the reference's signed-`char` comparison.
+* JSON: `json_decode` parses bytes. A byte that is not valid UTF-8 inside a
+  string is `JSON_ERROR_UTF8`, dropped under `JSON_INVALID_UTF8_IGNORE` and
+  one U+FFFD per byte under `_SUBSTITUTE`; outside a string it is error 5
+  whatever the flags. `json_encode` reads escape-range characters as
+  characters (`"􏿿"`), and its document is stored as text.
+* `htmlspecialchars`/`htmlentities` and `html_entity_decode` keep
+  escape-range characters.
+* mbstring: the functions that print an invalid sequence as `?`
+  (`mb_convert_case`, `mb_stripos`, `mb_strripos`, `mb_substr_count`,
+  `mb_scrub`, `mb_convert_kana`, `mb_strwidth`, `mb_trim` family,
+  `mb_strstr` family, `mb_strimwidth`, `mb_*_numericentity`) decode their
+  arguments first and store their result as text; `mb_str_split`,
+  `mb_str_pad` and `mb_ucfirst`/`mb_lcfirst` copy an invalid sequence through
+  as its bytes, as the reference does. `mb_strpos`/`mb_strrpos` are a port of
+  `mb_find_strpos`: a byte search answered in characters counted as
+  `mb_fast_strlen_utf8` counts them (`mb_strpos("é", "\xA9")` is 1,
+  `mb_strpos("a\x80b", "b")` is 1). `mb_ord` of an invalid first sequence is
+  `false`; `mb_chr`, `mb_strtoupper`/`mb_strtolower`/`mb_substr` keep
+  escape-range characters; `mb_check_encoding` accepts them.
+* PCRE: a byte in a pattern is that byte (`preg_match("/\xC3/", "é")` is 1;
+  the byte engine reads a non-ASCII pattern byte as a `\xHH` escape outside
+  `/u`). A `/u` pattern that is not UTF-8 is refused with PCRE2's own message
+  (`Compilation failed: UTF-8 error: illegal byte (0xfe or 0xff) at offset
+  1`), ported from `pcre2_valid_utf.c`; a `/u` subject holding an
+  escape-range character is valid. `\<` and `\>` are the literal characters
+  (they were word boundaries), and `\0` with up to two more octal digits is a
+  character code — `preg_quote` writes `\000` for NUL.
+
+The replacement the round asked for — a `Vec<u8>`-backed string — is not
+buildable under the round's constraints: `fusevm::Value` has no byte variant,
+and a byte string kept host-side behind `Value::Obj` would leak, since the
+object heap is an append-only arena that never frees a handle (see the object
+handle entry in BUGS.md). It needs a `Value` variant upstream. The in-band
+model is kept, with its producer obligation now explicit (`from_text`) and
+every gap the fuzz and the function sweep found closed.
+
+---
+
 ## Round 35: `random_bytes` / `random_int` use the OS CSPRNG
 
 * `random_bytes()` and `random_int()` read the operating system's CSPRNG, as
