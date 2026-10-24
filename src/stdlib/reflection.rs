@@ -539,6 +539,69 @@ fn callee(kind: &str, target: &Value, name: &str) -> Option<Callee> {
     }
 }
 
+/// Port of `format_default_value` (ext/reflection/php_reflection.c) for a
+/// default that folded to a value: `smart_str_append_zval` for scalars and
+/// enum cases, a bracketed list or map for an array, `object(Class)` for any
+/// other object.
+fn format_default(v: &Value) -> String {
+    match v {
+        Value::Undef => "NULL".to_string(),
+        Value::Bool(b) => if *b { "true" } else { "false" }.to_string(),
+        Value::Int(n) => n.to_string(),
+        Value::Float(f) => {
+            let s = crate::host::php_gcvt(*f, 14);
+            if f.is_finite() && !s.contains('.') {
+                format!("{s}.0")
+            } else {
+                s
+            }
+        }
+        Value::Str(s) => format!("'{}'", crate::host::smart_str_escaped(s, usize::MAX)),
+        _ => {
+            if let Some((case, _)) = with_host(|h| h.enum_case_of(v)) {
+                let class = with_host(|h| h.object_class(v)).unwrap_or_default();
+                return format!("{class}::{case}");
+            }
+            if let Some(pairs) = with_host(|h| h.array_pairs(v)) {
+                let list = pairs
+                    .iter()
+                    .enumerate()
+                    .all(|(i, (k, _))| matches!(k, Value::Int(n) if *n == i as i64));
+                let items: Vec<String> = pairs
+                    .iter()
+                    .map(|(k, x)| match (list, k) {
+                        (true, _) => format_default(x),
+                        (false, Value::Int(n)) => format!("{n} => {}", format_default(x)),
+                        (false, k) => format!(
+                            "'{}' => {}",
+                            crate::host::smart_str_escaped(&with_host(|h| h.to_str(k)), usize::MAX),
+                            format_default(x)
+                        ),
+                    })
+                    .collect();
+                return format!("[{}]", items.join(", "));
+            }
+            let class = with_host(|h| h.object_class(v)).unwrap_or_default();
+            format!("object({class})")
+        }
+    }
+}
+
+/// A library parameter's default as its arginfo spells it, or `<default>`
+/// when the table does not record one.
+fn lib_default_text(d: crate::argsig::Def) -> String {
+    use crate::argsig::Def;
+    match d {
+        Def::Required | Def::Unknown => "<default>".to_string(),
+        Def::Null => "null".to_string(),
+        Def::Bool(b) => b.to_string(),
+        Def::Int(n) => n.to_string(),
+        Def::Float(f) => crate::host::php_gcvt(f, 17),
+        Def::Str(s) => format!("\"{s}\""),
+        Def::EmptyArray => "[]".to_string(),
+    }
+}
+
 /// A library parameter's default as a value, or `None` when the table does
 /// not know it.
 fn lib_default(d: crate::argsig::Def) -> Option<Value> {
@@ -584,6 +647,11 @@ pub(crate) fn reflect(args: &[Value]) -> Result<Value, String> {
                     (key("final"), Value::bool(c.is_final)),
                     (key("internal"), Value::bool(c.internal)),
                     (key("anonymous"), Value::bool(c.anonymous)),
+                    (key("readonly"), Value::bool(c.is_readonly)),
+                    (
+                        key("backing"),
+                        c.enum_backing.map_or(Value::Undef, Value::str),
+                    ),
                 ]),
             }
         }
@@ -601,6 +669,43 @@ pub(crate) fn reflect(args: &[Value]) -> Result<Value, String> {
                 .collect(),
         ),
         "prop" => with_host(|h| h.refl_prop(&s1, &s2)).map_or(Value::Undef, member_info),
+        // `isDeprecated()` / `returnsReference()` / `__toString`.
+        // `ReflectionClassConstant`: `[class, modifiers, is_case]`.
+        "const_info" => match with_host(|h| h.refl_const_info(&s1, &s2)) {
+            Some((class, vis, fin, case)) => make_list(vec![
+                Value::str(class),
+                Value::int(vis | if fin { 32 } else { 0 }),
+                Value::bool(case),
+            ]),
+            None => Value::bool(false),
+        },
+        // `smart_str_append_double(…, EG(precision), false)`, as a class
+        // constant's `__toString` prints a float.
+        "double14" => Value::str(crate::host::php_gcvt(a1.to_float(), 14)),
+        // `format_default_value` of a value (an attribute argument).
+        "format_value" => Value::str(format_default(&a1)),
+        "fn_flags" => {
+            let (deprecated, by_ref, is_static) =
+                crate::host::refl_fn_flags(&s1, &arg(args, 2), &s3);
+            make_list(vec![
+                Value::bool(deprecated),
+                Value::bool(by_ref),
+                Value::bool(is_static),
+            ])
+        }
+        // `__toString`: a property's default as the reference prints it, or
+        // null when it has none.
+        "prop_default_text" => {
+            let kept = with_host(|h| h.refl_default_text(&s1, &s2));
+            match (kept, with_host(|h| h.refl_prop_default(&s1, &s2))) {
+                (Some(t), _) => Value::str(t),
+                (None, Some((class, chunk))) => {
+                    let v = crate::host::refl_eval_default(&class, chunk)?;
+                    Value::str(format_default(&v))
+                }
+                (None, None) => Value::Undef,
+            }
+        }
         "prop_default" => match with_host(|h| h.refl_prop_default(&s1, &s2)) {
             Some((class, chunk)) => crate::host::refl_eval_default(&class, chunk)?,
             None => Value::Undef,
@@ -730,6 +835,32 @@ pub(crate) fn reflect(args: &[Value]) -> Result<Value, String> {
                     .collect(),
             ),
         },
+        // `__toString`: a parameter's default as the reference prints it.
+        "default_text" => {
+            let index = arg(args, 4).to_int() as usize;
+            match callee(&s1, &arg(args, 2), &s3) {
+                Some(Callee::User { class, params }) => match params.into_iter().nth(index) {
+                    Some(crate::host::Param {
+                        default_text: Some(t),
+                        ..
+                    }) => Value::str(t),
+                    Some(crate::host::Param {
+                        default: Some(chunk),
+                        ..
+                    }) => Value::str(format_default(&crate::host::refl_eval_default(
+                        &class, chunk,
+                    )?)),
+                    _ => Value::Undef,
+                },
+                Some(Callee::Library(params)) => params.get(index).map_or(Value::Undef, |p| {
+                    Value::str(
+                        p.def
+                            .map_or_else(|| "<default>".to_string(), lib_default_text),
+                    )
+                }),
+                None => Value::Undef,
+            }
+        }
         "default" => {
             let index = arg(args, 4).to_int() as usize;
             match callee(&s1, &arg(args, 2), &s3) {

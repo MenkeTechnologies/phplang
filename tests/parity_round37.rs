@@ -123,3 +123,473 @@ false false-false
 "##
     );
 }
+#[test]
+fn reflection_classes_implement_reflector() {
+    let src = r##"<?php foreach (["ReflectionClass", "ReflectionObject", "ReflectionFunctionAbstract", "ReflectionMethod", "ReflectionProperty", "ReflectionClassConstant", "ReflectionEnumUnitCase", "ReflectionParameter", "ReflectionAttribute", "ReflectionNamedType", "Reflector"] as $c) { echo $c, ": ", implode(",", class_implements($c)), "\n"; } var_dump(new ReflectionClass("stdClass") instanceof Stringable, (new ReflectionClass("Reflector"))->isInterface());"##;
+    assert_eq!(
+        run(src),
+        r##"ReflectionClass: Stringable,Reflector
+ReflectionObject: Reflector,Stringable
+ReflectionFunctionAbstract: Reflector,Stringable
+ReflectionMethod: Stringable,Reflector
+ReflectionProperty: Stringable,Reflector
+ReflectionClassConstant: Stringable,Reflector
+ReflectionEnumUnitCase: Reflector,Stringable
+ReflectionParameter: Stringable,Reflector
+ReflectionAttribute: Stringable,Reflector
+ReflectionNamedType: Stringable
+Reflector: Stringable
+bool(true)
+bool(true)
+"##
+    );
+}
+
+#[test]
+fn reflection_class_to_string_matches_the_reference() {
+    let src = r##"<?php interface I { const IC = 1; function im(int $a): string; }
+interface J extends I { function jm(); }
+/** Base doc */
+abstract class Base implements J {
+    const BC = "b";
+    protected const PC = 2.5;
+    final public const FC = [1, 2];
+    public static $sp = 1;
+    private static $priv = null;
+    /** the x */
+    public int $x = 3;
+    protected ?string $y = null;
+    private $z;
+    public readonly int $ro;
+    public function __construct(public string $promo = "p") { $this->ro = 1; }
+    public function im(int $a): string { return ""; }
+    abstract protected function ab(&$r, ...$rest);
+    private function hidden() {}
+    public static function st(?array $o = null, $d = [1, 'k' => true]): static { return new static; }
+    final public function &refRet() { static $v; return $v; }
+}
+class Child extends Base {
+    public $dyn = 'q';
+    public function jm() {}
+    protected function ab(&$r, ...$rest) {}
+    public function im(int $a, $b = PHP_INT_MAX, $c = self::BC, $e = 1.0): string { return ""; }
+    #[\Deprecated]
+    public function old() {}
+}
+enum Suit: string implements I { case H = 'h'; case S = 's'; const X = self::H; public function im(int $a): string { return ""; } }
+echo new ReflectionClass("J"), new ReflectionClass("Base"), new ReflectionClass("Child"), new ReflectionClass("Suit");
+$o = new Child; $o->extra = 1;
+echo new ReflectionObject($o);"##;
+    assert_eq!(
+        run(src),
+        r##"Interface [ <user> interface J extends I ] {
+  @@ Command line code 2-2
+
+  - Constants [1] {
+    Constant [ public int IC ] { 1 }
+  }
+
+  - Static properties [0] {
+  }
+
+  - Static methods [0] {
+  }
+
+  - Properties [0] {
+  }
+
+  - Methods [2] {
+    Method [ <user> abstract public method jm ] {
+      @@ Command line code 2 - 2
+    }
+
+    Method [ <user, inherits I> abstract public method im ] {
+      @@ Command line code 1 - 1
+
+      - Parameters [1] {
+        Parameter #0 [ <required> int $a ]
+      }
+      - Return [ string ]
+    }
+  }
+}
+/** Base doc */
+Class [ <user> abstract class Base implements J, I ] {
+  @@ Command line code 4-21
+
+  - Constants [4] {
+    Constant [ public string BC ] { b }
+    Constant [ protected float PC ] { 2.5 }
+    Constant [ final public array FC ] { Array }
+    Constant [ public int IC ] { 1 }
+  }
+
+  - Static properties [2] {
+    Property [ public static $sp = 1 ]
+    Property [ private static $priv = NULL ]
+  }
+
+  - Static methods [1] {
+    Method [ <user> static public method st ] {
+      @@ Command line code 19 - 19
+
+      - Parameters [2] {
+        Parameter #0 [ <optional> ?array $o = NULL ]
+        Parameter #1 [ <optional> $d = [0 => 1, 'k' => true] ]
+      }
+      - Return [ static ]
+    }
+  }
+
+  - Properties [5] {
+    /** the x */
+    Property [ public int $x = 3 ]
+    Property [ protected ?string $y = NULL ]
+    Property [ private $z = NULL ]
+    Property [ public protected(set) readonly int $ro ]
+    Property [ public string $promo ]
+  }
+
+  - Methods [6] {
+    Method [ <user, ctor> public method __construct ] {
+      @@ Command line code 15 - 15
+
+      - Parameters [1] {
+        Parameter #0 [ <optional> string $promo = 'p' ]
+      }
+    }
+
+    Method [ <user, prototype I> public method im ] {
+      @@ Command line code 16 - 16
+
+      - Parameters [1] {
+        Parameter #0 [ <required> int $a ]
+      }
+      - Return [ string ]
+    }
+
+    Method [ <user> abstract protected method ab ] {
+      @@ Command line code 17 - 17
+
+      - Parameters [2] {
+        Parameter #0 [ <required> &$r ]
+        Parameter #1 [ <optional> ...$rest ]
+      }
+    }
+
+    Method [ <user> private method hidden ] {
+      @@ Command line code 18 - 18
+    }
+
+    Method [ <user> final public method &refRet ] {
+      @@ Command line code 20 - 20
+    }
+
+    Method [ <user, inherits J> abstract public method jm ] {
+      @@ Command line code 2 - 2
+    }
+  }
+}
+Class [ <user> class Child extends Base implements I, J ] {
+  @@ Command line code 22-29
+
+  - Constants [4] {
+    Constant [ public string BC ] { b }
+    Constant [ protected float PC ] { 2.5 }
+    Constant [ final public array FC ] { Array }
+    Constant [ public int IC ] { 1 }
+  }
+
+  - Static properties [1] {
+    Property [ public static $sp = 1 ]
+  }
+
+  - Static methods [1] {
+    Method [ <user, inherits Base> static public method st ] {
+      @@ Command line code 19 - 19
+
+      - Parameters [2] {
+        Parameter #0 [ <optional> ?array $o = NULL ]
+        Parameter #1 [ <optional> $d = [0 => 1, 'k' => true] ]
+      }
+      - Return [ static ]
+    }
+  }
+
+  - Properties [5] {
+    Property [ public $dyn = 'q' ]
+    /** the x */
+    Property [ public int $x = 3 ]
+    Property [ protected ?string $y = NULL ]
+    Property [ public protected(set) readonly int $ro ]
+    Property [ public string $promo ]
+  }
+
+  - Methods [6] {
+    Method [ <user, overwrites J, prototype J> public method jm ] {
+      @@ Command line code 24 - 24
+    }
+
+    Method [ <user, overwrites Base, prototype Base> protected method ab ] {
+      @@ Command line code 25 - 25
+
+      - Parameters [2] {
+        Parameter #0 [ <required> &$r ]
+        Parameter #1 [ <optional> ...$rest ]
+      }
+    }
+
+    Method [ <user, overwrites Base, prototype I> public method im ] {
+      @@ Command line code 26 - 26
+
+      - Parameters [4] {
+        Parameter #0 [ <required> int $a ]
+        Parameter #1 [ <optional> $b = PHP_INT_MAX ]
+        Parameter #2 [ <optional> $c = self::BC ]
+        Parameter #3 [ <optional> $e = 1.0 ]
+      }
+      - Return [ string ]
+    }
+
+    Method [ <user, deprecated> public method old ] {
+      @@ Command line code 28 - 28
+    }
+
+    Method [ <user, inherits Base, ctor> public method __construct ] {
+      @@ Command line code 15 - 15
+
+      - Parameters [1] {
+        Parameter #0 [ <optional> string $promo = 'p' ]
+      }
+    }
+
+    Method [ <user, inherits Base> final public method &refRet ] {
+      @@ Command line code 20 - 20
+    }
+  }
+}
+Enum [ <user> enum Suit: string implements I, UnitEnum, BackedEnum ] {
+  @@ Command line code 30-30
+
+  - Enum cases [2] {
+    Case H = h
+    Case S = s
+  }
+
+  - Constants [2] {
+    Constant [ public Suit X ] { Object }
+    Constant [ public int IC ] { 1 }
+  }
+
+  - Static properties [0] {
+  }
+
+  - Static methods [3] {
+    Method [ <internal, prototype UnitEnum> static public method cases ] {
+
+      - Parameters [0] {
+      }
+      - Return [ array ]
+    }
+
+    Method [ <internal, prototype BackedEnum> static public method from ] {
+
+      - Parameters [1] {
+        Parameter #0 [ <required> string|int $value ]
+      }
+      - Return [ static ]
+    }
+
+    Method [ <internal, prototype BackedEnum> static public method tryFrom ] {
+
+      - Parameters [1] {
+        Parameter #0 [ <required> string|int $value ]
+      }
+      - Return [ ?static ]
+    }
+  }
+
+  - Properties [2] {
+    Property [ public protected(set) readonly string $name ]
+    Property [ public protected(set) readonly string $value ]
+  }
+
+  - Methods [1] {
+    Method [ <user, prototype I> public method im ] {
+      @@ Command line code 30 - 30
+
+      - Parameters [1] {
+        Parameter #0 [ <required> int $a ]
+      }
+      - Return [ string ]
+    }
+  }
+}
+
+Deprecated: Creation of dynamic property Child::$extra is deprecated in Command line code on line 32
+Object of class [ <user> class Child extends Base implements I, J ] {
+  @@ Command line code 22-29
+
+  - Constants [4] {
+    Constant [ public string BC ] { b }
+    Constant [ protected float PC ] { 2.5 }
+    Constant [ final public array FC ] { Array }
+    Constant [ public int IC ] { 1 }
+  }
+
+  - Static properties [1] {
+    Property [ public static $sp = 1 ]
+  }
+
+  - Static methods [1] {
+    Method [ <user, inherits Base> static public method st ] {
+      @@ Command line code 19 - 19
+
+      - Parameters [2] {
+        Parameter #0 [ <optional> ?array $o = NULL ]
+        Parameter #1 [ <optional> $d = [0 => 1, 'k' => true] ]
+      }
+      - Return [ static ]
+    }
+  }
+
+  - Properties [5] {
+    Property [ public $dyn = 'q' ]
+    /** the x */
+    Property [ public int $x = 3 ]
+    Property [ protected ?string $y = NULL ]
+    Property [ public protected(set) readonly int $ro ]
+    Property [ public string $promo ]
+  }
+
+  - Dynamic properties [1] {
+    Property [ <dynamic> public $extra ]
+  }
+
+  - Methods [6] {
+    Method [ <user, overwrites J, prototype J> public method jm ] {
+      @@ Command line code 24 - 24
+    }
+
+    Method [ <user, overwrites Base, prototype Base> protected method ab ] {
+      @@ Command line code 25 - 25
+
+      - Parameters [2] {
+        Parameter #0 [ <required> &$r ]
+        Parameter #1 [ <optional> ...$rest ]
+      }
+    }
+
+    Method [ <user, overwrites Base, prototype I> public method im ] {
+      @@ Command line code 26 - 26
+
+      - Parameters [4] {
+        Parameter #0 [ <required> int $a ]
+        Parameter #1 [ <optional> $b = PHP_INT_MAX ]
+        Parameter #2 [ <optional> $c = self::BC ]
+        Parameter #3 [ <optional> $e = 1.0 ]
+      }
+      - Return [ string ]
+    }
+
+    Method [ <user, deprecated> public method old ] {
+      @@ Command line code 28 - 28
+    }
+
+    Method [ <user, inherits Base, ctor> public method __construct ] {
+      @@ Command line code 15 - 15
+
+      - Parameters [1] {
+        Parameter #0 [ <optional> string $promo = 'p' ]
+      }
+    }
+
+    Method [ <user, inherits Base> final public method &refRet ] {
+      @@ Command line code 20 - 20
+    }
+  }
+}
+"##
+    );
+}
+
+#[test]
+fn reflection_function_and_member_strings_match_the_reference() {
+    let src = r##"<?php class A { const K = 7; public $p2 = 1 << 3, $p3 = 'a' . 'b', $p4 = self::K, $p5 = \PHP_EOL, $p6 = PHP_INT_MAX + 1, $p7 = self::L; const L = 'l'; protected static int $s = 0; }
+function &g(int|string $u, ?A $v = null, &...$w): ?int { return $u; }
+$k = 5; $cl = function ($a) use ($k) { static $s = 1; }; $st = static fn(int ...$n): int => 0;
+echo new ReflectionFunction("g"), new ReflectionFunction($cl), new ReflectionFunction($st);
+echo (new ReflectionFunction("g"))->getParameters()[1], "\n", new ReflectionProperty("A", "p4"), new ReflectionProperty("A", "p7"), new ReflectionProperty("A", "s"), new ReflectionClassConstant("A", "K"); #[Attribute] class Tag { function __construct(...$a) {} } #[Tag("hi", opts: [1, 2.5])] function tagged() {} echo (new ReflectionFunction("tagged"))->getAttributes()[0], new ReflectionClass("A");"##;
+    assert_eq!(
+        run(src),
+        r##"Function [ <user> function &g ] {
+  @@ Command line code 2 - 2
+
+  - Parameters [3] {
+    Parameter #0 [ <required> string|int $u ]
+    Parameter #1 [ <optional> ?A $v = NULL ]
+    Parameter #2 [ <optional> &...$w ]
+  }
+  - Return [ ?int ]
+}
+Closure [ <user> function {closure:Command line code:3} ] {
+  @@ Command line code 3 - 3
+
+  - Bound Variables [2] {
+      Variable #0 [ $k ]
+      Variable #1 [ $s ]
+  }
+
+  - Parameters [1] {
+    Parameter #0 [ <required> $a ]
+  }
+}
+Closure [ <user> static function {closure:Command line code:3} ] {
+  @@ Command line code 3 - 3
+
+  - Parameters [1] {
+    Parameter #0 [ <optional> int ...$n ]
+  }
+  - Return [ int ]
+}
+Parameter #1 [ <optional> ?A $v = NULL ]
+Property [ public $p4 = 7 ]
+Property [ public $p7 = self::L ]
+Property [ protected static int $s = 0 ]
+Constant [ public int K ] { 7 }
+Attribute [ Tag ] {
+  - Arguments [2] {
+    Argument #0 [ 'hi' ]
+    Argument #1 [ opts = [1, 2.5] ]
+  }
+}
+Class [ <user> class A ] {
+  @@ Command line code 1-1
+
+  - Constants [2] {
+    Constant [ public int K ] { 7 }
+    Constant [ public string L ] { l }
+  }
+
+  - Static properties [1] {
+    Property [ protected static int $s = 0 ]
+  }
+
+  - Static methods [0] {
+  }
+
+  - Properties [6] {
+    Property [ public $p2 = 8 ]
+    Property [ public $p3 = 'ab' ]
+    Property [ public $p4 = 7 ]
+    Property [ public $p5 = '\n' ]
+    Property [ public $p6 = 9.2233720368548E+18 ]
+    Property [ public $p7 = self::L ]
+  }
+
+  - Methods [0] {
+  }
+}
+"##
+    );
+}

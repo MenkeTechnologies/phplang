@@ -461,6 +461,11 @@ pub struct Compiler {
     /// The lines of the closure literal being lowered (`function`/`fn` keyword,
     /// end), handed to its definition the way `closure_doc` is.
     closure_lines: (u32, u32),
+    /// Each class compiled so far, lowercased, with its constant expressions —
+    /// what a property default may fold through (see `crate::ast_export`).
+    /// The flag says whether the class binds at compile time (no parent,
+    /// interface or trait), which is when another class may see them too.
+    known_consts: FxHashMap<String, (bool, Vec<ConstAt>)>,
     /// The attributes of the closure literal about to be compiled.
     closure_attrs: Vec<host::AttrDef>,
     /// By-reference parameter positions per function (lowercased name), gathered
@@ -574,6 +579,10 @@ pub struct Compiler {
 }
 
 /// Compile a parsed program. `debug` enables per-statement DAP line markers.
+/// A class constant as a later property default may fold through it: its
+/// name, its expression and the token position it was declared at.
+type ConstAt = (String, Expr, usize);
+
 pub fn compile(stmts: &[Stmt], debug: bool) -> Result<Program, String> {
     compile_program(stmts, debug, false)
 }
@@ -811,6 +820,17 @@ impl Compiler {
             out.push(host::Param {
                 name: p.name.clone(),
                 line: p.line,
+                default_text: p
+                    .default
+                    .as_ref()
+                    .filter(|_| default.is_some())
+                    .and_then(|e| {
+                        let ctx = crate::ast_export::FoldCtx {
+                            substitute: false,
+                            class_const: &|_, _| None,
+                        };
+                        crate::ast_export::default_text(e, &ctx)
+                    }),
                 default,
                 variadic: p.variadic,
                 by_ref: p.by_ref,
@@ -1924,6 +1944,7 @@ impl Compiler {
                         doc: doc.clone(),
                         attrs: fn_attrs,
                         span: self.decl_span(lines.0, lines.1),
+                        returns_ref: *by_ref_return,
                     },
                 ));
                 if !top {
@@ -3085,6 +3106,20 @@ impl Compiler {
         let mut consts: Vec<(String, Chunk)> = Vec::new();
         let mut const_vis: FxHashMap<String, Visibility> = FxHashMap::default();
         let mut prop_defaults: Vec<(String, Chunk)> = Vec::new();
+        let mut default_texts: Vec<(String, String)> = Vec::new();
+        // The constants a later property default may fold through.
+        let early = decl.parent.is_none()
+            && decl.implements.is_empty()
+            && decl.uses.is_empty()
+            && !decl.is_enum;
+        let visible = decl
+            .consts
+            .iter()
+            .zip(&decl.const_pos)
+            .map(|((n, e), &at)| (n.clone(), e.clone(), at))
+            .collect();
+        self.known_consts
+            .insert(decl.name.to_ascii_lowercase(), (early, visible));
         let mut static_prop_defaults: Vec<(String, Chunk)> = Vec::new();
         let mut methods: FxHashMap<String, FuncDef> = FxHashMap::default();
         let mut prop_vis: FxHashMap<String, Visibility> = FxHashMap::default();
@@ -3180,6 +3215,7 @@ impl Compiler {
                 readonly: p.readonly || decl.is_readonly,
                 is_final: false,
                 line: p.line,
+                pos: 0,
             });
         let at = decl.ctor_prop_slot.min(decl.props.len());
         let props: Vec<PropDecl> = decl.props[..at]
@@ -3218,6 +3254,49 @@ impl Compiler {
             // compile time), so only instance declarations register one.
             if prop.readonly && !prop.is_static {
                 readonly_props.insert(name.clone());
+            }
+            default_texts.retain(|(n, _): &(String, String)| n != name);
+            let known = &self.known_consts;
+            let own = decl.name.to_ascii_lowercase();
+            let prop_pos = prop.pos;
+            let lookup = |class: &ClassRef, k: &str| -> Option<Expr> {
+                // `self::K` sees the constants declared above the property;
+                // `C::K` those of a class already bound at compile time.
+                let (key, before) = match class {
+                    ClassRef::Name(c) if c.eq_ignore_ascii_case("self") => {
+                        (own.clone(), Some(prop_pos))
+                    }
+                    ClassRef::Name(c)
+                        if c.eq_ignore_ascii_case("parent") || c.eq_ignore_ascii_case("static") =>
+                    {
+                        return None
+                    }
+                    ClassRef::Name(c) => {
+                        let lc = c.trim_start_matches('\\').to_ascii_lowercase();
+                        let here = (lc == own).then_some(prop_pos);
+                        (lc, here)
+                    }
+                    ClassRef::Expr(_) => return None,
+                };
+                let (early, consts) = known.get(&key)?;
+                if before.is_none() && !early {
+                    return None;
+                }
+                consts
+                    .iter()
+                    .find(|(n, _, at)| n == k && before.is_none_or(|p| *at < p))
+                    .map(|(_, e, _)| e.clone())
+            };
+            let ctx = crate::ast_export::FoldCtx {
+                substitute: true,
+                class_const: &lookup,
+            };
+            if let Some(t) = prop
+                .default
+                .as_ref()
+                .and_then(|e| crate::ast_export::default_text(e, &ctx))
+            {
+                default_texts.push((name.clone(), t));
             }
             let mut pb = ChunkBuilder::new();
             match &prop.default {
@@ -3351,6 +3430,7 @@ impl Compiler {
                     params: cparams,
                     // A method's frame is named by the method.
                     span: self.decl_span(m.line, m.end_line),
+                    returns_ref: m.by_ref_return,
                     closure_site: None,
                     declared: None,
                     chunk: mb.build(),
@@ -3421,6 +3501,9 @@ impl Compiler {
             ClassDef {
                 attrs: class_attrs,
                 span: self.decl_span(decl.lines.0, decl.lines.1),
+                default_texts,
+                is_readonly: decl.is_readonly,
+                enum_backing: decl.enum_backing.clone(),
                 member_deprecated,
                 docs: decl.docs.clone(),
                 name: decl.name.clone(),
@@ -6531,6 +6614,7 @@ impl Compiler {
                 doc,
                 attrs,
                 span: self.decl_span(lines.0, lines.1),
+                returns_ref: false,
             },
         ));
 

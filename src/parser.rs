@@ -2841,6 +2841,7 @@ impl Parser {
         self.expect_closer("{")?;
         let mut consts = Vec::new();
         let mut const_lines = Vec::new();
+        let mut const_pos = Vec::new();
         let mut const_vis = Vec::new();
         let mut final_consts = Vec::new();
         let mut props = Vec::new();
@@ -3015,6 +3016,7 @@ impl Parser {
                 let first_name_line = self.line();
                 loop {
                     const_lines.push(const_line);
+                    const_pos.push(self.pos);
                     if let Some(Tok::Ident(n)) = self.peek() {
                         attach(format!("const:{n}"));
                     }
@@ -3156,6 +3158,7 @@ impl Parser {
                         readonly,
                         is_final: m_final,
                         line: prop_line,
+                        pos: self.pos,
                     });
                     if !self.eat_punct(",") {
                         break;
@@ -3193,6 +3196,7 @@ impl Parser {
             cases,
             consts,
             const_lines,
+            const_pos,
             const_vis,
             final_consts,
             props,

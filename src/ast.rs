@@ -805,6 +805,8 @@ pub struct PropDecl {
     pub is_final: bool,
     /// The line of its `$name`, which is where a redeclaration is reported.
     pub line: u32,
+    /// The token position of its `$name` (see `ClassDecl::const_pos`).
+    pub pos: usize,
 }
 
 /// A parsed class declaration. Single inheritance only; interfaces/traits are
@@ -854,6 +856,9 @@ pub struct ClassDecl {
     pub consts: Vec<(String, Expr)>,
     /// The line of each entry of `consts`' name, index for index.
     pub const_lines: Vec<u32>,
+    /// The token position of each entry of `consts`, index for index — what
+    /// decides whether a property default declared later can see it.
+    pub const_pos: Vec<usize>,
     /// The declared visibility of each `private`/`protected` constant, by name.
     /// A constant absent from this list is `public`.
     pub const_vis: Vec<(String, Visibility)>,

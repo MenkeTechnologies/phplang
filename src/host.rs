@@ -602,6 +602,9 @@ pub struct Param {
     /// `Deprecated` against, rather than the call site.
     pub line: u32,
     pub default: Option<Chunk>,
+    /// The default as the reference prints it when it keeps the expression
+    /// rather than a value (see `crate::ast_export`); `None` for one it folds.
+    pub default_text: Option<String>,
     pub variadic: bool,
     /// `&$x` — a by-reference parameter (final value copied back to the caller).
     pub by_ref: bool,
@@ -623,6 +626,8 @@ pub struct AttrDef {
 /// A compiled user function: its parameters plus the lowered body chunk.
 #[derive(Debug, Clone)]
 pub struct FuncDef {
+    /// Declared `function &f()`.
+    pub returns_ref: bool,
     /// Where it was written; `None` for an internal function.
     pub span: Option<DeclSpan>,
     pub params: Vec<Param>,
@@ -725,6 +730,13 @@ pub enum ContainerIssue {
 /// were resolved to concrete class names at compile time.
 #[derive(Debug, Clone)]
 pub struct ClassDef {
+    /// `readonly class`.
+    pub is_readonly: bool,
+    /// A backed enum's backing type (`int` / `string`).
+    pub enum_backing: Option<String>,
+    /// Each property default the reference keeps as an expression, exported
+    /// (see `crate::ast_export`).
+    pub default_texts: Vec<(String, String)>,
     /// Where it was written; `None` for an internal class.
     pub span: Option<DeclSpan>,
     /// The doc comments of the declaration and its members — see
@@ -1640,9 +1652,15 @@ impl Visiting {
 /// land mid-character; the escaping then renders the orphaned bytes as `\xHH`,
 /// which is why the reference never emits invalid UTF-8 here.
 fn escape_trace_string(s: &str) -> String {
+    smart_str_escaped(s, 15)
+}
+
+/// `smart_str_append_escaped_truncated(…, limit)`: the first `limit` bytes of
+/// `s` escaped (see [`escape_trace_string`]), then `...` if it was cut.
+pub fn smart_str_escaped(s: &str, limit: usize) -> String {
     const VK_ESCAPE: u8 = 0x1b;
     let bytes = &*crate::bytes::to_bytes(s);
-    let cut = bytes.len().min(15);
+    let cut = bytes.len().min(limit);
     let mut out = String::new();
     for &c in &bytes[..cut] {
         if c < 32 || c == b'\\' || c > 126 {
@@ -1661,7 +1679,7 @@ fn escape_trace_string(s: &str) -> String {
             out.push(c as char);
         }
     }
-    if bytes.len() > 15 {
+    if bytes.len() > limit {
         out.push_str("...");
     }
     out
@@ -7548,6 +7566,15 @@ fn deprecated_constant_suffix(name: &str) -> Option<&'static str> {
     })
 }
 
+/// Whether `name` is a constant the engine itself defines — one the reference
+/// substitutes while compiling (`zend_try_ct_eval_const`).
+pub fn is_predefined_constant(name: &str) -> bool {
+    thread_local! {
+        static NAMES: FxHashSet<String> = predefined_constants().into_keys().collect();
+    }
+    NAMES.with(|n| n.contains(name))
+}
+
 fn predefined_constants() -> FxHashMap<String, Value> {
     let mut m = FxHashMap::default();
     let mut si = |k: &str, v: i64| {
@@ -10581,6 +10608,8 @@ pub fn doc_comment(kind: &str, target: &Value, name: &str) -> Option<String> {
                     return None;
                 }
                 pending.extend(def.interfaces.iter().rev().map(|i| i.to_ascii_lowercase()));
+                // A member a trait brought in keeps the trait's doc comment.
+                pending.extend(def.uses.iter().rev().map(|t| t.to_ascii_lowercase()));
                 pending.extend(def.parent.iter().map(|p| p.to_ascii_lowercase()));
                 seen.push(c);
             }
@@ -10608,6 +10637,30 @@ pub fn decl_span(kind: &str, target: &Value, name: &str) -> Option<DeclSpan> {
             .classes
             .get(&unanchored(&h.to_str(target)).to_ascii_lowercase())
             .and_then(|d| d.span.clone()),
+    })
+}
+
+/// `(deprecated, returns by reference, static)` for a user function, method
+/// or closure, as `Reflection*::__toString`, `returnsReference()` and
+/// `isStatic()` read them.
+pub fn refl_fn_flags(kind: &str, target: &Value, name: &str) -> (bool, bool, bool) {
+    with_host(|h| {
+        if let Some(PhpObj::Closure { is_static, .. }) = h.as_array(target) {
+            return (false, false, *is_static);
+        }
+        let def = match kind {
+            "function" => {
+                let lower = unanchored(&h.to_str(target)).to_ascii_lowercase();
+                h.functions.get(&lower).cloned()
+            }
+            "method" => h
+                .resolve_method(&h.to_str(target), &name.to_ascii_lowercase())
+                .map(|(_, d)| d),
+            _ => None,
+        };
+        def.map_or((false, false, false), |d| {
+            (d.deprecated.is_some(), d.returns_ref, false)
+        })
     })
 }
 
@@ -14849,6 +14902,8 @@ pub mod refl_flags {
 /// A class as reflection describes it.
 pub struct ReflClass {
     pub name: String,
+    pub is_readonly: bool,
+    pub enum_backing: Option<String>,
     pub parent: Option<String>,
     pub interfaces: Vec<String>,
     pub traits: Vec<String>,
@@ -14904,6 +14959,8 @@ impl PhpHost {
         if let Some(def) = self.classes.get(&lname) {
             return Some(ReflClass {
                 name: def.name.clone(),
+                is_readonly: def.is_readonly,
+                enum_backing: def.enum_backing.clone(),
                 parent: def
                     .parent
                     .as_ref()
@@ -14922,6 +14979,8 @@ impl PhpHost {
         let (spelled, kind, parents, _) = builtin_type(&lname)?;
         Some(ReflClass {
             name: spelled.to_string(),
+            is_readonly: false,
+            enum_backing: None,
             parent: None,
             interfaces: parents.iter().map(|p| p.to_string()).collect(),
             traits: Vec::new(),
@@ -14950,11 +15009,16 @@ impl PhpHost {
                 "tryfrom" if backed => "tryFrom",
                 _ => return None,
             };
+            let ret = match spelled {
+                "cases" => vec!["array".to_string()],
+                "from" => vec!["static".to_string()],
+                _ => vec!["static".to_string(), "null".to_string()],
+            };
             return Some(ReflMember {
                 name: spelled.to_string(),
                 class: self.declared_class_name(c),
                 modifiers: refl_flags::PUBLIC | refl_flags::STATIC,
-                ty: None,
+                ty: Some(crate::ast::TypeHint { parts: ret }),
                 has_default: false,
             });
         }
@@ -15046,6 +15110,31 @@ impl PhpHost {
             def.methods
                 .get(&lname)
                 .map(|f| (self.class_display_name(&c), f.params.clone()))
+                .or_else(|| {
+                    // A backed enum's engine `from` / `tryFrom` take one
+                    // `string|int $value`; its `cases` takes none.
+                    let synthetic =
+                        def.is_enum && matches!(lname.as_str(), "cases" | "from" | "tryfrom");
+                    synthetic.then(|| {
+                        let params = if lname == "cases" {
+                            Vec::new()
+                        } else {
+                            vec![Param {
+                                name: "value".to_string(),
+                                line: 0,
+                                default: None,
+                                default_text: None,
+                                variadic: false,
+                                by_ref: false,
+                                ty: Some(crate::ast::TypeHint {
+                                    parts: vec!["string".to_string(), "int".to_string()],
+                                }),
+                                attrs: Vec::new(),
+                            }]
+                        };
+                        (self.class_display_name(&c), params)
+                    })
+                })
         })
     }
 
@@ -15098,6 +15187,28 @@ impl PhpHost {
     /// The properties `ReflectionClass::getProperties()` lists: the class's
     /// own in declaration order, then each ancestor's not redeclared — an
     /// ancestor's private ones are not inherited.
+    /// An enum's engine-declared properties: `name`, and `value` for a backed
+    /// enum — `public protected(set) readonly`, typed, with no default.
+    fn enum_props(&self, c: &str, def: &ClassDef) -> Vec<ReflMember> {
+        if !def.is_enum {
+            return Vec::new();
+        }
+        let member = |name: &str, ty: &str| ReflMember {
+            name: name.to_string(),
+            class: self.declared_class_name(c),
+            modifiers: refl_flags::PUBLIC | refl_flags::READONLY | refl_flags::PROTECTED_SET,
+            ty: Some(crate::ast::TypeHint {
+                parts: vec![ty.to_string()],
+            }),
+            has_default: false,
+        };
+        let mut out = vec![member("name", "string")];
+        if let Some(b) = &def.enum_backing {
+            out.push(member("value", &b.to_ascii_lowercase()));
+        }
+        out
+    }
+
     pub fn refl_props(&self, class: &str) -> Vec<ReflMember> {
         let mut seen: Vec<String> = Vec::new();
         let mut out = Vec::new();
@@ -15115,6 +15226,14 @@ impl PhpHost {
                 seen.push(name.clone());
                 out.push(p);
             }
+            if depth == 0 {
+                for p in self.enum_props(&c, def) {
+                    if !seen.contains(&p.name) {
+                        seen.push(p.name.clone());
+                        out.push(p);
+                    }
+                }
+            }
         }
         out
     }
@@ -15127,6 +15246,15 @@ impl PhpHost {
             .find_map(|(depth, (c, def))| {
                 self.refl_prop_of(&c, def, name)
                     .filter(|p| depth == 0 || p.modifiers & refl_flags::PRIVATE == 0)
+                    .or_else(|| {
+                        (depth == 0)
+                            .then(|| {
+                                self.enum_props(&c, def)
+                                    .into_iter()
+                                    .find(|p| p.name == name)
+                            })
+                            .flatten()
+                    })
             })
     }
 
@@ -15140,6 +15268,26 @@ impl PhpHost {
                 .find(|(n, _)| n == name)
                 .map(|(_, chunk)| (c.clone(), chunk.clone()))
         })
+    }
+
+    /// The exported default of property `name`, from the class that declares
+    /// it (the one [`PhpHost::refl_prop_default`] reads), when the reference
+    /// keeps it as an expression.
+    pub fn refl_default_text(&self, class: &str, name: &str) -> Option<String> {
+        self.refl_chain(class)
+            .into_iter()
+            .find(|(_, def)| {
+                def.prop_defaults
+                    .iter()
+                    .chain(def.static_prop_defaults.iter())
+                    .any(|(n, _)| n == name)
+            })
+            .and_then(|(_, def)| {
+                def.default_texts
+                    .iter()
+                    .find(|(n, _)| n == name)
+                    .map(|(_, t)| t.clone())
+            })
     }
 
     /// The constant names `ReflectionClass::getConstants()` lists: the
@@ -15173,6 +15321,37 @@ impl PhpHost {
             visit.extend(def.interfaces.iter().map(|i| i.to_ascii_lowercase()));
         }
         out
+    }
+
+    /// How constant `name` of `class` was declared, from the nearest class that
+    /// declares it (the order [`PhpHost::refl_const_names`] visits):
+    /// `(declaring class, visibility modifier, final, is an enum case)`.
+    pub fn refl_const_info(&self, class: &str, name: &str) -> Option<(String, i64, bool, bool)> {
+        let mut visit: Vec<String> = vec![unanchored(class).to_ascii_lowercase()];
+        let mut done: Vec<String> = Vec::new();
+        while let Some(c) = (!visit.is_empty()).then(|| visit.remove(0)) {
+            if done.contains(&c) {
+                continue;
+            }
+            let Some(def) = self.classes.get(&c) else {
+                continue;
+            };
+            done.push(c.clone());
+            let case = def.enum_cases.iter().any(|(n, _)| n == name);
+            if case || def.consts.iter().any(|(n, _)| n == name) {
+                let vis = match def.const_vis.get(name) {
+                    Some(Visibility::Private) => 4,
+                    Some(Visibility::Protected) => 2,
+                    _ => 1,
+                };
+                return Some((def.name.clone(), vis, def.final_consts.contains(name), case));
+            }
+            if let Some(p) = &def.parent {
+                visit.push(p.to_ascii_lowercase());
+            }
+            visit.extend(def.interfaces.iter().map(|i| i.to_ascii_lowercase()));
+        }
+        None
     }
 
     /// A user function's parameters, return type and declared name.
