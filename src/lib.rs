@@ -185,6 +185,7 @@ interface DateTimeInterface {
     const RFC850 = 'l, d-M-y H:i:s T';
     const RFC1036 = 'D, d M y H:i:s O';
     const RFC1123 = 'D, d M Y H:i:s O';
+    #[\Deprecated(since: "8.5", message: "as this format ignores the associated timezone and always uses GMT")]
     const RFC7231 = 'D, d M Y H:i:s \G\M\T';
     const RFC2822 = 'D, d M Y H:i:s O';
     const RFC3339 = 'Y-m-d\TH:i:sP';
@@ -670,7 +671,7 @@ class ReflectionClassConstant {
         $this->class = $r->name;
     }
     public function getName(): string { return $this->name; }
-    public function getValue(): mixed { return constant($this->class . "::" . $this->name); }
+    public function getValue(): mixed { return __phplang_reflect("const_value", $this->class, $this->name); }
     public function getDocComment(): string|false { return __phplang_reflect("doc", "const", $this->class, $this->name) ?: __phplang_reflect("doc", "case", $this->class, $this->name); }
     public function getAttributes(?string $name = null, int $flags = 0): array { return ReflectionAttribute::__list("ReflectionClassConstant::getAttributes", ["const", $this->class, $this->name], -1, Attribute::TARGET_CLASS_CONSTANT, $name, $flags); }
     public function getDeclaringClass(): ReflectionClass { return new ReflectionClass($this->class); }

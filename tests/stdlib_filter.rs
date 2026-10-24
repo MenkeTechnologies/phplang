@@ -1,12 +1,8 @@
 //! End-to-end tests for the `filter` stdlib category: `filter_var` validation
 //! and sanitization filters plus `filter_var_array`. Expected values were
-//! cross-checked against PHP 8.5 `php -r` — for the RETURNED VALUE. Two of them
-//! omit a diagnostic the reference also emits, verified against `php 8.5.9`:
-//!
-//!   * both `FILTER_SANITIZE_STRING` assertions. The reference precedes the
-//!     sanitized value with `Deprecated: Constant FILTER_SANITIZE_STRING is
-//!     deprecated since 8.1, use htmlspecialchars() instead`; this engine does
-//!     not carry per-constant deprecations, so it emits the value alone.
+//! cross-checked against PHP 8.5 `php -r`. Both `FILTER_SANITIZE_STRING`
+//! assertions include the deprecation the reference raises for a use of that
+//! constant.
 //!
 //! The assertions here run headless without `php`.
 
@@ -403,14 +399,16 @@ fn sanitize_special_chars_numeric_entities() {
 
 #[test]
 fn sanitize_string_strips_tags() {
-    // strip_tags then encode quotes.
+    // strip_tags then encode quotes. Every use of the constant is deprecated.
+    let deprecated = "\nDeprecated: Constant FILTER_SANITIZE_STRING is deprecated since 8.1, \
+                      use htmlspecialchars() instead in Command line code on line 1\n";
     assert_eq!(
         run(r#"<?php echo filter_var("<b>hi</b>", FILTER_SANITIZE_STRING);"#),
-        "hi"
+        format!("{deprecated}hi")
     );
     assert_eq!(
         run(r#"<?php echo filter_var("say \"x\"", FILTER_SANITIZE_STRING);"#),
-        "say &#34;x&#34;"
+        format!("{deprecated}say &#34;x&#34;")
     );
 }
 

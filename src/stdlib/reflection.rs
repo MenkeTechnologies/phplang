@@ -605,11 +605,14 @@ pub(crate) fn reflect(args: &[Value]) -> Result<Value, String> {
             Some((class, chunk)) => crate::host::refl_eval_default(&class, chunk)?,
             None => Value::Undef,
         },
+        // `ReflectionClassConstant::getValue()`: inspects the constant, so a
+        // `#[\Deprecated]` one stays silent.
+        "const_value" => crate::host::class_const_reflect(&s1, &s2)?,
         "consts" => {
             let names = with_host(|h| h.refl_const_names(&s1));
             let mut pairs = Vec::with_capacity(names.len());
             for n in names {
-                let v = crate::host::class_const(&s1, &n)?;
+                let v = crate::host::class_const_reflect(&s1, &n)?;
                 pairs.push((Value::str(n), v));
             }
             make_map(pairs)

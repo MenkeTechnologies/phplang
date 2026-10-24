@@ -924,7 +924,7 @@ impl<'a> Parser<'a> {
                 let tag = self.length_prefixed_string()?;
                 self.eat(b";")?;
                 let (class, case) = tag.split_once(':')?;
-                crate::host::class_const(class, case).ok()
+                crate::host::class_const_silent(class, case).ok()
             }
             _ => None,
         }

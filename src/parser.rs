@@ -4643,7 +4643,7 @@ const PIPE_BP: (u8, u8) = (15, 16);
 
 /// `#[\Deprecated(message, since)]`'s literal arguments, by position or name.
 /// A non-literal argument leaves its part unset.
-fn deprecation_of(args: &[Expr]) -> Deprecation {
+pub(crate) fn deprecation_of(args: &[Expr]) -> Deprecation {
     let literal = |e: &Expr| match e {
         Expr::Str(s) => Some(s.clone()),
         Expr::Interp(parts) => parts

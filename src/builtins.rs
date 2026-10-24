@@ -1019,7 +1019,11 @@ fn b_foreach_prep(vm: &mut VM, _: u8) -> Value {
 /// no longer falls back to its own name as a string.
 fn b_const_fetch(vm: &mut VM, _: u8) -> Value {
     let name = pop_name(vm);
-    match with_host(|h| h.const_fetch(&name)) {
+    // A deprecated constant's notice reports this op's line, and an error
+    // handler that throws from it unwinds the fetch.
+    mark_warn_site(vm);
+    match with_host(|h| h.const_use(&name)) {
+        Some(_) if bubble_throw(vm) => Value::Undef,
         Some(v) => v,
         None => {
             mark_frame_line(vm);
@@ -1069,7 +1073,9 @@ fn b_class_link_check(vm: &mut VM, _: u8) -> Value {
 fn b_const_fetch_ns(vm: &mut VM, _: u8) -> Value {
     let qualified = pop_name(vm);
     let global = qualified.rsplit('\\').next().unwrap_or(&qualified);
-    match with_host(|h| h.const_fetch(&qualified).or_else(|| h.const_fetch(global))) {
+    mark_warn_site(vm);
+    match with_host(|h| h.const_use(&qualified).or_else(|| h.const_use(global))) {
+        Some(_) if bubble_throw(vm) => Value::Undef,
         Some(v) => v,
         None => {
             mark_frame_line(vm);
@@ -3540,8 +3546,11 @@ fn b_scall(vm: &mut VM, argc: u8) -> Value {
 fn b_sconst(vm: &mut VM, _: u8) -> Value {
     let name = pop_name(vm);
     let class = pop_name(vm);
+    // A `#[\Deprecated]` constant's notice reports this op's line, and a
+    // handler that throws from it unwinds the fetch.
+    mark_warn_site(vm);
     match host::class_const(&class, &name) {
-        Ok(v) => v,
+        Ok(v) => bubbled(vm, v),
         Err(e) => fail_or_throw(vm, e),
     }
 }

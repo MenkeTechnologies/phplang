@@ -26,6 +26,32 @@ comment above it.
 
 ---
 
+## Round 34: deprecated constants, `PHP_SAPI`, `PHP_BINARY`
+
+* A use of a predefined constant the reference declares `#[\Deprecated]`
+  raises its deprecation, as `zend_deprecated_constant` does: `E_STRICT`
+  (`Constant E_STRICT is deprecated since 8.4, the error level was removed`),
+  `DATE_RFC7231`, `SUNFUNCS_RET_TIMESTAMP` / `_STRING` / `_DOUBLE` and
+  `FILTER_SANITIZE_STRING` / `_STRIPPED`, each with the reference's suffix. A
+  bareword (namespaced or not) and `constant()` are uses; `defined()` is not.
+  The notice is `E_DEPRECATED`, so the `error_reporting` mask, `@` and
+  `set_error_handler` see it as they see any other, and a handler that throws
+  unwinds the fetch.
+* `#[\Deprecated]` on a class constant or an enum case is honoured
+  (`zend_deprecated_class_constant`): `K::X` and `constant("K::X")` raise
+  `Constant K::X is deprecated[ since …][, …]` (`Enum case E::A …`), naming the
+  DECLARING class, `E_USER_DEPRECATED` for a user class and `E_DEPRECATED` for
+  an internal one. `DateTimeInterface::RFC7231` carries it, as in the
+  reference. `defined()`, reflection, `cases()`, `from()`/`tryFrom()` and
+  `unserialize()` inspect the constant without raising it.
+* Reflection reads a class constant of any visibility:
+  `ReflectionClass::getConstants()` and `ReflectionClassConstant::getValue()`
+  over a private constant threw `Cannot access private constant`.
+* `PHP_SAPI` is defined (`"cli"`, matching `php_sapi_name()`), and so is
+  `PHP_BINARY`, ported from `php_binary_init`: the `realpath` of `argv[0]`,
+  searched for along `PATH` when it has no `/`, and `""` when nothing resolves.
+  Both were `Undefined constant` errors.
+
 ## Round 33: library return types, Throwable, internal interface order
 
 * `ReflectionFunction::getReturnType()` on a library function answers the

@@ -717,6 +717,9 @@ pub struct ClassDef {
     /// The attributes of the declaration and its properties, constants and
     /// enum cases, keyed as `docs` is (a method's are on its `FuncDef`).
     pub attrs: Vec<(String, Vec<AttrDef>)>,
+    /// The `#[\Deprecated]` of each constant and enum case that carries one,
+    /// keyed `const:NAME` / `case:NAME` as `attrs` is.
+    pub member_deprecated: Vec<(String, crate::ast::Deprecation)>,
     /// The class name in its declared spelling. The map is keyed by the
     /// lowercased name (PHP class lookup is case-insensitive), so this is the
     /// only place the source casing survives for display — a stack trace names
@@ -1964,6 +1967,20 @@ impl PhpHost {
                 "null" => Some(Value::Undef),
                 _ => None,
             })
+    }
+
+    /// [`Self::const_fetch`] for a USE of the constant — a bareword or
+    /// `constant()` — which raises the deprecation an internal constant
+    /// registered `#[\Deprecated]` carries (`zend_deprecated_constant`, reached
+    /// from `zend_get_class_constant_ex` and `zend_quick_get_constant`).
+    /// `defined()` is not a use and stays silent, as in the reference.
+    pub fn const_use(&mut self, name: &str) -> Option<Value> {
+        let value = self.const_fetch(name)?;
+        let name = name.strip_prefix('\\').unwrap_or(name);
+        if let Some(suffix) = deprecated_constant_suffix(name) {
+            self.deprecated(format!("Constant {name} is deprecated {suffix}"));
+        }
+        Some(value)
     }
 
     /// Whether a constant of this name is defined.
@@ -7377,6 +7394,73 @@ fn php_version_parts() -> (i64, i64, i64) {
     (next(), next(), next())
 }
 
+/// `PHP_BINARY`: `php_binary_init` (main/main.c) over the CLI SAPI's
+/// `executable_location`, which is `argv[0]`. A name without a `/` is searched
+/// for along `PATH` — the first `dir/name` that resolves, is executable and is a
+/// regular file — and one with a `/` is resolved where it is; either way the
+/// answer is the `realpath`. Nothing found is the empty string.
+#[cfg(unix)]
+fn php_binary() -> String {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::{Path, PathBuf};
+
+    let executable = |p: &Path| {
+        CString::new(p.as_os_str().as_bytes())
+            .is_ok_and(|c| unsafe { libc::access(c.as_ptr(), libc::X_OK) } == 0)
+    };
+    let Some(argv0) = std::env::args_os().next() else {
+        return String::new();
+    };
+    let found: Option<PathBuf> = if argv0.as_bytes().contains(&b'/') {
+        std::fs::canonicalize(&argv0)
+            .ok()
+            .filter(|real| executable(real))
+    } else {
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        path.as_bytes()
+            .split(|&b| b == b':')
+            .filter(|dir| !dir.is_empty())
+            .find_map(|dir| {
+                let mut candidate = dir.to_vec();
+                candidate.push(b'/');
+                candidate.extend_from_slice(argv0.as_bytes());
+                let real = std::fs::canonicalize(std::ffi::OsStr::from_bytes(&candidate)).ok()?;
+                (executable(&real) && real.is_file()).then_some(real)
+            })
+    };
+    found.map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
+/// `PHP_BINARY` on Windows: `GetModuleFileName(0)`, the running executable.
+#[cfg(not(unix))]
+fn php_binary() -> String {
+    std::env::current_exe()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// The deprecation suffix of each predefined constant the reference declares
+/// `#[\Deprecated]` (its stubs' `since` and `message`, rendered as
+/// `get_deprecation_suffix_from_attribute` renders them), or `None`. Only the
+/// constants [`predefined_constants`] seeds are listed: the reference's other
+/// deprecated ones (`MHASH_*`, `ASSERT_*`, `MT_RAND_PHP`, …) are not defined here.
+fn deprecated_constant_suffix(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "E_STRICT" => "since 8.4, the error level was removed",
+        "DATE_RFC7231" => {
+            "since 8.5, as this format ignores the associated timezone and always uses GMT"
+        }
+        "SUNFUNCS_RET_TIMESTAMP" | "SUNFUNCS_RET_STRING" | "SUNFUNCS_RET_DOUBLE" => {
+            "since 8.4, as date_sunrise() and date_sunset() were deprecated in 8.1"
+        }
+        "FILTER_SANITIZE_STRING" | "FILTER_SANITIZE_STRIPPED" => {
+            "since 8.1, use htmlspecialchars() instead"
+        }
+        _ => return None,
+    })
+}
+
 fn predefined_constants() -> FxHashMap<String, Value> {
     let mut m = FxHashMap::default();
     let mut si = |k: &str, v: i64| {
@@ -7683,6 +7767,8 @@ fn predefined_constants() -> FxHashMap<String, Value> {
     }
     ss("PHP_VERSION", PHP_VERSION);
     ss("PHP_EXTRA_VERSION", "");
+    ss("PHP_SAPI", "cli");
+    ss("PHP_BINARY", &php_binary());
     ss("PHP_SHLIB_SUFFIX", "so");
     ss(
         "PHP_OS",
@@ -11380,15 +11466,59 @@ fn run_in_class_scope(declaring: &str, chunk: Chunk) -> Result<Value, String> {
 
 /// `Class::CONST` — evaluate the (inherited) constant initializer. On an `enum`, a
 /// name that is not a real constant is resolved as an enum case singleton.
+///
+/// This is a USE of the constant (`K::C`, `constant("K::C")`), so a
+/// `#[\Deprecated]` one reports itself; see [`class_const_silent`].
 pub fn class_const(class: &str, name: &str) -> Result<Value, String> {
+    class_const_with(class, name, ConstLookup::Use)
+}
+
+/// [`class_const`] without the deprecation: the `ZEND_FETCH_CLASS_SILENT`
+/// lookups — `defined("K::C")` and `unserialize` resolving an enum case —
+/// that inspect a constant rather than use it. Visibility still applies.
+pub fn class_const_silent(class: &str, name: &str) -> Result<Value, String> {
+    class_const_with(class, name, ConstLookup::Silent)
+}
+
+/// [`class_const_silent`] for reflection, which reads a constant of any
+/// visibility (`ReflectionClass::getConstants()`, `ReflectionClassConstant::
+/// getValue()` on a private constant).
+pub fn class_const_reflect(class: &str, name: &str) -> Result<Value, String> {
+    class_const_with(class, name, ConstLookup::Reflect)
+}
+
+/// Who is asking [`class_const_with`] for a constant.
+#[derive(PartialEq)]
+enum ConstLookup {
+    Use,
+    Silent,
+    Reflect,
+}
+
+fn class_const_with(class: &str, name: &str, lookup: ConstLookup) -> Result<Value, String> {
+    let report = lookup == ConstLookup::Use;
     if let Some(v) = autoload_first(class)? {
         return Ok(v);
     }
     if let Some((declaring, chunk)) = with_host(|h| h.resolve_const_chunk(class, name)) {
-        if let Some(msg) = with_host(|h| h.const_access_denied(class, name)) {
+        if let Some(msg) = with_host(|h| h.const_access_denied(class, name))
+            .filter(|_| lookup != ConstLookup::Reflect)
+        {
             return Err(crate::builtins::throws_bare("Error", msg));
         }
+        if report && raise_deprecated_member(&declaring, &format!("const:{name}")) {
+            return Ok(Value::Undef);
+        }
         return run_in_class_scope(&declaring, chunk);
+    }
+    // A deprecated case warns when it is NAMED (`E::A`), not when `cases()`,
+    // `from()` or `tryFrom()` hand it out.
+    let lower = class.to_ascii_lowercase();
+    if report
+        && with_host(|h| h.is_enum_class(&lower) && h.enum_case_chunk(&lower, name).is_some())
+        && raise_deprecated_member(&lower, &format!("case:{name}"))
+    {
+        return Ok(Value::Undef);
     }
     if let Some(r) = enum_case(class, name) {
         return r;
@@ -14502,6 +14632,48 @@ fn is_prelude_helper_name(frame: &str) -> bool {
         || (method.starts_with("__") && !MAGIC.contains(&method.to_ascii_lowercase().as_str()))
 }
 
+/// `get_deprecation_suffix_from_attribute`: ` since <since>`, then
+/// `, <message>`, each only when the attribute gave it.
+fn deprecation_suffix(d: &crate::ast::Deprecation) -> String {
+    let mut suffix = String::new();
+    if let Some(since) = &d.since {
+        suffix.push_str(&format!(" since {since}"));
+    }
+    if let Some(message) = &d.message {
+        suffix.push_str(&format!(", {message}"));
+    }
+    suffix
+}
+
+/// `zend_deprecated_class_constant`: a use of a class constant or enum case
+/// declared `#[\Deprecated]` raises `Constant K::C is deprecated` (`Enum case
+/// E::A …`), naming the DECLARING class, before the value is produced. A user
+/// class's is `E_USER_DEPRECATED`; a prelude class stands in for an internal
+/// one, whose is `E_DEPRECATED`. The handler runs now; `true` when it threw.
+fn raise_deprecated_member(declaring: &str, key: &str) -> bool {
+    let Some((class, d)) = with_host(|h| {
+        let def = h.classes.get(declaring)?;
+        let (_, d) = def.member_deprecated.iter().find(|(k, _)| k == key)?;
+        Some((h.class_display_name(declaring), d.clone()))
+    }) else {
+        return false;
+    };
+    let (kind, name) = match key.split_once(':') {
+        Some(("case", name)) => ("Enum case", name),
+        Some((_, name)) => ("Constant", name),
+        None => ("Constant", key),
+    };
+    let msg = format!("{kind} {class}::{name} is deprecated{}", deprecation_suffix(&d));
+    let level = if crate::prelude_type(declaring).is_some() {
+        errlevel::E_DEPRECATED
+    } else {
+        errlevel::E_USER_DEPRECATED
+    };
+    with_host(|h| h.diagnose("Deprecated", level, warn_line(), msg));
+    drain_error_handlers();
+    with_host(|h| h.pending_throw.is_some())
+}
+
 /// `zend_deprecated_function`: `Method K::m() is deprecated` or `Function f()
 /// is deprecated`, then ` since <since>` and `, <message>` from the attribute.
 /// A user function's is `E_USER_DEPRECATED`; a prelude method stands in for an
@@ -14512,13 +14684,11 @@ fn raise_deprecated_call(frame: &str, d: &crate::ast::Deprecation) {
     } else {
         "Function"
     };
-    let mut msg = format!("{kind} {}() is deprecated", display_frame(frame));
-    if let Some(since) = &d.since {
-        msg.push_str(&format!(" since {since}"));
-    }
-    if let Some(message) = &d.message {
-        msg.push_str(&format!(", {message}"));
-    }
+    let msg = format!(
+        "{kind} {}() is deprecated{}",
+        display_frame(frame),
+        deprecation_suffix(d)
+    );
     let level = if is_prelude_frame(frame) {
         errlevel::E_DEPRECATED
     } else {

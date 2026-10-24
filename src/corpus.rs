@@ -943,8 +943,8 @@ pub const CORPUS: &[Entry] = &[
     ),
     // ══ Predefined constant ═════════════════════════════════════════════════
     // Seeded onto every fresh host by `predefined_constants()` in `src/host.rs`.
-    // Constant lookup is case-SENSITIVE, and an undefined bareword resolves to
-    // its own name as a string rather than raising.
+    // Constant lookup is case-SENSITIVE, and an undefined bareword throws
+    // `Error: Undefined constant`.
     (
         "PHP_INT_MAX",
         "Predefined constant",
@@ -1021,6 +1021,20 @@ pub const CORPUS: &[Entry] = &[
         "PHP_EXTRA_VERSION: string = \"\"",
         "The version's suffix; empty for a release build.",
         "",
+    ),
+    (
+        "PHP_SAPI",
+        "Predefined constant",
+        "PHP_SAPI: string = \"cli\"",
+        "The server API the engine runs under — always the command-line SAPI, the same answer as `php_sapi_name()`.",
+        "",
+    ),
+    (
+        "PHP_BINARY",
+        "Predefined constant",
+        "PHP_BINARY: string",
+        "The interpreter's own path, as `php_binary_init` computes it: the `realpath` of `argv[0]`, or — for a bare name with no `/` — of the first executable regular file of that name along `PATH`. The empty string when neither resolves.",
+        "echo PHP_BINARY === realpath(PHP_BINARY) ? \"resolved\" : \"\";   // => resolved",
     ),
     (
         "PHP_DEBUG",
@@ -1341,7 +1355,7 @@ pub const CORPUS: &[Entry] = &[
         "E_STRICT",
         "Predefined constant",
         "E_STRICT: int = 2048",
-        "Error level for interoperability suggestions. The level was REMOVED in PHP 8.4 — nothing raises it and it is not part of `E_ALL` — but the constant remains so an existing `E_ALL & ~E_STRICT` still parses.",
+        "Error level for interoperability suggestions. The level was REMOVED in PHP 8.4 — nothing raises it and it is not part of `E_ALL` — but the constant remains so an existing `E_ALL & ~E_STRICT` still parses. Every use of it raises `Deprecated: Constant E_STRICT is deprecated since 8.4, the error level was removed`.",
         "",
     ),
     (
@@ -1985,14 +1999,14 @@ pub const CORPUS: &[Entry] = &[
         "FILTER_SANITIZE_STRING",
         "Predefined constant",
         "FILTER_SANITIZE_STRING: int = 513",
-        "Strips `<…>` tags then encodes `\"` and `'` as numeric entities. Sanitizers never fail.",
+        "Strips `<…>` tags then encodes `\"` and `'` as numeric entities. Sanitizers never fail. Deprecated since 8.1: every use of the constant raises `Deprecated: Constant FILTER_SANITIZE_STRING is deprecated since 8.1, use htmlspecialchars() instead`.",
         "",
     ),
     (
         "FILTER_SANITIZE_STRIPPED",
         "Predefined constant",
         "FILTER_SANITIZE_STRIPPED: int = 513",
-        "The legacy alias of `FILTER_SANITIZE_STRING`, sharing its id.",
+        "The legacy alias of `FILTER_SANITIZE_STRING`, sharing its id, and deprecated the same way.",
         "",
     ),
     (

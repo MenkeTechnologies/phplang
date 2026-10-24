@@ -29,7 +29,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             let cname = with_host(|h| h.to_str(args.first().unwrap_or(&Value::Undef)));
             if let Some((class, konst)) = cname.split_once("::") {
                 return Some(Ok(Value::bool(
-                    crate::host::class_const(class, konst).is_ok(),
+                    crate::host::class_const_silent(class, konst).is_ok(),
                 )));
             }
             Some(Ok(Value::bool(with_host(|h| h.const_defined(&cname)))))
@@ -64,7 +64,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
                     konst,
                 ));
             }
-            Some(match with_host(|h| h.const_fetch(&cname)) {
+            Some(match with_host(|h| h.const_use(&cname)) {
                 Some(v) => Ok(v),
                 None => Err(crate::builtins::throws(
                     "Error",

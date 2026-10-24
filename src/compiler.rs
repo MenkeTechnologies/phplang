@@ -3384,10 +3384,20 @@ impl Compiler {
         for (key, a) in decl.attrs.iter().filter(|(k, _)| !k.starts_with("method:")) {
             class_attrs.push((key.clone(), self.compile_attrs(a)?));
         }
+        let member_deprecated = decl
+            .attrs
+            .iter()
+            .filter(|(k, _)| k.starts_with("const:") || k.starts_with("case:"))
+            .filter_map(|(k, attrs)| {
+                let dep = attrs.iter().find(|a| a.name.eq_ignore_ascii_case("Deprecated"))?;
+                Some((k.clone(), crate::parser::deprecation_of(&dep.args)))
+            })
+            .collect();
         self.classes.push((
             decl.name.to_ascii_lowercase(),
             ClassDef {
                 attrs: class_attrs,
+                member_deprecated,
                 docs: decl.docs.clone(),
                 name: decl.name.clone(),
                 parent: decl.parent.clone(),
