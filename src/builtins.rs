@@ -50,6 +50,11 @@ pub fn install(vm: &mut VM) {
     reg!(vm, ops::SETVAR, b_setvar);
     reg!(vm, ops::COPY, b_copy);
     reg!(vm, ops::CONCAT, b_concat);
+    reg!(vm, ops::CONCAT_ASSIGN_FSLOT, b_concat_assign_fslot);
+    reg!(vm, ops::CONCAT_ASSIGN_SLOT, b_concat_assign_slot);
+    reg!(vm, ops::CONCAT_ASSIGN_VAR, b_concat_assign_var);
+    reg!(vm, ops::FOREACH_KEYS, b_foreach_keys);
+    reg!(vm, ops::IS_PLAIN_OBJECT, b_is_plain_object);
     reg!(vm, ops::TRUTHY, b_truthy);
     reg!(vm, ops::CALL, b_call);
     reg!(vm, ops::MINMAX_FLF2, b_minmax_flf2);
@@ -1851,21 +1856,87 @@ fn b_concat(vm: &mut VM, _: u8) -> Value {
     let a = vm.pop();
     // As in `b_echo`: the conversion warns against the concatenation's own line.
     mark_warn_site(vm);
+    concat_values(&a, &b)
+}
+
+/// `a . b` with PHP's string conversions.
+fn concat_values(a: &Value, b: &Value) -> Value {
     // Two strings need no conversion at all — no `__toString` to run, no
     // `Array to string conversion`, no NaN notice — so they skip both host
     // borrows and the `format!`, and the result is built once at the exact
     // length. This is the shape of most concatenations, including every
     // interpolation whose parts are already strings.
-    if let (Value::Str(x), Value::Str(y)) = (&a, &b) {
+    if let (Value::Str(x), Value::Str(y)) = (a, b) {
         return Value::str(crate::bytes::concat(x, y));
     }
     // Both conversions happen outside the host borrow so an operand with
     // `__toString` can run it. String interpolation lowers to this op too.
-    let (a, b) = (host::to_str_ext(&a), host::to_str_ext(&b));
+    let (a, b) = (host::to_str_ext(a), host::to_str_ext(b));
     if host::unwinding() {
         return Value::Undef;
     }
     Value::str(crate::bytes::concat(&a, &b))
+}
+
+/// `$x .= value` for a frame-slot local (`ops::CONCAT_ASSIGN_FSLOT`). The
+/// variable is read AFTER the right-hand side, as `ZEND_ASSIGN_OP` reads it,
+/// and a string is appended in its own buffer when the slot is the sole owner
+/// — the copy every append used to make turned building a string by `.=`
+/// into quadratic work.
+fn b_concat_assign_fslot(vm: &mut VM, _: u8) -> Value {
+    let y = vm.pop();
+    let i = vm.pop().to_int() as usize;
+    mark_warn_site(vm);
+    if let Value::Str(ys) = &y {
+        let slot = vm.frames.last_mut().and_then(|f| f.slots.get_mut(i));
+        if let Some(Value::Str(s)) = slot {
+            crate::bytes::append(std::sync::Arc::make_mut(s), ys);
+            return Value::Str(s.clone());
+        }
+    }
+    let r = concat_values(&vm.get_slot(i as u16), &y);
+    if !host::unwinding() {
+        vm.set_slot(i as u16, r.clone());
+    }
+    r
+}
+
+/// `$x .= value` for a host-slot variable (`ops::CONCAT_ASSIGN_SLOT`); see
+/// [`b_concat_assign_fslot`].
+fn b_concat_assign_slot(vm: &mut VM, _: u8) -> Value {
+    let y = vm.pop();
+    let i = vm.pop().to_int() as u32;
+    mark_warn_site(vm);
+    if let Value::Str(ys) = &y {
+        if let Some(v) = with_host(|h| h.slot_append_str(i, ys)) {
+            return v;
+        }
+    }
+    let cur = with_host(|h| h.slot_get(i));
+    let r = concat_values(&cur, &y);
+    if !host::unwinding() {
+        with_host(|h| h.slot_set(i, r.clone()));
+    }
+    r
+}
+
+/// `$x .= value` for a variable reached by name (`ops::CONCAT_ASSIGN_VAR`);
+/// see [`b_concat_assign_fslot`].
+fn b_concat_assign_var(vm: &mut VM, _: u8) -> Value {
+    let y = vm.pop();
+    let name = pop_name(vm);
+    mark_warn_site(vm);
+    if let Value::Str(ys) = &y {
+        if let Some(v) = with_host(|h| h.var_append_str(&name, ys)) {
+            return v;
+        }
+    }
+    let cur = with_host(|h| h.get_var_warn(&name));
+    let r = concat_values(&cur, &y);
+    if !host::unwinding() {
+        with_host(|h| h.set_var(&name, r.clone()));
+    }
+    r
 }
 
 fn b_truthy(vm: &mut VM, _: u8) -> Value {
@@ -2713,6 +2784,19 @@ fn b_incdec_slot(vm: &mut VM, _: u8) -> Value {
 fn b_arraykeys(vm: &mut VM, _: u8) -> Value {
     let recv = vm.pop();
     with_host(|h| h.array_keys(&recv))
+}
+
+/// See `ops::IS_PLAIN_OBJECT`.
+fn b_is_plain_object(vm: &mut VM, _: u8) -> Value {
+    let v = vm.pop();
+    Value::bool(with_host(|h| h.is_plain_foreach_object(&v)))
+}
+
+/// See `ops::FOREACH_KEYS`.
+fn b_foreach_keys(vm: &mut VM, _: u8) -> Value {
+    let arr = vm.pop();
+    let subj = vm.pop();
+    host::foreach_keys(&subj, &arr)
 }
 
 fn b_arraylen(vm: &mut VM, _: u8) -> Value {

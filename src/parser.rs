@@ -1956,6 +1956,7 @@ impl Parser {
 
     fn function_stmt(&mut self) -> Result<StmtKind, String> {
         let doc = self.take_doc(self.pos);
+        let fn_line = self.line();
         let attrs = std::mem::take(&mut self.pending_attr_specs);
         self.pos += 1; // function
         let deprecated = self.pending_deprecated.take();
@@ -1972,6 +1973,7 @@ impl Parser {
         let body = self.block()?;
         self.magic = saved;
         Ok(StmtKind::Function {
+            lines: (fn_line, self.line_at(self.pos - 1)),
             name,
             params,
             body,
@@ -2714,6 +2716,7 @@ impl Parser {
             }
         }
         let class_doc = self.take_doc(self.pos);
+        let class_line = self.line();
         self.pos += 1; // class / interface / trait / enum
         let name = match self.next() {
             Some(Tok::Ident(n)) => n,
@@ -2780,6 +2783,7 @@ impl Parser {
             decl.attrs.insert(0, ("class".to_string(), class_attrs));
         }
         Ok(StmtKind::Class(ClassDecl {
+            lines: (class_line, decl.lines.1),
             attributes,
             is_final,
             namespace: self.magic.namespace.clone(),
@@ -3083,6 +3087,7 @@ impl Parser {
                     return Err(self.syntax_error_expecting("\";\" or \"{\""));
                 }
                 let body = if has_body { self.block()? } else { Vec::new() };
+                let end_line = self.line_at(self.pos - 1);
                 self.magic = saved;
                 if mname.eq_ignore_ascii_case("__construct") {
                     ctor_prop_slot = props.len();
@@ -3099,6 +3104,7 @@ impl Parser {
                     is_final: m_final,
                     has_body,
                     line: fn_line,
+                    end_line,
                     deprecated: member_deprecated.clone(),
                 });
             } else {
@@ -3159,6 +3165,7 @@ impl Parser {
             }
         }
         self.expect_punct("}")?;
+        let end_line = self.line_at(self.pos - 1);
         // A backed enum implements `BackedEnum` (which extends `UnitEnum`); a pure
         // enum implements `UnitEnum`. Added so `instanceof UnitEnum`/`BackedEnum`
         // holds without the user declaring it.
@@ -3169,6 +3176,8 @@ impl Parser {
             }
         }
         Ok(ClassDecl {
+            // The caller knows where the declaration began.
+            lines: (0, end_line),
             name,
             parent,
             implements,
@@ -4135,7 +4144,8 @@ impl Parser {
                     let decl =
                         self.class_rest("class@anonymous".to_string(), ClassKind::default(), None);
                     self.magic = saved;
-                    let decl = decl?;
+                    let mut decl = decl?;
+                    decl.lines.0 = line;
                     return Ok(Expr::NewAnon {
                         decl: Box::new(decl),
                         args,
@@ -4251,6 +4261,7 @@ impl Parser {
                     ret,
                     is_static: false,
                     line,
+                    end_line: self.line_at(self.pos - 1),
                     doc,
                     attrs: Vec::new(),
                 })
@@ -4271,6 +4282,7 @@ impl Parser {
                     ret,
                     is_static: false,
                     line,
+                    end_line: self.line_at(self.pos - 1),
                     doc,
                     attrs: Vec::new(),
                 })

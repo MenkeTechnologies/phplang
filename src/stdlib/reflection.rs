@@ -638,6 +638,16 @@ pub(crate) fn reflect(args: &[Value]) -> Result<Value, String> {
         "doc" => {
             crate::host::doc_comment(&s1, &arg(args, 2), &s3).map_or(Value::bool(false), Value::str)
         }
+        // `getFileName` / `getStartLine` / `getEndLine`: `[file, start, end]`,
+        // or false for an internal declaration.
+        "span" => match crate::host::decl_span(&s1, &arg(args, 2), &s3) {
+            Some(sp) => make_list(vec![
+                Value::str(sp.file),
+                Value::int(i64::from(sp.start)),
+                Value::int(i64::from(sp.end)),
+            ]),
+            None => Value::bool(false),
+        },
         // `getStaticVariables`: a closure's is what its dump lists under
         // `static` — the captured variables, then its `static`s; a function's
         // or a method's, its `static`s.

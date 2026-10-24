@@ -463,6 +463,9 @@ abstract class ReflectionFunctionAbstract {
     public function hasReturnType(): bool { return $this->__returnInfo() !== null; }
     public function getReturnType(): ?ReflectionType { $t = $this->__returnInfo(); return $t === null ? null : ReflectionType::__make($t); }
     public function getDocComment(): string|false { [$k, $t, $n] = $this->__spec(); return __phplang_reflect("doc", $k, $t, $n); }
+    public function getFileName(): string|false { [$k, $t, $n] = $this->__spec(); $s = __phplang_reflect("span", $k, $t, $n); return $s === false ? false : $s[0]; }
+    public function getStartLine(): int|false { [$k, $t, $n] = $this->__spec(); $s = __phplang_reflect("span", $k, $t, $n); return $s === false ? false : $s[1]; }
+    public function getEndLine(): int|false { [$k, $t, $n] = $this->__spec(); $s = __phplang_reflect("span", $k, $t, $n); return $s === false ? false : $s[2]; }
     public function isUserDefined(): bool { return !$this->isInternal(); }
     public function getStaticVariables(): array { [$k, $t, $n] = $this->__spec(); return $k === "method" ? __phplang_reflect("statics", $t, $n) : []; }
     public function getAttributes(?string $name = null, int $flags = 0): array {
@@ -812,6 +815,9 @@ class ReflectionClass {
     public function newInstanceWithoutConstructor(): object { return __phplang_reflect("instantiate", $this->name); }
     public function getFileName(): string|false { return false; }
     public function getDocComment(): string|false { return __phplang_reflect("doc", "class", $this->name, ""); }
+    public function getFileName(): string|false { $s = __phplang_reflect("span", "class", $this->name, ""); return $s === false ? false : $s[0]; }
+    public function getStartLine(): int|false { $s = __phplang_reflect("span", "class", $this->name, ""); return $s === false ? false : $s[1]; }
+    public function getEndLine(): int|false { $s = __phplang_reflect("span", "class", $this->name, ""); return $s === false ? false : $s[2]; }
     public function getAttributes(?string $name = null, int $flags = 0): array { return ReflectionAttribute::__list("ReflectionClass::getAttributes", ["class", $this->name, ""], -1, Attribute::TARGET_CLASS, $name, $flags); }
     public function getExtensionName(): string|false { return false; }
 }

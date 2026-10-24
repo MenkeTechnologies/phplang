@@ -522,6 +522,18 @@ pub mod ops {
     /// `[slot-key] -> bool`. Whether the `static` declared under `slot-key`
     /// is initialized already, so its initializer is skipped.
     pub const STATIC_HAS: u16 = 163;
+    /// `[slot, value] -> string`. `$x .= value` for a frame-slot local: the
+    /// append happens in the slot's own buffer when it is the sole owner.
+    pub const CONCAT_ASSIGN_FSLOT: u16 = 164;
+    /// `[slot, value] -> string`. The same for a host-slot variable.
+    pub const CONCAT_ASSIGN_SLOT: u16 = 165;
+    /// `[name, value] -> string`. The same for a variable reached by name.
+    pub const CONCAT_ASSIGN_VAR: u16 = 166;
+    /// `[subject, array] -> keys`. The keys a `foreach` over `subject` (already
+    /// materialized as `array`) binds; see `host::foreach_keys`.
+    pub const FOREACH_KEYS: u16 = 167;
+    /// `[v] -> bool`. `PhpHost::is_plain_foreach_object`.
+    pub const IS_PLAIN_OBJECT: u16 = 168;
 }
 
 /// The capture name a `static` closure carries from its creation site.
@@ -611,6 +623,8 @@ pub struct AttrDef {
 /// A compiled user function: its parameters plus the lowered body chunk.
 #[derive(Debug, Clone)]
 pub struct FuncDef {
+    /// Where it was written; `None` for an internal function.
+    pub span: Option<DeclSpan>,
     pub params: Vec<Param>,
     pub chunk: Chunk,
     /// The frame's variables in the order the chunk numbers them. The call
@@ -711,6 +725,8 @@ pub enum ContainerIssue {
 /// were resolved to concrete class names at compile time.
 #[derive(Debug, Clone)]
 pub struct ClassDef {
+    /// Where it was written; `None` for an internal class.
+    pub span: Option<DeclSpan>,
     /// The doc comments of the declaration and its members — see
     /// `ClassDecl::docs`.
     pub docs: Vec<(String, String)>,
@@ -919,6 +935,8 @@ pub enum PhpObj {
         doc: Option<String>,
         /// The literal's `#[…]` attributes.
         attrs: Vec<AttrDef>,
+        /// Where the literal was written, for `getFileName()` and the lines.
+        span: Option<DeclSpan>,
     },
     /// A live generator: an index into `PhpHost::generators`, where the suspended
     /// stackful coroutine and its execution context live. Built by calling a
@@ -1134,6 +1152,16 @@ struct IncludeFrame {
     arg: Option<String>,
     /// The line of the construct in the code that reached it.
     call_line: u32,
+}
+
+/// Where a user declaration was written: its file and the lines of its
+/// keyword and closing brace — what `getFileName()`, `getStartLine()` and
+/// `getEndLine()` answer. Internal (prelude) declarations have none.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeclSpan {
+    pub file: String,
+    pub start: u32,
+    pub end: u32,
 }
 
 /// Where a user function or class was declared — what a redeclaration quotes
@@ -3484,6 +3512,62 @@ impl PhpHost {
         self.write_slot(idx, i, val);
     }
 
+    /// Whether a `foreach` over `v` walks its property table: an object with
+    /// neither `getIterator` nor the `Iterator` protocol.
+    pub fn is_plain_foreach_object(&self, v: &Value) -> bool {
+        !self.is_array(v)
+            && !self.is_generator_val(v)
+            && self.object_class(v).is_some_and(|c| {
+                !self.class_has_method(&c, "getIterator")
+                    && !(self.class_has_method(&c, "valid") && self.class_has_method(&c, "current"))
+            })
+    }
+
+    /// The value bound in slot `i` of scope `scope_idx` — through its cell when
+    /// the slot is a reference — for an in-place update; `None` when unbound.
+    fn bound_value_mut(&mut self, scope_idx: usize, i: u32) -> Option<&mut Value> {
+        let cell = match self.scopes.get(scope_idx)?.vars.slots.get(i as usize)? {
+            Slot::Ref(c) => Some(*c),
+            Slot::Val(_) => None,
+            Slot::Unset => return None,
+        };
+        match cell {
+            Some(c) => self.ref_cells.get_mut(c),
+            None => match self.scopes[scope_idx].vars.slots.get_mut(i as usize)? {
+                Slot::Val(v) => Some(v),
+                _ => None,
+            },
+        }
+    }
+
+    /// `$var .= y` in place when `$var` (slot `i` of scope `scope_idx`) holds a
+    /// string: `Arc::make_mut` writes into the buffer when the variable is its
+    /// only owner and copies it otherwise, so value semantics hold either way.
+    /// `None` when the variable is unbound or not a string — the caller's
+    /// general path, with its diagnostics.
+    fn append_bound(&mut self, scope_idx: usize, i: u32, y: &str) -> Option<Value> {
+        match self.bound_value_mut(scope_idx, i)? {
+            Value::Str(s) => {
+                crate::bytes::append(std::sync::Arc::make_mut(s), y);
+                Some(Value::Str(s.clone()))
+            }
+            _ => None,
+        }
+    }
+
+    /// [`PhpHost::append_bound`] on slot `i` of the current frame.
+    pub fn slot_append_str(&mut self, i: u32, y: &str) -> Option<Value> {
+        let idx = self.scopes.len().checked_sub(1)?;
+        self.append_bound(idx, i, y)
+    }
+
+    /// [`PhpHost::append_bound`] on the variable `name`.
+    pub fn var_append_str(&mut self, name: &str, y: &str) -> Option<Value> {
+        let idx = self.scope_idx(name);
+        let i = self.scopes.get(idx)?.vars.slot_of(name)?;
+        self.append_bound(idx, i, y)
+    }
+
     /// Store into a slot: a reference writes through its shared cell so every
     /// alias sees it, anything else takes the value directly.
     fn write_slot(&mut self, scope_idx: usize, i: u32, val: Value) {
@@ -4341,6 +4425,7 @@ impl PhpHost {
             site: def.closure_site,
             doc: def.doc,
             attrs: def.attrs,
+            span: def.span,
         });
         Value::Obj((self.objs.len() - 1) as u32)
     }
@@ -10504,6 +10589,28 @@ pub fn doc_comment(kind: &str, target: &Value, name: &str) -> Option<String> {
     })
 }
 
+/// Where a closure, function, method or class was written (see [`DeclSpan`]),
+/// or `None` for an internal one.
+pub fn decl_span(kind: &str, target: &Value, name: &str) -> Option<DeclSpan> {
+    with_host(|h| match kind {
+        "closure" => match h.as_array(target) {
+            Some(PhpObj::Closure { span, .. }) => span.clone(),
+            _ => None,
+        },
+        "function" => {
+            let lower = unanchored(&h.to_str(target)).to_ascii_lowercase();
+            h.functions.get(&lower).and_then(|d| d.span.clone())
+        }
+        "method" => h
+            .resolve_method(&h.to_str(target), &name.to_ascii_lowercase())
+            .and_then(|(_, d)| d.span),
+        _ => h
+            .classes
+            .get(&unanchored(&h.to_str(target)).to_ascii_lowercase())
+            .and_then(|d| d.span.clone()),
+    })
+}
+
 /// The attributes of a declaration and the class scope their arguments are
 /// evaluated in: a function ("function", its name), method ("method", class,
 /// name), closure ("closure", the closure), or a class or one of its members
@@ -12062,6 +12169,23 @@ pub fn foreach_prep(v: Value) -> Result<Value, String> {
         return foreach_prep(inner);
     }
     Ok(arr)
+}
+
+/// [`ops::FOREACH_KEYS`]: the key list a `foreach` walks. For a plain object
+/// (no iterator protocol) it is the visible property names as the property
+/// table keeps them — a numeric name stays the string `"5"` — where the
+/// materialized array `arr` has normalized it to an integer key.
+pub fn foreach_keys(subj: &Value, arr: &Value) -> Value {
+    with_host(|h| {
+        if !h.is_plain_foreach_object(subj) {
+            return h.array_keys(arr);
+        }
+        let keys = h.new_array();
+        for (k, _) in h.object_props_visible(subj) {
+            h.arr_push_auto(&keys, prop_key(&k));
+        }
+        keys
+    })
 }
 
 /// Every `(key, value)` a `foreach` over `v` would bind, in order and with

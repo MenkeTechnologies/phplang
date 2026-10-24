@@ -179,19 +179,26 @@ fn leading_escapes(s: &str, max: usize) -> usize {
 /// quadratic.
 pub fn concat(x: &str, y: &str) -> String {
     let mut out = String::with_capacity(x.len() + y.len());
+    out.push_str(x);
+    append(&mut out, y);
+    out
+}
+
+/// `x .= y` in place for two canonical strings (see [`concat`]): only the seam
+/// is re-derived, so appending to a string the caller owns is amortized
+/// constant work.
+pub fn append(x: &mut String, y: &str) {
     let tail = trailing_escapes(x, 3);
     let head = leading_escapes(y, 3);
     if tail == x.len() || head == 0 {
-        out.push_str(x);
-        out.push_str(y);
-        return out;
+        x.push_str(y);
+        return;
     }
-    out.push_str(&x[..tail]);
     let mut seam = to_bytes(&x[tail..]).into_owned();
     seam.extend_from_slice(&to_bytes(&y[..head]));
-    out.push_str(&from_bytes(&seam));
-    out.push_str(&y[head..]);
-    out
+    x.truncate(tail);
+    x.push_str(&from_bytes(&seam));
+    x.push_str(&y[head..]);
 }
 
 /// The byte offset of the first `needle` in `hay` (an empty needle is found at

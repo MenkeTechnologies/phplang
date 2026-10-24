@@ -458,6 +458,9 @@ pub struct Compiler {
     body_statics: Option<Vec<(String, Option<Expr>)>>,
     /// The doc comment of the closure literal about to be compiled.
     closure_doc: Option<String>,
+    /// The lines of the closure literal being lowered (`function`/`fn` keyword,
+    /// end), handed to its definition the way `closure_doc` is.
+    closure_lines: (u32, u32),
     /// The attributes of the closure literal about to be compiled.
     closure_attrs: Vec<host::AttrDef>,
     /// By-reference parameter positions per function (lowercased name), gathered
@@ -1858,6 +1861,7 @@ impl Compiler {
                 deprecated,
                 doc,
                 attrs,
+                lines,
             } => {
                 if top {
                     if let Some(msg) = self.fn_redeclare_msg(name, namespace) {
@@ -1919,6 +1923,7 @@ impl Compiler {
                         statics,
                         doc: doc.clone(),
                         attrs: fn_attrs,
+                        span: self.decl_span(lines.0, lines.1),
                     },
                 ));
                 if !top {
@@ -2357,8 +2362,9 @@ impl Compiler {
             Ok(())
         })?;
         self.emit_set_var(b, &keys_t, |c, b| {
+            c.emit_get_var(b, &subj_t);
             c.emit_get_var(b, &arr_t);
-            b.emit(Op::CallBuiltin(ops::ARRAYKEYS, 1), 0);
+            b.emit(Op::CallBuiltin(ops::FOREACH_KEYS, 2), 0);
             Ok(())
         })?;
         self.emit_set_var(b, &i_t, |_, b| {
@@ -2419,12 +2425,26 @@ impl Compiler {
         // element, so `foreach ($a as &$v) {} foreach ($a as $v) {}` leaves
         // `$a`'s tail duplicated exactly as PHP's most-cited gotcha does.
         if by_ref {
+            // Over a plain object the element is the PROPERTY, so a write
+            // through `$v` reaches the object rather than the snapshot array.
+            self.emit_get_var(b, &subj_t);
+            b.emit(Op::CallBuiltin(ops::IS_PLAIN_OBJECT, 1), 0);
+            let not_object = b.emit(Op::JumpIfFalse(0), 0);
+            let prop = Expr::PropGet(
+                Box::new(Expr::Var(subj_t.clone())),
+                Member::Dyn(Box::new(Expr::Var(k_t.clone()))),
+            );
+            self.compile_ref_assign(b, &Expr::Var(val_name.clone()), &prop)?;
+            b.emit(Op::Pop, 0);
+            let bound = b.emit(Op::Jump(0), 0);
+            b.patch_jump(not_object, b.current_pos());
             let elem = Expr::Index(
                 Box::new(Expr::Var(arr_t.clone())),
                 Box::new(Expr::Var(k_t.clone())),
             );
             self.compile_ref_assign(b, &Expr::Var(val_name.clone()), &elem)?;
             b.emit(Op::Pop, 0);
+            b.patch_jump(bound, b.current_pos());
         } else {
             self.emit_set_var(b, val_var, |c, b| {
                 c.emit_get_var(b, &arr_t);
@@ -3330,6 +3350,7 @@ impl Compiler {
                 FuncDef {
                     params: cparams,
                     // A method's frame is named by the method.
+                    span: self.decl_span(m.line, m.end_line),
                     closure_site: None,
                     declared: None,
                     chunk: mb.build(),
@@ -3399,6 +3420,7 @@ impl Compiler {
             decl.name.to_ascii_lowercase(),
             ClassDef {
                 attrs: class_attrs,
+                span: self.decl_span(decl.lines.0, decl.lines.1),
                 member_deprecated,
                 docs: decl.docs.clone(),
                 name: decl.name.clone(),
@@ -4516,9 +4538,11 @@ impl Compiler {
                 ret,
                 is_static,
                 line,
+                end_line,
                 doc,
                 attrs,
             } => {
+                self.closure_lines = (*line, *end_line);
                 self.check_closure_uses(params, uses, *line)?;
                 self.closure_doc = doc.clone();
                 self.closure_attrs = self.compile_attrs(attrs)?;
@@ -4533,9 +4557,11 @@ impl Compiler {
                 ret: ret_ty,
                 is_static,
                 line,
+                end_line,
                 doc,
                 attrs,
             } => {
+                self.closure_lines = (*line, *end_line);
                 self.closure_doc = doc.clone();
                 self.closure_attrs = self.compile_attrs(attrs)?;
                 // An arrow fn desugars to a closure whose single-statement body
@@ -5721,6 +5747,22 @@ impl Compiler {
             Expr::Var(name) if name == "this" && op.is_none() => {
                 return Err(self.compile_fatal(self.cur_line, "Cannot re-assign $this"));
             }
+            // `$x .= rhs`: one op that appends in the variable's own buffer.
+            Expr::Var(name) if op == Some(BinOp::Concat) && name != "this" => {
+                let op = if let Some(&i) = self.fslots.get(name) {
+                    b.emit(Op::LoadInt(i64::from(i)), 0);
+                    ops::CONCAT_ASSIGN_FSLOT
+                } else if let Some(&i) = self.slots.get(name) {
+                    b.emit(Op::LoadInt(i as i64), 0);
+                    ops::CONCAT_ASSIGN_SLOT
+                } else {
+                    let idx = b.add_constant(Value::str(name.to_string()));
+                    b.emit(Op::LoadConst(idx), 0);
+                    ops::CONCAT_ASSIGN_VAR
+                };
+                self.compile_expr(b, rhs)?;
+                b.emit(Op::CallBuiltin(op, 2), self.cur_line);
+            }
             Expr::Var(name) => {
                 self.emit_var_target(b, name);
                 match op {
@@ -6333,6 +6375,7 @@ impl Compiler {
                 // The closure the reference synthesizes for `f(...)` is written
                 // where the syntax is, so that is the line its frames name.
                 line: self.cur_line,
+                end_line: self.cur_line,
                 doc: None,
                 attrs: Vec::new(),
             },
@@ -6439,6 +6482,7 @@ impl Compiler {
         line: u32,
     ) -> Result<(), String> {
         let doc = self.closure_doc.take();
+        let lines = std::mem::take(&mut self.closure_lines);
         let attrs = std::mem::take(&mut self.closure_attrs);
         let script = host::with_host(|h| h.script_name().to_string());
         let owner = format!("{{closure:{}:{line}}}()", self.decl_site.render(&script));
@@ -6486,6 +6530,7 @@ impl Compiler {
                 statics: Vec::new(),
                 doc,
                 attrs,
+                span: self.decl_span(lines.0, lines.1),
             },
         ));
 
@@ -6690,6 +6735,16 @@ impl Compiler {
             }
         }
         Ok(())
+    }
+
+    /// Where a declaration spanning `start..=end` was written — `None` for the
+    /// prelude, whose classes and functions are internal to the reference.
+    fn decl_span(&self, start: u32, end: u32) -> Option<host::DeclSpan> {
+        (!self.prelude).then(|| host::DeclSpan {
+            file: host::with_host(|h| h.script_name().to_string()),
+            start,
+            end,
+        })
     }
 
     /// Emit the native op for an arithmetic operator, or a builtin call for the

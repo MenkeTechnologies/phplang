@@ -26,6 +26,38 @@ comment above it.
 
 ---
 
+## Round 37: in-place `.=`, object `foreach` keys, declaration lines
+
+Measured under `PHP 8.5.12 (cli)`; pinned in `tests/parity_round37.rs`.
+
+* `$x .= v` on a variable is one op (`CONCAT_ASSIGN_FSLOT` / `_SLOT` /
+  `_VAR`) that appends in the variable's own string buffer:
+  `Arc::make_mut` writes in place when the variable is the buffer's only
+  owner and copies it otherwise, so a copy taken earlier (`$a = $s`, an array
+  element, a reference) never sees the append. The variable is read after the
+  right-hand side, as `ZEND_ASSIGN_OP` reads it: `$w .= ($w = "x")` is
+  `"xx"`, and `$undefined .= f()` warns after `f()` has run. Building a
+  string by appending was quadratic in its length (every `.=` copied the
+  whole string). 400 000 appends, debug build: `$s .= "ab"` at top level
+  7.65 s → 1.05 s, in a function 10.49 s → 1.27 s, through a reference
+  6.55 s → 1.10 s; `$b .= chr($i & 255)` 17.0 s → 5.26 s, the rest being the
+  `chr()` call itself.
+* `foreach` over a plain object binds each property name as the property
+  table keeps it: `$o->{"5"}` is the key `"5"`, not `5`. A by-reference
+  `foreach` over a plain object binds `$v` to the PROPERTY, so writes reach
+  the object; they went to a snapshot array and were lost.
+* `ReflectionClass`, `ReflectionFunction` (closures and arrow functions
+  included) and `ReflectionMethod` answer `getFileName()`, `getStartLine()`
+  and `getEndLine()`: the file the declaration was compiled from (`Command
+  line code` under `-r`, the included file's real path, an `eval()`'s
+  `… : eval()'d code` name), the line of its `class` / `interface` / `trait`
+  / `enum` / `function` / `fn` keyword (not of a modifier or attribute before
+  it), and the line of its closing brace — the `;` of a bodiless method, the
+  end of an arrow function's expression. Internal classes and functions
+  answer `false`.
+
+---
+
 ## Round 36: the byte-string model audited
 
 Measured under `PHP 8.5.12 (cli)`; pinned in `tests/parity_round36.rs` and the

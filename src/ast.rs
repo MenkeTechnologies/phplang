@@ -289,6 +289,8 @@ pub enum Expr {
         /// enclosing statement started on. `$f =\n    function () {…}` is line 2
         /// there.
         line: u32,
+        /// The line of its closing brace, for `getEndLine()`.
+        end_line: u32,
         /// Its doc comment, for `getDocComment()`.
         doc: Option<String>,
         /// Its `#[…]` attributes.
@@ -306,6 +308,8 @@ pub enum Expr {
         is_static: bool,
         /// The line the `fn` keyword is on — see `Closure::line`.
         line: u32,
+        /// The line its body expression ends on.
+        end_line: u32,
         /// Its doc comment, for `getDocComment()`.
         doc: Option<String>,
         /// Its `#[…]` attributes.
@@ -598,6 +602,9 @@ pub enum StmtKind {
         deprecated: Option<Deprecation>,
         /// Its doc comment, for `getDocComment()`.
         doc: Option<String>,
+        /// The lines of its `function` keyword and its closing brace, for
+        /// `getStartLine()` / `getEndLine()`.
+        lines: (u32, u32),
         /// Its `#[…]` attributes.
         attrs: Vec<Attr>,
     },
@@ -805,6 +812,9 @@ pub struct PropDecl {
 #[derive(Debug, Clone)]
 pub struct ClassDecl {
     pub name: String,
+    /// The lines of its `class` (`interface`, `trait`, `enum`) keyword and its
+    /// closing brace, for `getStartLine()` / `getEndLine()`.
+    pub lines: (u32, u32),
     pub parent: Option<String>,
     /// Interfaces this class implements (or, for an `interface`, the interfaces it
     /// extends). Used by `instanceof`/`is_a`/`catch`.
@@ -953,6 +963,8 @@ pub struct Method {
     pub has_body: bool,
     /// The line the declaration starts on.
     pub line: u32,
+    /// The line its body (or the `;` of a bodiless one) ends on.
+    pub end_line: u32,
     /// Its `#[\Deprecated]` attribute, if it has one.
     pub deprecated: Option<Deprecation>,
 }
