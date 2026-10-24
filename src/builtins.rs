@@ -119,6 +119,8 @@ pub fn install(vm: &mut VM) {
     reg!(vm, ops::NS_FN_NAME, b_ns_fn_name);
     reg!(vm, ops::CONST_FETCH_NS, b_const_fetch_ns);
     reg!(vm, ops::CLASS_LINK_CHECK, b_class_link_check);
+    reg!(vm, ops::REF_SLOT_SPROP, b_ref_slot_sprop);
+    reg!(vm, ops::REF_TO_SPROP, b_ref_to_sprop);
     reg!(vm, ops::CONST_DECL, b_const_decl);
     reg!(vm, ops::PROP_GET_EMPTY, b_prop_get_empty);
     reg!(vm, ops::PROP_INCDEC, b_prop_incdec);
@@ -754,6 +756,27 @@ fn b_ref_to_append(vm: &mut VM, argc: u8) -> Value {
 }
 
 /// Stack `[recv, prop, slot]` — make `$recv->prop` a reference to `slot`'s cell.
+/// See `ops::REF_SLOT_SPROP`.
+fn b_ref_slot_sprop(vm: &mut VM, _: u8) -> Value {
+    let name = pop_name(vm);
+    let class = pop_name(vm);
+    match host::static_prop_ref_slot(&class, &name) {
+        Ok(slot) => Value::int(slot as i64),
+        Err(e) => fail_or_throw(vm, e),
+    }
+}
+
+/// See `ops::REF_TO_SPROP`.
+fn b_ref_to_sprop(vm: &mut VM, _: u8) -> Value {
+    let slot = vm.pop().to_int() as usize;
+    let name = pop_name(vm);
+    let class = pop_name(vm);
+    match host::static_prop_bind(&class, &name, slot) {
+        Ok(v) => v,
+        Err(e) => fail_or_throw(vm, e),
+    }
+}
+
 fn b_ref_to_prop(vm: &mut VM, _: u8) -> Value {
     let slot = vm.pop().to_int() as usize;
     let prop = pop_name(vm);

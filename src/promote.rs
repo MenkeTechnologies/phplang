@@ -505,8 +505,8 @@ impl Scan<'_> {
                     self.expr(d);
                 }
             }
-            Expr::StaticProp(class, _) => {
-                if let Some(op) = class.operand() {
+            Expr::StaticProp(class, name) => {
+                for op in class.operand().into_iter().chain(name.operand()) {
                     self.expr(op);
                 }
             }
@@ -855,8 +855,13 @@ impl Flow {
             // and then read as null by any detached chunk — a `try` body, most
             // visibly: `try { echo $o::class; }` answered
             // `Cannot use "::class" on null`.
-            Expr::StaticGet(class, _) | Expr::StaticProp(class, _) => {
+            Expr::StaticGet(class, _) => {
                 if let Some(op) = class.operand() {
+                    self.expr(op);
+                }
+            }
+            Expr::StaticProp(class, name) => {
+                for op in class.operand().into_iter().chain(name.operand()) {
                     self.expr(op);
                 }
             }
@@ -1133,8 +1138,13 @@ impl GlobalScan {
             // and then read as null by any detached chunk — a `try` body, most
             // visibly: `try { echo $o::class; }` answered
             // `Cannot use "::class" on null`.
-            Expr::StaticGet(class, _) | Expr::StaticProp(class, _) => {
+            Expr::StaticGet(class, _) => {
                 if let Some(op) = class.operand() {
+                    self.expr(op);
+                }
+            }
+            Expr::StaticProp(class, name) => {
+                for op in class.operand().into_iter().chain(name.operand()) {
                     self.expr(op);
                 }
             }

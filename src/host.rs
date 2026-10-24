@@ -513,6 +513,12 @@ pub mod ops {
     /// `Error: Class "X" not found` / `Interface "X" not found` if it is
     /// still missing (`zend_do_link_class`).
     pub const CLASS_LINK_CHECK: u16 = 160;
+    /// `[class, name] -> Int slot`. The reference cell `Class::$name` is
+    /// stored in, made one if it is not already (`&Class::$p`).
+    pub const REF_SLOT_SPROP: u16 = 161;
+    /// `[class, name, slot] -> value`. Bind `Class::$name` to the cell at
+    /// `slot` (`Class::$p = &$x`).
+    pub const REF_TO_SPROP: u16 = 162;
 }
 
 /// The capture name a `static` closure carries from its creation site.
@@ -6045,14 +6051,48 @@ impl PhpHost {
     }
 
     /// The stored value of a static property, by storage key (`None` = not yet
-    /// initialized).
+    /// initialized). A property bound by reference reads through its cell.
     fn get_static_stored(&self, key: &str) -> Option<Value> {
-        self.static_props.get(key).cloned()
+        let v = self.static_props.get(key)?;
+        Some(match self.ref_slot_of_value(v) {
+            Some(slot) => self.ref_cells[slot].clone(),
+            None => v.clone(),
+        })
     }
 
-    /// Store a static property's value by storage key.
+    /// Store a static property's value by storage key, through its reference
+    /// cell when it is bound to one.
     fn set_static_stored(&mut self, key: &str, val: Value) {
-        self.static_props.insert(key.to_string(), val);
+        match self
+            .static_props
+            .get(key)
+            .and_then(|v| self.ref_slot_of_value(v))
+        {
+            Some(slot) => self.ref_cells[slot] = val,
+            None => {
+                self.static_props.insert(key.to_string(), val);
+            }
+        }
+    }
+
+    /// The reference cell an initialized static property is stored in, made
+    /// one (holding its current value) if it is not already.
+    fn static_ref_slot_ensure(&mut self, key: &str) -> usize {
+        let cur = self.static_props.get(key).cloned().unwrap_or(Value::Undef);
+        if let Some(slot) = self.ref_slot_of_value(&cur) {
+            return slot;
+        }
+        self.ref_cells.push(cur);
+        let slot = self.ref_cells.len() - 1;
+        self.bind_static_to_slot(key, slot);
+        slot
+    }
+
+    /// Make the static property at `key` an alias of the cell at `slot`.
+    fn bind_static_to_slot(&mut self, key: &str, slot: usize) {
+        self.objs.push(PhpObj::Ref { slot });
+        let handle = Value::Obj((self.objs.len() - 1) as u32);
+        self.static_props.insert(key.to_string(), handle);
     }
 
     /// Bind a function-local `$name` to its persistent `static` slot. On first
@@ -11311,6 +11351,28 @@ fn static_prop_denied(class: &str, name: &str) -> Option<String> {
         let shown = h.class_display_name(&class.to_ascii_lowercase());
         Some(format!("Cannot access {vname} property {shown}::${name}"))
     })
+}
+
+/// `&Class::$prop`: the reference cell the static property is stored in, after
+/// the same resolution, visibility check and first-access initialization as a
+/// read.
+pub fn static_prop_ref_slot(class: &str, name: &str) -> Result<usize, String> {
+    static_prop_get(class, name)?;
+    let key = with_host(|h| h.resolve_static_key(class, name).map(|(k, _)| k))
+        .expect("resolved by the read above");
+    Ok(with_host(|h| h.static_ref_slot_ensure(&key)))
+}
+
+/// `Class::$prop = &$x`: bind the static property to the cell at `slot`, and
+/// answer the value it now has.
+pub fn static_prop_bind(class: &str, name: &str, slot: usize) -> Result<Value, String> {
+    static_prop_get(class, name)?;
+    let key = with_host(|h| h.resolve_static_key(class, name).map(|(k, _)| k))
+        .expect("resolved by the read above");
+    Ok(with_host(|h| {
+        h.bind_static_to_slot(&key, slot);
+        h.ref_cell_value(slot)
+    }))
 }
 
 /// `Class::$prop` read. On first access the (constant) initializer runs once and

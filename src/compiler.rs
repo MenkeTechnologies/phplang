@@ -4651,8 +4651,7 @@ impl Compiler {
             }
             Expr::StaticProp(class, name) => {
                 self.emit_class_ref(b, class)?;
-                let nidx = b.add_constant(Value::str(name.clone()));
-                b.emit(Op::LoadConst(nidx), 0);
+                self.emit_member(b, name, 0)?;
                 b.emit(Op::CallBuiltin(ops::SPROP_GET, 2), 0);
             }
             Expr::StaticCall(class, name, args) if needs_arg_pairs(args) => {
@@ -4990,8 +4989,7 @@ impl Compiler {
             }
             Expr::StaticProp(class, name) => {
                 self.emit_class_ref(b, class)?;
-                let nidx = b.add_constant(Value::str(name.clone()));
-                b.emit(Op::LoadConst(nidx), line);
+                self.emit_member(b, name, line)?;
                 b.emit(Op::CallBuiltin(ops::SPROP_GET_Q, 2), line);
             }
             other => self.compile_expr(b, other)?,
@@ -5071,6 +5069,12 @@ impl Compiler {
                 self.compile_ref_slot(b, rhs)?;
                 b.emit(Op::CallBuiltin(ops::REF_TO_PROP, 3), 0);
             }
+            Expr::StaticProp(class, name) => {
+                self.emit_class_ref(b, class)?;
+                self.emit_member(b, name, 0)?;
+                self.compile_ref_slot(b, rhs)?;
+                b.emit(Op::CallBuiltin(ops::REF_TO_SPROP, 3), self.cur_line);
+            }
             _ => {
                 return Err(
                     "reference `= &` assigns only to a variable, an array element or \
@@ -5114,6 +5118,11 @@ impl Compiler {
                 self.emit_member(b, prop, 0)?;
                 b.emit(Op::CallBuiltin(ops::REF_SLOT_PROP, 2), 0);
             }
+            Expr::StaticProp(class, name) => {
+                self.emit_class_ref(b, class)?;
+                self.emit_member(b, name, 0)?;
+                b.emit(Op::CallBuiltin(ops::REF_SLOT_SPROP, 2), self.cur_line);
+            }
             // `$r = &f()` / `&$o->m()` — the cell a `function &f()` published on
             // its way out. A callee that returned by value has none, and the
             // binding falls back to a detached cell holding the result.
@@ -5146,6 +5155,17 @@ impl Compiler {
                     c.compile_expr(b, &recv)?;
                     c.emit_member(b, &prop, 0)?;
                     b.emit(Op::CallBuiltin(ops::PROP_ENSURE_ARRAY, 2), c.cur_line);
+                    Ok(())
+                })?;
+                Ok(tmp)
+            }
+            Expr::StaticProp(class, prop) => {
+                let tmp = self.tmp_name("ref");
+                let (class, prop) = (class.clone(), prop.clone());
+                self.emit_set_var(b, &tmp, |c, b| {
+                    c.emit_class_ref(b, &class)?;
+                    c.emit_member(b, &prop, 0)?;
+                    b.emit(Op::CallBuiltin(ops::SPROP_ENSURE_ARRAY, 2), c.cur_line);
                     Ok(())
                 })?;
                 Ok(tmp)
@@ -5656,8 +5676,7 @@ impl Compiler {
                         let (class, prop) = (class.clone(), prop.clone());
                         self.emit_set_var(b, &t, |c, b| {
                             c.emit_class_ref(b, &class)?;
-                            let nidx = b.add_constant(Value::str(prop.clone()));
-                            b.emit(Op::LoadConst(nidx), 0);
+                            c.emit_member(b, &prop, 0)?;
                             b.emit(Op::CallBuiltin(ops::SPROP_ENSURE_ARRAY, 2), c.cur_line);
                             Ok(())
                         })?;
@@ -5668,14 +5687,16 @@ impl Compiler {
             }
             Expr::StaticProp(class, name) => {
                 // `Class::$p = rhs` and its compound form `Class::$p op= rhs`.
+                // A computed name is evaluated once, for both the read and the
+                // write.
+                let name = self.stash_member(b, name)?;
                 self.emit_class_ref(b, class)?;
-                let nidx = b.add_constant(Value::str(name.clone()));
-                b.emit(Op::LoadConst(nidx), 0);
+                self.emit_member(b, &name, 0)?;
                 match op {
                     None => self.compile_rhs(b, rhs)?,
                     Some(cop) => {
                         // value = Class::$p op rhs
-                        self.compile_expr(b, lhs)?;
+                        self.compile_expr(b, &Expr::StaticProp(class.clone(), name))?;
                         self.compile_rhs(b, rhs)?;
                         self.emit_binop(b, cop);
                     }
@@ -6439,8 +6460,7 @@ impl Compiler {
             Expr::StaticProp(class, name) => {
                 // `Class::$p++` — read-modify-write a static property.
                 self.emit_class_ref(b, class)?;
-                let nidx = b.add_constant(Value::str(name.clone()));
-                b.emit(Op::LoadConst(nidx), 0);
+                self.emit_member(b, name, 0)?;
                 b.emit(Op::LoadInt(code), 0);
                 b.emit(Op::CallBuiltin(ops::SPROP_INCDEC, 3), self.cur_line);
             }
@@ -6472,8 +6492,7 @@ impl Compiler {
                         let (class, prop) = (class.clone(), prop.clone());
                         self.emit_set_var(b, &t, |c, b| {
                             c.emit_class_ref(b, &class)?;
-                            let nidx = b.add_constant(Value::str(prop.clone()));
-                            b.emit(Op::LoadConst(nidx), 0);
+                            c.emit_member(b, &prop, 0)?;
                             b.emit(Op::CallBuiltin(ops::SPROP_ENSURE_ARRAY, 2), c.cur_line);
                             Ok(())
                         })?;
@@ -7227,9 +7246,14 @@ pub(crate) fn collect_free_vars(e: &Expr, out: &mut Vec<String>) {
         Expr::NamedArg(_, v) => collect_free_vars(v, out),
         // A bareword class holds no variable, but `$cls::K` does — and an arrow
         // fn that says it must capture `$cls` along with everything else.
-        Expr::StaticGet(class, _) | Expr::StaticProp(class, _) => {
+        Expr::StaticGet(class, _) => {
             if let ClassRef::Expr(c) = class {
                 collect_free_vars(c, out);
+            }
+        }
+        Expr::StaticProp(class, name) => {
+            for e in class.operand().into_iter().chain(name.operand()) {
+                collect_free_vars(e, out);
             }
         }
         Expr::Throw(inner) | Expr::Clone(inner) => collect_free_vars(inner, out),
@@ -7352,8 +7376,10 @@ fn expr_has_yield(e: &Expr) -> bool {
         Expr::StaticCall(class, _, args) => {
             class.operand().is_some_and(expr_has_yield) || args.iter().any(expr_has_yield)
         }
-        Expr::StaticGet(class, _) | Expr::StaticProp(class, _) => {
+        Expr::StaticGet(class, _) => class.operand().is_some_and(expr_has_yield),
+        Expr::StaticProp(class, name) => {
             class.operand().is_some_and(expr_has_yield)
+                || name.operand().is_some_and(expr_has_yield)
         }
         Expr::CallValue(c, args) => expr_has_yield(c) || args.iter().any(expr_has_yield),
         Expr::PropGet(r, m) | Expr::NullsafePropGet(r, m) => {

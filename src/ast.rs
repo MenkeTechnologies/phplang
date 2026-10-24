@@ -340,8 +340,9 @@ pub enum Expr {
     StaticGet(ClassRef, String),
     /// `Class::$prop` — static property access (`self::$n`, `C::$x`). A read, an
     /// assignment target, and an `++`/`--` target; storage is shared per declaring
-    /// class, so all instances and scopes observe the same value.
-    StaticProp(ClassRef, String),
+    /// class, so all instances and scopes observe the same value. The name is
+    /// computed in `C::$$n` and `C::${expr}`.
+    StaticProp(ClassRef, Member),
     /// `Class::method(args)` — static / scope-resolution method call.
     StaticCall(ClassRef, String, Vec<Expr>),
     /// `clone $o` — a new instance of the same class carrying a copy of the

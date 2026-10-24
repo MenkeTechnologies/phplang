@@ -26,6 +26,22 @@ comment above it.
 
 ---
 
+## Round 32: computed static property names, static references
+
+Measured under `PHP 8.5.12 (cli)`; pinned in `tests/static_property_access.rs`.
+
+* `A::$$n` and `A::${expr}` name a static property at run time (they were a
+  parse error), wherever a literal `A::$p` works: reads, `isset`/`empty`,
+  assignment and compound assignment (the name is evaluated once), `++`/`--`,
+  `[]`/`[k]` writes, through `static::`/`self::`/`$obj::`, and inside arrow
+  functions, which capture the variables the name reads.
+* A static property can be bound by reference: `$r = &A::$p`,
+  `A::$p = &$x`, and `&A::$arr[k]` (each a compile error before). The
+  property then reads and writes through the shared cell, with the usual
+  `undeclared` and visibility errors.
+
+---
+
 ## Round 31: the rest of ext/hash
 
 Measured under `PHP 8.5.12 (cli)`; pinned in `tests/stdlib_hash.rs`,

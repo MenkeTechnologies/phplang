@@ -1903,6 +1903,22 @@ impl Parser {
         }
     }
 
+    /// The name after `Class::`: `$name`, or one computed — `$$n` takes the
+    /// value of `$n` (and `$$$n` that of `$$n`), `${expr}` that of `expr`.
+    fn static_prop_name(&mut self) -> Result<Member, String> {
+        if !self.eat_punct("$") {
+            return self.expect_var().map(Member::Name);
+        }
+        let name = if self.eat_punct("{") {
+            let e = self.expression()?;
+            self.expect_punct("}")?;
+            e
+        } else {
+            self.primary()?
+        };
+        Ok(Member::Dyn(Box::new(name)))
+    }
+
     fn expect_var(&mut self) -> Result<String, String> {
         match self.next() {
             Some(Tok::Var(n)) => Ok(n),
@@ -3851,9 +3867,10 @@ impl Parser {
                 };
                 // `Class::$prop` — a static property (the `::` is followed by a
                 // `$variable`, not a bareword constant/method name).
-                if let Some(Tok::Var(_)) = self.peek() {
-                    let prop = self.expect_var()?;
-                    if self.eat_punct("(") {
+                if let Some(Tok::Var(_) | Tok::Punct("$")) = self.peek() {
+                    let prop = self.static_prop_name()?;
+                    if let (Member::Name(prop), true) = (&prop, self.at_punct("(")) {
+                        self.pos += 1;
                         // `Class::$method(…)` — a static method call whose name
                         // a variable holds, not a call of the property's value.
                         // It runs as the `[class, $method]` callable.
@@ -3867,7 +3884,7 @@ impl Parser {
                         let callee = Expr::Array(
                             vec![
                                 ArrayElem::new(None, class_value),
-                                ArrayElem::new(None, Expr::Var(prop)),
+                                ArrayElem::new(None, Expr::Var(prop.clone())),
                             ],
                             ArraySyntax::Short,
                         );
@@ -3991,7 +4008,7 @@ impl Parser {
                     kind: NameKind::Unqualified,
                 }));
                 self.pos += 2;
-                Expr::StaticProp(class, self.expect_var()?)
+                Expr::StaticProp(class, Member::Name(self.expect_var()?))
             }
             _ => return Ok(None),
         };
@@ -4011,7 +4028,10 @@ impl Parser {
                 )
             {
                 self.pos += 1;
-                e = Expr::StaticProp(ClassRef::Expr(Box::new(e)), self.expect_var()?);
+                e = Expr::StaticProp(
+                    ClassRef::Expr(Box::new(e)),
+                    Member::Name(self.expect_var()?),
+                );
             } else {
                 return Ok(Some(e));
             }
