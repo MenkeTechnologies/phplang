@@ -4,14 +4,8 @@
 //! RFC test vectors. File tests use unique temp paths under the system temp dir
 //! and clean up after themselves; no network access.
 //!
-//! The two `random_bytes` length assertions are the exception, and they are NOT
-//! reference-derived — they cannot be. They use `mb_strlen` rather than `strlen`
-//! because this engine's strings are UTF-8 `String`s (see `wrap` in
-//! `src/stdlib/hashext.rs`): a raw byte >= 0x80 becomes a multi-byte codepoint,
-//! so `strlen(random_bytes(16))` counts 25 here and 16 in the reference, while
-//! `mb_strlen` counts the 16 codepoints. Running the same assertion under `php`
-//! would give a DIFFERENT answer on every run, since `mb_strlen` over random
-//! bytes depends on the bytes. They pin this engine's string model, deliberately.
+//! `random_bytes` output is random, so its tests pin only the length and the
+//! argument errors, never the bytes.
 
 use phplang::eval_capture;
 use std::path::{Path, PathBuf};
@@ -297,4 +291,28 @@ fn hash_file_reads_options_after_opening_the_file() {
         r#"<?php var_dump(hash_file("xxh3", "{missing}", false, ["seed" => 1, "secret" => "s"]));"#
     ));
     assert!(out.ends_with("bool(false)\n"), "{out}");
+}
+
+/// The rest of `random_bytes`' argument contract, and the exception class the
+/// OS-CSPRNG failure path throws (`Random\RandomException`, a plain
+/// `Exception` subclass, internal and not final). The failure itself cannot be
+/// provoked from PHP; its messages are pinned by `stdlib::csprng`'s unit tests.
+/// Expected text recorded from php 8.5.12.
+#[test]
+fn random_bytes_argument_errors_and_exception_class() {
+    assert_eq!(
+        run(r#"<?php try { random_bytes(-1); } catch (ValueError $e) { echo $e->getMessage(); }"#),
+        "random_bytes(): Argument #1 ($length) must be greater than 0"
+    );
+    assert_eq!(
+        run(r#"<?php try { random_bytes("x"); } catch (TypeError $e) { echo $e->getMessage(); }"#),
+        "random_bytes(): Argument #1 ($length) must be of type int, string given"
+    );
+    assert_eq!(
+        run(r#"<?php $r = new ReflectionClass('Random\RandomException');
+               var_dump($r->getName(), $r->getParentClass()->getName(), $r->isInternal(), $r->isFinal());"#),
+        "string(22) \"Random\\RandomException\"\nstring(9) \"Exception\"\nbool(true)\nbool(false)\n"
+    );
+    // The namespaced class leaves the global name free for user code.
+    assert_eq!(run(r#"<?php class RandomException {} echo get_class(new RandomException);"#), "RandomException");
 }

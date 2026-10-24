@@ -40,7 +40,9 @@ pub mod types;
 pub mod url;
 
 // Not categories of the dispatch chain below: the sort algorithm every sort
-// shares, and the output-buffering stack, whose functions `system` routes to.
+// shares, the OS CSPRNG behind `random_bytes`/`random_int`, and the
+// output-buffering stack, whose functions `system` routes to.
+pub(crate) mod csprng;
 pub(crate) mod output;
 pub(crate) mod zsort;
 

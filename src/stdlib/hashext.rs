@@ -242,13 +242,8 @@ fn hash_pbkdf2(args: &[Value]) -> Result<Value, String> {
     }
 }
 
-/// `random_bytes(length)` — return `length` random bytes as a binary string.
-///
-/// NOT A CSPRNG. No `getrandom`/OS entropy dependency is available in this
-/// crate, so the bytes come from a SplitMix64 generator seeded from the wall
-/// clock (nanoseconds) and process id. Suitable for tests and non-security
-/// filler ONLY; never use for keys, tokens, salts, or anything security
-/// sensitive. Real PHP `random_bytes` is a CSPRNG — this is not.
+/// `random_bytes(length)` — `length` bytes from the OS CSPRNG
+/// (`stdlib::csprng`), as a binary string.
 fn random_bytes(args: &[Value]) -> Result<Value, String> {
     let len = int_arg(args, 0);
     if len < 1 {
@@ -263,17 +258,8 @@ fn random_bytes(args: &[Value]) -> Result<Value, String> {
     if len > (1 << 24) {
         return Err("random_bytes(): Argument #1 ($length) is too large".to_string());
     }
-    let len = len as usize;
-    let mut out = Vec::with_capacity(len);
-    let mut state = seed();
-    while out.len() < len {
-        state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        for b in splitmix64(state).to_le_bytes() {
-            if out.len() < len {
-                out.push(b);
-            }
-        }
-    }
+    let mut out = vec![0u8; len as usize];
+    crate::stdlib::csprng::random_bytes_throw(&mut out)?;
     Ok(wrap(out, true))
 }
 
@@ -308,26 +294,6 @@ fn pbkdf2(
     }
     out.truncate(dk_len);
     out
-}
-
-// ---- non-cryptographic PRNG (random_bytes) ---------------------------------
-
-/// Seed the SplitMix64 generator from the wall clock (nanoseconds) and pid.
-/// Best-effort entropy only — see `random_bytes` for the CSPRNG caveat.
-fn seed() -> u64 {
-    let pid = std::process::id() as u64;
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0);
-    nanos ^ pid.wrapping_mul(0x9E37_79B9_7F4A_7C15)
-}
-
-/// SplitMix64 finalizer (Steele/Vigna). Deterministic mix of one 64-bit state.
-fn splitmix64(mut z: u64) -> u64 {
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    z ^ (z >> 31)
 }
 
 // ── Incremental hashing: `hash_init` … `hash_final` over a `HashContext` ──────

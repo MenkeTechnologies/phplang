@@ -2792,6 +2792,14 @@ pub const FROM_CALLABLE_FORWARDER: &str = "@__from_callable";
 /// forward identically.
 const FROM_CALLABLE_SRC: &str = r#"<?php $f = fn(...$args) => call_user_func_array($c, $args);"#;
 
+/// `ext/random`'s exception, which `random_bytes` / `random_int` throw when the
+/// OS CSPRNG fails (`stdlib::csprng`). It lives in a namespace, which the
+/// unnamespaced prelude above cannot open, so it compiles from its own unit.
+const RANDOM_PRELUDE: &str = r#"<?php
+namespace Random;
+class RandomException extends \Exception {}
+"#;
+
 /// A compiled program's installable definitions: `(functions, classes)`.
 type PreludeDefs = (Vec<(String, host::FuncDef)>, Vec<(String, host::ClassDef)>);
 
@@ -2810,7 +2818,13 @@ fn prelude_defs() -> &'static PreludeDefs {
         // `declare(strict_types=1)` had just set. The prelude declares nothing of
         // the sort, so it has no facts of its own to apply.
         let stmts = parser::parse(&src).expect("prelude parses");
-        let prog = compiler::compile_prelude(&stmts).expect("prelude compiles");
+        let mut prog = compiler::compile_prelude(&stmts).expect("prelude compiles");
+        let random = parser::parse(RANDOM_PRELUDE).expect("random prelude parses");
+        prog.classes.extend(
+            compiler::compile_prelude(&random)
+                .expect("random prelude compiles")
+                .classes,
+        );
         let mut functions = prog.functions;
         // The forwarder is compiled from its own snippet — the closure literal
         // is the only definition it produces — and re-keyed to a name of its

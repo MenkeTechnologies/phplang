@@ -441,3 +441,32 @@ fn seeded_generator_reproduces_the_reference_sequence() {
          oexqhrT c kouibf nw\n"
     );
 }
+
+/// `php_random_int`'s edge spans: equal bounds at the type's extremes return the
+/// bound without a draw, the full `PHP_INT_MIN..PHP_INT_MAX` span takes the raw
+/// 64-bit draw (no `umax + 1` overflow), and a small odd span reaches every
+/// value. Expected text recorded from php 8.5.12.
+#[test]
+fn random_int_extreme_spans() {
+    assert_eq!(
+        run("<?php var_dump(random_int(PHP_INT_MIN, PHP_INT_MIN), random_int(PHP_INT_MAX, PHP_INT_MAX), is_int(random_int(PHP_INT_MIN, PHP_INT_MAX)));"),
+        "int(-9223372036854775808)\nint(9223372036854775807)\nbool(true)\n"
+    );
+    assert_eq!(
+        run("<?php $seen = []; for ($i = 0; $i < 2000; $i++) { $seen[random_int(-2, 2)] = 1; } ksort($seen); echo implode(',', array_keys($seen));"),
+        "-2,-1,0,1,2"
+    );
+}
+
+/// `random_int`'s parameter parsing, before any randomness is read.
+#[test]
+fn random_int_argument_errors() {
+    assert_eq!(
+        run("<?php try { random_int(1); } catch (ArgumentCountError $e) { echo $e->getMessage(); }"),
+        "random_int() expects exactly 2 arguments, 1 given"
+    );
+    assert_eq!(
+        run("<?php try { random_int('a', 2); } catch (TypeError $e) { echo $e->getMessage(); }"),
+        "random_int(): Argument #1 ($min) must be of type int, string given"
+    );
+}

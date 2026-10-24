@@ -4703,7 +4703,7 @@ pub const CORPUS: &[Entry] = &[
         "random_int",
         "Math",
         "random_int(int $min, int $max): int",
-        "Draws fresh bits rather than using the seeded generator, and raises when `$min > $max`. DIVERGENCE: NOT cryptographically secure — the bits come from clock nanoseconds XOR an atomic counter, mixed with SplitMix64. Do not use it for keys, tokens, or salts.",
+        "A uniform integer in `[$min, $max]` from the operating system's CSPRNG (the `random_bytes` source), never the seeded `mt_rand` engine, so `mt_srand` does not affect it. The mapping is `php_random_int`'s: equal bounds return without a draw, the full `PHP_INT_MIN..PHP_INT_MAX` span is the raw 64-bit draw, a power-of-two span masks, and any other span redraws above the largest multiple of the span so no value is favoured. `$min > $max` throws `ValueError: random_int(): Argument #1 ($min) must be less than or equal to argument #2 ($max)`; a CSPRNG failure throws `Random\\RandomException`.",
         "",
     ),
     // ══ Arbitrary precision — bcmath (stdlib::bcmath) ═══════════════════════
@@ -5626,7 +5626,7 @@ pub const CORPUS: &[Entry] = &[
         "random_bytes",
         "Hashing — files and key derivation",
         "random_bytes(int $length): string",
-        "DIVERGENCE — NOT A CSPRNG. No OS-entropy dependency is available to this crate, so the bytes come from a SplitMix64 generator seeded from wall-clock nanoseconds XOR the process id. Use it for tests and filler only, never for keys, tokens, or salts. The result is `$length` raw bytes. A length below 1 throws `ValueError: random_bytes(): Argument #1 ($length) must be greater than 0`. DIVERGENCE: a length above 16 MiB is refused with a `ValueError` too (PHP instead attempts the allocation and dies on the memory limit).",
+        "`$length` raw bytes from the operating system's CSPRNG, per `ext/random/csprng.c`: `CCRandomGenerateBytes` on macOS, `arc4random_buf` on OpenBSD/NetBSD/Haiku, and `getrandom` falling back to `/dev/urandom` elsewhere. A failure throws `Random\\RandomException` with the reference's text (`Cannot open /dev/urandom: …`, `Could not gather sufficient random data`, …). A length below 1 throws `ValueError: random_bytes(): Argument #1 ($length) must be greater than 0`. DIVERGENCE: a length above 16 MiB is refused with a `ValueError` too (PHP instead attempts the allocation and dies on the memory limit).",
         "",
     ),
     // Incremental hashing. A `HashContext` (a prelude class, `src/lib.rs`)

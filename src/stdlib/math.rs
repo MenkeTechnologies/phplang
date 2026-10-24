@@ -162,9 +162,15 @@ fn splitmix(mut z: u64) -> u64 {
     z ^ (z >> 31)
 }
 
-/// Non-deterministic 64 bits from the clock and a monotonically-incrementing
-/// counter — the entropy source for auto-seeding and for `random_int`.
+/// The auto-seed for the Mt19937 engine: `php_random_bytes_silent` from the OS
+/// CSPRNG, as `php_random_mt19937_seed_default` takes it. Only when that fails
+/// does it fall back to the clock and a monotonically-incrementing counter,
+/// standing in for `php_random_generate_fallback_seed`.
 fn os_entropy() -> u64 {
+    let mut seed = [0u8; 8];
+    if crate::stdlib::csprng::random_bytes_ex(&mut seed).is_ok() {
+        return u64::from_ne_bytes(seed);
+    }
     static CTR: AtomicU64 = AtomicU64::new(0);
     let t = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -172,16 +178,6 @@ fn os_entropy() -> u64 {
         .unwrap_or(0);
     let c = CTR.fetch_add(1, Ordering::Relaxed);
     splitmix(t ^ c.wrapping_mul(0x9E37_79B9_7F4A_7C15))
-}
-
-/// Map a random `u64` into the inclusive range `[min, max]` — `random_int`'s
-/// mapping over the clock entropy, NOT the seeded engine. The caller must
-/// guarantee `min <= max`: `rand()` swaps inverted bounds first, while
-/// `mt_rand()`/`random_int()` reject them (each with its own PHP 8 message).
-fn to_range(bits: u64, min: i64, max: i64) -> Value {
-    let span = (max as i128 - min as i128) as u128 + 1;
-    let off = (bits as u128 % span) as i128;
-    Value::int((min as i128 + off) as i64)
 }
 
 /// Parse the two-argument `(min, max)` bounds, defaulting to `[0, RAND_MAX]` when
@@ -408,7 +404,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
                         "random_int(): Argument #1 ($min) must be less than or equal to argument #2 ($max)",
                     )));
             }
-            return Some(Ok(to_range(os_entropy(), min, max)));
+            return Some(crate::stdlib::csprng::random_int_throw(min, max).map(Value::int));
         }
 
         _ => return None,

@@ -26,6 +26,21 @@ comment above it.
 
 ---
 
+## Round 35: `random_bytes` / `random_int` use the OS CSPRNG
+
+* `random_bytes()` and `random_int()` read the operating system's CSPRNG, as
+  `ext/random/csprng.c` does: `CCRandomGenerateBytes` on macOS,
+  `arc4random_buf` on OpenBSD/NetBSD/Haiku, and `getrandom` with a
+  `/dev/urandom` fallback elsewhere. They drew from a clock-seeded SplitMix64,
+  so their output was predictable; keys, tokens and salts made with them should
+  be regenerated.
+* `random_int()` maps the draw as `php_random_int` does, redrawing above the
+  largest multiple of the span; the old modulo mapping favoured low values.
+* A CSPRNG failure throws `Random\RandomException` (now declared) with the
+  reference's text.
+* The `mt_rand` engine's auto-seed comes from the same source, falling back to
+  the clock only when it fails.
+
 ## Round 34: deprecated constants, `PHP_SAPI`, `PHP_BINARY`
 
 * A use of a predefined constant the reference declares `#[\Deprecated]`
