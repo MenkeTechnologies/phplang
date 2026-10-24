@@ -19,6 +19,7 @@ pub mod dap;
 pub mod errlevel;
 pub mod host;
 pub mod intercepts;
+pub mod internal_interfaces;
 pub mod lexer;
 pub mod lsp;
 pub mod parser;
@@ -73,7 +74,7 @@ fn compile_with_meta(src: &str, debug: bool) -> Result<compiler::Program, String
 /// `throw` site. `trace` is the structured frame array `getTrace()` returns;
 /// `getTraceAsString()` renders it.
 const EXCEPTION_PRELUDE: &str = r#"<?php
-class Exception {
+class Exception implements Throwable {
     protected $message = "";
     private $string = "";
     protected $code = 0;
@@ -95,7 +96,7 @@ class Exception {
     final public function getTraceAsString() { return __phplang_trace_string($this->trace); }
     public function __toString() { return __phplang_throwable_string($this); }
 }
-class Error {
+class Error implements Throwable {
     protected $message = "";
     private $string = "";
     protected $code = 0;
@@ -1084,7 +1085,7 @@ class SplFixedArray implements IteratorAggregate, ArrayAccess, Countable, JsonSe
 // instance shows only its storage. An object passed as the backing array is
 // copied into it: the reference's write-through to that object is not
 // modelled (BUGS.md).
-class ArrayObject implements IteratorAggregate, ArrayAccess, Countable {
+class ArrayObject implements IteratorAggregate, ArrayAccess, Serializable, Countable {
     const STD_PROP_LIST = 1;
     const ARRAY_AS_PROPS = 2;
     private $storage = [];
@@ -1172,6 +1173,15 @@ class ArrayObject implements IteratorAggregate, ArrayAccess, Countable {
     public function setIteratorClass(string $iteratorClass): void { self::$__state[spl_object_id($this)] = [$this->__state()[0], self::__itclass($iteratorClass, 'ArrayObject::setIteratorClass(): Argument #1')]; }
     // `spl_array_object_new_ex` with `clone_orig`: the copy keeps the flags and the iterator class.
     private function __phplang_clone($orig) { self::$__state[spl_object_id($this)] = $orig->__state(); }
+    public function serialize(): string { return __SplArraySerial::format($this->__state()[0], $this->storage, array_diff_key(get_object_vars($this), ['storage' => 1])); }
+    public function unserialize(string $data): void {
+        $parsed = __SplArraySerial::parse($data);
+        if ($parsed === null) { return; }
+        $flags = $parsed[0]; $storage = $parsed[1]; $members = $parsed[2];
+        $this->storage = $storage;
+        foreach ($members as $k => $v) { $this->$k = $v; }
+        self::$__state[spl_object_id($this)] = [$flags, $this->__state()[1]];
+    }
     public function __serialize(): array { [$flags, $class] = $this->__state(); return [$flags, $this->storage, array_diff_key(get_object_vars($this), ['storage' => 1]), $class === ArrayIterator::class ? null : $class]; }
     public function __unserialize(array $data): void { $this->storage = $data[1]; foreach ($data[2] ?? [] as $k => $v) { $this->$k = $v; } self::$__state[spl_object_id($this)] = [$data[0], $data[3] ?? ArrayIterator::class]; }
     public function asort(int $flags = SORT_REGULAR): bool { return $this->__sort("asort", $flags); }
@@ -1234,7 +1244,7 @@ final class Override { public function __construct() {} }
 // An iterator over an array, positioned by a cursor kept outside the
 // instance (a static table keyed by object id) so the instance shows only
 // its storage, as the reference's does.
-class ArrayIterator implements SeekableIterator, ArrayAccess, Countable {
+class ArrayIterator implements SeekableIterator, ArrayAccess, Serializable, Countable {
     const STD_PROP_LIST = 1;
     const ARRAY_AS_PROPS = 2;
     private $storage = [];
@@ -1277,6 +1287,15 @@ class ArrayIterator implements SeekableIterator, ArrayAccess, Countable {
     // `spl_array_object_new_ex` with `clone_orig`: the copy keeps the flags; its
     // position starts over.
     private function __phplang_clone($orig) { self::$__flags[spl_object_id($this)] = self::$__flags[spl_object_id($orig)] ?? 0; }
+    public function serialize(): string { return __SplArraySerial::format(self::$__flags[spl_object_id($this)] ?? 0, $this->storage, array_diff_key(get_object_vars($this), ['storage' => 1])); }
+    public function unserialize(string $data): void {
+        $parsed = __SplArraySerial::parse($data);
+        if ($parsed === null) { return; }
+        $flags = $parsed[0]; $storage = $parsed[1]; $members = $parsed[2];
+        $this->storage = $storage;
+        foreach ($members as $k => $v) { $this->$k = $v; }
+        self::$__flags[spl_object_id($this)] = $flags;
+    }
     public function __serialize(): array { return [self::$__flags[spl_object_id($this)] ?? 0, $this->storage, array_diff_key(get_object_vars($this), ['storage' => 1]), null]; }
     public function __unserialize(array $data): void { $this->storage = $data[1]; foreach ($data[2] ?? [] as $k => $v) { $this->$k = $v; } self::$__flags[spl_object_id($this)] = $data[0]; }
     public function asort(int $flags = SORT_REGULAR): bool { return asort($this->storage, $flags); }
@@ -1659,6 +1678,39 @@ class SplPriorityQueue implements Iterator, Countable {
 // its Iterator methods, which is what the reference's `zend_user_iterator`
 // does, including keeping the value `current()` answered until the iterator
 // moves (`zend_user_it_get_current_data`).
+// The `Serializable` form `spl_array_serialize` writes and
+// `spl_array_unserialize` reads: `x:i:FLAGS;STORAGE;m:MEMBERS`, the storage
+// and the members each in `serialize` notation.
+final class __SplArraySerial {
+    public static function format(int $flags, $storage, array $members): string {
+        return "x:i:" . $flags . ";" . serialize($storage) . ";m:" . serialize($members);
+    }
+    // `[flags, storage, members]`, or null for an empty string (a no-op); a
+    // malformed one is `UnexpectedValueException: Error at offset N of LEN
+    // bytes`, N where the part that failed begins.
+    public static function parse(string $data): ?array {
+        if ($data === "") { return null; }
+        $len = strlen($data);
+        if (!preg_match('/\Ax:i:(\d+);/', $data, $m)) {
+            throw new UnexpectedValueException("Error at offset 0 of $len bytes");
+        }
+        $start = strlen($m[0]);
+        // The storage ends at the `;m:` whose prefix is one whole value.
+        for ($at = strpos($data, ";m:", $start); $at !== false; $at = strpos($data, ";m:", $at + 1)) {
+            $part = substr($data, $start, $at - $start);
+            $storage = @unserialize($part);
+            if (($storage !== false || $part === "b:0;") && serialize($storage) === $part) {
+                $members = @unserialize(substr($data, $at + 3));
+                if (!is_array($members)) {
+                    throw new UnexpectedValueException("Error at offset $len of $len bytes");
+                }
+                return [(int) $m[1], $storage, $members];
+            }
+        }
+        throw new UnexpectedValueException("Error at offset $start of $len bytes");
+    }
+}
+
 final class __SplIt {
     private static $d = [];
     // RecursiveTreeIterator's prefix parts and postfix, set when the object is

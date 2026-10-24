@@ -4585,6 +4585,21 @@ impl PhpHost {
                 push(&mut out, inherited);
             }
         }
+        // A class the reference ships lists its interfaces in the order ext/*
+        // registered them, measured into `internal_interfaces`; one this build
+        // implements beyond that list keeps its place after it.
+        if crate::prelude_type(c).is_some() {
+            use crate::internal_interfaces::INTERNAL_INTERFACES as TABLE;
+            if let Ok(i) = TABLE.binary_search_by(|&(k, _)| k.cmp(c)) {
+                let order = TABLE[i].1;
+                out.sort_by_key(|n| {
+                    order
+                        .iter()
+                        .position(|o| o.eq_ignore_ascii_case(n))
+                        .unwrap_or(order.len())
+                });
+            }
+        }
         out
     }
 
@@ -12656,7 +12671,52 @@ pub fn final_violation<'a>(
             }
         }
     }
-    abstract_violation(def, &find, &chain)
+    throwable_violation(def, &find, &chain).or_else(|| abstract_violation(def, &find, &chain))
+}
+
+/// `zend_implement_throwable`: only `Exception` and `Error` (and what extends
+/// them) may implement `Throwable`, directly or through an interface that
+/// extends it.
+fn throwable_violation<'a>(
+    def: &ClassDef,
+    find: &impl Fn(&str) -> Option<&'a ClassDef>,
+    chain: &[&ClassDef],
+) -> Option<(String, Option<u32>)> {
+    if def.is_interface || def.is_trait {
+        return None;
+    }
+    let roots = std::iter::once(def).chain(chain.iter().copied());
+    if roots
+        .clone()
+        .any(|c| c.name.eq_ignore_ascii_case("exception") || c.name.eq_ignore_ascii_case("error"))
+    {
+        return None;
+    }
+    let mut pending: Vec<String> = roots
+        .flat_map(|c| c.interfaces.iter().map(|i| i.to_ascii_lowercase()))
+        .collect();
+    let mut seen: FxHashSet<String> = FxHashSet::default();
+    while let Some(iface) = pending.pop() {
+        if iface == "throwable" {
+            let name = display_class(&def.name);
+            return Some((
+                if def.is_enum {
+                    format!("Enum {name} cannot implement interface Throwable")
+                } else {
+                    format!(
+                        "Class {name} cannot implement interface Throwable, extend Exception or Error instead"
+                    )
+                },
+                None,
+            ));
+        }
+        if seen.insert(iface.clone()) {
+            if let Some(d) = find(&iface) {
+                pending.extend(d.interfaces.iter().map(|i| i.to_ascii_lowercase()));
+            }
+        }
+    }
+    None
 }
 
 /// `zend_verify_abstract_class`: the reference refuses to link a concrete class

@@ -2512,14 +2512,14 @@ pub const CORPUS: &[Entry] = &[
     (
         "Exception",
         "Prelude class",
-        "class Exception {\n    protected $message = \"\"; protected $code = 0; protected $previous = null;\n    protected $file = \"\"; protected $line = 0; protected $trace = \"\";\n    __construct($message = \"\", $code = 0, $previous = null)\n    final getMessage(): string   final getCode(): int   final getPrevious(): ?Throwable\n    final getFile(): string   final getLine(): int   final getTraceAsString(): string\n    __toString(): string\n}",
+        "class Exception implements Throwable {\n    protected $message = \"\"; protected $code = 0; protected $previous = null;\n    protected $file = \"\"; protected $line = 0; protected $trace = \"\";\n    __construct($message = \"\", $code = 0, $previous = null)\n    final getMessage(): string   final getCode(): int   final getPrevious(): ?Throwable\n    final getFile(): string   final getLine(): int   final getTraceAsString(): string\n    __toString(): string\n}",
         "One of the two disjoint roots of the exception hierarchy. `catch (Throwable)` is special-cased in the host to match this root or `Error`. `file`, `line` and `trace` are recorded when the object is *constructed*, as the reference engine records them, so `getLine()` reports the `new` site even when the `throw` is on a later line. `__toString()` is the reference's rendering: `Class: message in file:line`, `Stack trace:` and the trace, for every exception down the `previous` chain, innermost first and joined by `Next `. DIVERGENCE: `getTrace()` — the structured array form — is not declared; only the rendered `getTraceAsString()` is.",
         "try { throw new Exception(\"boom\", 7); }\ncatch (Exception $e) { echo $e->getMessage(), $e->getCode(); }   // => boom7",
     ),
     (
         "Error",
         "Prelude class",
-        "class Error {\n    protected $message = \"\"; protected $code = 0; protected $previous = null;\n    protected $file = \"\"; protected $line = 0; protected $trace = \"\";\n    __construct($message = \"\", $code = 0, $previous = null)\n    final getMessage(): string   final getCode(): int   final getPrevious(): ?Throwable\n    final getFile(): string   final getLine(): int   final getTraceAsString(): string\n    __toString(): string\n}",
+        "class Error implements Throwable {\n    protected $message = \"\"; protected $code = 0; protected $previous = null;\n    protected $file = \"\"; protected $line = 0; protected $trace = \"\";\n    __construct($message = \"\", $code = 0, $previous = null)\n    final getMessage(): string   final getCode(): int   final getPrevious(): ?Throwable\n    final getFile(): string   final getLine(): int   final getTraceAsString(): string\n    __toString(): string\n}",
         "The other root of the hierarchy, for engine-level failures. It does NOT extend `Exception` — the two roots are disjoint, exactly as in PHP, so `catch (Exception)` never catches an `Error`. A zero divisor throws `DivisionByZeroError`, and a method call on a non-object throws `Error`. Reaching the top uncaught prints the reference's `Fatal error: Uncaught <__toString()>` block on stdout — a user override of `__toString` included, and an exception that override throws is reported in its place. DIVERGENCE: most other runtime failures — a bad standard-library argument, a call to an undefined function — still abort with a host-level `php: <message>` on stderr that no `catch` block can intercept.",
         "try { throw new TypeError(\"t\"); }\ncatch (Exception $e) { echo \"E\"; } catch (Error $e) { echo \"R\"; }   // => R",
     ),
@@ -2743,14 +2743,14 @@ pub const CORPUS: &[Entry] = &[
     (
         "ArrayObject",
         "Prelude class",
-        "class ArrayObject implements IteratorAggregate, ArrayAccess, Countable {\n    private $storage = [];\n    __construct(array|object $array = [], int $flags = 0, string $iteratorClass = ArrayIterator::class)\n    offsetGet  offsetSet  offsetExists  offsetUnset  append  count  getArrayCopy  exchangeArray\n    getIterator(): Iterator  asort  ksort  uasort  uksort  natsort  natcasesort\n}",
+        "class ArrayObject implements IteratorAggregate, ArrayAccess, Serializable, Countable {\n    private $storage = [];\n    __construct(array|object $array = [], int $flags = 0, string $iteratorClass = ArrayIterator::class)\n    offsetGet  offsetSet  offsetExists  offsetUnset  append  count  getArrayCopy  exchangeArray\n    getIterator(): Iterator  asort  ksort  uasort  uksort  natsort  natcasesort  serialize  unserialize\n}",
         "An object wrapper around an array: `$obj[$k]`, `count($obj)` and `foreach` reach the wrapped array, and `getIterator()` hands out an `ArrayIterator` over a copy of it. DIVERGENCE: the `STD_PROP_LIST` / `ARRAY_AS_PROPS` flags are accepted and ignored, and an object passed in is copied by its public properties rather than wrapped.",
         "$o = new ArrayObject([\"a\" => 1]); $o->append(2);\necho $o->count(), $o->offsetGet(\"a\");   // => 21",
     ),
     (
         "ArrayIterator",
         "Prelude class",
-        "class ArrayIterator implements SeekableIterator, ArrayAccess, Countable {\n    private $storage = [];\n    current()  key()  next()  rewind()  valid()  seek(int $offset)\n    offsetGet  offsetSet  offsetExists  offsetUnset  append  count  getArrayCopy  asort  ksort ...\n}",
+        "class ArrayIterator implements SeekableIterator, ArrayAccess, Serializable, Countable {\n    private $storage = [];\n    current()  key()  next()  rewind()  valid()  seek(int $offset)\n    offsetGet  offsetSet  offsetExists  offsetUnset  append  count  getArrayCopy  asort  ksort  serialize  unserialize ...\n}",
         "An iterator over an array, with the array access and sorting of `ArrayObject`. `seek()` past the end throws `OutOfBoundsException`. `getFlags()` answers the flags the constructor or `setFlags()` set; `STD_PROP_LIST` and `ARRAY_AS_PROPS` are not otherwise honoured. DIVERGENCE: a write while iterating restarts the key order the cursor walks.",
         "$it = new ArrayIterator([10, 20, 30]); $it->seek(1);\necho $it->current();   // => 20",
     ),

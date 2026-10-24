@@ -26,7 +26,7 @@ comment above it.
 
 ---
 
-## Round 33: library return types from the reference
+## Round 33: library return types, Throwable, internal interface order
 
 * `ReflectionFunction::getReturnType()` on a library function answers the
   type the reference declares (`str_replace` is `array|string`, `sort` is
@@ -34,6 +34,22 @@ comment above it.
   function's reflected return type in `src/argsig.rs` beside its parameters;
   they were read from the corpus signatures, which spell many of them
   narrower or wider. All 614 functions in the table agree with the reference.
+* `Exception` and `Error` implement `Throwable`, so `class_implements`,
+  `getInterfaceNames` and `implementsInterface` list it. A class outside
+  those two hierarchies that implements `Throwable` (directly or through an
+  interface extending it) is the reference's link-time fatal (`Class X cannot
+  implement interface Throwable, extend Exception or Error instead`; `Enum E
+  cannot implement interface Throwable`).
+* An internal class lists its interfaces in the order ext/* registers them,
+  measured off the reference by `scripts/gen-internal-interfaces.php` into
+  `src/internal_interfaces.rs`.
+* `ArrayObject` and `ArrayIterator` implement `Serializable`: `serialize()`
+  writes `x:i:FLAGS;STORAGE;m:MEMBERS`, and `unserialize()` reads it back,
+  refusing a malformed one with `UnexpectedValueException: Error at offset N
+  of LEN bytes`.
+* An element of a call's result passed to a by-reference parameter
+  (`f(h()[0])`, `W::g(h()[0])`) is passed by value and the write dropped, as
+  the reference does; it failed to compile (`unsupported assignment target`).
 
 ---
 

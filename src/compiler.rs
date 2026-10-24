@@ -1095,6 +1095,20 @@ impl Compiler {
             ) {
                 continue;
             }
+            // `f(h()[0])`: an element of a call's result is no location the
+            // caller can see, so the reference passes it and drops the write.
+            if let Expr::Index(..) = arg {
+                if matches!(
+                    Self::flatten_segments(arg)?.0,
+                    Expr::Call(..)
+                        | Expr::CallValue(..)
+                        | Expr::MethodCall(..)
+                        | Expr::NullsafeMethodCall(..)
+                        | Expr::StaticCall(..)
+                ) {
+                    continue;
+                }
+            }
             let skip = if guarded {
                 b.emit(Op::LoadInt(pos as i64), 0);
                 b.emit(Op::CallBuiltin(ops::BYREF_LIVE, 1), 0);
