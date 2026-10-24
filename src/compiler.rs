@@ -3389,7 +3389,9 @@ impl Compiler {
             .iter()
             .filter(|(k, _)| k.starts_with("const:") || k.starts_with("case:"))
             .filter_map(|(k, attrs)| {
-                let dep = attrs.iter().find(|a| a.name.eq_ignore_ascii_case("Deprecated"))?;
+                let dep = attrs
+                    .iter()
+                    .find(|a| a.name.eq_ignore_ascii_case("Deprecated"))?;
                 Some((k.clone(), crate::parser::deprecation_of(&dep.args)))
             })
             .collect();

@@ -114,7 +114,12 @@ fn getrandom_fill(_bytes: &mut [u8]) -> usize {
 /// reference's `random_fd` is: a thread that loses the race to publish its
 /// descriptor closes it and uses the winner's.
 #[cfg_attr(
-    any(target_os = "macos", target_os = "openbsd", target_os = "netbsd", target_os = "haiku"),
+    any(
+        target_os = "macos",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "haiku"
+    ),
     allow(dead_code)
 )]
 fn urandom_fd() -> Result<libc::c_int, String> {
@@ -139,7 +144,12 @@ fn urandom_fd() -> Result<libc::c_int, String> {
 /// error text — which names `/dev/urandom` whatever `path` is, since the
 /// reference only ever opens that one.
 #[cfg_attr(
-    any(target_os = "macos", target_os = "openbsd", target_os = "netbsd", target_os = "haiku"),
+    any(
+        target_os = "macos",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "haiku"
+    ),
     allow(dead_code)
 )]
 fn open_urandom(path: &std::ffi::CStr) -> Result<libc::c_int, String> {
@@ -171,7 +181,12 @@ fn open_urandom(path: &std::ffi::CStr) -> Result<libc::c_int, String> {
 /// Fill `bytes` by `read(2)` from `fd`; a read that returns 0 or fails is
 /// "Could not gather sufficient random data".
 #[cfg_attr(
-    any(target_os = "macos", target_os = "openbsd", target_os = "netbsd", target_os = "haiku"),
+    any(
+        target_os = "macos",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "haiku"
+    ),
     allow(dead_code)
 )]
 fn urandom_fill(fd: libc::c_int, bytes: &mut [u8]) -> Result<(), String> {
@@ -195,7 +210,12 @@ fn urandom_fill(fd: libc::c_int, bytes: &mut [u8]) -> Result<(), String> {
 
 /// `msg: strerror(errno)` for a call that has just failed and set `errno`.
 #[cfg_attr(
-    any(target_os = "macos", target_os = "openbsd", target_os = "netbsd", target_os = "haiku"),
+    any(
+        target_os = "macos",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "haiku"
+    ),
     allow(dead_code)
 )]
 fn with_errno(msg: &str) -> String {
@@ -277,7 +297,10 @@ mod tests {
         // span 3: limit = u64::MAX - (u64::MAX % 3) - 1 = u64::MAX - 1, so
         // u64::MAX is redrawn and the next draw (5 % 3 == 2) is used.
         assert_eq!(range_over(0, 2, &[u64::MAX, 5]), (2, 2));
-        assert_eq!(range_over(0, 2, &[u64::MAX - 1]), (((u64::MAX - 1) % 3) as i64, 1));
+        assert_eq!(
+            range_over(0, 2, &[u64::MAX - 1]),
+            (((u64::MAX - 1) % 3) as i64, 1)
+        );
     }
 
     #[test]
@@ -293,7 +316,10 @@ mod tests {
             "Cannot open /dev/urandom: No such file or directory"
         );
         // A regular file opens and `fstat`s fine but is not a character device.
-        assert_eq!(open_urandom(c"/etc/hosts").unwrap_err(), "Error reading from /dev/urandom");
+        assert_eq!(
+            open_urandom(c"/etc/hosts").unwrap_err(),
+            "Error reading from /dev/urandom"
+        );
     }
 
     #[test]
@@ -302,7 +328,10 @@ mod tests {
         let fd = unsafe { libc::open(c"/dev/null".as_ptr(), libc::O_RDONLY) };
         assert!(fd >= 0);
         let mut buf = [0u8; 4];
-        assert_eq!(urandom_fill(fd, &mut buf).unwrap_err(), "Could not gather sufficient random data");
+        assert_eq!(
+            urandom_fill(fd, &mut buf).unwrap_err(),
+            "Could not gather sufficient random data"
+        );
         // SAFETY: `fd` was opened above.
         unsafe { libc::close(fd) };
     }

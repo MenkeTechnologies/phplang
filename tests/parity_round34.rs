@@ -112,7 +112,10 @@ fn php_binary_is_the_resolved_interpreter_path() {
     let real = std::fs::canonicalize(exe).unwrap();
     let real = real.to_str().unwrap();
 
-    let by_path = Command::new(exe).args(["-r", "echo PHP_BINARY;"]).output().unwrap();
+    let by_path = Command::new(exe)
+        .args(["-r", "echo PHP_BINARY;"])
+        .output()
+        .unwrap();
     assert_eq!(String::from_utf8_lossy(&by_path.stdout), real);
 
     // Spawned by bare name, so `argv[0]` is `php` and the `PATH` search runs.

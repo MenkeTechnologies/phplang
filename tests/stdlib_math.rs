@@ -462,7 +462,9 @@ fn random_int_extreme_spans() {
 #[test]
 fn random_int_argument_errors() {
     assert_eq!(
-        run("<?php try { random_int(1); } catch (ArgumentCountError $e) { echo $e->getMessage(); }"),
+        run(
+            "<?php try { random_int(1); } catch (ArgumentCountError $e) { echo $e->getMessage(); }"
+        ),
         "random_int() expects exactly 2 arguments, 1 given"
     );
     assert_eq!(

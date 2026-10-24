@@ -7429,7 +7429,9 @@ fn php_binary() -> String {
                 (executable(&real) && real.is_file()).then_some(real)
             })
     };
-    found.map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()
+    found
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 /// `PHP_BINARY` on Windows: `GetModuleFileName(0)`, the running executable.
@@ -14663,7 +14665,10 @@ fn raise_deprecated_member(declaring: &str, key: &str) -> bool {
         Some((_, name)) => ("Constant", name),
         None => ("Constant", key),
     };
-    let msg = format!("{kind} {class}::{name} is deprecated{}", deprecation_suffix(&d));
+    let msg = format!(
+        "{kind} {class}::{name} is deprecated{}",
+        deprecation_suffix(&d)
+    );
     let level = if crate::prelude_type(declaring).is_some() {
         errlevel::E_DEPRECATED
     } else {

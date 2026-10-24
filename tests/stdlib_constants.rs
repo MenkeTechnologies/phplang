@@ -45,7 +45,10 @@ fn flag_constants_are_integers() {
                       was removed in Command line code on line 1\n";
     assert_eq!(run("<?php echo E_ALL;"), "30719");
     assert_eq!(run("<?php echo E_STRICT;"), format!("{deprecated}2048"));
-    assert_eq!(run("<?php echo E_ALL & E_STRICT;"), format!("{deprecated}0"));
+    assert_eq!(
+        run("<?php echo E_ALL & E_STRICT;"),
+        format!("{deprecated}0")
+    );
 }
 
 #[test]

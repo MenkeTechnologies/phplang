@@ -314,5 +314,8 @@ fn random_bytes_argument_errors_and_exception_class() {
         "string(22) \"Random\\RandomException\"\nstring(9) \"Exception\"\nbool(true)\nbool(false)\n"
     );
     // The namespaced class leaves the global name free for user code.
-    assert_eq!(run(r#"<?php class RandomException {} echo get_class(new RandomException);"#), "RandomException");
+    assert_eq!(
+        run(r#"<?php class RandomException {} echo get_class(new RandomException);"#),
+        "RandomException"
+    );
 }
