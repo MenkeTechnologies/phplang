@@ -223,3 +223,21 @@ ReflectionException: Class "stdClass" is not an enum
 "##
     );
 }
+
+#[test]
+fn a_library_functions_return_type_is_the_references() {
+    let src = r##"<?php foreach (["str_replace", "array_search", "sort", "var_export", "json_encode", "array_key_first", "hexdec", "strlen", "print_r"] as $f) { $t = (new ReflectionFunction($f))->getReturnType(); echo $f, " ", $t, " ", get_class($t), " ", var_export($t->allowsNull(), true), "\n"; }"##;
+    assert_eq!(
+        run(src),
+        r##"str_replace array|string ReflectionUnionType false
+array_search string|int|false ReflectionUnionType false
+sort true ReflectionNamedType false
+var_export ?string ReflectionNamedType true
+json_encode string|false ReflectionUnionType false
+array_key_first string|int|null ReflectionUnionType true
+hexdec int|float ReflectionUnionType false
+strlen int ReflectionNamedType false
+print_r string|true ReflectionUnionType false
+"##
+    );
+}

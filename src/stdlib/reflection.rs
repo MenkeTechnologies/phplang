@@ -602,7 +602,7 @@ pub(crate) fn reflect(args: &[Value]) -> Result<Value, String> {
             } else if let Some((n, _, ret)) = with_host(|h| h.refl_user_function(&s1)) {
                 Some((n, false, type_info(ret.as_ref(), "")))
             } else if crate::stdlib::callable::function_resolves(&s1) {
-                let ret = crate::corpus::signature_return(&s1)
+                let ret = crate::argsig::return_type(&s1)
                     .map(|t| type_info(Some(&crate::ast::TypeHint { parts: t }), ""))
                     .unwrap_or(Value::Undef);
                 Some((crate::host::unanchored(&s1).to_ascii_lowercase(), true, ret))

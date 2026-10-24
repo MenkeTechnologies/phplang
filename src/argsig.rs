@@ -94,6 +94,9 @@ pub struct Sig {
     pub req: usize,
     pub params: &'static [Param],
     pub variadic: bool,
+    /// The declared return type as the reference's reflection spells it
+    /// (`array|string`, `?int`), `""` for none.
+    pub ret: &'static str,
 }
 
 impl Sig {
@@ -519,6 +522,20 @@ pub struct LibParam {
     pub def: Option<Def>,
 }
 
+/// The return type library function `name` declares, split into its
+/// alternatives (`?int` → `[int, null]`); `None` for an unknown name or one
+/// declared without a return type.
+pub fn return_type(name: &str) -> Option<Vec<String>> {
+    let ret = sig_of(name)?.ret;
+    if ret.is_empty() {
+        return None;
+    }
+    Some(match ret.strip_prefix('?') {
+        Some(t) => vec![t.to_string(), "null".to_string()],
+        None => ret.split('|').map(str::to_string).collect(),
+    })
+}
+
 /// The parameters of library function `name`: names, types and defaults from
 /// the argument table, by-reference positions from the compiler's, and the
 /// variadic tail's name from the corpus signature (the table records only
@@ -573,6 +590,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("num", Required, "int|float")],
             variadic: false,
+            ret: "int|float",
         },
     ),
     (
@@ -581,6 +599,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("num", Required, "float")],
             variadic: false,
+            ret: "float",
         },
     ),
     (
@@ -589,6 +608,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("num", Required, "float")],
             variadic: false,
+            ret: "float",
         },
     ),
     (
@@ -600,6 +620,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("characters", Required, "string"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -608,6 +629,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("string", Required, "string")],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -619,6 +641,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("callback", Required, "callable"),
             ],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -630,6 +653,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("callback", Required, "callable"),
             ],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -638,6 +662,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "array"), p("case", Int(0), "int")],
             variadic: false,
+            ret: "array",
         },
     ),
     (
@@ -650,6 +675,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("preserve_keys", Bool(false), "bool"),
             ],
             variadic: false,
+            ret: "array",
         },
     ),
     (
@@ -662,6 +688,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("index_key", Null, "string|int|null"),
             ],
             variadic: false,
+            ret: "array",
         },
     ),
     (
@@ -670,6 +697,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 2,
             params: &[p("keys", Required, "array"), p("values", Required, "array")],
             variadic: false,
+            ret: "array",
         },
     ),
     (
@@ -678,6 +706,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "array")],
             variadic: false,
+            ret: "array",
         },
     ),
     (
@@ -686,6 +715,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "array")],
             variadic: true,
+            ret: "array",
         },
     ),
     (
@@ -694,6 +724,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "array")],
             variadic: true,
+            ret: "array",
         },
     ),
     (
@@ -702,6 +733,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "array")],
             variadic: true,
+            ret: "array",
         },
     ),
     (
@@ -710,6 +742,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "array")],
             variadic: true,
+            ret: "array",
         },
     ),
     (
@@ -718,6 +751,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "array")],
             variadic: true,
+            ret: "array",
         },
     ),
     (
@@ -730,6 +764,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("value", Required, "mixed"),
             ],
             variadic: false,
+            ret: "array",
         },
     ),
     (
@@ -738,6 +773,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 2,
             params: &[p("keys", Required, "array"), p("value", Required, "mixed")],
             variadic: false,
+            ret: "array",
         },
     ),
     (
@@ -750,6 +786,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("mode", Int(0), "int"),
             ],
             variadic: false,
+            ret: "array",
         },
     ),
     (
@@ -761,6 +798,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("callback", Required, "callable"),
             ],
             variadic: false,
+            ret: "mixed",
         },
     ),
     (
@@ -772,6 +810,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("callback", Required, "callable"),
             ],
             variadic: false,
+            ret: "mixed",
         },
     ),
     (
@@ -780,6 +819,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "array")],
             variadic: false,
+            ret: "mixed",
         },
     ),
     (
@@ -788,6 +828,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "array")],
             variadic: false,
+            ret: "array",
         },
     ),
     (
@@ -796,6 +837,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "array")],
             variadic: true,
+            ret: "array",
         },
     ),
     (
@@ -804,6 +846,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "array")],
             variadic: true,
+            ret: "array",
         },
     ),
     (
@@ -812,6 +855,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "array")],
             variadic: true,
+            ret: "array",
         },
     ),
     (
@@ -820,6 +864,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "array")],
             variadic: true,
+            ret: "array",
         },
     ),
     (
@@ -828,6 +873,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "array")],
             variadic: true,
+            ret: "array",
         },
     ),
     (
@@ -836,6 +882,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "array")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -844,6 +891,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 2,
             params: &[p("key", Required, ""), p("array", Required, "array")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -852,6 +900,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "array")],
             variadic: false,
+            ret: "string|int|null",
         },
     ),
     (
@@ -860,6 +909,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "array")],
             variadic: false,
+            ret: "string|int|null",
         },
     ),
     (
@@ -872,6 +922,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("strict", Bool(false), "bool"),
             ],
             variadic: false,
+            ret: "array",
         },
     ),
     (
@@ -880,6 +931,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "array")],
             variadic: false,
+            ret: "mixed",
         },
     ),
     (
@@ -891,6 +943,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("array", Required, "array"),
             ],
             variadic: true,
+            ret: "array",
         },
     ),
     (
@@ -899,6 +952,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: true,
+            ret: "array",
         },
     ),
     (
@@ -907,6 +961,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: true,
+            ret: "array",
         },
     ),
     (
@@ -915,6 +970,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "")],
             variadic: true,
+            ret: "true",
         },
     ),
     (
@@ -927,6 +983,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("value", Required, "mixed"),
             ],
             variadic: false,
+            ret: "array",
         },
     ),
     (
@@ -935,6 +992,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "array")],
             variadic: false,
+            ret: "mixed",
         },
     ),
     (
@@ -943,6 +1001,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "array")],
             variadic: false,
+            ret: "int|float",
         },
     ),
     (
@@ -951,6 +1010,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "array")],
             variadic: true,
+            ret: "int",
         },
     ),
     (
@@ -959,6 +1019,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "array"), p("num", Int(1), "int")],
             variadic: false,
+            ret: "array|string|int",
         },
     ),
     (
@@ -971,6 +1032,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("initial", Null, "mixed"),
             ],
             variadic: false,
+            ret: "mixed",
         },
     ),
     (
@@ -979,6 +1041,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "array")],
             variadic: true,
+            ret: "array",
         },
     ),
     (
@@ -987,6 +1050,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "array")],
             variadic: true,
+            ret: "array",
         },
     ),
     (
@@ -998,6 +1062,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("preserve_keys", Bool(false), "bool"),
             ],
             variadic: false,
+            ret: "array",
         },
     ),
     (
@@ -1010,6 +1075,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("strict", Bool(false), "bool"),
             ],
             variadic: false,
+            ret: "string|int|false",
         },
     ),
     (
@@ -1018,6 +1084,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "array")],
             variadic: false,
+            ret: "mixed",
         },
     ),
     (
@@ -1031,6 +1098,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("preserve_keys", Bool(false), "bool"),
             ],
             variadic: false,
+            ret: "array",
         },
     ),
     (
@@ -1044,6 +1112,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("replacement", EmptyArray, "mixed"),
             ],
             variadic: false,
+            ret: "array",
         },
     ),
     (
@@ -1052,6 +1121,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "array")],
             variadic: false,
+            ret: "int|float",
         },
     ),
     (
@@ -1060,6 +1130,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "array")],
             variadic: true,
+            ret: "array",
         },
     ),
     (
@@ -1068,6 +1139,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "array")],
             variadic: true,
+            ret: "array",
         },
     ),
     (
@@ -1076,6 +1148,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "array")],
             variadic: true,
+            ret: "array",
         },
     ),
     (
@@ -1084,6 +1157,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "array")],
             variadic: true,
+            ret: "array",
         },
     ),
     (
@@ -1092,6 +1166,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "array")],
             variadic: true,
+            ret: "array",
         },
     ),
     (
@@ -1100,6 +1175,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "array")],
             variadic: true,
+            ret: "array",
         },
     ),
     (
@@ -1108,6 +1184,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "array"), p("flags", Int(2), "int")],
             variadic: false,
+            ret: "array",
         },
     ),
     (
@@ -1116,6 +1193,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "array")],
             variadic: true,
+            ret: "int",
         },
     ),
     (
@@ -1124,6 +1202,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "array")],
             variadic: false,
+            ret: "array",
         },
     ),
     (
@@ -1136,6 +1215,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("arg", Unknown, "mixed"),
             ],
             variadic: false,
+            ret: "true",
         },
     ),
     (
@@ -1148,6 +1228,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("arg", Unknown, "mixed"),
             ],
             variadic: false,
+            ret: "true",
         },
     ),
     (
@@ -1156,6 +1237,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "array"), p("flags", Int(0), "int")],
             variadic: false,
+            ret: "true",
         },
     ),
     (
@@ -1164,6 +1246,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("num", Required, "float")],
             variadic: false,
+            ret: "float",
         },
     ),
     (
@@ -1172,6 +1255,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("num", Required, "float")],
             variadic: false,
+            ret: "float",
         },
     ),
     (
@@ -1180,6 +1264,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "array"), p("flags", Int(0), "int")],
             variadic: false,
+            ret: "true",
         },
     ),
     (
@@ -1191,6 +1276,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("description", Null, "Throwable|string|null"),
             ],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -1199,6 +1285,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("option", Required, "int"), p("value", Unknown, "mixed")],
             variadic: false,
+            ret: "mixed",
         },
     ),
     (
@@ -1207,6 +1294,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("num", Required, "float")],
             variadic: false,
+            ret: "float",
         },
     ),
     (
@@ -1215,6 +1303,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 2,
             params: &[p("y", Required, "float"), p("x", Required, "float")],
             variadic: false,
+            ret: "float",
         },
     ),
     (
@@ -1223,6 +1312,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("num", Required, "float")],
             variadic: false,
+            ret: "float",
         },
     ),
     (
@@ -1234,6 +1324,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("strict", Bool(false), "bool"),
             ],
             variadic: false,
+            ret: "string|false",
         },
     ),
     (
@@ -1242,6 +1333,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("string", Required, "string")],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -1254,6 +1346,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("to_base", Required, "int"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -1265,6 +1358,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("suffix", Str(""), "string"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -1277,6 +1371,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("scale", Null, "?int"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -1289,6 +1384,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("scale", Null, "?int"),
             ],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -1301,6 +1397,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("scale", Null, "?int"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -1313,6 +1410,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("scale", Null, "?int"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -1325,6 +1423,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("scale", Null, "?int"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -1337,6 +1436,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("scale", Null, "?int"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -1350,6 +1450,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("scale", Null, "?int"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -1358,6 +1459,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[p("scale", Null, "?int")],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -1366,6 +1468,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("num", Required, "string"), p("scale", Null, "?int")],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -1378,6 +1481,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("scale", Null, "?int"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -1386,6 +1490,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("string", Required, "string")],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -1394,6 +1499,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("binary_string", Required, "string")],
             variadic: false,
+            ret: "int|float",
         },
     ),
     (
@@ -1402,6 +1508,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("value", Required, "mixed")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -1410,6 +1517,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("callback", Required, "callable")],
             variadic: true,
+            ret: "mixed",
         },
     ),
     (
@@ -1421,6 +1529,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("args", Required, "array"),
             ],
             variadic: false,
+            ret: "mixed",
         },
     ),
     (
@@ -1429,6 +1538,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("num", Required, "int|float")],
             variadic: false,
+            ret: "float",
         },
     ),
     (
@@ -1441,6 +1551,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("year", Required, "int"),
             ],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -1452,6 +1563,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("characters", Str(" \n\r\t\u{B}\u{0}"), "string"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -1460,6 +1572,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("codepoint", Required, "int")],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -1472,6 +1585,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("separator", Str("\r\n"), "string"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -1484,6 +1598,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("autoload", Bool(true), "bool"),
             ],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -1495,6 +1610,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("autoload", Bool(true), "bool"),
             ],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -1506,6 +1622,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("autoload", Bool(true), "bool"),
             ],
             variadic: false,
+            ret: "array|false",
         },
     ),
     (
@@ -1517,6 +1634,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("autoload", Bool(true), "bool"),
             ],
             variadic: false,
+            ret: "array|false",
         },
     ),
     (
@@ -1528,6 +1646,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("autoload", Bool(true), "bool"),
             ],
             variadic: false,
+            ret: "array|false",
         },
     ),
     (
@@ -1539,6 +1658,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("filename", Str(""), "string"),
             ],
             variadic: false,
+            ret: "void",
         },
     ),
     (
@@ -1547,6 +1667,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("var_name", Required, "")],
             variadic: true,
+            ret: "array",
         },
     ),
     (
@@ -1555,6 +1676,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("name", Required, "string")],
             variadic: false,
+            ret: "mixed",
         },
     ),
     (
@@ -1563,6 +1685,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("string", Required, "string")],
             variadic: false,
+            ret: "string|false",
         },
     ),
     (
@@ -1571,6 +1694,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("string", Required, "string")],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -1583,6 +1707,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("context", Null, ""),
             ],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -1591,6 +1716,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("num", Required, "float")],
             variadic: false,
+            ret: "float",
         },
     ),
     (
@@ -1599,6 +1725,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("num", Required, "float")],
             variadic: false,
+            ret: "float",
         },
     ),
     (
@@ -1610,6 +1737,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("mode", Int(0), "int"),
             ],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -1618,6 +1746,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("string", Required, "string"), p("mode", Int(0), "int")],
             variadic: false,
+            ret: "array|string",
         },
     ),
     (
@@ -1626,6 +1755,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("string", Required, "string")],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -1634,6 +1764,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("text", Required, "mixed")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -1642,6 +1773,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("text", Required, "mixed")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -1650,6 +1782,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("text", Required, "mixed")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -1658,6 +1791,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("text", Required, "mixed")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -1666,6 +1800,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("text", Required, "mixed")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -1674,6 +1809,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("text", Required, "mixed")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -1682,6 +1818,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("text", Required, "mixed")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -1690,6 +1827,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("text", Required, "mixed")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -1698,6 +1836,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("text", Required, "mixed")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -1706,6 +1845,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("text", Required, "mixed")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -1714,6 +1854,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("text", Required, "mixed")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -1722,6 +1863,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "object|array")],
             variadic: false,
+            ret: "mixed",
         },
     ),
     (
@@ -1733,6 +1875,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("timestamp", Null, "?int"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -1744,6 +1887,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("interval", Required, "DateInterval"),
             ],
             variadic: false,
+            ret: "DateTime",
         },
     ),
     (
@@ -1755,6 +1899,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("timezone", Null, "?DateTimeZone"),
             ],
             variadic: false,
+            ret: "DateTime|false",
         },
     ),
     (
@@ -1767,6 +1912,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("timezone", Null, "?DateTimeZone"),
             ],
             variadic: false,
+            ret: "DateTime|false",
         },
     ),
     (
@@ -1778,6 +1924,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("timezone", Null, "?DateTimeZone"),
             ],
             variadic: false,
+            ret: "DateTimeImmutable|false",
         },
     ),
     (
@@ -1790,6 +1937,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("timezone", Null, "?DateTimeZone"),
             ],
             variadic: false,
+            ret: "DateTimeImmutable|false",
         },
     ),
     (
@@ -1803,6 +1951,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("day", Required, "int"),
             ],
             variadic: false,
+            ret: "DateTime",
         },
     ),
     (
@@ -1811,6 +1960,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -1819,6 +1969,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("timezoneId", Required, "string")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -1831,6 +1982,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("absolute", Bool(false), "bool"),
             ],
             variadic: false,
+            ret: "DateInterval",
         },
     ),
     (
@@ -1842,6 +1994,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("format", Required, "string"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -1850,6 +2003,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "array|false",
         },
     ),
     (
@@ -1858,6 +2012,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("datetime", Required, "string")],
             variadic: false,
+            ret: "DateInterval|false",
         },
     ),
     (
@@ -1869,6 +2024,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("format", Required, "string"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -1882,6 +2038,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("dayOfWeek", Int(1), "int"),
             ],
             variadic: false,
+            ret: "DateTime",
         },
     ),
     (
@@ -1893,6 +2050,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("modifier", Required, "string"),
             ],
             variadic: false,
+            ret: "DateTime|false",
         },
     ),
     (
@@ -1901,6 +2059,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("object", Required, "DateTimeInterface")],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -1909,6 +2068,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("datetime", Required, "string")],
             variadic: false,
+            ret: "array",
         },
     ),
     (
@@ -1920,6 +2080,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("datetime", Required, "string"),
             ],
             variadic: false,
+            ret: "array",
         },
     ),
     (
@@ -1931,6 +2092,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("interval", Required, "DateInterval"),
             ],
             variadic: false,
+            ret: "DateTime",
         },
     ),
     (
@@ -1945,6 +2107,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("microsecond", Int(0), "int"),
             ],
             variadic: false,
+            ret: "DateTime",
         },
     ),
     (
@@ -1953,6 +2116,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("object", Required, "DateTimeInterface")],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -1964,6 +2128,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("timestamp", Required, "int"),
             ],
             variadic: false,
+            ret: "DateTime",
         },
     ),
     (
@@ -1972,6 +2137,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("object", Required, "DateTimeInterface")],
             variadic: false,
+            ret: "DateTimeZone|false",
         },
     ),
     (
@@ -1983,6 +2149,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("timezone", Required, "DateTimeZone"),
             ],
             variadic: false,
+            ret: "DateTime",
         },
     ),
     (
@@ -1991,6 +2158,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[p("options", Int(1), "int"), p("limit", Int(0), "int")],
             variadic: false,
+            ret: "array",
         },
     ),
     (
@@ -1999,6 +2167,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[p("options", Int(0), "int"), p("limit", Int(0), "int")],
             variadic: false,
+            ret: "void",
         },
     ),
     (
@@ -2007,6 +2176,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("num", Required, "int")],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -2015,6 +2185,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("num", Required, "int")],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -2023,6 +2194,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("num", Required, "int")],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -2035,6 +2207,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("case_insensitive", Bool(false), "bool"),
             ],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -2043,6 +2216,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("constant_name", Required, "string")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -2051,6 +2225,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("num", Required, "float")],
             variadic: false,
+            ret: "float",
         },
     ),
     (
@@ -2059,6 +2234,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[p("status", Int(0), "string|int")],
             variadic: false,
+            ret: "never",
         },
     ),
     (
@@ -2067,6 +2243,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("path", Required, "string"), p("levels", Int(1), "int")],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -2075,6 +2252,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("directory", Required, "string")],
             variadic: false,
+            ret: "float|false",
         },
     ),
     (
@@ -2083,6 +2261,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("directory", Required, "string")],
             variadic: false,
+            ret: "float|false",
         },
     ),
     (
@@ -2091,6 +2270,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("directory", Required, "string")],
             variadic: false,
+            ret: "float|false",
         },
     ),
     (
@@ -2099,6 +2279,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("value", Required, "mixed")],
             variadic: false,
+            ret: "float",
         },
     ),
     (
@@ -2107,6 +2288,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "object|array")],
             variadic: false,
+            ret: "mixed",
         },
     ),
     (
@@ -2118,6 +2300,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("autoload", Bool(true), "bool"),
             ],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -2126,6 +2309,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "void",
         },
     ),
     (
@@ -2134,6 +2318,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "?array",
         },
     ),
     (
@@ -2147,6 +2332,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("additional_headers", Null, "?string"),
             ],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -2155,6 +2341,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[p("error_level", Null, "?int")],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -2163,6 +2350,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[p("status", Int(0), "string|int")],
             variadic: false,
+            ret: "never",
         },
     ),
     (
@@ -2171,6 +2359,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("num", Required, "float")],
             variadic: false,
+            ret: "float",
         },
     ),
     (
@@ -2183,6 +2372,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("limit", Int(9223372036854775807), "int"),
             ],
             variadic: false,
+            ret: "array",
         },
     ),
     (
@@ -2191,6 +2381,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("num", Required, "float")],
             variadic: false,
+            ret: "float",
         },
     ),
     (
@@ -2199,6 +2390,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("extension", Required, "string")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -2211,6 +2403,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("prefix", Str(""), "string"),
             ],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -2219,6 +2412,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("stream", Required, "")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -2227,6 +2421,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 2,
             params: &[p("num1", Required, "float"), p("num2", Required, "float")],
             variadic: false,
+            ret: "float",
         },
     ),
     (
@@ -2235,6 +2430,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("stream", Required, "")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -2243,6 +2439,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("stream", Required, "")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -2251,6 +2448,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("stream", Required, "")],
             variadic: false,
+            ret: "string|false",
         },
     ),
     (
@@ -2265,6 +2463,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("escape", Str("\\"), "string"),
             ],
             variadic: false,
+            ret: "array|false",
         },
     ),
     (
@@ -2273,6 +2472,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("stream", Required, ""), p("length", Null, "?int")],
             variadic: false,
+            ret: "string|false",
         },
     ),
     (
@@ -2285,6 +2485,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("context", Null, ""),
             ],
             variadic: false,
+            ret: "array|false",
         },
     ),
     (
@@ -2293,6 +2494,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("filename", Required, "string")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -2307,6 +2509,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("length", Null, "?int"),
             ],
             variadic: false,
+            ret: "string|false",
         },
     ),
     (
@@ -2320,6 +2523,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("context", Null, ""),
             ],
             variadic: false,
+            ret: "int|false",
         },
     ),
     (
@@ -2328,6 +2532,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("filename", Required, "string")],
             variadic: false,
+            ret: "int|false",
         },
     ),
     (
@@ -2336,6 +2541,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("filename", Required, "string")],
             variadic: false,
+            ret: "int|false",
         },
     ),
     (
@@ -2344,6 +2550,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("filename", Required, "string")],
             variadic: false,
+            ret: "int|false",
         },
     ),
     (
@@ -2352,6 +2559,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("filename", Required, "string")],
             variadic: false,
+            ret: "string|false",
         },
     ),
     (
@@ -2363,6 +2571,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("var_name", Required, "string"),
             ],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -2375,6 +2584,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("options", Int(0), "array|int"),
             ],
             variadic: false,
+            ret: "mixed",
         },
     ),
     (
@@ -2387,6 +2597,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("add_empty", Bool(true), "bool"),
             ],
             variadic: false,
+            ret: "array|false|null",
         },
     ),
     (
@@ -2395,6 +2606,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("value", Required, "mixed")],
             variadic: false,
+            ret: "float",
         },
     ),
     (
@@ -2403,6 +2615,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("num", Required, "int|float")],
             variadic: false,
+            ret: "float",
         },
     ),
     (
@@ -2411,6 +2624,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "void",
         },
     ),
     (
@@ -2419,6 +2633,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 2,
             params: &[p("num1", Required, "float"), p("num2", Required, "float")],
             variadic: false,
+            ret: "float",
         },
     ),
     (
@@ -2431,6 +2646,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("flags", Int(0), "int"),
             ],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -2444,6 +2660,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("context", Null, ""),
             ],
             variadic: false,
+            ret: "",
         },
     ),
     (
@@ -2452,6 +2669,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("stream", Required, "")],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -2463,6 +2681,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("exponent", Required, "float"),
             ],
             variadic: false,
+            ret: "float",
         },
     ),
     (
@@ -2471,6 +2690,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 2,
             params: &[p("stream", Required, ""), p("format", Required, "string")],
             variadic: true,
+            ret: "int",
         },
     ),
     (
@@ -2486,6 +2706,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("eol", Str("\n"), "string"),
             ],
             variadic: false,
+            ret: "int|false",
         },
     ),
     (
@@ -2498,6 +2719,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("length", Null, "?int"),
             ],
             variadic: false,
+            ret: "int|false",
         },
     ),
     (
@@ -2506,6 +2728,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 2,
             params: &[p("stream", Required, ""), p("length", Required, "int")],
             variadic: false,
+            ret: "string|false",
         },
     ),
     (
@@ -2514,6 +2737,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 2,
             params: &[p("stream", Required, ""), p("format", Required, "string")],
             variadic: true,
+            ret: "array|int|false|null",
         },
     ),
     (
@@ -2526,6 +2750,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("whence", Int(0), "int"),
             ],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -2534,6 +2759,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("stream", Required, "")],
             variadic: false,
+            ret: "array|false",
         },
     ),
     (
@@ -2542,6 +2768,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("stream", Required, "")],
             variadic: false,
+            ret: "int|false",
         },
     ),
     (
@@ -2550,6 +2777,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 2,
             params: &[p("stream", Required, ""), p("size", Required, "int")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -2558,6 +2786,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("position", Required, "int")],
             variadic: false,
+            ret: "mixed",
         },
     ),
     (
@@ -2566,6 +2795,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "array",
         },
     ),
     (
@@ -2574,6 +2804,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -2582,6 +2813,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("function", Required, "string")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -2594,6 +2826,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("length", Null, "?int"),
             ],
             variadic: false,
+            ret: "int|false",
         },
     ),
     (
@@ -2602,6 +2835,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -2610,6 +2844,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "void",
         },
     ),
     (
@@ -2618,6 +2853,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "void",
         },
     ),
     (
@@ -2626,6 +2862,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -2634,6 +2871,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -2642,6 +2880,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -2650,6 +2889,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[p("object", Unknown, "object")],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -2658,6 +2898,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("object_or_class", Required, "object|string")],
             variadic: false,
+            ret: "array",
         },
     ),
     (
@@ -2666,6 +2907,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("class", Required, "string")],
             variadic: false,
+            ret: "array",
         },
     ),
     (
@@ -2674,6 +2916,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("value", Required, "mixed")],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -2682,6 +2925,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "array",
         },
     ),
     (
@@ -2690,6 +2934,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "array",
         },
     ),
     (
@@ -2698,6 +2943,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "array",
         },
     ),
     (
@@ -2706,6 +2952,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[p("categorize", Bool(false), "bool")],
             variadic: false,
+            ret: "array",
         },
     ),
     (
@@ -2714,6 +2961,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "array",
         },
     ),
     (
@@ -2726,6 +2974,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("encoding", Str("UTF-8"), "string"),
             ],
             variadic: false,
+            ret: "array",
         },
     ),
     (
@@ -2734,6 +2983,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "string|false",
         },
     ),
     (
@@ -2742,6 +2992,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "array",
         },
     ),
     (
@@ -2750,6 +3001,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("object", Required, "object")],
             variadic: false,
+            ret: "array",
         },
     ),
     (
@@ -2758,6 +3010,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[p("object_or_class", Unknown, "object|string")],
             variadic: false,
+            ret: "string|false",
         },
     ),
     (
@@ -2766,6 +3019,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "array",
         },
     ),
     (
@@ -2774,6 +3028,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("resource", Required, "")],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -2782,6 +3037,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("resource", Required, "")],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -2790,6 +3046,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "string|false",
         },
     ),
     (
@@ -2798,6 +3055,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[p("timestamp", Null, "?int")],
             variadic: false,
+            ret: "array",
         },
     ),
     (
@@ -2809,6 +3067,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("local_only", Bool(false), "bool"),
             ],
             variadic: false,
+            ret: "array|string|false",
         },
     ),
     (
@@ -2817,6 +3076,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "int|false",
         },
     ),
     (
@@ -2825,6 +3085,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "int|false",
         },
     ),
     (
@@ -2833,6 +3094,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "int|false",
         },
     ),
     (
@@ -2841,6 +3103,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -2849,6 +3112,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("value", Required, "mixed")],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -2857,6 +3121,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("pattern", Required, "string"), p("flags", Int(0), "int")],
             variadic: false,
+            ret: "array|false",
         },
     ),
     (
@@ -2868,6 +3133,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("timestamp", Null, "?int"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -2883,6 +3149,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("year", Null, "?int"),
             ],
             variadic: false,
+            ret: "int|false",
         },
     ),
     (
@@ -2891,6 +3158,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("num", Required, "GMP|string|int")],
             variadic: false,
+            ret: "GMP",
         },
     ),
     (
@@ -2902,6 +3170,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("num2", Required, "GMP|string|int"),
             ],
             variadic: false,
+            ret: "GMP",
         },
     ),
     (
@@ -2913,6 +3182,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("num2", Required, "GMP|string|int"),
             ],
             variadic: false,
+            ret: "GMP",
         },
     ),
     (
@@ -2921,6 +3191,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 2,
             params: &[p("n", Required, "GMP|string|int"), p("k", Required, "int")],
             variadic: false,
+            ret: "GMP",
         },
     ),
     (
@@ -2932,6 +3203,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("num2", Required, "GMP|string|int"),
             ],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -2940,6 +3212,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("num", Required, "GMP|string|int")],
             variadic: false,
+            ret: "GMP",
         },
     ),
     (
@@ -2952,6 +3225,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("rounding_mode", Int(0), "int"),
             ],
             variadic: false,
+            ret: "GMP",
         },
     ),
     (
@@ -2964,6 +3238,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("rounding_mode", Int(0), "int"),
             ],
             variadic: false,
+            ret: "GMP",
         },
     ),
     (
@@ -2976,6 +3251,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("rounding_mode", Int(0), "int"),
             ],
             variadic: false,
+            ret: "array",
         },
     ),
     (
@@ -2988,6 +3264,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("rounding_mode", Int(0), "int"),
             ],
             variadic: false,
+            ret: "GMP",
         },
     ),
     (
@@ -2999,6 +3276,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("num2", Required, "GMP|string|int"),
             ],
             variadic: false,
+            ret: "GMP",
         },
     ),
     (
@@ -3007,6 +3285,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("num", Required, "GMP|string|int")],
             variadic: false,
+            ret: "GMP",
         },
     ),
     (
@@ -3018,6 +3297,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("num2", Required, "GMP|string|int"),
             ],
             variadic: false,
+            ret: "GMP",
         },
     ),
     (
@@ -3029,6 +3309,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("num2", Required, "GMP|string|int"),
             ],
             variadic: false,
+            ret: "array",
         },
     ),
     (
@@ -3040,6 +3321,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("num2", Required, "GMP|string|int"),
             ],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -3048,6 +3330,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("num", Required, "string|int"), p("base", Int(0), "int")],
             variadic: false,
+            ret: "GMP",
         },
     ),
     (
@@ -3056,6 +3339,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("num", Required, "GMP|string|int")],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -3067,6 +3351,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("num2", Required, "GMP|string|int"),
             ],
             variadic: false,
+            ret: "GMP|false",
         },
     ),
     (
@@ -3078,6 +3363,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("num2", Required, "GMP|string|int"),
             ],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -3089,6 +3375,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("num2", Required, "GMP|string|int"),
             ],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -3100,6 +3387,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("num2", Required, "GMP|string|int"),
             ],
             variadic: false,
+            ret: "GMP",
         },
     ),
     (
@@ -3111,6 +3399,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("num2", Required, "GMP|string|int"),
             ],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -3122,6 +3411,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("num2", Required, "GMP|string|int"),
             ],
             variadic: false,
+            ret: "GMP",
         },
     ),
     (
@@ -3133,6 +3423,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("num2", Required, "GMP|string|int"),
             ],
             variadic: false,
+            ret: "GMP",
         },
     ),
     (
@@ -3141,6 +3432,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("num", Required, "GMP|string|int")],
             variadic: false,
+            ret: "GMP",
         },
     ),
     (
@@ -3149,6 +3441,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("num", Required, "GMP|string|int")],
             variadic: false,
+            ret: "GMP",
         },
     ),
     (
@@ -3160,6 +3453,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("num2", Required, "GMP|string|int"),
             ],
             variadic: false,
+            ret: "GMP",
         },
     ),
     (
@@ -3168,6 +3462,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("num", Required, "GMP|string|int")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -3176,6 +3471,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("num", Required, "GMP|string|int")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -3184,6 +3480,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("num", Required, "GMP|string|int")],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -3195,6 +3492,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("exponent", Required, "int"),
             ],
             variadic: false,
+            ret: "GMP",
         },
     ),
     (
@@ -3207,6 +3505,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("modulus", Required, "GMP|string|int"),
             ],
             variadic: false,
+            ret: "GMP",
         },
     ),
     (
@@ -3218,6 +3517,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("repetitions", Int(10), "int"),
             ],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -3229,6 +3529,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("nth", Required, "int"),
             ],
             variadic: false,
+            ret: "GMP",
         },
     ),
     (
@@ -3240,6 +3541,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("nth", Required, "int"),
             ],
             variadic: false,
+            ret: "array",
         },
     ),
     (
@@ -3251,6 +3553,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("start", Required, "int"),
             ],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -3262,6 +3565,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("start", Required, "int"),
             ],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -3270,6 +3574,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("num", Required, "GMP|string|int")],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -3278,6 +3583,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("num", Required, "GMP|string|int")],
             variadic: false,
+            ret: "GMP",
         },
     ),
     (
@@ -3286,6 +3592,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("num", Required, "GMP|string|int")],
             variadic: false,
+            ret: "array",
         },
     ),
     (
@@ -3297,6 +3604,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("base", Int(10), "int"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -3308,6 +3616,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("num2", Required, "GMP|string|int"),
             ],
             variadic: false,
+            ret: "GMP",
         },
     ),
     (
@@ -3319,6 +3628,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("index", Required, "int"),
             ],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -3330,6 +3640,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("num2", Required, "GMP|string|int"),
             ],
             variadic: false,
+            ret: "GMP",
         },
     ),
     (
@@ -3343,6 +3654,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("options", EmptyArray, "array"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -3351,6 +3663,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "array",
         },
     ),
     (
@@ -3359,6 +3672,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("context", Required, "HashContext")],
             variadic: false,
+            ret: "HashContext",
         },
     ),
     (
@@ -3370,6 +3684,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("user_string", Required, "string"),
             ],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -3383,6 +3698,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("options", EmptyArray, "array"),
             ],
             variadic: false,
+            ret: "string|false",
         },
     ),
     (
@@ -3394,6 +3710,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("binary", Bool(false), "bool"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -3407,6 +3724,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("binary", Bool(false), "bool"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -3415,6 +3733,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "array",
         },
     ),
     (
@@ -3428,6 +3747,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("binary", Bool(false), "bool"),
             ],
             variadic: false,
+            ret: "string|false",
         },
     ),
     (
@@ -3441,6 +3761,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("options", EmptyArray, "array"),
             ],
             variadic: false,
+            ret: "HashContext",
         },
     ),
     (
@@ -3457,6 +3778,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("options", EmptyArray, "array"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -3468,6 +3790,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("data", Required, "string"),
             ],
             variadic: false,
+            ret: "true",
         },
     ),
     (
@@ -3480,6 +3803,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("stream_context", Null, ""),
             ],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -3492,6 +3816,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("length", Int(-1), "int"),
             ],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -3500,6 +3825,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("string", Required, "string")],
             variadic: false,
+            ret: "string|false",
         },
     ),
     (
@@ -3508,6 +3834,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("hex_string", Required, "string")],
             variadic: false,
+            ret: "int|float",
         },
     ),
     (
@@ -3520,6 +3847,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("encoding", Null, "?string"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -3533,6 +3861,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("double_encode", Bool(true), "bool"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -3546,6 +3875,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("double_encode", Bool(true), "bool"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -3554,6 +3884,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("string", Required, "string"), p("flags", Int(11), "int")],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -3567,6 +3898,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("encoding_type", Int(1), "int"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -3575,6 +3907,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 2,
             params: &[p("x", Required, "float"), p("y", Required, "float")],
             variadic: false,
+            ret: "float",
         },
     ),
     (
@@ -3587,6 +3920,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("string", Required, "string"),
             ],
             variadic: false,
+            ret: "string|false",
         },
     ),
     (
@@ -3595,6 +3929,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[p("type", Str("all"), "string")],
             variadic: false,
+            ret: "array|string|false",
         },
     ),
     (
@@ -3606,6 +3941,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("encoding", Null, "?string"),
             ],
             variadic: false,
+            ret: "int|false",
         },
     ),
     (
@@ -3619,6 +3955,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("encoding", Null, "?string"),
             ],
             variadic: false,
+            ret: "int|false",
         },
     ),
     (
@@ -3631,6 +3968,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("encoding", Null, "?string"),
             ],
             variadic: false,
+            ret: "int|false",
         },
     ),
     (
@@ -3644,6 +3982,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("encoding", Null, "?string"),
             ],
             variadic: false,
+            ret: "string|false",
         },
     ),
     (
@@ -3655,6 +3994,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("timestamp", Null, "?int"),
             ],
             variadic: false,
+            ret: "int|false",
         },
     ),
     (
@@ -3663,6 +4003,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[p("enable", Null, "?bool")],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -3674,6 +4015,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("array", Null, "?array"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -3686,6 +4028,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("strict", Bool(false), "bool"),
             ],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -3694,6 +4037,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("option", Required, "string")],
             variadic: false,
+            ret: "string|false",
         },
     ),
     (
@@ -3705,6 +4049,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("value", Required, "string|int|float|bool|null"),
             ],
             variadic: false,
+            ret: "string|false",
         },
     ),
     (
@@ -3713,6 +4058,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 2,
             params: &[p("num1", Required, "int"), p("num2", Required, "int")],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -3724,6 +4070,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("autoload", Bool(true), "bool"),
             ],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -3732,6 +4079,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("value", Required, "mixed"), p("base", Int(10), "int")],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -3740,6 +4088,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("ip", Required, "string")],
             variadic: false,
+            ret: "int|false",
         },
     ),
     (
@@ -3752,6 +4101,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("allow_string", Bool(false), "bool"),
             ],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -3760,6 +4110,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("value", Required, "mixed")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -3768,6 +4119,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("value", Required, "mixed")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -3780,6 +4132,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("callable_name", Null, ""),
             ],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -3788,6 +4141,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("value", Required, "mixed")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -3796,6 +4150,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("filename", Required, "string")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -3804,6 +4159,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("value", Required, "mixed")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -3812,6 +4168,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("filename", Required, "string")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -3820,6 +4177,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("filename", Required, "string")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -3828,6 +4186,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("num", Required, "float")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -3836,6 +4195,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("value", Required, "mixed")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -3844,6 +4204,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("num", Required, "float")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -3852,6 +4213,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("value", Required, "mixed")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -3860,6 +4222,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("value", Required, "mixed")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -3868,6 +4231,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("value", Required, "mixed")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -3876,6 +4240,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("filename", Required, "string")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -3884,6 +4249,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("value", Required, "mixed")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -3892,6 +4258,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("num", Required, "float")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -3900,6 +4267,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("value", Required, "mixed")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -3908,6 +4276,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("value", Required, "mixed")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -3916,6 +4285,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("value", Required, "mixed")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -3924,6 +4294,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("filename", Required, "string")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -3932,6 +4303,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("value", Required, "mixed")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -3940,6 +4312,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("value", Required, "mixed")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -3948,6 +4321,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("value", Required, "mixed")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -3960,6 +4334,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("allow_string", Bool(true), "bool"),
             ],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -3968,6 +4343,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("filename", Required, "string")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -3976,6 +4352,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("filename", Required, "string")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -3988,6 +4365,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("args", Null, "?array"),
             ],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -3996,6 +4374,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("iterator", Required, "Traversable|array")],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -4007,6 +4386,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("preserve_keys", Bool(true), "bool"),
             ],
             variadic: false,
+            ret: "array",
         },
     ),
     (
@@ -4018,6 +4398,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("array", Null, "?array"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -4031,6 +4412,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("flags", Int(0), "int"),
             ],
             variadic: false,
+            ret: "mixed",
         },
     ),
     (
@@ -4043,6 +4425,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("depth", Int(512), "int"),
             ],
             variadic: false,
+            ret: "string|false",
         },
     ),
     (
@@ -4051,6 +4434,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -4059,6 +4443,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -4071,6 +4456,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("flags", Int(0), "int"),
             ],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -4079,6 +4465,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "object|array")],
             variadic: false,
+            ret: "string|int|null",
         },
     ),
     (
@@ -4087,6 +4474,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 2,
             params: &[p("key", Required, ""), p("array", Required, "array")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -4095,6 +4483,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "array"), p("flags", Int(0), "int")],
             variadic: false,
+            ret: "true",
         },
     ),
     (
@@ -4103,6 +4492,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "array"), p("flags", Int(0), "int")],
             variadic: false,
+            ret: "true",
         },
     ),
     (
@@ -4111,6 +4501,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("string", Required, "string")],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -4125,6 +4516,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("deletion_cost", Int(1), "int"),
             ],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -4136,6 +4528,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("base", Float(2.718281828459045), "float"),
             ],
             variadic: false,
+            ret: "float",
         },
     ),
     (
@@ -4144,6 +4537,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("num", Required, "float")],
             variadic: false,
+            ret: "float",
         },
     ),
     (
@@ -4152,6 +4546,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("num", Required, "float")],
             variadic: false,
+            ret: "float",
         },
     ),
     (
@@ -4160,6 +4555,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("ip", Required, "int")],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -4168,6 +4564,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("filename", Required, "string")],
             variadic: false,
+            ret: "array|false",
         },
     ),
     (
@@ -4179,6 +4576,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("characters", Str(" \n\r\t\u{B}\u{0}"), "string"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -4187,6 +4585,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("value", Required, "mixed")],
             variadic: true,
+            ret: "mixed",
         },
     ),
     (
@@ -4198,6 +4597,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("encoding", Null, "?string"),
             ],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -4209,6 +4609,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("encoding", Null, "?string"),
             ],
             variadic: false,
+            ret: "string|false",
         },
     ),
     (
@@ -4221,6 +4622,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("encoding", Null, "?string"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -4233,6 +4635,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("from_encoding", Null, "array|string|null"),
             ],
             variadic: false,
+            ret: "array|string|false",
         },
     ),
     (
@@ -4245,6 +4648,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("encoding", Null, "?string"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -4257,6 +4661,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("encoding", Null, "?string"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -4269,6 +4674,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("strict", Bool(false), "bool"),
             ],
             variadic: false,
+            ret: "string|false",
         },
     ),
     (
@@ -4282,6 +4688,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("hex", Bool(false), "bool"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -4290,6 +4697,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[p("encoding", Null, "?string")],
             variadic: false,
+            ret: "string|bool",
         },
     ),
     (
@@ -4301,6 +4709,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("encoding", Null, "?string"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -4313,6 +4722,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("encoding", Null, "?string"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -4324,6 +4734,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("encoding", Null, "?string"),
             ],
             variadic: false,
+            ret: "int|false",
         },
     ),
     (
@@ -4336,6 +4747,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("encoding", Null, "?string"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -4347,6 +4759,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("encoding", Null, "?string"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -4359,6 +4772,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("limit", Int(-1), "int"),
             ],
             variadic: false,
+            ret: "array|false",
         },
     ),
     (
@@ -4373,6 +4787,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("encoding", Null, "?string"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -4385,6 +4800,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("encoding", Null, "?string"),
             ],
             variadic: false,
+            ret: "array",
         },
     ),
     (
@@ -4398,6 +4814,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("encoding", Null, "?string"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -4412,6 +4829,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("encoding", Null, "?string"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -4425,6 +4843,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("encoding", Null, "?string"),
             ],
             variadic: false,
+            ret: "int|false",
         },
     ),
     (
@@ -4438,6 +4857,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("encoding", Null, "?string"),
             ],
             variadic: false,
+            ret: "string|false",
         },
     ),
     (
@@ -4449,6 +4869,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("encoding", Null, "?string"),
             ],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -4462,6 +4883,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("encoding", Null, "?string"),
             ],
             variadic: false,
+            ret: "int|false",
         },
     ),
     (
@@ -4475,6 +4897,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("encoding", Null, "?string"),
             ],
             variadic: false,
+            ret: "string|false",
         },
     ),
     (
@@ -4488,6 +4911,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("encoding", Null, "?string"),
             ],
             variadic: false,
+            ret: "string|false",
         },
     ),
     (
@@ -4501,6 +4925,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("encoding", Null, "?string"),
             ],
             variadic: false,
+            ret: "int|false",
         },
     ),
     (
@@ -4514,6 +4939,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("encoding", Null, "?string"),
             ],
             variadic: false,
+            ret: "int|false",
         },
     ),
     (
@@ -4527,6 +4953,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("encoding", Null, "?string"),
             ],
             variadic: false,
+            ret: "string|false",
         },
     ),
     (
@@ -4538,6 +4965,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("encoding", Null, "?string"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -4549,6 +4977,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("encoding", Null, "?string"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -4560,6 +4989,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("encoding", Null, "?string"),
             ],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -4573,6 +5003,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("encoding", Null, "?string"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -4585,6 +5016,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("encoding", Null, "?string"),
             ],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -4597,6 +5029,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("encoding", Null, "?string"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -4608,6 +5041,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("encoding", Null, "?string"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -4619,6 +5053,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("binary", Bool(false), "bool"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -4630,6 +5065,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("binary", Bool(false), "bool"),
             ],
             variadic: false,
+            ret: "string|false",
         },
     ),
     (
@@ -4638,6 +5074,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[p("real_usage", Bool(false), "bool")],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -4646,6 +5083,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[p("real_usage", Bool(false), "bool")],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -4657,6 +5095,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("max_phonemes", Int(0), "int"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -4668,6 +5107,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("method", Required, "string"),
             ],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -4676,6 +5116,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[p("as_float", Bool(false), "bool")],
             variadic: false,
+            ret: "string|float",
         },
     ),
     (
@@ -4684,6 +5125,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("value", Required, "mixed")],
             variadic: true,
+            ret: "mixed",
         },
     ),
     (
@@ -4697,6 +5139,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("context", Null, ""),
             ],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -4712,6 +5155,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("year", Null, "?int"),
             ],
             variadic: false,
+            ret: "int|false",
         },
     ),
     (
@@ -4720,6 +5164,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -4728,6 +5173,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[p("min", Unknown, "int"), p("max", Unknown, "int")],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -4736,6 +5182,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[p("seed", Null, "?int"), p("mode", Int(0), "int")],
             variadic: false,
+            ret: "void",
         },
     ),
     (
@@ -4744,6 +5191,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "array")],
             variadic: false,
+            ret: "true",
         },
     ),
     (
@@ -4752,6 +5200,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "array")],
             variadic: false,
+            ret: "true",
         },
     ),
     (
@@ -4760,6 +5209,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "object|array")],
             variadic: false,
+            ret: "mixed",
         },
     ),
     (
@@ -4771,6 +5221,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("use_xhtml", Bool(true), "bool"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -4784,6 +5235,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("thousands_separator", Str(","), "?string"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -4792,6 +5244,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -4800,6 +5253,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -4808,6 +5262,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -4816,6 +5271,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -4824,6 +5280,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "string|false",
         },
     ),
     (
@@ -4832,6 +5289,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "string|false",
         },
     ),
     (
@@ -4840,6 +5298,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "string|false",
         },
     ),
     (
@@ -4848,6 +5307,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "int|false",
         },
     ),
     (
@@ -4856,6 +5316,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -4864,6 +5325,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[p("full_status", Bool(false), "bool")],
             variadic: false,
+            ret: "array",
         },
     ),
     (
@@ -4872,6 +5334,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[p("enable", Bool(true), "bool")],
             variadic: false,
+            ret: "void",
         },
     ),
     (
@@ -4880,6 +5343,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "array",
         },
     ),
     (
@@ -4892,6 +5356,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("flags", Int(112), "int"),
             ],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -4900,6 +5365,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("octal_string", Required, "string")],
             variadic: false,
+            ret: "int|float",
         },
     ),
     (
@@ -4908,6 +5374,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("character", Required, "string")],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -4916,6 +5383,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("format", Required, "string")],
             variadic: true,
+            ret: "string",
         },
     ),
     (
@@ -4924,6 +5392,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 2,
             params: &[p("string", Required, "string"), p("result", Required, "")],
             variadic: false,
+            ret: "void",
         },
     ),
     (
@@ -4932,6 +5401,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("url", Required, "string"), p("component", Int(-1), "int")],
             variadic: false,
+            ret: "array|string|int|false|null",
         },
     ),
     (
@@ -4940,6 +5410,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("path", Required, "string"), p("flags", Int(15), "int")],
             variadic: false,
+            ret: "array|string",
         },
     ),
     (
@@ -4948,6 +5419,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "string|false",
         },
     ),
     (
@@ -4956,6 +5428,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "string|false",
         },
     ),
     (
@@ -4964,6 +5437,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[p("mode", Str("a"), "string")],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -4972,6 +5446,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[p("extension", Null, "?string")],
             variadic: false,
+            ret: "string|false",
         },
     ),
     (
@@ -4980,6 +5455,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "float",
         },
     ),
     (
@@ -4988,6 +5464,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "object|array")],
             variadic: false,
+            ret: "mixed",
         },
     ),
     (
@@ -4999,6 +5476,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("exponent", Required, "mixed"),
             ],
             variadic: false,
+            ret: "object|int|float",
         },
     ),
     (
@@ -5013,6 +5491,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("count", Null, ""),
             ],
             variadic: false,
+            ret: "array|string|null",
         },
     ),
     (
@@ -5025,6 +5504,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("flags", Int(0), "int"),
             ],
             variadic: false,
+            ret: "array|false",
         },
     ),
     (
@@ -5033,6 +5513,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -5041,6 +5522,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -5055,6 +5537,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("offset", Int(0), "int"),
             ],
             variadic: false,
+            ret: "int|false",
         },
     ),
     (
@@ -5069,6 +5552,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("offset", Int(0), "int"),
             ],
             variadic: false,
+            ret: "int|false",
         },
     ),
     (
@@ -5080,6 +5564,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("delimiter", Null, "?string"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -5094,6 +5579,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("count", Null, ""),
             ],
             variadic: false,
+            ret: "array|string|null",
         },
     ),
     (
@@ -5109,6 +5595,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("flags", Int(0), "int"),
             ],
             variadic: false,
+            ret: "array|string|null",
         },
     ),
     (
@@ -5123,6 +5610,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("flags", Int(0), "int"),
             ],
             variadic: false,
+            ret: "array|string|null",
         },
     ),
     (
@@ -5136,6 +5624,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("flags", Int(0), "int"),
             ],
             variadic: false,
+            ret: "array|false",
         },
     ),
     (
@@ -5144,6 +5633,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "object|array")],
             variadic: false,
+            ret: "mixed",
         },
     ),
     (
@@ -5155,6 +5645,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("return", Bool(false), "bool"),
             ],
             variadic: false,
+            ret: "string|true",
         },
     ),
     (
@@ -5163,6 +5654,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("format", Required, "string")],
             variadic: true,
+            ret: "int",
         },
     ),
     (
@@ -5174,6 +5666,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("property", Required, "string"),
             ],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -5182,6 +5675,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("assignment", Required, "string")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -5190,6 +5684,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("string", Required, "string")],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -5198,6 +5693,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("string", Required, "string")],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -5206,6 +5702,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("string", Required, "string")],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -5214,6 +5711,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("num", Required, "float")],
             variadic: false,
+            ret: "float",
         },
     ),
     (
@@ -5222,6 +5720,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[p("min", Unknown, "int"), p("max", Unknown, "int")],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -5230,6 +5729,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("length", Required, "int")],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -5238,6 +5738,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 2,
             params: &[p("min", Required, "int"), p("max", Required, "int")],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -5250,6 +5751,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("step", Int(1), "int|float"),
             ],
             variadic: false,
+            ret: "array",
         },
     ),
     (
@@ -5258,6 +5760,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("string", Required, "string")],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -5266,6 +5769,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("string", Required, "string")],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -5278,6 +5782,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("context", Null, ""),
             ],
             variadic: false,
+            ret: "int|false",
         },
     ),
     (
@@ -5286,6 +5791,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("path", Required, "string")],
             variadic: false,
+            ret: "string|false",
         },
     ),
     (
@@ -5294,6 +5800,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("callback", Required, "callable")],
             variadic: true,
+            ret: "void",
         },
     ),
     (
@@ -5306,6 +5813,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("context", Null, ""),
             ],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -5314,6 +5822,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "object|array")],
             variadic: false,
+            ret: "mixed",
         },
     ),
     (
@@ -5322,6 +5831,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "true",
         },
     ),
     (
@@ -5330,6 +5840,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "true",
         },
     ),
     (
@@ -5338,6 +5849,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("stream", Required, "")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -5346,6 +5858,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("directory", Required, "string"), p("context", Null, "")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -5358,6 +5871,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("mode", Unknown, "RoundingMode|int"),
             ],
             variadic: false,
+            ret: "float",
         },
     ),
     (
@@ -5366,6 +5880,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "array"), p("flags", Int(0), "int")],
             variadic: false,
+            ret: "true",
         },
     ),
     (
@@ -5377,6 +5892,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("characters", Str(" \n\r\t\u{B}\u{0}"), "string"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -5389,6 +5905,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("context", Null, ""),
             ],
             variadic: false,
+            ret: "array|false",
         },
     ),
     (
@@ -5397,6 +5914,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("value", Required, "mixed")],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -5408,6 +5926,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("error_levels", Int(30719), "int"),
             ],
             variadic: false,
+            ret: "",
         },
     ),
     (
@@ -5416,6 +5935,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("callback", Required, "?callable")],
             variadic: false,
+            ret: "",
         },
     ),
     (
@@ -5424,6 +5944,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("seconds", Required, "int")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -5432,6 +5953,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 2,
             params: &[p("category", Required, "int"), p("locales", Required, "")],
             variadic: true,
+            ret: "string|false",
         },
     ),
     (
@@ -5440,6 +5962,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 2,
             params: &[p("var", Required, "mixed"), p("type", Required, "string")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -5451,6 +5974,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("binary", Bool(false), "bool"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -5462,6 +5986,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("binary", Bool(false), "bool"),
             ],
             variadic: false,
+            ret: "string|false",
         },
     ),
     (
@@ -5470,6 +5995,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "array")],
             variadic: false,
+            ret: "true",
         },
     ),
     (
@@ -5482,6 +6008,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("percent", Null, ""),
             ],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -5490,6 +6017,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("num", Required, "float")],
             variadic: false,
+            ret: "float",
         },
     ),
     (
@@ -5498,6 +6026,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("num", Required, "float")],
             variadic: false,
+            ret: "float",
         },
     ),
     (
@@ -5509,6 +6038,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("mode", Int(0), "int"),
             ],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -5517,6 +6047,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("seconds", Required, "int")],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -5525,6 +6056,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("array", Required, "array"), p("flags", Int(0), "int")],
             variadic: false,
+            ret: "true",
         },
     ),
     (
@@ -5533,6 +6065,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("string", Required, "string")],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -5544,6 +6077,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("file_extensions", Null, "?string"),
             ],
             variadic: false,
+            ret: "void",
         },
     ),
     (
@@ -5552,6 +6086,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("class", Required, "string")],
             variadic: false,
+            ret: "void",
         },
     ),
     (
@@ -5560,6 +6095,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[p("file_extensions", Null, "?string")],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -5568,6 +6104,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "array",
         },
     ),
     (
@@ -5580,6 +6117,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("prepend", Bool(false), "bool"),
             ],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -5588,6 +6126,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("callback", Required, "callable")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -5596,6 +6135,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("object", Required, "object")],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -5604,6 +6144,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("object", Required, "object")],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -5612,6 +6153,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("format", Required, "string")],
             variadic: true,
+            ret: "string",
         },
     ),
     (
@@ -5620,6 +6162,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("num", Required, "float")],
             variadic: false,
+            ret: "float",
         },
     ),
     (
@@ -5628,6 +6171,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[p("seed", Null, "?int"), p("mode", Int(0), "int")],
             variadic: false,
+            ret: "void",
         },
     ),
     (
@@ -5639,6 +6183,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("format", Required, "string"),
             ],
             variadic: true,
+            ret: "array|int|null",
         },
     ),
     (
@@ -5647,6 +6192,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("filename", Required, "string")],
             variadic: false,
+            ret: "array|false",
         },
     ),
     (
@@ -5658,6 +6204,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("needle", Required, "string"),
             ],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -5666,6 +6213,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("string", Required, "string")],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -5677,6 +6225,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("needle", Required, "string"),
             ],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -5690,6 +6239,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("escape", Str("\\"), "string"),
             ],
             variadic: false,
+            ret: "array",
         },
     ),
     (
@@ -5698,6 +6248,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("string", Required, "string")],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -5711,6 +6262,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("count", Null, ""),
             ],
             variadic: false,
+            ret: "array|string",
         },
     ),
     (
@@ -5724,6 +6276,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("pad_type", Int(1), "int"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -5732,6 +6285,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 2,
             params: &[p("string", Required, "string"), p("times", Required, "int")],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -5745,6 +6299,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("count", Null, ""),
             ],
             variadic: false,
+            ret: "array|string",
         },
     ),
     (
@@ -5753,6 +6308,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("string", Required, "string")],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -5761,6 +6317,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("string", Required, "string")],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -5769,6 +6326,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("string", Required, "string"), p("length", Int(1), "int")],
             variadic: false,
+            ret: "array",
         },
     ),
     (
@@ -5780,6 +6338,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("needle", Required, "string"),
             ],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -5792,6 +6351,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("characters", Null, "?string"),
             ],
             variadic: false,
+            ret: "array|int",
         },
     ),
     (
@@ -5803,6 +6363,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("string2", Required, "string"),
             ],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -5815,6 +6376,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("before_needle", Bool(false), "bool"),
             ],
             variadic: false,
+            ret: "string|false",
         },
     ),
     (
@@ -5826,6 +6388,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("string2", Required, "string"),
             ],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -5837,6 +6400,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("string2", Required, "string"),
             ],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -5850,6 +6414,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("length", Null, "?int"),
             ],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -5862,6 +6427,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("offset", Int(-1), "int"),
             ],
             variadic: false,
+            ret: "string|false",
         },
     ),
     (
@@ -5873,6 +6439,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("allowed_tags", Null, "array|string|null"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -5881,6 +6448,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("string", Required, "string")],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -5893,6 +6461,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("offset", Int(0), "int"),
             ],
             variadic: false,
+            ret: "int|false",
         },
     ),
     (
@@ -5901,6 +6470,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("string", Required, "string")],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -5913,6 +6483,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("before_needle", Bool(false), "bool"),
             ],
             variadic: false,
+            ret: "string|false",
         },
     ),
     (
@@ -5921,6 +6492,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("string", Required, "string")],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -5932,6 +6504,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("string2", Required, "string"),
             ],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -5943,6 +6516,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("string2", Required, "string"),
             ],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -5955,6 +6529,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("length", Required, "int"),
             ],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -5967,6 +6542,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("length", Required, "int"),
             ],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -5978,6 +6554,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("characters", Required, "string"),
             ],
             variadic: false,
+            ret: "string|false",
         },
     ),
     (
@@ -5990,6 +6567,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("offset", Int(0), "int"),
             ],
             variadic: false,
+            ret: "int|false",
         },
     ),
     (
@@ -6002,6 +6580,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("before_needle", Bool(false), "bool"),
             ],
             variadic: false,
+            ret: "string|false",
         },
     ),
     (
@@ -6010,6 +6589,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("string", Required, "string")],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -6022,6 +6602,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("offset", Int(0), "int"),
             ],
             variadic: false,
+            ret: "int|false",
         },
     ),
     (
@@ -6034,6 +6615,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("offset", Int(0), "int"),
             ],
             variadic: false,
+            ret: "int|false",
         },
     ),
     (
@@ -6047,6 +6629,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("length", Null, "?int"),
             ],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -6059,6 +6642,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("before_needle", Bool(false), "bool"),
             ],
             variadic: false,
+            ret: "string|false",
         },
     ),
     (
@@ -6067,6 +6651,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("string", Required, "string"), p("token", Null, "?string")],
             variadic: false,
+            ret: "string|false",
         },
     ),
     (
@@ -6075,6 +6660,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("string", Required, "string")],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -6086,6 +6672,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("baseTimestamp", Null, "?int"),
             ],
             variadic: false,
+            ret: "int|false",
         },
     ),
     (
@@ -6094,6 +6681,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("string", Required, "string")],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -6106,6 +6694,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("to", Null, "?string"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -6114,6 +6703,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("value", Required, "mixed")],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -6126,6 +6716,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("length", Null, "?int"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -6140,6 +6731,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("case_insensitive", Bool(false), "bool"),
             ],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -6153,6 +6745,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("length", Null, "?int"),
             ],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -6166,6 +6759,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("length", Null, "array|int|null"),
             ],
             variadic: false,
+            ret: "array|string",
         },
     ),
     (
@@ -6174,6 +6768,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -6182,6 +6777,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "array|false",
         },
     ),
     (
@@ -6190,6 +6786,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("num", Required, "float")],
             variadic: false,
+            ret: "float",
         },
     ),
     (
@@ -6198,6 +6795,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("num", Required, "float")],
             variadic: false,
+            ret: "float",
         },
     ),
     (
@@ -6209,6 +6807,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("prefix", Required, "string"),
             ],
             variadic: false,
+            ret: "string|false",
         },
     ),
     (
@@ -6217,6 +6816,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -6228,6 +6828,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("nanoseconds", Required, "int"),
             ],
             variadic: false,
+            ret: "array|bool",
         },
     ),
     (
@@ -6236,6 +6837,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("object", Required, "DateTimeZone")],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -6247,6 +6849,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("datetime", Required, "DateTimeInterface"),
             ],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -6255,6 +6858,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("timezone", Required, "string")],
             variadic: false,
+            ret: "DateTimeZone|false",
         },
     ),
     (
@@ -6263,6 +6867,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 0,
             params: &[],
             variadic: false,
+            ret: "",
         },
     ),
     (
@@ -6275,6 +6880,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("atime", Null, "?int"),
             ],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -6286,6 +6892,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("autoload", Bool(true), "bool"),
             ],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -6297,6 +6904,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("error_level", Int(1024), "int"),
             ],
             variadic: false,
+            ret: "true",
         },
     ),
     (
@@ -6308,6 +6916,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("characters", Str(" \n\r\t\u{B}\u{0}"), "string"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -6319,6 +6928,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("callback", Required, "callable"),
             ],
             variadic: false,
+            ret: "true",
         },
     ),
     (
@@ -6327,6 +6937,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("string", Required, "string")],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -6338,6 +6949,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("separators", Str(" \t\r\n\u{C}\u{B}"), "string"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -6349,6 +6961,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("callback", Required, "callable"),
             ],
             variadic: false,
+            ret: "true",
         },
     ),
     (
@@ -6360,6 +6973,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("more_entropy", Bool(false), "bool"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -6368,6 +6982,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("filename", Required, "string"), p("context", Null, "")],
             variadic: false,
+            ret: "bool",
         },
     ),
     (
@@ -6380,6 +6995,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("offset", Int(0), "int"),
             ],
             variadic: false,
+            ret: "array|false",
         },
     ),
     (
@@ -6391,6 +7007,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("options", EmptyArray, "array"),
             ],
             variadic: false,
+            ret: "mixed",
         },
     ),
     (
@@ -6399,6 +7016,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("string", Required, "string")],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -6407,6 +7025,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("string", Required, "string")],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -6418,6 +7037,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("error_level", Int(1024), "int"),
             ],
             variadic: false,
+            ret: "true",
         },
     ),
     (
@@ -6426,6 +7046,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("microseconds", Required, "int")],
             variadic: false,
+            ret: "void",
         },
     ),
     (
@@ -6437,6 +7058,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("callback", Required, "callable"),
             ],
             variadic: false,
+            ret: "true",
         },
     ),
     (
@@ -6445,6 +7067,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("string", Required, "string")],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -6453,6 +7076,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("string", Required, "string")],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -6461,6 +7085,7 @@ static SIGS: &[(&str, Sig)] = &[
             req: 1,
             params: &[p("value", Required, "mixed")],
             variadic: true,
+            ret: "void",
         },
     ),
     (
@@ -6472,6 +7097,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("return", Bool(false), "bool"),
             ],
             variadic: false,
+            ret: "?string",
         },
     ),
     (
@@ -6484,6 +7110,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("operator", Null, "?string"),
             ],
             variadic: false,
+            ret: "int|bool",
         },
     ),
     (
@@ -6496,6 +7123,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("values", Required, "array"),
             ],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -6507,6 +7135,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("values", Required, "array"),
             ],
             variadic: false,
+            ret: "int",
         },
     ),
     (
@@ -6518,6 +7147,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("values", Required, "array"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
     (
@@ -6531,6 +7161,7 @@ static SIGS: &[(&str, Sig)] = &[
                 p("cut_long_words", Bool(false), "bool"),
             ],
             variadic: false,
+            ret: "string",
         },
     ),
 ];

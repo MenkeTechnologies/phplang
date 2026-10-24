@@ -7713,18 +7713,3 @@ pub fn signature_params(name: &str) -> Option<Vec<SigParam>> {
         .collect();
     Some(params)
 }
-
-/// The return type a library function's corpus signature declares, split
-/// into its alternatives (`?int` → `[int, null]`), or `None` without one.
-pub fn signature_return(name: &str) -> Option<Vec<String>> {
-    let ret = function_signature(name)?.rsplit_once("):")?.1.trim();
-    let (nullable, ret) = match ret.strip_prefix('?') {
-        Some(r) => (true, r),
-        None => (false, ret),
-    };
-    let mut parts: Vec<String> = ret.split('|').map(|p| p.trim().to_string()).collect();
-    if nullable {
-        parts.push("null".to_string());
-    }
-    Some(parts)
-}

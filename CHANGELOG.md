@@ -26,6 +26,17 @@ comment above it.
 
 ---
 
+## Round 33: library return types from the reference
+
+* `ReflectionFunction::getReturnType()` on a library function answers the
+  type the reference declares (`str_replace` is `array|string`, `sort` is
+  `true`, `var_export` is `?string`). `scripts/gen-argsig.php` now records each
+  function's reflected return type in `src/argsig.rs` beside its parameters;
+  they were read from the corpus signatures, which spell many of them
+  narrower or wider. All 614 functions in the table agree with the reference.
+
+---
+
 ## Round 32: computed static property names, static references
 
 Measured under `PHP 8.5.12 (cli)`; pinned in `tests/static_property_access.rs`.

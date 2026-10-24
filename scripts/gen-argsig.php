@@ -96,12 +96,14 @@ foreach (corpus_functions("$root/src/corpus.rs") as $name) {
             rust_str($t ? (string) $t : "")
         );
     }
+    $ret = $r->getReturnType();
     $rows[] = sprintf(
-        "    (%s, Sig { req: %d, params: &[%s], variadic: %s }),",
+        "    (%s, Sig { req: %d, params: &[%s], variadic: %s, ret: %s }),",
         rust_str(strtolower($name)),
         $r->getNumberOfRequiredParameters(),
         implode(", ", $params),
-        $variadic ? "true" : "false"
+        $variadic ? "true" : "false",
+        rust_str($ret ? (string) $ret : "")
     );
 }
 
