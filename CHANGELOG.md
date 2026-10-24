@@ -70,6 +70,14 @@ comment above it.
   function or method reports that function's statics and its name
   (`["function"]`); `getStaticVariables()` of a function or method answers
   its statics.
+* Doc comments are kept: `getDocComment()` of a class, function, method,
+  closure, property, class constant or enum case answers the `/** … */`
+  before it — the scanner keeps the last one until a declaration takes it or
+  a `{`/`}` drops it, as the reference's does. Reflection's `$class` of an
+  anonymous class's member is the class's full NUL-suffixed name.
+* `ReflectionEnumUnitCase` and `ReflectionEnumBackedCase` exist;
+  `ReflectionEnum::getCases()`/`getCase()` answer them (`getCases()`
+  answered the case objects).
 
 ---
 

@@ -476,3 +476,107 @@ array(0) {
 "##
     );
 }
+
+#[test]
+fn doc_comments_are_reported_by_reflection() {
+    let src = r##"<?php /** d1 */ $x = 1; function f(){}
+/** d2 */
+#[Attr]
+function g(){}
+#[Attr]
+/** d3 */
+function h(){}
+/** d4 */ final class C { /** pd */ public $p; /** cd */ const K = 1; /** md */ public static function m() {} /** pd2 */ public int $q; public /** pd3 */ $r; public $b; const X = 1, Y = 2; /** k */ const Z = 1, W = 2; function n() {} }
+/** d5 */ /** d6 */ function k(){}
+/** d7 */ abstract class D { /** dm */ function dm() {} /** dp */ public $dp; /** dc */ const DC = 1; }
+class D2 extends D {}
+/** d8 */ interface I { /** ic */ const IC = 1; } /** d9 */ trait T { /** tm */ function tm() {} } /** d10 */ enum E { /** case */ case A; case B; }
+class U implements I { use T; }
+foreach (["f","g","h","k"] as $fn) var_dump((new ReflectionFunction($fn))->getDocComment());
+$c = new ReflectionClass("C"); var_dump($c->getDocComment(), $c->getProperty("p")->getDocComment(), $c->getReflectionConstant("K")->getDocComment(), $c->getMethod("m")->getDocComment(), $c->getProperty("q")->getDocComment(), $c->getProperty("r")->getDocComment(), $c->getProperty("b")->getDocComment(), $c->getMethod("n")->getDocComment());
+foreach (["X","Y","Z","W"] as $k) var_dump($c->getReflectionConstant($k)->getDocComment());
+foreach (["D","I","T","E","D2"] as $x) var_dump((new ReflectionClass($x))->getDocComment());
+var_dump((new ReflectionMethod("D2", "dm"))->getDocComment(), (new ReflectionProperty("D2", "dp"))->getDocComment(), (new ReflectionClassConstant("D2", "DC"))->getDocComment(), (new ReflectionClassConstant("U", "IC"))->getDocComment(), (new ReflectionMethod("U", "tm"))->getDocComment());
+var_dump((new ReflectionFunction(/** cl */ function() {}))->getDocComment(), (new ReflectionFunction(/** ar */ fn() => 1))->getDocComment(), (new ReflectionFunction(/** st */ static fn() => 1))->getDocComment());
+$o = new class { /** anon */ public $z; }; var_dump((new ReflectionObject($o))->getDocComment(), (new ReflectionProperty($o, "z"))->getDocComment());
+var_dump((new ReflectionClassConstant("E", "A"))->getDocComment(), (new ReflectionClassConstant("E", "B"))->getDocComment());
+/** a1 */ $f1 = function() {}; $f2 = function() {}; var_dump((new ReflectionFunction($f2))->getDocComment(), (new ReflectionFunction($f1->bindTo(null)))->getDocComment());
+var_dump((new ReflectionFunction("strlen"))->getDocComment(), (new ReflectionClass("Exception"))->getDocComment());"##;
+    assert_eq!(
+        run(src),
+        r##"string(9) "/** d1 */"
+string(9) "/** d2 */"
+string(9) "/** d3 */"
+string(9) "/** d6 */"
+string(9) "/** d4 */"
+string(9) "/** pd */"
+string(9) "/** cd */"
+string(9) "/** md */"
+string(10) "/** pd2 */"
+string(10) "/** pd3 */"
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+string(8) "/** k */"
+bool(false)
+string(9) "/** d7 */"
+string(9) "/** d8 */"
+string(9) "/** d9 */"
+string(10) "/** d10 */"
+bool(false)
+string(9) "/** dm */"
+string(9) "/** dp */"
+string(9) "/** dc */"
+string(9) "/** ic */"
+string(9) "/** tm */"
+string(9) "/** cl */"
+string(9) "/** ar */"
+string(9) "/** st */"
+bool(false)
+string(11) "/** anon */"
+string(11) "/** case */"
+bool(false)
+bool(false)
+string(9) "/** a1 */"
+bool(false)
+bool(false)
+"##
+    );
+}
+
+#[test]
+fn enum_cases_reflect_as_case_objects() {
+    let src = r##"<?php enum E { /** a */ case A; const K = 1; } enum B: int { case X = 3; }
+echo get_class((new ReflectionEnum("E"))->getCases()[0]), "\n"; var_dump((new ReflectionEnum("B"))->getCase("X")->getBackingValue(), (new ReflectionEnumUnitCase("E","A"))->getEnum()->name, (new ReflectionEnumUnitCase("E","A"))->getValue(), (new ReflectionEnumUnitCase("E","A"))->getDocComment(), get_class((new ReflectionEnum("B"))->getCases()[0]));
+try { new ReflectionEnumUnitCase("E","K"); } catch (Exception $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+try { new ReflectionEnumBackedCase("E","A"); } catch (Exception $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+try { (new ReflectionEnum("E"))->getCase("Z"); } catch (Exception $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+try { (new ReflectionEnum("E"))->getCase("K"); } catch (Exception $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }"##;
+    assert_eq!(
+        run(src),
+        r##"ReflectionEnumUnitCase
+int(3)
+string(1) "E"
+enum(E::A)
+string(8) "/** a */"
+string(24) "ReflectionEnumBackedCase"
+ReflectionException: Constant E::K is not a case
+ReflectionException: Enum case E::A is not a backed case
+ReflectionException: Case E::Z does not exist
+ReflectionException: E::K is not a case
+"##
+    );
+}
+
+#[test]
+fn a_brace_drops_the_pending_doc_comment() {
+    let src = r##"<?php /** x */ if (1) { } function q() {} var_dump((new ReflectionFunction("q"))->getDocComment());
+/** y */ $a = [1]; class R {} var_dump((new ReflectionClass("R"))->getDocComment());"##;
+    assert_eq!(
+        run(src),
+        r##"bool(false)
+string(8) "/** y */"
+"##
+    );
+}

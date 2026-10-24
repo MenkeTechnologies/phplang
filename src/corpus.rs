@@ -7552,7 +7552,7 @@ pub const CORPUS: &[Entry] = &[
         "ReflectionClass",
         "Prelude class",
         "class ReflectionClass {\n    public string $name;\n    __construct(object|string $objectOrClass)\n    getName()  getShortName()  getNamespaceName()  inNamespace()\n    isInterface()  isTrait()  isEnum()  isAbstract()  isFinal()  isInstantiable()  isInternal()  isUserDefined()  isAnonymous()\n    getParentClass()  getInterfaceNames()  getInterfaces()  getTraitNames()  implementsInterface()  isSubclassOf()  isInstance()\n    hasMethod()  getMethod()  getMethods(?int $filter)  getConstructor()\n    hasProperty()  getProperty()  getProperties(?int $filter)  getDefaultProperties()  getStaticProperties()  getStaticPropertyValue()  setStaticPropertyValue()\n    hasConstant()  getConstant()  getConstants()  getReflectionConstant()\n    newInstance(...$args)  newInstanceArgs(array $args)  newInstanceWithoutConstructor()\n}",
-        "A class, interface, trait or enum by name or by instance; `ReflectionException: Class \"X\" does not exist` otherwise. Methods and properties are listed own first (a trait's included) in declaration order, then each ancestor's not overridden — an ancestor's private members are not inherited — and an abstract class lists its interfaces' methods; constants list an enum's cases first. Made from an object, `hasProperty` also sees its dynamic properties. DIVERGENCE: `getDocComment()` and `getFileName()` answer `false`, `getAttributes()` an empty array, and there is no `__toString()`.",
+        "A class, interface, trait or enum by name or by instance; `ReflectionException: Class \"X\" does not exist` otherwise. Methods and properties are listed own first (a trait's included) in declaration order, then each ancestor's not overridden — an ancestor's private members are not inherited — and an abstract class lists its interfaces' methods; constants list an enum's cases first. Made from an object, `hasProperty` also sees its dynamic properties. `getDocComment()` answers the `/** … */` comment the declaration took — the last one before it, unless a `{` or `}` came between or an earlier declaration took it — for a class, function, method, closure, property, constant or enum case, else `false`. DIVERGENCE: `getFileName()` answers `false`, `getAttributes()` an empty array, and there is no `__toString()`.",
         "class A { public $x = 1; } echo (new ReflectionClass(\"A\"))->getProperties()[0]->name;   // => x",
     ),
     (
@@ -7565,8 +7565,8 @@ pub const CORPUS: &[Entry] = &[
     (
         "ReflectionEnum",
         "Prelude class",
-        "class ReflectionEnum extends ReflectionClass { isBacked()  getCases()  hasCase() }",
-        "`ReflectionClass` of an enum; `ReflectionException` for anything else. `getCases()` answers the case objects themselves.",
+        "class ReflectionEnum extends ReflectionClass { isBacked()  getCases()  hasCase()  getCase() }\nclass ReflectionEnumUnitCase extends ReflectionClassConstant { getEnum()  getValue() }\nclass ReflectionEnumBackedCase extends ReflectionEnumUnitCase { getBackingValue() }",
+        "`ReflectionClass` of an enum; `ReflectionException` for anything else. `getCases()` and `getCase()` answer `ReflectionEnumUnitCase` (`ReflectionEnumBackedCase` for a backed enum) objects; a constant that is not a case, a missing case, and a pure case asked for as backed are the reference's `ReflectionException`s.",
         "",
     ),
     (

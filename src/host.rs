@@ -626,6 +626,8 @@ pub struct FuncDef {
     /// constant initializer (the value before the declaration first runs).
     /// Empty for a closure, whose objects carry their own.
     pub statics: Vec<(String, Option<Chunk>)>,
+    /// Its doc comment, for `getDocComment()`.
+    pub doc: Option<String>,
 }
 
 /// Where a closure literal was WRITTEN, which is what PHP 8.4 names a closure
@@ -696,6 +698,9 @@ pub enum ContainerIssue {
 /// were resolved to concrete class names at compile time.
 #[derive(Debug, Clone)]
 pub struct ClassDef {
+    /// The doc comments of the declaration and its members — see
+    /// `ClassDecl::docs`.
+    pub docs: Vec<(String, String)>,
     /// The class name in its declared spelling. The map is keyed by the
     /// lowercased name (PHP class lookup is case-insensitive), so this is the
     /// only place the source casing survives for display — a stack trace names
@@ -891,6 +896,8 @@ pub enum PhpObj {
         /// Where the literal was written, which names the frames it opens. It
         /// travels with the closure VALUE, so `Closure::bind` cannot move it.
         site: Option<DeclSite>,
+        /// The literal's doc comment, for `getDocComment()`.
+        doc: Option<String>,
     },
     /// A live generator: an index into `PhpHost::generators`, where the suspended
     /// stackful coroutine and its execution context live. Built by calling a
@@ -4297,6 +4304,7 @@ impl PhpHost {
             ret: def.ret,
             is_static,
             site: def.closure_site,
+            doc: def.doc,
         });
         Value::Obj((self.objs.len() - 1) as u32)
     }
@@ -4341,27 +4349,30 @@ impl PhpHost {
         this: Option<Value>,
         scope: Option<String>,
     ) -> Option<Value> {
-        let (params, chunk, captured, is_generator, ret, is_static, site) = match self.as_array(v) {
-            Some(PhpObj::Closure {
-                params,
-                chunk,
-                captured,
-                is_generator,
-                ret,
-                is_static,
-                site,
-                ..
-            }) => (
-                params.clone(),
-                chunk.clone(),
-                captured.clone(),
-                *is_generator,
-                ret.clone(),
-                *is_static,
-                site.clone(),
-            ),
-            _ => return None,
-        };
+        let (params, chunk, captured, is_generator, ret, is_static, site, doc) =
+            match self.as_array(v) {
+                Some(PhpObj::Closure {
+                    params,
+                    chunk,
+                    captured,
+                    is_generator,
+                    ret,
+                    is_static,
+                    site,
+                    doc,
+                    ..
+                }) => (
+                    params.clone(),
+                    chunk.clone(),
+                    captured.clone(),
+                    *is_generator,
+                    ret.clone(),
+                    *is_static,
+                    site.clone(),
+                    doc.clone(),
+                ),
+                _ => return None,
+            };
         let mut captured = captured;
         self.fork_closure_statics(&mut captured);
         // `do_closure_bind`: the new object's class, or the new scope without
@@ -4387,6 +4398,7 @@ impl PhpHost {
             // The rebound closure is the same literal, so it keeps the site the
             // original was written at — which is what PHP reports.
             site,
+            doc,
         });
         Some(Value::Obj((self.objs.len() - 1) as u32))
     }
@@ -10357,6 +10369,54 @@ pub fn function_statics(name: &str) -> Vec<(String, Value)> {
     defs.map(|d| defined_statics(&d)).unwrap_or_default()
 }
 
+/// The doc comment `getDocComment()` reports: of a closure object
+/// (`kind` "closure", `target` the closure), a function ("function", its
+/// name), a method ("method", class, name), or a class or one of its members
+/// ("class", "prop", "const", "case" — class, member name), the member found
+/// on the class or the nearest ancestor (or interface) that declares it.
+pub fn doc_comment(kind: &str, target: &Value, name: &str) -> Option<String> {
+    with_host(|h| match kind {
+        "closure" => match h.as_array(target) {
+            Some(PhpObj::Closure { doc, .. }) => doc.clone(),
+            _ => None,
+        },
+        "function" => {
+            let lower = unanchored(&h.to_str(target)).to_ascii_lowercase();
+            h.functions.get(&lower).and_then(|d| d.doc.clone())
+        }
+        "method" => h
+            .resolve_method(&h.to_str(target), name)
+            .and_then(|(_, d)| d.doc),
+        _ => {
+            let key = if kind == "class" {
+                "class".to_string()
+            } else {
+                format!("{kind}:{name}")
+            };
+            let mut pending = vec![h.to_str(target).to_ascii_lowercase()];
+            let mut seen = Vec::new();
+            while let Some(c) = pending.pop() {
+                if seen.contains(&c) {
+                    continue;
+                }
+                let Some(def) = h.classes.get(&c) else {
+                    continue;
+                };
+                if let Some((_, d)) = def.docs.iter().find(|(k, _)| *k == key) {
+                    return Some(d.clone());
+                }
+                if kind == "class" {
+                    return None;
+                }
+                pending.extend(def.interfaces.iter().rev().map(|i| i.to_ascii_lowercase()));
+                pending.extend(def.parent.iter().map(|p| p.to_ascii_lowercase()));
+                seen.push(c);
+            }
+            None
+        }
+    })
+}
+
 /// The `static` variables of method `class::method` (see [`defined_statics`]).
 pub fn method_statics(class: &str, method: &str) -> Vec<(String, Value)> {
     let defs = with_host(|h| h.resolve_method(class, method).map(|(_, d)| d.statics));
@@ -14533,7 +14593,7 @@ impl PhpHost {
             };
             return Some(ReflMember {
                 name: spelled.to_string(),
-                class: self.class_display_name(c),
+                class: self.declared_class_name(c),
                 modifiers: refl_flags::PUBLIC | refl_flags::STATIC,
                 ty: None,
                 has_default: false,
@@ -14557,7 +14617,7 @@ impl PhpHost {
         }
         Some(ReflMember {
             name: spelled,
-            class: self.class_display_name(c),
+            class: self.declared_class_name(c),
             modifiers,
             ty: f.ret.clone(),
             has_default: false,
@@ -14669,7 +14729,7 @@ impl PhpHost {
         let has_default = ty.is_none() || !def.uninit_props.contains_key(name);
         Some(ReflMember {
             name: name.to_string(),
-            class: self.class_display_name(c),
+            class: self.declared_class_name(c),
             modifiers,
             ty,
             has_default,

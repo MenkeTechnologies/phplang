@@ -456,6 +456,8 @@ pub struct Compiler {
     /// copy of them, created with the closure; a function keeps the list on its
     /// definition, for a dump or `getStaticVariables` before the first call.
     body_statics: Option<Vec<(String, Option<Expr>)>>,
+    /// The doc comment of the closure literal about to be compiled.
+    closure_doc: Option<String>,
     /// By-reference parameter positions per function (lowercased name), gathered
     /// in a pre-pass so a call can write the callee's final by-ref values back to
     /// the caller's variables even when the function is declared later.
@@ -1823,6 +1825,7 @@ impl Compiler {
                 by_ref_return,
                 namespace,
                 deprecated,
+                doc,
             } => {
                 if top {
                     if let Some(msg) = self.fn_redeclare_msg(name, namespace) {
@@ -1881,6 +1884,7 @@ impl Compiler {
                         declared: Some(name.clone()),
                         deprecated: deprecated.clone(),
                         statics,
+                        doc: doc.clone(),
                     },
                 ));
                 if !top {
@@ -3297,6 +3301,11 @@ impl Compiler {
                     // property desugaring bind through the host either way.
                     locals: Vec::new(),
                     statics,
+                    doc: decl
+                        .docs
+                        .iter()
+                        .find(|(k, _)| *k == format!("method:{}", m.name.to_ascii_lowercase()))
+                        .map(|(_, d)| d.clone()),
                 },
             );
         }
@@ -3334,6 +3343,7 @@ impl Compiler {
         self.classes.push((
             decl.name.to_ascii_lowercase(),
             ClassDef {
+                docs: decl.docs.clone(),
                 name: decl.name.clone(),
                 parent: decl.parent.clone(),
                 interfaces: decl.implements.clone(),
@@ -4449,8 +4459,10 @@ impl Compiler {
                 ret,
                 is_static,
                 line,
+                doc,
             } => {
                 self.check_closure_uses(params, uses, *line)?;
+                self.closure_doc = doc.clone();
                 let saved_rule =
                     std::mem::replace(&mut self.ret_rule, ret_rule(ret.as_ref(), body));
                 self.compile_closure(b, params, uses, body, ret.as_ref(), *is_static, *line)?;
@@ -4462,7 +4474,9 @@ impl Compiler {
                 ret: ret_ty,
                 is_static,
                 line,
+                doc,
             } => {
+                self.closure_doc = doc.clone();
                 // An arrow fn desugars to a closure whose single-statement body
                 // returns the expression; it captures every free variable of the
                 // body (minus its own parameters) by value. The synthesized
@@ -6257,6 +6271,7 @@ impl Compiler {
                 // The closure the reference synthesizes for `f(...)` is written
                 // where the syntax is, so that is the line its frames name.
                 line: self.cur_line,
+                doc: None,
             },
         )
     }
@@ -6360,6 +6375,7 @@ impl Compiler {
         is_static: bool,
         line: u32,
     ) -> Result<(), String> {
+        let doc = self.closure_doc.take();
         let script = host::with_host(|h| h.script_name().to_string());
         let owner = format!("{{closure:{}:{line}}}()", self.decl_site.render(&script));
         let cparams = self.compile_params(params, &owner)?;
@@ -6404,6 +6420,7 @@ impl Compiler {
                 deprecated: None,
                 // A closure's statics travel with each closure object.
                 statics: Vec::new(),
+                doc,
             },
         ));
 

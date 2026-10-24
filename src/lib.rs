@@ -461,7 +461,7 @@ abstract class ReflectionFunctionAbstract {
     abstract protected function __returnInfo();
     public function hasReturnType(): bool { return $this->__returnInfo() !== null; }
     public function getReturnType(): ?ReflectionType { $t = $this->__returnInfo(); return $t === null ? null : ReflectionType::__make($t); }
-    public function getDocComment(): string|false { return false; }
+    public function getDocComment(): string|false { [$k, $t, $n] = $this->__spec(); return __phplang_reflect("doc", $k, $t, $n); }
     public function isUserDefined(): bool { return !$this->isInternal(); }
     public function getStaticVariables(): array { [$k, $t, $n] = $this->__spec(); return $k === "method" ? __phplang_reflect("statics", $t, $n) : []; }
     public function getAttributes(?string $name = null, int $flags = 0): array { return []; }
@@ -626,7 +626,7 @@ class ReflectionProperty {
     public function hasDefaultValue(): bool { return $this->__info()["default"]; }
     public function getDefaultValue(): mixed { return __phplang_reflect("prop_default", $this->class, $this->name); }
     public function getDeclaringClass(): ReflectionClass { return new ReflectionClass($this->class); }
-    public function getDocComment(): string|false { return false; }
+    public function getDocComment(): string|false { return __phplang_reflect("doc", "prop", $this->class, $this->name); }
     #[\Deprecated(message: "as it has no effect since PHP 8.1", since: "8.5")]
     public function setAccessible(bool $accessible): void {}
     public function getValue(?object $object = null): mixed {
@@ -668,6 +668,7 @@ class ReflectionClassConstant {
     }
     public function getName(): string { return $this->name; }
     public function getValue(): mixed { return constant($this->class . "::" . $this->name); }
+    public function getDocComment(): string|false { return __phplang_reflect("doc", "const", $this->class, $this->name) ?: __phplang_reflect("doc", "case", $this->class, $this->name); }
     public function getDeclaringClass(): ReflectionClass { return new ReflectionClass($this->class); }
 }
 
@@ -805,7 +806,7 @@ class ReflectionClass {
     public function newInstanceArgs(array $args = []): ?object { $c = $this->name; return new $c(...$args); }
     public function newInstanceWithoutConstructor(): object { return __phplang_reflect("instantiate", $this->name); }
     public function getFileName(): string|false { return false; }
-    public function getDocComment(): string|false { return false; }
+    public function getDocComment(): string|false { return __phplang_reflect("doc", "class", $this->name, ""); }
     public function getAttributes(?string $name = null, int $flags = 0): array { return []; }
     public function getExtensionName(): string|false { return false; }
 }
@@ -820,8 +821,36 @@ class ReflectionEnum extends ReflectionClass {
         if (!$this->isEnum()) { throw new ReflectionException("Class \"" . $this->name . "\" is not an enum"); }
     }
     public function isBacked(): bool { return $this->implementsInterface("BackedEnum"); }
-    public function getCases(): array { $c = $this->name; return $c::cases(); }
-    public function hasCase(string $name): bool { foreach ($this->getCases() as $case) { if ($case->name === $name) { return true; } } return false; }
+    public function getCases(): array {
+        $c = $this->name;
+        $kind = $this->isBacked() ? ReflectionEnumBackedCase::class : ReflectionEnumUnitCase::class;
+        $out = [];
+        foreach ($c::cases() as $case) { $out[] = new $kind($c, $case->name); }
+        return $out;
+    }
+    public function hasCase(string $name): bool { foreach ($this->name::cases() as $case) { if ($case->name === $name) { return true; } } return false; }
+    public function getCase(string $name): ReflectionEnumUnitCase {
+        if (!$this->hasConstant($name)) { throw new ReflectionException("Case " . $this->name . "::" . $name . " does not exist"); }
+        if (!$this->hasCase($name)) { throw new ReflectionException($this->name . "::" . $name . " is not a case"); }
+        return $this->isBacked() ? new ReflectionEnumBackedCase($this->name, $name) : new ReflectionEnumUnitCase($this->name, $name);
+    }
+}
+
+class ReflectionEnumUnitCase extends ReflectionClassConstant {
+    public function __construct(object|string $class, string $constant) {
+        parent::__construct($class, $constant);
+        if (!(constant($this->class . "::" . $constant) instanceof UnitEnum)) { throw new ReflectionException("Constant " . $this->class . "::" . $constant . " is not a case"); }
+    }
+    public function getEnum(): ReflectionEnum { return new ReflectionEnum($this->class); }
+    public function getValue(): UnitEnum { return constant($this->class . "::" . $this->name); }
+}
+
+class ReflectionEnumBackedCase extends ReflectionEnumUnitCase {
+    public function __construct(object|string $class, string $constant) {
+        parent::__construct($class, $constant);
+        if (!($this->getValue() instanceof BackedEnum)) { throw new ReflectionException("Enum case " . $this->class . "::" . $constant . " is not a backed case"); }
+    }
+    public function getBackingValue(): int|string { return $this->getValue()->value; }
 }
 "##;
 

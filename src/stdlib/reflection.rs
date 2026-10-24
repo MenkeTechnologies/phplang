@@ -594,6 +594,10 @@ pub(crate) fn reflect(args: &[Value]) -> Result<Value, String> {
             }
             make_map(pairs)
         }
+        // `getDocComment()`: see `host::doc_comment`.
+        "doc" => {
+            crate::host::doc_comment(&s1, &arg(args, 2), &s3).map_or(Value::bool(false), Value::str)
+        }
         // `getStaticVariables`: a closure's is what its dump lists under
         // `static` — the captured variables, then its `static`s; a function's
         // or a method's, its `static`s.

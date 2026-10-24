@@ -289,6 +289,8 @@ pub enum Expr {
         /// enclosing statement started on. `$f =\n    function () {…}` is line 2
         /// there.
         line: u32,
+        /// Its doc comment, for `getDocComment()`.
+        doc: Option<String>,
     },
     /// An arrow function `fn(params) => expr` — its body is a single expression
     /// and every free variable is captured by value automatically.
@@ -302,6 +304,8 @@ pub enum Expr {
         is_static: bool,
         /// The line the `fn` keyword is on — see `Closure::line`.
         line: u32,
+        /// Its doc comment, for `getDocComment()`.
+        doc: Option<String>,
     },
     /// `new Class(args)` — instantiate an object (class name literal, or the
     /// `self`/`parent`/`static` keyword resolved at compile time).
@@ -588,6 +592,8 @@ pub enum StmtKind {
         namespace: String,
         /// Its `#[\Deprecated]` attribute, if it has one.
         deprecated: Option<Deprecation>,
+        /// Its doc comment, for `getDocComment()`.
+        doc: Option<String>,
     },
     /// `class Name [extends Parent] { ... }`.
     Class(ClassDecl),
@@ -853,6 +859,10 @@ pub struct ClassDecl {
     /// DIFFERENT namespaces are not a redeclaration, and a namespaced class may
     /// share a built-in class's short name.
     pub namespace: String,
+    /// The doc comments of the declaration and its members, for
+    /// `getDocComment()`: keyed `class`, `method:<lowercased name>`,
+    /// `prop:<name>`, `const:<name>` and `case:<name>`.
+    pub docs: Vec<(String, String)>,
 }
 
 /// One `A::m insteadof B, C;` conflict resolution inside a `use` block. Without

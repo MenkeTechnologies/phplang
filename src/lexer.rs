@@ -106,6 +106,12 @@ pub struct Spanned {
     /// it. A qualified name is one token to the reference, so `A \ B` is three
     /// and `A\B` is one; only this tells them apart.
     pub space_before: bool,
+    /// The doc comment pending at this token, numbered in source order: the
+    /// last `/** … */` before it, unless a `{` or `}` came between (the
+    /// reference's scanner resets it there). A declaration starting here takes
+    /// it for `getDocComment()` unless an earlier one already did — see
+    /// `Parser::take_doc`.
+    pub doc: Option<std::rc::Rc<(u32, Box<str>)>>,
 }
 
 /// The multi-character operators, longest first so `===` beats `==` beats `=`.
@@ -134,6 +140,10 @@ struct Lexer<'a> {
     /// Whitespace or a comment has been skipped since the last token — see
     /// [`Spanned::space_before`].
     gap: bool,
+    /// The pending doc comment — see [`Spanned::doc`].
+    doc: Option<std::rc::Rc<(u32, Box<str>)>>,
+    /// How many doc comments have been read, which numbers them.
+    docs: u32,
 }
 
 /// Render a lexer failure the way the CLI prints one: the message, the script it
@@ -154,6 +164,8 @@ pub fn lex(src: &str) -> Result<Vec<Spanned>, String> {
         line: 1,
         out: Vec::new(),
         gap: false,
+        doc: None,
+        docs: 0,
     };
     lx.run()?;
     Ok(lx.out)
@@ -279,10 +291,19 @@ impl<'a> Lexer<'a> {
         // The reference names the line the comment OPENED on, not the line the
         // scan gave up on, so it is captured before the walk moves `self.line`.
         let opened = self.line;
+        let start = self.pos;
         self.advance(2);
         while self.pos < self.src.len() {
             if self.starts_with("*/") {
                 self.advance(2);
+                // `/**` followed by whitespace opens a doc comment (`/**/`
+                // and `/**x` do not), as the reference's scanner reads it.
+                let text = &self.src[start..self.pos];
+                if text.len() >= 5 && text[2] == b'*' && text[3].is_ascii_whitespace() {
+                    self.docs += 1;
+                    let text: Box<str> = crate::bytes::from_bytes(text).into();
+                    self.doc = Some(std::rc::Rc::new((self.docs, text)));
+                }
                 return Ok(());
             }
             if self.src[self.pos] == b'\n' {
@@ -792,6 +813,8 @@ impl<'a> Lexer<'a> {
                 line: body_line,
                 out: Vec::new(),
                 gap: false,
+                doc: None,
+                docs: 0,
             };
             let parts = sub.scan_interp(InterpEnd::EndOfInput)?;
             self.push(Tok::Interp(parts));
@@ -926,7 +949,11 @@ impl<'a> Lexer<'a> {
             line: self.line,
             raw: None,
             space_before: std::mem::take(&mut self.gap),
+            doc: self.doc.clone(),
         });
+        if matches!(self.out.last().map(|s| &s.tok), Some(Tok::Punct("{" | "}"))) {
+            self.doc = None;
+        }
     }
 
     /// [`push`](Self::push) for a numeric literal, recording the source spelling
@@ -937,6 +964,7 @@ impl<'a> Lexer<'a> {
             line: self.line,
             raw: Some(raw.into()),
             space_before: std::mem::take(&mut self.gap),
+            doc: self.doc.clone(),
         });
     }
 

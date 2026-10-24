@@ -244,6 +244,7 @@ pub fn parse_meta(src: &str) -> Result<(Vec<Stmt>, ParseMeta), ParseFail> {
         pending_attrs: Vec::new(),
         pending_deprecated: None,
         last_deprecated: None,
+        doc_used: 0,
         top_level: true,
         only_declares_so_far: true,
         strict_types: false,
@@ -307,6 +308,7 @@ fn resolve_interp_parts(
                     pending_attrs: Vec::new(),
                     pending_deprecated: None,
                     last_deprecated: None,
+                    doc_used: 0,
                     // An interpolation is a bare expression, never a statement,
                     // so no declaration can appear in it and the value is moot.
                     top_level: false,
@@ -357,6 +359,9 @@ struct Parser {
     pending_deprecated: Option<Deprecation>,
     /// The `#[\Deprecated]` the latest `attributes()` call read, if any.
     last_deprecated: Option<Deprecation>,
+    /// The number of the last doc comment a declaration took — see
+    /// [`Parser::take_doc`].
+    doc_used: u32,
     /// Whether the statement about to be parsed sits at TOP level — file scope,
     /// or directly inside a `namespace Name { }` body, which upstream's grammar
     /// treats the same way. False anywhere inside a function body, an `if`, a
@@ -1926,7 +1931,20 @@ impl Parser {
         }
     }
 
+    /// The doc comment a declaration whose deciding token is at `at` reports:
+    /// the one pending there, unless an earlier declaration took it already
+    /// (`/** d */ public $a, $b;` gives it to `$a` only).
+    fn take_doc(&mut self, at: usize) -> Option<String> {
+        let doc = self.toks.get(at)?.doc.clone()?;
+        if doc.0 <= self.doc_used {
+            return None;
+        }
+        self.doc_used = doc.0;
+        Some(doc.1.to_string())
+    }
+
     fn function_stmt(&mut self) -> Result<StmtKind, String> {
+        let doc = self.take_doc(self.pos);
         self.pos += 1; // function
         let deprecated = self.pending_deprecated.take();
         let by_ref_return = self.eat_punct("&");
@@ -1949,6 +1967,7 @@ impl Parser {
             by_ref_return,
             namespace: self.magic.namespace.clone(),
             deprecated,
+            doc,
         })
     }
 
@@ -2776,6 +2795,7 @@ impl Parser {
                 }
             }
         }
+        let class_doc = self.take_doc(self.pos);
         self.pos += 1; // class / interface / trait / enum
         let name = match self.next() {
             Some(Tok::Ident(n)) => n,
@@ -2834,7 +2854,10 @@ impl Parser {
             enum_backing,
         );
         self.magic = saved;
-        let decl = decl?;
+        let mut decl = decl?;
+        if let Some(d) = class_doc {
+            decl.docs.insert(0, ("class".to_string(), d));
+        }
         Ok(StmtKind::Class(ClassDecl {
             attributes,
             is_final,
@@ -2902,6 +2925,7 @@ impl Parser {
         let mut trait_insteadof = Vec::new();
         let mut trait_aliases = Vec::new();
         let mut cases = Vec::new();
+        let mut docs = Vec::new();
         while !self.at_punct("}") && !self.at_end() {
             // Any member — const, property, method, enum case — may be attributed.
             self.attributes()?;
@@ -2909,6 +2933,9 @@ impl Parser {
             // `case Name [= value];` — an enum case (only meaningful inside `enum`).
             if is_enum && self.at_kw("case") {
                 self.pos += 1;
+                if let (Some(d), Some(Tok::Ident(n))) = (self.take_doc(self.pos), self.peek()) {
+                    docs.push((format!("case:{n}"), d));
+                }
                 let case_line = self.line();
                 let cname = match self.next() {
                     Some(Tok::Ident(n)) => n,
@@ -3053,6 +3080,9 @@ impl Parser {
                 let first_name_line = self.line();
                 loop {
                     const_lines.push(const_line);
+                    if let (Some(d), Some(Tok::Ident(n))) = (self.take_doc(self.pos), self.peek()) {
+                        docs.push((format!("const:{n}"), d));
+                    }
                     let cname = match self.next() {
                         Some(Tok::Ident(n)) => n,
                         _ => return Err(self.syntax_error_at(self.pos - 1)),
@@ -3084,12 +3114,16 @@ impl Parser {
                 self.expect_listing(";", "\",\" or \";\"")?;
             } else if self.at_kw("function") {
                 let fn_line = self.line();
+                let method_doc = self.take_doc(self.pos);
                 self.pos += 1; // function
                 let by_ref_return = self.eat_punct("&"); // return-by-ref marker
                 let mname = match self.next() {
                     Some(Tok::Ident(n)) => n,
                     _ => return Err(self.syntax_error_at(self.pos - 1)),
                 };
+                if let Some(d) = method_doc {
+                    docs.push((format!("method:{}", mname.to_ascii_lowercase()), d));
+                }
                 // `zend_begin_method_decl`: a private method cannot be overridden, so
                 // `final` on one is pointless — except on a constructor, which a
                 // subclass constructor does not override.
@@ -3139,6 +3173,9 @@ impl Parser {
                 let ty = self.type_hint()?;
                 loop {
                     let prop_line = self.line();
+                    if let (Some(d), Some(Tok::Var(n))) = (self.take_doc(self.pos), self.peek()) {
+                        docs.push((format!("prop:{n}"), d));
+                    }
                     // After a modifier the reference expects a variable; at a member
                     // that starts with nothing recognisable it says `function`
                     // instead, which is not modelled, so no list is printed there.
@@ -3217,6 +3254,7 @@ impl Parser {
             attributes: Vec::new(),
             namespace: String::new(),
             is_final: false,
+            docs,
         })
     }
 
@@ -4215,6 +4253,7 @@ impl Parser {
                         body,
                         ret,
                         line,
+                        doc,
                         ..
                     } => Expr::Closure {
                         params,
@@ -4223,12 +4262,14 @@ impl Parser {
                         ret,
                         is_static: true,
                         line,
+                        doc,
                     },
                     Expr::ArrowFn {
                         params,
                         body,
                         ret,
                         line,
+                        doc,
                         ..
                     } => Expr::ArrowFn {
                         params,
@@ -4236,6 +4277,7 @@ impl Parser {
                         ret,
                         is_static: true,
                         line,
+                        doc,
                     },
                     other => other,
                 })
@@ -4249,6 +4291,7 @@ impl Parser {
             // the expression form — `function (` — reaches here.)
             Some(Tok::Ident(kw)) if kw.eq_ignore_ascii_case("function") && self.at_punct("(") => {
                 let line = self.line_at(self.pos - 1);
+                let doc = self.take_doc(self.pos - 1);
                 let saved = self.enter_closure(line);
                 let params = self.param_list()?;
                 let mut uses = Vec::new();
@@ -4292,11 +4335,13 @@ impl Parser {
                     ret,
                     is_static: false,
                     line,
+                    doc,
                 })
             }
             // An arrow function `fn (params) => expr` — implicit by-value capture.
             Some(Tok::Ident(kw)) if kw.eq_ignore_ascii_case("fn") && self.at_punct("(") => {
                 let line = self.line_at(self.pos - 1);
+                let doc = self.take_doc(self.pos - 1);
                 let saved = self.enter_closure(line);
                 let params = self.param_list()?;
                 let ret = self.return_type()?;
@@ -4309,6 +4354,7 @@ impl Parser {
                     ret,
                     is_static: false,
                     line,
+                    doc,
                 })
             }
             // `function` / `fn` is reserved: anything but `(` after it is a
