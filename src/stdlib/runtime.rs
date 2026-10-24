@@ -28,6 +28,16 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
         }
         // `SplFixedArray`'s offset conversion, called by the prelude.
         "__phplang_spl_offset" => return Some(crate::host::spl_offset(&arg(args, 0))),
+        // `$ao[] = v` on an object an ArrayObject / ArrayIterator wraps.
+        // An ArrayObject sort writing a wrapped object's property table back.
+        "__phplang_obj_replace" => {
+            crate::host::obj_replace_table(&arg(args, 0), &arg(args, 1));
+            Value::Undef
+        }
+        "__phplang_obj_append" => {
+            crate::host::obj_append(&arg(args, 0), arg(args, 1));
+            Value::Undef
+        }
         // Call a closure for the prelude and answer `[true, $result]`, or
         // `[false, $exception]` with the exception it threw taken off the
         // stack: the prelude cannot hold a `try` (its try-defs are not loaded).

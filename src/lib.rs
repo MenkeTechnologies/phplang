@@ -1130,11 +1130,9 @@ class ArrayObject implements IteratorAggregate, ArrayAccess, Serializable, Count
             return;
         }
         if ($this->__shared()) { $this->storage->offsetSet($key, $value); return; }
-        if ($key === null) {
-            // The next integer key the object's properties leave free.
-            $key = 0;
-            foreach (array_keys(get_object_vars($this->storage)) as $k) { if (is_int($k) && $k >= $key) { $key = $k + 1; } }
-        }
+        // An append takes the next INTEGER key of the property table; a named
+        // element is the string-named property.
+        if ($key === null) { __phplang_obj_append($this->storage, $value); return; }
         $this->storage->$key = $value;
     }
     public function offsetExists(mixed $key): bool {
@@ -1159,14 +1157,20 @@ class ArrayObject implements IteratorAggregate, ArrayAccess, Serializable, Count
         if ($this->__shared()) { $this->storage->append($value); return; }
         throw new Error("Cannot append properties to objects, use ArrayObject::offsetSet() instead");
     }
-    public function count(): int { return count($this->getArrayCopy()); }
-    public function getArrayCopy(): array {
+    public function count(): int { return count($this->__elements(false)); }
+    // An object's elements are its whole property table, as `(array)` reads
+    // it; counting and iterating skip the non-public properties.
+    public function getArrayCopy(): array { return $this->__elements(true); }
+    public function __elements(bool $all) {
         if (!is_object($this->storage)) { return $this->storage; }
-        return $this->__shared() ? $this->storage->getArrayCopy() : get_object_vars($this->storage);
+        if ($this->__shared()) { return $this->storage->__elements($all); }
+        $t = (array) $this->storage;
+        if (!$all) { foreach ($t as $k => $_) { if (is_string($k) && $k !== "" && $k[0] === "\0") { unset($t[$k]); } } }
+        return $t;
     }
     public function exchangeArray(array|object $array): array { $old = $this->getArrayCopy(); $this->storage = self::__backing($array, 'ArrayObject::exchangeArray()'); return $old; }
     // `spl_array_object_new_ex` for the iterator: it starts with this object's flags.
-    public function getIterator(): Iterator { [$flags, $class] = $this->__state(); return new $class($this->getArrayCopy(), $flags); }
+    public function getIterator(): Iterator { [$flags, $class] = $this->__state(); return ArrayIterator::__over($this, $flags, $class); }
     public function getFlags(): int { return $this->__state()[0]; }
     public function setFlags(int $flags): void { self::$__state[spl_object_id($this)] = [$flags & ~0xFFFF0000, $this->__state()[1]]; }
     public function getIteratorClass(): string { return $this->__state()[1]; }
@@ -1195,10 +1199,9 @@ class ArrayObject implements IteratorAggregate, ArrayAccess, Serializable, Count
     private function __sort($fn, ...$args) {
         if (!is_object($this->storage)) { return $fn($this->storage, ...$args); }
         if ($this->__shared()) { return $this->storage->$fn(...$args); }
-        $props = get_object_vars($this->storage);
-        $r = $fn($props, ...$args);
-        foreach (array_keys(get_object_vars($this->storage)) as $k) { unset($this->storage->$k); }
-        foreach ($props as $k => $v) { $this->storage->$k = $v; }
+        $table = (array) $this->storage;
+        $r = $fn($table, ...$args);
+        __phplang_obj_replace($this->storage, $table);
         return $r;
     }
 }
@@ -1251,37 +1254,89 @@ class ArrayIterator implements SeekableIterator, ArrayAccess, Serializable, Coun
     private static $__cursor = [];
     // id => the flags a program set, `ar_flags & ~SPL_ARRAY_INT_MASK`.
     private static $__flags = [];
+    // An object backing is the storage itself, as ArrayObject's: its property
+    // table, or another ArrayObject / ArrayIterator's storage, which a write
+    // through either reaches.
     public function __construct(array|object $array = [], int $flags = 0) {
         if (!is_array($array)) { __phplang_deprecated("ArrayIterator::__construct(): Using an object as a backing array for ArrayIterator is deprecated, as it allows violating class constraints and invariants"); }
-        $this->storage = is_array($array) ? $array : ($array instanceof ArrayObject || $array instanceof ArrayIterator ? $array->getArrayCopy() : get_object_vars($array));
+        $this->storage = $array;
         self::$__flags[spl_object_id($this)] = $flags & ~0xFFFF0000;
+    }
+    private function __shared() { return $this->storage instanceof ArrayObject || $this->storage instanceof ArrayIterator; }
+    // The elements as they stand: the array, or the backing object's table
+    // — all of it for a copy, and for counting and iterating without the
+    // non-public properties, which `spl_array_skip_protected` steps over.
+    private function __table(bool $all = false) {
+        if (!is_object($this->storage)) { return $this->storage; }
+        if ($this->__shared()) { return $this->storage->__elements($all); }
+        $t = (array) $this->storage;
+        if (!$all) { foreach ($t as $k => $_) { if (is_string($k) && $k !== "" && $k[0] === "\0") { unset($t[$k]); } } }
+        return $t;
+    }
+    public function __elements(bool $all) { return $this->__table($all); }
+    // `ArrayObject::getIterator`: an iterator of `$class` sharing the
+    // object's storage, made without running a constructor.
+    public static function __over(ArrayObject $owner, int $flags, string $class) {
+        $it = __phplang_reflect("instantiate", $class);
+        $it->storage = $owner;
+        self::$__flags[spl_object_id($it)] = $flags;
+        return $it;
     }
     private function __at() {
         $c = self::$__cursor[spl_object_id($this)] ?? [0, null];
-        if ($c[1] === null) { $c[1] = array_keys($this->storage); self::$__cursor[spl_object_id($this)] = $c; }
+        if ($c[1] === null) { $c[1] = array_keys($this->__table()); self::$__cursor[spl_object_id($this)] = $c; }
         return $c;
     }
-    public function current(): mixed { [$i, $keys] = $this->__at(); return $i < count($keys) ? $this->storage[$keys[$i]] : null; }
+    private function __moved() { self::$__cursor[spl_object_id($this)][1] = null; }
+    public function current(): mixed { [$i, $keys] = $this->__at(); return $i < count($keys) ? $this->__table()[$keys[$i]] : null; }
     public function key(): string|int|null { [$i, $keys] = $this->__at(); return $keys[$i] ?? null; }
     public function next(): void { [$i, $keys] = $this->__at(); self::$__cursor[spl_object_id($this)] = [$i + 1, $keys]; }
-    public function rewind(): void { self::$__cursor[spl_object_id($this)] = [0, array_keys($this->storage)]; }
+    public function rewind(): void { self::$__cursor[spl_object_id($this)] = [0, array_keys($this->__table())]; }
     public function valid(): bool { [$i, $keys] = $this->__at(); return $i < count($keys); }
     public function seek(int $offset): void {
-        if ($offset < 0 || $offset >= count($this->storage)) { throw new OutOfBoundsException("Seek position $offset is out of range"); }
-        self::$__cursor[spl_object_id($this)] = [$offset, array_keys($this->storage)];
+        $keys = array_keys($this->__table());
+        if ($offset < 0 || $offset >= count($keys)) { throw new OutOfBoundsException("Seek position $offset is out of range"); }
+        self::$__cursor[spl_object_id($this)] = [$offset, $keys];
     }
-    public function offsetGet(mixed $key): mixed { return $this->storage[$key]; }
-    public function offsetSet(mixed $key, mixed $value): void { if ($key === null) { $this->storage[] = $value; } else { $this->storage[$key] = $value; } self::$__cursor[spl_object_id($this)][1] = null; }
-    public function offsetExists(mixed $key): bool { return isset($this->storage[$key]); }
-    public function offsetUnset(mixed $key): void { unset($this->storage[$key]); self::$__cursor[spl_object_id($this)][1] = null; }
+    public function offsetGet(mixed $key): mixed {
+        if (!is_object($this->storage)) { return $this->storage[$key]; }
+        if ($this->__shared()) { return $this->storage->offsetGet($key); }
+        return $this->storage->$key;
+    }
+    public function offsetSet(mixed $key, mixed $value): void {
+        if (!is_object($this->storage)) {
+            if ($key === null) { $this->storage[] = $value; } else { $this->storage[$key] = $value; }
+        } elseif ($this->__shared()) {
+            $this->storage->offsetSet($key, $value);
+        } elseif ($key === null) {
+            __phplang_obj_append($this->storage, $value);
+        } else {
+            $this->storage->$key = $value;
+        }
+        $this->__moved();
+    }
+    public function offsetExists(mixed $key): bool {
+        if (!is_object($this->storage)) { return isset($this->storage[$key]); }
+        if ($this->__shared()) { return $this->storage->offsetExists($key); }
+        return isset($this->storage->$key);
+    }
+    public function offsetUnset(mixed $key): void {
+        if (!is_object($this->storage)) { unset($this->storage[$key]); }
+        elseif ($this->__shared()) { $this->storage->offsetUnset($key); }
+        else { unset($this->storage->$key); }
+        $this->__moved();
+    }
     // ARRAY_AS_PROPS, as ArrayObject's.
     public function __get($name) { return $this->offsetGet($name); }
     public function __set($name, $value) { $this->offsetSet($name, $value); }
     public function __isset($name) { return $this->offsetExists($name) && $this->offsetGet($name) !== null; }
     public function __unset($name) { $this->offsetUnset($name); }
-    public function append(mixed $value): void { $this->storage[] = $value; self::$__cursor[spl_object_id($this)][1] = null; }
-    public function count(): int { return count($this->storage); }
-    public function getArrayCopy(): array { return $this->storage; }
+    public function append(mixed $value): void {
+        if (is_object($this->storage) && !$this->__shared()) { throw new Error("Cannot append properties to objects, use ArrayIterator::offsetSet() instead"); }
+        $this->offsetSet(null, $value);
+    }
+    public function count(): int { return count($this->__table()); }
+    public function getArrayCopy(): array { return $this->__table(true); }
     public function getFlags(): int { return self::$__flags[spl_object_id($this)] ?? 0; }
     public function setFlags(int $flags): void { self::$__flags[spl_object_id($this)] = $flags & ~0xFFFF0000; }
     // `spl_array_object_new_ex` with `clone_orig`: the copy keeps the flags; its

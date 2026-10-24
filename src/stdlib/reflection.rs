@@ -176,7 +176,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
                 // from outside the class, everything from inside a method of it.
                 let arr = h.new_array();
                 for (k, val) in h.object_props_visible(&a) {
-                    h.arr_set_key(&arr, &Value::str(k), val);
+                    h.arr_set_key(&arr, &crate::host::prop_key(&k), val);
                 }
                 arr
             })

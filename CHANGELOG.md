@@ -50,6 +50,15 @@ comment above it.
 * An element of a call's result passed to a by-reference parameter
   (`f(h()[0])`, `W::g(h()[0])`) is passed by value and the write dropped, as
   the reference does; it failed to compile (`unsupported assignment target`).
+* An object wrapped by an `ArrayIterator` is the iterator's storage, as it
+  already was for `ArrayObject`: writes reach the object, and reads see its
+  later changes. `$x[] = v` through either adds an integer-keyed property
+  (`var_dump` shows `[0]`, `serialize` writes `i:0;`, `$o->{"0"}` does not
+  reach it); it was the string-named `"0"`. `count` and `foreach` skip the
+  object's non-public properties and `getArrayCopy()` returns the whole
+  property table, mangled names included. `ArrayObject::getIterator()`
+  shares the object's storage instead of copying it, and a sort over a
+  wrapped object reorders its whole property table in place.
 
 ---
 

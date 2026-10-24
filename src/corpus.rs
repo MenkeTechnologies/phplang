@@ -2744,14 +2744,14 @@ pub const CORPUS: &[Entry] = &[
         "ArrayObject",
         "Prelude class",
         "class ArrayObject implements IteratorAggregate, ArrayAccess, Serializable, Countable {\n    private $storage = [];\n    __construct(array|object $array = [], int $flags = 0, string $iteratorClass = ArrayIterator::class)\n    offsetGet  offsetSet  offsetExists  offsetUnset  append  count  getArrayCopy  exchangeArray\n    getIterator(): Iterator  asort  ksort  uasort  uksort  natsort  natcasesort  serialize  unserialize\n}",
-        "An object wrapper around an array: `$obj[$k]`, `count($obj)` and `foreach` reach the wrapped array, and `getIterator()` hands out an `ArrayIterator` over a copy of it. DIVERGENCE: the `STD_PROP_LIST` / `ARRAY_AS_PROPS` flags are accepted and ignored, and an object passed in is copied by its public properties rather than wrapped.",
+        "An object wrapper around an array: `$obj[$k]`, `count($obj)` and `foreach` reach the wrapped array, and `getIterator()` hands out an `ArrayIterator` over a copy of it. An object passed in (deprecated since 8.5) is wrapped, not copied: reads and writes reach its properties, `$obj[] = v` adds an integer-keyed property, and `count`/`foreach` skip its non-public ones while `getArrayCopy()` returns the whole table. `getIterator()` shares the storage. DIVERGENCE: the `STD_PROP_LIST` flag is accepted and ignored.",
         "$o = new ArrayObject([\"a\" => 1]); $o->append(2);\necho $o->count(), $o->offsetGet(\"a\");   // => 21",
     ),
     (
         "ArrayIterator",
         "Prelude class",
         "class ArrayIterator implements SeekableIterator, ArrayAccess, Serializable, Countable {\n    private $storage = [];\n    current()  key()  next()  rewind()  valid()  seek(int $offset)\n    offsetGet  offsetSet  offsetExists  offsetUnset  append  count  getArrayCopy  asort  ksort  serialize  unserialize ...\n}",
-        "An iterator over an array, with the array access and sorting of `ArrayObject`. `seek()` past the end throws `OutOfBoundsException`. `getFlags()` answers the flags the constructor or `setFlags()` set; `STD_PROP_LIST` and `ARRAY_AS_PROPS` are not otherwise honoured. DIVERGENCE: a write while iterating restarts the key order the cursor walks.",
+        "An iterator over an array, with the array access and sorting of `ArrayObject`. `seek()` past the end throws `OutOfBoundsException`. `getFlags()` answers the flags the constructor or `setFlags()` set, and `ARRAY_AS_PROPS` makes a missing property an element. An object passed in (deprecated since 8.5) is wrapped as `ArrayObject` wraps one. DIVERGENCE: `STD_PROP_LIST` is accepted and ignored, and a write while iterating restarts the key order the cursor walks.",
         "$it = new ArrayIterator([10, 20, 30]); $it->seek(1);\necho $it->current();   // => 20",
     ),
     (
@@ -7270,6 +7270,20 @@ pub const CORPUS: &[Entry] = &[
         "Runtime and diagnostics",
         "__phplang_throwable_string(Throwable $e): string",
         "Internal helper behind the prelude's `Exception::__toString` and `Error::__toString`; a phplang extension with no PHP counterpart. Renders `Class: message in file:line` plus `Stack trace:` and the object's `getTraceAsString()` (`#0 {main}` when empty), omitting `: message` when the message is empty. The `previous` chain is walked and joined with `Next `, so the innermost exception reads first. A user function's argument `TypeError` / `ArgumentCountError` gains ` and defined`. A non-throwable argument yields an empty string.",
+        "",
+    ),
+    (
+        "__phplang_obj_append",
+        "Runtime and diagnostics",
+        "__phplang_obj_append(object $object, mixed $value): void",
+        "Internal helper behind the prelude's `ArrayObject` / `ArrayIterator` over an object; a phplang extension with no PHP counterpart. `$object[] = $value` through either stores `$value` under the next INTEGER key of the object's property table (`zend_hash_next_index_insert`), a key `$object->{\"0\"}` does not reach and `var_dump` prints as `[0]`.",
+        "",
+    ),
+    (
+        "__phplang_obj_replace",
+        "Runtime and diagnostics",
+        "__phplang_obj_replace(object $object, array $table): void",
+        "Internal helper behind the prelude's `ArrayObject` sorts over an object; a phplang extension with no PHP counterpart. The object's property table becomes `$table`, in its order, read the way `(array)` writes it: an integer key is an integer-keyed property and a mangled name (`\"\\0*\\0p\"`, `\"\\0Class\\0p\"`) the property it names.",
         "",
     ),
     (

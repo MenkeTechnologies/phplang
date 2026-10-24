@@ -11734,7 +11734,7 @@ fn traverse(v: &Value, sink: &mut dyn FnMut(Value, Value)) -> Result<Option<Valu
     // from outside, private and protected ones too from inside the class —
     // which is the set `get_object_vars` answers with.
     for (k, val) in with_host(|h| h.object_props_visible(v)) {
-        sink(Value::str(k), val);
+        sink(prop_key(&k), val);
     }
     Ok(None)
 }
@@ -13736,6 +13736,81 @@ fn prelude_call_site_line(h: &PhpHost) -> Option<u32> {
 /// `loses precision` deprecation for a fractional value that fits. Anything
 /// else is `zend_illegal_container_offset`'s `TypeError`. Diagnostics name the
 /// user's call site. A negative result is the caller's out-of-range case.
+/// The first character of an INTEGER-keyed property's stored name.
+///
+/// A property table is a hash table, so it can hold an integer key as well as
+/// a string one, and the two are different keys: the only thing that writes
+/// one is `ArrayObject`/`ArrayIterator` appending to an object it wraps
+/// (`zend_hash_next_index_insert` on the properties). `$o->{"0"}` does not
+/// reach `0`, `var_dump` shows `[0]` rather than `["0"]`, and `foreach`,
+/// `(array)` and `serialize` read an integer key. `U+10FF00` is an escape
+/// character `crate::bytes` never produces (it encodes bytes 0x80..=0xFF as
+/// `U+10FF80..`), so no string-named property can begin with it.
+pub const INT_PROP_MARK: char = '\u{10FF00}';
+
+/// The stored name of the integer-keyed property `n`.
+pub fn int_prop_name(n: i64) -> String {
+    format!("{INT_PROP_MARK}{n}")
+}
+
+/// The key a property's stored name stands for in an array or a `foreach`:
+/// an integer for an integer-keyed one, else the name.
+pub fn prop_key(name: &str) -> Value {
+    match name
+        .strip_prefix(INT_PROP_MARK)
+        .and_then(|n| n.parse().ok())
+    {
+        Some(n) => Value::int(n),
+        None => Value::str(name.to_string()),
+    }
+}
+
+/// `ArrayObject::append` / `$ao[] = v` on a wrapped object: the value under the
+/// next integer key its property table leaves free.
+pub fn obj_append(obj: &Value, val: Value) {
+    with_host(|h| {
+        let next = h
+            .object_props(obj)
+            .iter()
+            .filter_map(|(n, _)| match prop_key(n) {
+                Value::Int(i) => Some(i + 1),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(0);
+        h.obj_put_prop(obj, &int_prop_name(next), val);
+    });
+}
+
+/// The prelude's `ArrayObject` sort over a wrapped object: its property table
+/// becomes `table` — an `(array)`-shaped array, so an integer key is an
+/// integer-keyed property and a mangled name the property it mangles — in
+/// exactly that order.
+pub fn obj_replace_table(obj: &Value, table: &Value) {
+    with_host(|h| {
+        let pairs = h.array_pairs(table).unwrap_or_default();
+        let props: IndexMap<String, Value> = pairs
+            .into_iter()
+            .map(|(k, v)| {
+                let name = match k {
+                    Value::Int(n) => int_prop_name(n),
+                    k => {
+                        let s = h.to_str(&k);
+                        match s.strip_prefix('\0').and_then(|r| r.split_once('\0')) {
+                            Some((_, name)) => name.to_string(),
+                            None => s,
+                        }
+                    }
+                };
+                (name, v)
+            })
+            .collect();
+        if let Some(PhpObj::Object { props: p, .. }) = h.as_array_mut(obj) {
+            *p = props;
+        }
+    });
+}
+
 pub fn spl_offset(offset: &Value) -> Result<Value, String> {
     let v = with_host(|h| h.deref(offset.clone()));
     let n = match &v {

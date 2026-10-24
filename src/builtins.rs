@@ -5564,7 +5564,7 @@ fn spl_storage_pairs(h: &host::PhpHost, v: &Value) -> Option<Vec<(Value, Value)>
     Some(
         h.object_props(&st)
             .into_iter()
-            .map(|(k, val)| (Value::str(k), val))
+            .map(|(k, val)| (host::prop_key(&k), val))
             .collect(),
     )
 }
@@ -5628,7 +5628,7 @@ fn php_cast_array(h: &mut host::PhpHost, v: &Value) -> Value {
         // Non-public property names are mangled with NUL separators, as PHP's
         // cast does — see `PhpHost::object_props_mangled`.
         for (name, val) in h.object_props_mangled(v) {
-            h.arr_set_key(&out, &Value::str(name), val);
+            h.arr_set_key(&out, &host::prop_key(&name), val);
         }
         return out;
     }
@@ -6939,6 +6939,9 @@ enum PropRow {
 
 /// The row label for a declared or dynamic property `name` of `class`.
 fn prop_row(h: &host::PhpHost, class: &str, name: String) -> PropRow {
+    if let Value::Int(n) = host::prop_key(&name) {
+        return PropRow::Index(n);
+    }
     match h.prop_visibility(class, &name) {
         Some((_, crate::ast::Visibility::Protected)) => PropRow::Protected(name),
         Some((declaring, crate::ast::Visibility::Private)) => PropRow::Private(declaring, name),
@@ -8414,11 +8417,12 @@ fn php_var_export_object(
         None => h
             .object_props(v)
             .into_iter()
-            .map(|(n, val)| {
-                (
+            .map(|(n, val)| match host::prop_key(&n) {
+                Value::Int(i) => (i.to_string(), val),
+                _ => (
                     format!("'{}'", n.replace('\\', "\\\\").replace('\'', "\\'")),
                     val,
-                )
+                ),
             })
             .collect(),
     };
@@ -8630,6 +8634,7 @@ fn json_prepare_seen(v: &Value, prep: &mut JsonPrep) -> Result<Value, i64> {
         if with_host(|h| h.prop_visibility(&class, &name)).is_some() {
             continue;
         }
+        let name = with_host(|h| h.to_str(&host::prop_key(&name)));
         out.push((name, json_prepare_seen(&val, prep)?));
     }
     prep.seen.leave();
@@ -8725,7 +8730,7 @@ fn php_json_encode(h: &host::PhpHost, v: &Value, flags: i64, depth: usize) -> St
             let pairs = if object {
                 h.object_props(v)
                     .into_iter()
-                    .map(|(k, val)| (Value::str(k), val))
+                    .map(|(k, val)| (host::prop_key(&k), val))
                     .collect()
             } else {
                 h.array_pairs(v).unwrap_or_default()

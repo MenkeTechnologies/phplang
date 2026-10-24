@@ -414,8 +414,13 @@ fn php_serialize_object(
     let props = h.object_props(v);
     let mut out = format!("O:{}:\"{class}\":{}:{{", class.len(), props.len());
     for (name, val) in props {
-        let key = mangled_prop_key(h, &class, &name);
-        out.push_str(&format!("s:{}:\"{key}\";", crate::bytes::byte_len(&key)));
+        match crate::host::prop_key(&name) {
+            Value::Int(n) => out.push_str(&format!("i:{n};")),
+            _ => {
+                let key = mangled_prop_key(h, &class, &name);
+                out.push_str(&format!("s:{}:\"{key}\";", crate::bytes::byte_len(&key)));
+            }
+        }
         out.push_str(&php_serialize_seen(h, &val, seen));
     }
     out.push('}');

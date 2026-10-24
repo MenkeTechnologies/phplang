@@ -143,3 +143,152 @@ fn only_exception_and_error_may_implement_throwable() {
         fatal("Enum E cannot implement interface Throwable")
     );
 }
+
+#[test]
+fn an_append_through_an_arrayobject_adds_an_integer_keyed_property() {
+    let src = r##"<?php $o = new stdClass; $o->a = 1; $ao = @new ArrayObject($o); $ao["b"] = 2; $ao[] = 3; $ao[] = 4;
+var_dump($o); print_r($o); var_export($o); echo "\n", serialize($o), " ", json_encode($o), "\n";
+var_dump(get_object_vars($o), (array) $o, isset($o->{"0"}), count($ao)); foreach ($o as $k => $v) { var_dump($k); }"##;
+    assert_eq!(
+        run(src),
+        r##"object(stdClass)#1 (4) {
+  ["a"]=>
+  int(1)
+  ["b"]=>
+  int(2)
+  [0]=>
+  int(3)
+  [1]=>
+  int(4)
+}
+stdClass Object
+(
+    [a] => 1
+    [b] => 2
+    [0] => 3
+    [1] => 4
+)
+(object) array(
+   'a' => 1,
+   'b' => 2,
+   0 => 3,
+   1 => 4,
+)
+O:8:"stdClass":4:{s:1:"a";i:1;s:1:"b";i:2;i:0;i:3;i:1;i:4;} {"a":1,"b":2,"0":3,"1":4}
+array(4) {
+  ["a"]=>
+  int(1)
+  ["b"]=>
+  int(2)
+  [0]=>
+  int(3)
+  [1]=>
+  int(4)
+}
+array(4) {
+  ["a"]=>
+  int(1)
+  ["b"]=>
+  int(2)
+  [0]=>
+  int(3)
+  [1]=>
+  int(4)
+}
+bool(false)
+int(4)
+string(1) "a"
+string(1) "b"
+int(0)
+int(1)
+"##
+    );
+}
+
+#[test]
+fn an_arrayiterator_writes_through_to_the_object_it_wraps() {
+    let src = r##"<?php $o2 = new stdClass; $o2->x = 1; $i = @new ArrayIterator($o2); $i["b"] = 2; $i[] = 5; print_r($o2); $o2->c = 9;
+foreach ($i as $k => $v) echo "$k=$v "; echo count($i), "\n";
+$o3 = new stdClass; $it = @new ArrayIterator($o3); $o3->z = 1; var_dump(isset($it["z"]), $it["z"]);
+try { $it->append(1); } catch (Error $e) { echo $e->getMessage(), "\n"; }"##;
+    assert_eq!(
+        run(src),
+        r##"stdClass Object
+(
+    [x] => 1
+    [b] => 2
+    [0] => 5
+)
+x=1 b=2 0=5 c=9 4
+bool(true)
+int(1)
+Cannot append properties to objects, use ArrayIterator::offsetSet() instead
+"##
+    );
+}
+
+#[test]
+fn an_object_backing_counts_and_iterates_only_its_public_properties() {
+    let src = r##"<?php class P { public $pub = 1; protected $pro = 2; private $pri = 3; } $p = new P; $ap = @new ArrayObject($p);
+var_dump(count($ap), array_keys($ap->getArrayCopy()) == ["pub", "\0*\0pro", "\0P\0pri"]); foreach ($ap as $k => $v) { var_dump($k); } var_dump(iterator_count($ap->getIterator()));
+$ap["pub"] = 7; var_dump($p->pub);"##;
+    assert_eq!(
+        run(src),
+        r##"int(1)
+bool(true)
+string(3) "pub"
+int(1)
+int(7)
+"##
+    );
+}
+
+#[test]
+fn an_arrayobjects_iterator_shares_its_storage() {
+    let src = r##"<?php $ao = new ArrayObject([1]); $it = $ao->getIterator(); $ao[] = 2; var_dump(count($it)); $it[] = 3; var_dump(count($ao)); print_r($it->getArrayCopy());
+class AI extends ArrayIterator { function __construct() { echo "ctor\n"; } } $ao->setIteratorClass("AI"); $j = $ao->getIterator(); var_dump(get_class($j), count($j));
+$wrap = new ArrayObject(new ArrayObject([1, 2])); $wrap[] = 3; var_dump(count($wrap));"##;
+    assert_eq!(
+        run(src),
+        r##"int(2)
+int(3)
+Array
+(
+    [0] => 1
+    [1] => 2
+    [2] => 3
+)
+string(2) "AI"
+int(3)
+
+Deprecated: ArrayObject::__construct(): Using an object as a backing array for ArrayObject is deprecated, as it allows violating class constraints and invariants in Command line code on line 3
+int(3)
+"##
+    );
+}
+
+#[test]
+fn sorting_an_arrayobject_reorders_the_wrapped_objects_table() {
+    let src = r##"<?php class P { public $b = 3; protected $a = 1; private $c = 2; } $p = new P; $x = @new ArrayObject($p); $x[] = 0; $x->asort(); var_dump($p);
+$o = new stdClass; $y = @new ArrayObject($o); $y["k"] = 2; $y[] = 1; $y->ksort(); print_r($o); var_dump(isset($o->{"0"}));"##;
+    assert_eq!(
+        run(src),
+        r##"object(P)#1 (4) {
+  [0]=>
+  int(0)
+  ["a":protected]=>
+  int(1)
+  ["c":"P":private]=>
+  int(2)
+  ["b"]=>
+  int(3)
+}
+stdClass Object
+(
+    [0] => 1
+    [k] => 2
+)
+bool(false)
+"##
+    );
+}
