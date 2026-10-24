@@ -492,6 +492,26 @@ enum Callee {
     Library(Vec<crate::argsig::LibParam>),
 }
 
+/// The attributes `getAttributes()` reads (see `host::attr_defs`), or a
+/// parameter's when `param` is its position.
+fn attr_defs_at(
+    kind: &str,
+    target: &Value,
+    name: &str,
+    param: i64,
+) -> Option<(String, Vec<crate::host::AttrDef>)> {
+    if param < 0 {
+        return crate::host::attr_defs(kind, target, name);
+    }
+    match callee(kind, target, name)? {
+        Callee::User { class, params } => params
+            .into_iter()
+            .nth(param as usize)
+            .map(|p| (class, p.attrs)),
+        Callee::Library(_) => Some((String::new(), Vec::new())),
+    }
+}
+
 fn callee(kind: &str, target: &Value, name: &str) -> Option<Callee> {
     match kind {
         "method" => {
@@ -593,6 +613,23 @@ pub(crate) fn reflect(args: &[Value]) -> Result<Value, String> {
                 pairs.push((Value::str(n), v));
             }
             make_map(pairs)
+        }
+        // `getAttributes()`: the names of a declaration's attributes, in
+        // order — a parameter's when argument 4 is its position (else -1).
+        "attrs" => make_list(
+            attr_defs_at(&s1, &arg(args, 2), &s3, arg(args, 4).to_int())
+                .map(|(_, defs)| defs.into_iter().map(|d| Value::str(d.name)).collect())
+                .unwrap_or_default(),
+        ),
+        // `ReflectionAttribute::getArguments()`: attribute argument 5 of that
+        // declaration's list, evaluated now, in the declaring class's scope.
+        "attr_args" => {
+            let found = attr_defs_at(&s1, &arg(args, 2), &s3, arg(args, 4).to_int());
+            let index = arg(args, 5).to_int() as usize;
+            match found.and_then(|(class, defs)| defs.into_iter().nth(index).map(|d| (class, d))) {
+                Some((class, def)) => crate::host::refl_eval_default(&class, def.args)?,
+                None => make_list(Vec::new()),
+            }
         }
         // `getDocComment()`: see `host::doc_comment`.
         "doc" => {

@@ -75,6 +75,15 @@ comment above it.
   before it — the scanner keeps the last one until a declaration takes it or
   a `{`/`}` drops it, as the reference's does. Reflection's `$class` of an
   anonymous class's member is the class's full NUL-suffixed name.
+* Attributes keep their arguments: the parser reads them as call
+  arguments, and `getAttributes()` on every reflection of a declaration
+  (class, function, method, closure, property, class constant, enum case,
+  parameter) answers `ReflectionAttribute`s whose `getArguments()`,
+  `getTarget()`, `isRepeated()` and `newInstance()` follow the reference,
+  validation errors included. `Deprecated` and `NoDiscard` exist, and the
+  internal attribute classes carry their `#[Attribute]` flags. Reflection of
+  a method named in mixed case (`__toString`) finds its doc comment,
+  attributes and statics.
 * `ReflectionEnumUnitCase` and `ReflectionEnumBackedCase` exist;
   `ReflectionEnum::getCases()`/`getCase()` answer them (`getCases()`
   answered the case objects).

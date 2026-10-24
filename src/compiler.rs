@@ -458,6 +458,8 @@ pub struct Compiler {
     body_statics: Option<Vec<(String, Option<Expr>)>>,
     /// The doc comment of the closure literal about to be compiled.
     closure_doc: Option<String>,
+    /// The attributes of the closure literal about to be compiled.
+    closure_attrs: Vec<host::AttrDef>,
     /// By-reference parameter positions per function (lowercased name), gathered
     /// in a pre-pass so a call can write the callee's final by-ref values back to
     /// the caller's variables even when the function is declared later.
@@ -815,9 +817,38 @@ impl Compiler {
                     }
                     t
                 }),
+                attrs: self.compile_attrs(&p.attrs)?,
             });
         }
         Ok(out)
+    }
+
+    /// Attributes as their definitions keep them: each name with a chunk that
+    /// builds its argument array — positional entries, then `name: value` ones
+    /// under their names — evaluated only when reflection asks.
+    fn compile_attrs(&mut self, attrs: &[Attr]) -> Result<Vec<host::AttrDef>, String> {
+        attrs
+            .iter()
+            .map(|a| {
+                let elems = a
+                    .args
+                    .iter()
+                    .map(|e| match e {
+                        Expr::NamedArg(n, v) => {
+                            ArrayElem::new(Some(Expr::Str(n.clone())), (**v).clone())
+                        }
+                        v => ArrayElem::new(None, v.clone()),
+                    })
+                    .collect();
+                let mut ab = ChunkBuilder::new();
+                let array = Expr::Array(elems, ArraySyntax::Short);
+                self.in_other_frame(|c| c.compile_expr(&mut ab, &array))?;
+                Ok(host::AttrDef {
+                    name: a.name.clone(),
+                    args: ab.build(),
+                })
+            })
+            .collect()
     }
 
     /// Seed the write-back map with the standard-library functions whose
@@ -1826,6 +1857,7 @@ impl Compiler {
                 namespace,
                 deprecated,
                 doc,
+                attrs,
             } => {
                 if top {
                     if let Some(msg) = self.fn_redeclare_msg(name, namespace) {
@@ -1871,6 +1903,7 @@ impl Compiler {
                 self.loops = saved;
                 self.leave_own_loop_scope(saved_try);
                 self.ret_rule = saved_rule;
+                let fn_attrs = self.compile_attrs(attrs)?;
                 self.functions.push((
                     name.to_ascii_lowercase(),
                     FuncDef {
@@ -1885,6 +1918,7 @@ impl Compiler {
                         deprecated: deprecated.clone(),
                         statics,
                         doc: doc.clone(),
+                        attrs: fn_attrs,
                     },
                 ));
                 if !top {
@@ -3280,6 +3314,11 @@ impl Compiler {
             })?;
             let statics = std::mem::replace(&mut self.body_statics, outer_statics);
             let statics = self.static_initializers(statics.unwrap_or_default())?;
+            let method_key = format!("method:{}", m.name.to_ascii_lowercase());
+            let method_attrs = match decl.attrs.iter().find(|(k, _)| *k == method_key) {
+                Some((_, a)) => self.compile_attrs(a)?,
+                None => Vec::new(),
+            };
             self.resolve_gotos(&mut mb, self.cur_chunk, true)?;
             self.decl_site = saved_site;
             self.ret_by_ref = saved_ref;
@@ -3306,6 +3345,7 @@ impl Compiler {
                         .iter()
                         .find(|(k, _)| *k == format!("method:{}", m.name.to_ascii_lowercase()))
                         .map(|(_, d)| d.clone()),
+                    attrs: method_attrs,
                 },
             );
         }
@@ -3340,9 +3380,14 @@ impl Compiler {
             .partition(|(n, _)| decl.methods.iter().any(|m| m.name.eq_ignore_ascii_case(n)));
         own.extend(traits);
         finals.method_sites = own;
+        let mut class_attrs = Vec::new();
+        for (key, a) in decl.attrs.iter().filter(|(k, _)| !k.starts_with("method:")) {
+            class_attrs.push((key.clone(), self.compile_attrs(a)?));
+        }
         self.classes.push((
             decl.name.to_ascii_lowercase(),
             ClassDef {
+                attrs: class_attrs,
                 docs: decl.docs.clone(),
                 name: decl.name.clone(),
                 parent: decl.parent.clone(),
@@ -4460,9 +4505,11 @@ impl Compiler {
                 is_static,
                 line,
                 doc,
+                attrs,
             } => {
                 self.check_closure_uses(params, uses, *line)?;
                 self.closure_doc = doc.clone();
+                self.closure_attrs = self.compile_attrs(attrs)?;
                 let saved_rule =
                     std::mem::replace(&mut self.ret_rule, ret_rule(ret.as_ref(), body));
                 self.compile_closure(b, params, uses, body, ret.as_ref(), *is_static, *line)?;
@@ -4475,8 +4522,10 @@ impl Compiler {
                 is_static,
                 line,
                 doc,
+                attrs,
             } => {
                 self.closure_doc = doc.clone();
+                self.closure_attrs = self.compile_attrs(attrs)?;
                 // An arrow fn desugars to a closure whose single-statement body
                 // returns the expression; it captures every free variable of the
                 // body (minus its own parameters) by value. The synthesized
@@ -6250,6 +6299,7 @@ impl Compiler {
             promoted_set_vis: None,
             readonly: false,
             by_ref: false,
+            attrs: Vec::new(),
         };
         // `call_user_func_array` reads an integer key as a positional argument
         // and a string key as a named one, which is what carries `$f(b: 2)`
@@ -6272,6 +6322,7 @@ impl Compiler {
                 // where the syntax is, so that is the line its frames name.
                 line: self.cur_line,
                 doc: None,
+                attrs: Vec::new(),
             },
         )
     }
@@ -6376,6 +6427,7 @@ impl Compiler {
         line: u32,
     ) -> Result<(), String> {
         let doc = self.closure_doc.take();
+        let attrs = std::mem::take(&mut self.closure_attrs);
         let script = host::with_host(|h| h.script_name().to_string());
         let owner = format!("{{closure:{}:{line}}}()", self.decl_site.render(&script));
         let cparams = self.compile_params(params, &owner)?;
@@ -6421,6 +6473,7 @@ impl Compiler {
                 // A closure's statics travel with each closure object.
                 statics: Vec::new(),
                 doc,
+                attrs,
             },
         ));
 

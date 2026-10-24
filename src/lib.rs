@@ -464,7 +464,10 @@ abstract class ReflectionFunctionAbstract {
     public function getDocComment(): string|false { [$k, $t, $n] = $this->__spec(); return __phplang_reflect("doc", $k, $t, $n); }
     public function isUserDefined(): bool { return !$this->isInternal(); }
     public function getStaticVariables(): array { [$k, $t, $n] = $this->__spec(); return $k === "method" ? __phplang_reflect("statics", $t, $n) : []; }
-    public function getAttributes(?string $name = null, int $flags = 0): array { return []; }
+    public function getAttributes(?string $name = null, int $flags = 0): array {
+        $spec = $this->__spec();
+        return ReflectionAttribute::__list("ReflectionFunctionAbstract::getAttributes", $spec, -1, $spec[0] === "method" ? Attribute::TARGET_METHOD : Attribute::TARGET_FUNCTION, $name, $flags);
+    }
 }
 
 class ReflectionFunction extends ReflectionFunctionAbstract {
@@ -584,7 +587,7 @@ class ReflectionParameter {
         $fn = ReflectionParameter::$__p[spl_object_id($this)][0];
         return $fn instanceof ReflectionMethod ? new ReflectionClass($fn->class) : null;
     }
-    public function getAttributes(?string $name = null, int $flags = 0): array { return []; }
+    public function getAttributes(?string $name = null, int $flags = 0): array { $p = ReflectionParameter::$__p[spl_object_id($this)]; return ReflectionAttribute::__list("ReflectionParameter::getAttributes", $p[0]->__spec(), $p[2], Attribute::TARGET_PARAMETER, $name, $flags); }
 }
 
 class ReflectionProperty {
@@ -650,7 +653,7 @@ class ReflectionProperty {
         if ($this->isStatic()) { return true; }
         return Closure::bind(function ($o, $n) { return isset($o->$n) || array_key_exists($n, get_object_vars($o)); }, null, $this->class)($object, $this->name);
     }
-    public function getAttributes(?string $name = null, int $flags = 0): array { return []; }
+    public function getAttributes(?string $name = null, int $flags = 0): array { return ReflectionAttribute::__list("ReflectionProperty::getAttributes", ["prop", $this->class, $this->name], -1, Attribute::TARGET_PROPERTY, $name, $flags); }
 }
 
 class ReflectionClassConstant {
@@ -669,6 +672,7 @@ class ReflectionClassConstant {
     public function getName(): string { return $this->name; }
     public function getValue(): mixed { return constant($this->class . "::" . $this->name); }
     public function getDocComment(): string|false { return __phplang_reflect("doc", "const", $this->class, $this->name) ?: __phplang_reflect("doc", "case", $this->class, $this->name); }
+    public function getAttributes(?string $name = null, int $flags = 0): array { return ReflectionAttribute::__list("ReflectionClassConstant::getAttributes", ["const", $this->class, $this->name], -1, Attribute::TARGET_CLASS_CONSTANT, $name, $flags); }
     public function getDeclaringClass(): ReflectionClass { return new ReflectionClass($this->class); }
 }
 
@@ -807,7 +811,7 @@ class ReflectionClass {
     public function newInstanceWithoutConstructor(): object { return __phplang_reflect("instantiate", $this->name); }
     public function getFileName(): string|false { return false; }
     public function getDocComment(): string|false { return __phplang_reflect("doc", "class", $this->name, ""); }
-    public function getAttributes(?string $name = null, int $flags = 0): array { return []; }
+    public function getAttributes(?string $name = null, int $flags = 0): array { return ReflectionAttribute::__list("ReflectionClass::getAttributes", ["class", $this->name, ""], -1, Attribute::TARGET_CLASS, $name, $flags); }
     public function getExtensionName(): string|false { return false; }
 }
 
@@ -1257,6 +1261,7 @@ interface RecursiveIterator extends Iterator {
     public function hasChildren(): bool;
     public function getChildren(): ?RecursiveIterator;
 }
+#[Attribute(Attribute::TARGET_CLASS)]
 final class Attribute {
     const TARGET_CLASS = 1;
     const TARGET_FUNCTION = 2;
@@ -1270,10 +1275,80 @@ final class Attribute {
     public int $flags;
     public function __construct(int $flags = Attribute::TARGET_ALL) { $this->flags = $flags; }
 }
+#[Attribute(Attribute::TARGET_METHOD)]
 final class ReturnTypeWillChange { public function __construct() {} }
+#[Attribute(Attribute::TARGET_CLASS)]
 final class AllowDynamicProperties { public function __construct() {} }
+#[Attribute(Attribute::TARGET_PARAMETER)]
 final class SensitiveParameter { public function __construct() {} }
+#[Attribute(Attribute::TARGET_METHOD | Attribute::TARGET_PROPERTY)]
 final class Override { public function __construct() {} }
+#[Attribute(Attribute::TARGET_CLASS | Attribute::TARGET_FUNCTION | Attribute::TARGET_METHOD | Attribute::TARGET_CLASS_CONSTANT | Attribute::TARGET_CONSTANT)]
+final class Deprecated {
+    public readonly ?string $message;
+    public readonly ?string $since;
+    public function __construct(?string $message = null, ?string $since = null) { $this->message = $message; $this->since = $since; }
+}
+#[Attribute(Attribute::TARGET_FUNCTION | Attribute::TARGET_METHOD)]
+final class NoDiscard {
+    public readonly ?string $message;
+    public function __construct(?string $message = null) { $this->message = $message; }
+}
+// `ReflectionAttribute`: one attribute of a declaration, read through
+// `__phplang_reflect("attrs" / "attr_args")` on the declaration's
+// `[kind, target, member]` spec (a parameter's position, else -1).
+final class ReflectionAttribute {
+    const IS_INSTANCEOF = 2;
+    public string $name = "";
+    // id => [kind, target, member, parameter position, index, target flag, repeated]
+    private static $__a = [];
+    // The `getAttributes($name, $flags)` of the declaration `$spec`, which
+    // the reference names `$fn` in its argument errors.
+    public static function __list(string $fn, array $spec, int $pos, int $target, ?string $name, int $flags): array {
+        if ($flags & ~ReflectionAttribute::IS_INSTANCEOF) { throw new ValueError("$fn(): Argument #2 (\$flags) must be a valid attribute filter flag"); }
+        if ($name !== null && ($flags & ReflectionAttribute::IS_INSTANCEOF) && !class_exists($name) && !interface_exists($name)) { throw new Error("Class \"$name\" not found"); }
+        [$k, $t, $n] = $spec;
+        $names = __phplang_reflect("attrs", $k, $t, $n, $pos);
+        $counts = [];
+        foreach ($names as $a) { $counts[strtolower($a)] = ($counts[strtolower($a)] ?? 0) + 1; }
+        $out = [];
+        foreach ($names as $i => $a) {
+            if ($name !== null && ($flags & ReflectionAttribute::IS_INSTANCEOF ? !is_a($a, $name, true) : strcasecmp(ltrim($name, "\\"), $a) !== 0)) { continue; }
+            $r = new ReflectionAttribute();
+            $r->name = $a;
+            ReflectionAttribute::$__a[spl_object_id($r)] = [$k, $t, $n, $pos, $i, $target, $counts[strtolower($a)] > 1];
+            $out[] = $r;
+        }
+        return $out;
+    }
+    public function getName(): string { return $this->name; }
+    public function getTarget(): int { return ReflectionAttribute::$__a[spl_object_id($this)][5]; }
+    public function isRepeated(): bool { return ReflectionAttribute::$__a[spl_object_id($this)][6]; }
+    public function getArguments(): array {
+        [$k, $t, $n, $p, $i] = ReflectionAttribute::$__a[spl_object_id($this)];
+        return __phplang_reflect("attr_args", $k, $t, $n, $p, $i);
+    }
+    // `zend_get_attribute_object`: the class must exist and be an attribute
+    // whose `#[Attribute]` flags admit this target, and repeat only when
+    // `IS_REPEATABLE`.
+    public function newInstance(): object {
+        $c = $this->name;
+        if (!class_exists($c)) { throw new Error("Attribute class \"$c\" not found"); }
+        $meta = (new ReflectionClass($c))->getAttributes("Attribute");
+        if (!$meta) { throw new Error("Attempting to use non-attribute class \"$c\" as attribute"); }
+        $args = $meta[0]->getArguments();
+        $allowed = $args[0] ?? $args["flags"] ?? Attribute::TARGET_ALL;
+        $target = $this->getTarget();
+        if (!($allowed & $target)) {
+            $names = ["class", "function", "method", "property", "class constant", "parameter", "constant"];
+            $shown = [];
+            foreach ($names as $bit => $label) { if ($allowed & (1 << $bit)) { $shown[] = $label; } }
+            throw new Error("Attribute \"$c\" cannot target " . $names[(int) log($target, 2)] . " (allowed targets: " . implode(", ", $shown) . ")");
+        }
+        if ($this->isRepeated() && !($allowed & Attribute::IS_REPEATABLE)) { throw new Error("Attribute \"$c\" must not be repeated"); }
+        return new $c(...$this->getArguments());
+    }
+}
 // An iterator over an array, positioned by a cursor kept outside the
 // instance (a static table keyed by object id) so the instance shows only
 // its storage, as the reference's does.

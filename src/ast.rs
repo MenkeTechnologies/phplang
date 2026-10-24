@@ -291,6 +291,8 @@ pub enum Expr {
         line: u32,
         /// Its doc comment, for `getDocComment()`.
         doc: Option<String>,
+        /// Its `#[…]` attributes.
+        attrs: Vec<Attr>,
     },
     /// An arrow function `fn(params) => expr` — its body is a single expression
     /// and every free variable is captured by value automatically.
@@ -306,6 +308,8 @@ pub enum Expr {
         line: u32,
         /// Its doc comment, for `getDocComment()`.
         doc: Option<String>,
+        /// Its `#[…]` attributes.
+        attrs: Vec<Attr>,
     },
     /// `new Class(args)` — instantiate an object (class name literal, or the
     /// `self`/`parent`/`static` keyword resolved at compile time).
@@ -594,6 +598,8 @@ pub enum StmtKind {
         deprecated: Option<Deprecation>,
         /// Its doc comment, for `getDocComment()`.
         doc: Option<String>,
+        /// Its `#[…]` attributes.
+        attrs: Vec<Attr>,
     },
     /// `class Name [extends Parent] { ... }`.
     Class(ClassDecl),
@@ -755,6 +761,8 @@ pub struct Param {
     /// `&$x` — a by-reference parameter; the caller's variable is updated to the
     /// parameter's final value when the call returns.
     pub by_ref: bool,
+    /// Its `#[…]` attributes.
+    pub attrs: Vec<Attr>,
 }
 
 /// Member visibility, captured on properties and methods. `Public` is the
@@ -863,6 +871,9 @@ pub struct ClassDecl {
     /// `getDocComment()`: keyed `class`, `method:<lowercased name>`,
     /// `prop:<name>`, `const:<name>` and `case:<name>`.
     pub docs: Vec<(String, String)>,
+    /// The `#[…]` attributes of the declaration and its members, keyed as
+    /// `docs` is.
+    pub attrs: Vec<(String, Vec<Attr>)>,
 }
 
 /// One `A::m insteadof B, C;` conflict resolution inside a `use` block. Without
@@ -898,6 +909,16 @@ pub struct EnumCase {
     pub name: String,
     pub value: Option<Expr>,
     /// The line of its name.
+    pub line: u32,
+}
+
+/// One `#[Name(args)]` attribute: its name, resolved as a class name, and its
+/// arguments as written (positional, then `name: value` as `Expr::NamedArg`).
+/// Reflection evaluates them when asked, as the reference does.
+#[derive(Debug, Clone)]
+pub struct Attr {
+    pub name: String,
+    pub args: Vec<Expr>,
     pub line: u32,
 }
 

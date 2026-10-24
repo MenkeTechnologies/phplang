@@ -595,6 +595,17 @@ pub struct Param {
     pub by_ref: bool,
     /// The declared type, carried from the source so the bind can check it.
     pub ty: Option<TypeHint>,
+    /// Its `#[…]` attributes.
+    pub attrs: Vec<AttrDef>,
+}
+
+/// A compiled `#[Name(args)]` attribute: its name, and a chunk that builds its
+/// argument array (positional entries, then the named ones under their
+/// names). Reflection runs the chunk when asked for the arguments.
+#[derive(Debug, Clone)]
+pub struct AttrDef {
+    pub name: String,
+    pub args: Chunk,
 }
 
 /// A compiled user function: its parameters plus the lowered body chunk.
@@ -628,6 +639,8 @@ pub struct FuncDef {
     pub statics: Vec<(String, Option<Chunk>)>,
     /// Its doc comment, for `getDocComment()`.
     pub doc: Option<String>,
+    /// Its `#[…]` attributes.
+    pub attrs: Vec<AttrDef>,
 }
 
 /// Where a closure literal was WRITTEN, which is what PHP 8.4 names a closure
@@ -701,6 +714,9 @@ pub struct ClassDef {
     /// The doc comments of the declaration and its members — see
     /// `ClassDecl::docs`.
     pub docs: Vec<(String, String)>,
+    /// The attributes of the declaration and its properties, constants and
+    /// enum cases, keyed as `docs` is (a method's are on its `FuncDef`).
+    pub attrs: Vec<(String, Vec<AttrDef>)>,
     /// The class name in its declared spelling. The map is keyed by the
     /// lowercased name (PHP class lookup is case-insensitive), so this is the
     /// only place the source casing survives for display — a stack trace names
@@ -898,6 +914,8 @@ pub enum PhpObj {
         site: Option<DeclSite>,
         /// The literal's doc comment, for `getDocComment()`.
         doc: Option<String>,
+        /// The literal's `#[…]` attributes.
+        attrs: Vec<AttrDef>,
     },
     /// A live generator: an index into `PhpHost::generators`, where the suspended
     /// stackful coroutine and its execution context live. Built by calling a
@@ -4305,6 +4323,7 @@ impl PhpHost {
             is_static,
             site: def.closure_site,
             doc: def.doc,
+            attrs: def.attrs,
         });
         Value::Obj((self.objs.len() - 1) as u32)
     }
@@ -4349,35 +4368,16 @@ impl PhpHost {
         this: Option<Value>,
         scope: Option<String>,
     ) -> Option<Value> {
-        let (params, chunk, captured, is_generator, ret, is_static, site, doc) =
-            match self.as_array(v) {
-                Some(PhpObj::Closure {
-                    params,
-                    chunk,
-                    captured,
-                    is_generator,
-                    ret,
-                    is_static,
-                    site,
-                    doc,
-                    ..
-                }) => (
-                    params.clone(),
-                    chunk.clone(),
-                    captured.clone(),
-                    *is_generator,
-                    ret.clone(),
-                    *is_static,
-                    site.clone(),
-                    doc.clone(),
-                ),
-                _ => return None,
-            };
-        let mut captured = captured;
-        self.fork_closure_statics(&mut captured);
+        // The rebound closure is the same literal: everything but the binding
+        // carries over — its site (which names its frames), doc comment and
+        // attributes — and its `static`s are copied.
+        let mut dup = match self.as_array(v) {
+            Some(c @ PhpObj::Closure { .. }) => c.clone(),
+            _ => return None,
+        };
         // `do_closure_bind`: the new object's class, or the new scope without
         // one — in its declared spelling, since a scope may arrive lowercased.
-        let called_scope = match &this {
+        let new_called = match &this {
             Some(t) => self.object_class(t),
             None => scope.as_ref().map(|s| {
                 self.classes
@@ -4385,21 +4385,20 @@ impl PhpHost {
                     .map_or_else(|| s.clone(), |d| d.name.clone())
             }),
         };
-        self.objs.push(PhpObj::Closure {
-            params,
-            chunk,
+        if let PhpObj::Closure {
             captured,
-            bound_this: this,
-            scope,
+            bound_this,
+            scope: s,
             called_scope,
-            is_generator,
-            ret,
-            is_static,
-            // The rebound closure is the same literal, so it keeps the site the
-            // original was written at — which is what PHP reports.
-            site,
-            doc,
-        });
+            ..
+        } = &mut dup
+        {
+            self.fork_closure_statics(captured);
+            *bound_this = this;
+            *s = scope;
+            *called_scope = new_called;
+        }
+        self.objs.push(dup);
         Some(Value::Obj((self.objs.len() - 1) as u32))
     }
 
@@ -10385,7 +10384,7 @@ pub fn doc_comment(kind: &str, target: &Value, name: &str) -> Option<String> {
             h.functions.get(&lower).and_then(|d| d.doc.clone())
         }
         "method" => h
-            .resolve_method(&h.to_str(target), name)
+            .resolve_method(&h.to_str(target), &name.to_ascii_lowercase())
             .and_then(|(_, d)| d.doc),
         _ => {
             let key = if kind == "class" {
@@ -10417,9 +10416,70 @@ pub fn doc_comment(kind: &str, target: &Value, name: &str) -> Option<String> {
     })
 }
 
+/// The attributes of a declaration and the class scope their arguments are
+/// evaluated in: a function ("function", its name), method ("method", class,
+/// name), closure ("closure", the closure), or a class or one of its members
+/// ("class", "prop", "const", "case" — class, member name; found on the class
+/// or the nearest ancestor or interface declaring it).
+pub fn attr_defs(kind: &str, target: &Value, name: &str) -> Option<(String, Vec<AttrDef>)> {
+    with_host(|h| match kind {
+        "closure" => match h.as_array(target) {
+            Some(PhpObj::Closure { attrs, scope, .. }) => {
+                Some((scope.clone().unwrap_or_default(), attrs.clone()))
+            }
+            _ => None,
+        },
+        "function" => {
+            let lower = unanchored(&h.to_str(target)).to_ascii_lowercase();
+            h.functions
+                .get(&lower)
+                .map(|d| (String::new(), d.attrs.clone()))
+        }
+        "method" => h
+            .resolve_method(&h.to_str(target), &name.to_ascii_lowercase())
+            .map(|(c, d)| (c, d.attrs)),
+        _ => {
+            let key = if kind == "class" {
+                "class".to_string()
+            } else {
+                format!("{kind}:{name}")
+            };
+            let mut pending = vec![h.to_str(target).to_ascii_lowercase()];
+            let mut seen = Vec::new();
+            while let Some(c) = pending.pop() {
+                if seen.contains(&c) {
+                    continue;
+                }
+                let Some(def) = h.classes.get(&c) else {
+                    continue;
+                };
+                // An enum case is reflected as a class constant.
+                let alt = format!("case:{name}");
+                let found = def
+                    .attrs
+                    .iter()
+                    .find(|(k, _)| *k == key || (kind == "const" && *k == alt));
+                if let Some((_, a)) = found {
+                    return Some((def.name.clone(), a.clone()));
+                }
+                if kind == "class" {
+                    return Some((def.name.clone(), Vec::new()));
+                }
+                pending.extend(def.interfaces.iter().rev().map(|i| i.to_ascii_lowercase()));
+                pending.extend(def.parent.iter().map(|p| p.to_ascii_lowercase()));
+                seen.push(c);
+            }
+            None
+        }
+    })
+}
+
 /// The `static` variables of method `class::method` (see [`defined_statics`]).
 pub fn method_statics(class: &str, method: &str) -> Vec<(String, Value)> {
-    let defs = with_host(|h| h.resolve_method(class, method).map(|(_, d)| d.statics));
+    let defs = with_host(|h| {
+        h.resolve_method(class, &method.to_ascii_lowercase())
+            .map(|(_, d)| d.statics)
+    });
     defs.map(|d| defined_statics(&d)).unwrap_or_default()
 }
 

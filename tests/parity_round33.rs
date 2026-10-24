@@ -580,3 +580,99 @@ string(8) "/** y */"
 "##
     );
 }
+
+#[test]
+fn attributes_are_reflected_with_their_arguments() {
+    let src = r##"<?php #[Attribute(Attribute::TARGET_CLASS | Attribute::TARGET_METHOD)]
+class Route { function __construct(public string $path = "/", public array $methods = []) {} }
+#[Attribute] class Tag { function __construct(public $v = null) {} }
+class Plain {}
+const BASE = "/b";
+#[Route("/x", methods: ["GET"]), Tag(1 + 2)]
+#[Tag(BASE . "/y")]
+class C {
+    #[Tag] public $p;
+    #[Tag(self::K)] const K = 5;
+    #[Route(path: "/m")] #[Tag] public function m(#[Tag("param")] $a) {}
+}
+#[Tag] function f() {}
+#[Nope] #[Plain] #[Route] function g() {}
+$rc = new ReflectionClass("C");
+foreach ($rc->getAttributes() as $a) { echo $a->getName(), " ", json_encode($a->getArguments()), " ", $a->getTarget(), " ", var_export($a->isRepeated(), true), "\n"; }
+echo count($rc->getAttributes("Tag")), count($rc->getAttributes("tag")), count($rc->getAttributes("Route")), count($rc->getAttributes("Nope")), "\n";
+$r = $rc->getAttributes("Route")[0]->newInstance(); echo get_class($r), " ", $r->path, " ", json_encode($r->methods), "\n";
+try { $rc->getAttributes("Tag")[0]->newInstance(); } catch (Error $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+$m = $rc->getMethod("m"); foreach ($m->getAttributes() as $a) { echo $a->getName(), " ", json_encode($a->getArguments()), " ", $a->getTarget(), "\n"; } echo get_class($m->getAttributes()[0]->newInstance()), "\n";
+echo json_encode($rc->getProperty("p")->getAttributes()[0]->getArguments()), " ", $rc->getProperty("p")->getAttributes()[0]->getTarget(), "\n";
+try { $rc->getProperty("p")->getAttributes()[0]->newInstance(); echo "ok\n"; } catch (Error $e) { echo $e->getMessage(), "\n"; }
+echo json_encode($rc->getReflectionConstant("K")->getAttributes()[0]->getArguments()), " ", $rc->getReflectionConstant("K")->getAttributes()[0]->getTarget(), "\n";
+$p = $m->getParameters()[0]; echo json_encode($p->getAttributes()[0]->getArguments()), " ", $p->getAttributes()[0]->getTarget(), "\n";
+$g = new ReflectionFunction("g"); foreach ($g->getAttributes() as $a) { try { $a->newInstance(); } catch (Error $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; } }
+echo count((new ReflectionFunction("f"))->getAttributes()), " ", (new ReflectionFunction("f"))->getAttributes()[0]->getTarget(), "\n";
+echo count($rc->getAttributes("Tag", ReflectionAttribute::IS_INSTANCEOF)), "\n";
+try { $rc->getAttributes("Tag", 5); } catch (Error $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+try { $rc->getAttributes("Missing", ReflectionAttribute::IS_INSTANCEOF); } catch (Error $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+$cl = #[Tag("cl")] function() {}; echo json_encode((new ReflectionFunction($cl))->getAttributes()[0]->getArguments()), "\n";"##;
+    assert_eq!(
+        run(src),
+        r##"Route {"0":"\/x","methods":["GET"]} 1 false
+Tag [3] 1 true
+Tag ["\/b\/y"] 1 true
+2210
+Route /x ["GET"]
+Error: Attribute "Tag" must not be repeated
+Route {"path":"\/m"} 4
+Tag [] 4
+Route
+[] 8
+ok
+[5] 16
+["param"] 32
+Error: Attribute class "Nope" not found
+Error: Attempting to use non-attribute class "Plain" as attribute
+Error: Attribute "Route" cannot target function (allowed targets: class, method)
+1 2
+2
+ValueError: ReflectionClass::getAttributes(): Argument #2 ($flags) must be a valid attribute filter flag
+Error: Class "Missing" not found
+["cl"]
+"##
+    );
+}
+
+#[test]
+fn internal_attributes_reflect_and_instantiate() {
+    let src = r##"<?php enum E { #[Deprecated("old", since: "1.0")] case A; } class K { #[Override] public function __toString(): string { return ""; } } function s(#[SensitiveParameter] $p) {}
+$d = (new ReflectionClassConstant("E", "A"))->getAttributes()[0]; echo $d->getName(), " ", $d->getTarget(), " ", json_encode($d->getArguments()), " ", $d->newInstance()->message, "|", $d->newInstance()->since, "\n";
+echo get_class((new ReflectionMethod("K", "__toString"))->getAttributes()[0]->newInstance()), " ", get_class((new ReflectionFunction("s"))->getParameters()[0]->getAttributes()[0]->newInstance()), "\n";
+foreach (["Attribute", "Override", "Deprecated", "SensitiveParameter", "AllowDynamicProperties", "ReturnTypeWillChange", "NoDiscard"] as $c) { echo $c, " ", json_encode((new ReflectionClass($c))->getAttributes()[0]->getArguments()), "\n"; }"##;
+    assert_eq!(
+        run(src),
+        r##"Deprecated 16 {"0":"old","since":"1.0"} old|1.0
+Override SensitiveParameter
+Attribute [1]
+Override [12]
+Deprecated [87]
+SensitiveParameter [32]
+AllowDynamicProperties [1]
+ReturnTypeWillChange [4]
+NoDiscard [6]
+"##
+    );
+}
+
+#[test]
+fn a_mixed_case_methods_reflection_finds_its_declaration() {
+    let src = r##"<?php class K { /** d */ #[Override] public function __toString(): string { static $q = 1; return ""; } }
+$m = new ReflectionMethod("K", "__toString"); var_dump(count($m->getAttributes()), $m->getDocComment(), $m->getStaticVariables());"##;
+    assert_eq!(
+        run(src),
+        r##"int(1)
+string(8) "/** d */"
+array(1) {
+  ["q"]=>
+  int(1)
+}
+"##
+    );
+}

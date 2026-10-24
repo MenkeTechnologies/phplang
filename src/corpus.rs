@@ -7552,7 +7552,7 @@ pub const CORPUS: &[Entry] = &[
         "ReflectionClass",
         "Prelude class",
         "class ReflectionClass {\n    public string $name;\n    __construct(object|string $objectOrClass)\n    getName()  getShortName()  getNamespaceName()  inNamespace()\n    isInterface()  isTrait()  isEnum()  isAbstract()  isFinal()  isInstantiable()  isInternal()  isUserDefined()  isAnonymous()\n    getParentClass()  getInterfaceNames()  getInterfaces()  getTraitNames()  implementsInterface()  isSubclassOf()  isInstance()\n    hasMethod()  getMethod()  getMethods(?int $filter)  getConstructor()\n    hasProperty()  getProperty()  getProperties(?int $filter)  getDefaultProperties()  getStaticProperties()  getStaticPropertyValue()  setStaticPropertyValue()\n    hasConstant()  getConstant()  getConstants()  getReflectionConstant()\n    newInstance(...$args)  newInstanceArgs(array $args)  newInstanceWithoutConstructor()\n}",
-        "A class, interface, trait or enum by name or by instance; `ReflectionException: Class \"X\" does not exist` otherwise. Methods and properties are listed own first (a trait's included) in declaration order, then each ancestor's not overridden — an ancestor's private members are not inherited — and an abstract class lists its interfaces' methods; constants list an enum's cases first. Made from an object, `hasProperty` also sees its dynamic properties. `getDocComment()` answers the `/** … */` comment the declaration took — the last one before it, unless a `{` or `}` came between or an earlier declaration took it — for a class, function, method, closure, property, constant or enum case, else `false`. DIVERGENCE: `getFileName()` answers `false`, `getAttributes()` an empty array, and there is no `__toString()`.",
+        "A class, interface, trait or enum by name or by instance; `ReflectionException: Class \"X\" does not exist` otherwise. Methods and properties are listed own first (a trait's included) in declaration order, then each ancestor's not overridden — an ancestor's private members are not inherited — and an abstract class lists its interfaces' methods; constants list an enum's cases first. Made from an object, `hasProperty` also sees its dynamic properties. `getDocComment()` answers the `/** … */` comment the declaration took — the last one before it, unless a `{` or `}` came between or an earlier declaration took it — for a class, function, method, closure, property, constant or enum case, else `false`. `getAttributes()` answers `ReflectionAttribute`s. DIVERGENCE: `getFileName()` answers `false`, and there is no `__toString()`.",
         "class A { public $x = 1; } echo (new ReflectionClass(\"A\"))->getProperties()[0]->name;   // => x",
     ),
     (
@@ -7560,6 +7560,13 @@ pub const CORPUS: &[Entry] = &[
         "Prelude class",
         "class ReflectionObject extends ReflectionClass { __construct(object $object) }",
         "`ReflectionClass` made from an instance.",
+        "",
+    ),
+    (
+        "ReflectionAttribute",
+        "Prelude class",
+        "final class ReflectionAttribute { const IS_INSTANCEOF = 2; getName()  getArguments()  getTarget()  isRepeated()  newInstance() }",
+        "One `#[…]` attribute of a class, function, method, closure, property, class constant, enum case or parameter, as that declaration's `getAttributes(?string $name = null, int $flags = 0)` lists them — filtered to one name, or with `IS_INSTANCEOF` to the subclasses of one (`Error: Class \"X\" not found` if it does not exist); any other flag is `ValueError: …::getAttributes(): Argument #2 ($flags) must be a valid attribute filter flag`. `getArguments()` evaluates the arguments when asked, in the declaring class's scope, positional then named. `newInstance()` refuses a missing class (`Attribute class \"X\" not found`), a class without `#[Attribute]` (`Attempting to use non-attribute class \"X\" as attribute`), a target its flags exclude (`Attribute \"X\" cannot target method (allowed targets: class)`) and a repeat without `IS_REPEATABLE` (`Attribute \"X\" must not be repeated`). The internal attribute classes (`Attribute`, `Deprecated`, `Override`, `SensitiveParameter`, `AllowDynamicProperties`, `ReturnTypeWillChange`, `NoDiscard`) carry their reference flags.",
         "",
     ),
     (

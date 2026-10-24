@@ -245,6 +245,8 @@ pub fn parse_meta(src: &str) -> Result<(Vec<Stmt>, ParseMeta), ParseFail> {
         pending_deprecated: None,
         last_deprecated: None,
         doc_used: 0,
+        last_attrs: Vec::new(),
+        pending_attr_specs: Vec::new(),
         top_level: true,
         only_declares_so_far: true,
         strict_types: false,
@@ -309,6 +311,8 @@ fn resolve_interp_parts(
                     pending_deprecated: None,
                     last_deprecated: None,
                     doc_used: 0,
+                    last_attrs: Vec::new(),
+                    pending_attr_specs: Vec::new(),
                     // An interpolation is a bare expression, never a statement,
                     // so no declaration can appear in it and the value is moot.
                     top_level: false,
@@ -362,6 +366,12 @@ struct Parser {
     /// The number of the last doc comment a declaration took — see
     /// [`Parser::take_doc`].
     doc_used: u32,
+    /// The attributes, with their arguments, the latest `attributes()` call
+    /// read.
+    last_attrs: Vec<Attr>,
+    /// The statement-level attributes waiting for the declaration that
+    /// follows, as `pending_attrs` holds their names.
+    pending_attr_specs: Vec<Attr>,
     /// Whether the statement about to be parsed sits at TOP level — file scope,
     /// or directly inside a `namespace Name { }` body, which upstream's grammar
     /// treats the same way. False anywhere inside a function body, an `if`, a
@@ -1325,6 +1335,7 @@ impl Parser {
         // read here and handed to the declaration that follows through
         // `pending_attrs`, since only that declaration can interpret them.
         self.pending_attrs = self.attributes()?;
+        self.pending_attr_specs = std::mem::take(&mut self.last_attrs);
         self.pending_deprecated = self.last_deprecated.take();
         let line = self.line();
         let kind = match self.peek() {
@@ -1945,6 +1956,7 @@ impl Parser {
 
     fn function_stmt(&mut self) -> Result<StmtKind, String> {
         let doc = self.take_doc(self.pos);
+        let attrs = std::mem::take(&mut self.pending_attr_specs);
         self.pos += 1; // function
         let deprecated = self.pending_deprecated.take();
         let by_ref_return = self.eat_punct("&");
@@ -1968,6 +1980,7 @@ impl Parser {
             namespace: self.magic.namespace.clone(),
             deprecated,
             doc,
+            attrs,
         })
     }
 
@@ -2434,149 +2447,51 @@ impl Parser {
     /// names in source order, each resolved as a class name is — an attribute
     /// IS a class, so `#[Deprecated]` inside `namespace A` names `A\Deprecated`.
     ///
-    /// Attributes are declarative metadata: nothing here executes, and only their
-    /// NAMES are kept, because the one attribute this engine acts on
-    /// (`#[AllowDynamicProperties]`) takes no arguments. The argument list is
-    /// scanned for balance and discarded, so an attribute whose arguments contain
-    /// brackets or a nested `#[…]` still ends at the right `]`.
+    /// The arguments are parsed as the call arguments they are (positional, then
+    /// named) and kept, with the names, in `last_attrs` for the declaration that
+    /// follows: nothing here executes, and reflection evaluates them on demand.
+    /// `#[\Deprecated]`'s literal `message`/`since` are read into
+    /// `last_deprecated`.
     ///
     /// Every declaration form may carry attributes, so this is called at the head
-    /// of statements, class members, and parameters; consuming them is what keeps
-    /// an attributed declaration parsing at all.
+    /// of statements, class members, closures and parameters.
     fn attributes(&mut self) -> Result<Vec<String>, String> {
-        let mut names: Vec<String> = Vec::new();
-        // Whether each name in `names` was written with a leading `\`.
-        let mut anchored: Vec<bool> = Vec::new();
-        let mut anchor_next = false;
+        let mut attrs: Vec<Attr> = Vec::new();
         self.last_deprecated = None;
-        // Inside `#[\Deprecated(…)]`'s argument list: the arguments read so
-        // far, the position of the next one, and the name a `name:` gave it.
-        let mut dep: Option<(Deprecation, usize, Option<String>)> = None;
-        while self.at_punct("#[") {
-            self.pos += 1;
-            let mut depth = 1usize;
-            // Depth 1 is the attribute list itself: a name there is an attribute,
-            // a name nested inside an argument list is not.
-            let mut expect_name = true;
-            while depth > 0 {
-                match self.next() {
-                    None => return Err("unterminated attribute".to_string()),
-                    Some(Tok::Punct("(")) if depth == 1 => {
-                        depth += 1;
-                        let last = names
-                            .last()
-                            .map(|n| self.resolve_attribute(n, anchored.last() == Some(&true)));
-                        if last.is_some_and(|n| n.eq_ignore_ascii_case("Deprecated"))
-                            && !expect_name
-                        {
-                            dep = Some((Deprecation::default(), 0, None));
-                        }
-                    }
-                    Some(Tok::Punct("#[")) | Some(Tok::Punct("[")) | Some(Tok::Punct("(")) => {
-                        depth += 1
-                    }
-                    Some(Tok::Punct(")")) if depth == 2 && dep.is_some() => {
-                        depth -= 1;
-                        self.last_deprecated = dep.take().map(|(d, ..)| d);
-                    }
-                    Some(Tok::Punct("]")) | Some(Tok::Punct(")")) => depth -= 1,
-                    Some(Tok::Punct(",")) if depth == 2 => {
-                        if let Some((_, pos, name)) = dep.as_mut() {
-                            *pos += 1;
-                            *name = None;
-                        }
-                    }
-                    Some(Tok::Ident(n)) if depth == 2 && dep.is_some() && self.at_punct(":") => {
-                        self.pos += 1;
-                        if let Some((_, _, name)) = dep.as_mut() {
-                            *name = Some(n.to_ascii_lowercase());
-                        }
-                    }
-                    Some(Tok::Interp(parts))
-                        if depth == 2
-                            && dep.is_some()
-                            && parts.iter().all(|p| matches!(p, StrPart::Lit(_))) =>
-                    {
-                        let s: String = parts
-                            .iter()
-                            .map(|p| match p {
-                                StrPart::Lit(l) => l.as_str(),
-                                _ => "",
-                            })
-                            .collect();
-                        if let Some((d, pos, name)) = dep.as_mut() {
-                            match (name.as_deref(), *pos) {
-                                (Some("message"), _) | (None, 0) => d.message = Some(s),
-                                (Some("since"), _) | (None, 1) => d.since = Some(s),
-                                _ => {}
-                            }
-                        }
-                    }
-                    Some(Tok::Str(s)) if depth == 2 && dep.is_some() => {
-                        if let Some((d, pos, name)) = dep.as_mut() {
-                            match (name.as_deref(), *pos) {
-                                (Some("message"), _) | (None, 0) => d.message = Some(s),
-                                (Some("since"), _) | (None, 1) => d.since = Some(s),
-                                _ => {}
-                            }
-                        }
-                    }
-                    Some(Tok::Punct(",")) if depth == 1 => expect_name = true,
-                    // A namespace separator: inside a name it is qualification,
-                    // which is kept — `#[Foo\AllowDynamicProperties]` is a user
-                    // attribute, not the engine's — and in front of one it
-                    // anchors the name to the global namespace.
-                    Some(Tok::Punct("\\")) if depth == 1 => {
-                        match names.last_mut() {
-                            Some(last) if !expect_name => last.push('\\'),
-                            _ => anchor_next = true,
-                        }
-                        expect_name = true;
-                    }
-                    Some(Tok::Ident(n)) if depth == 1 && expect_name => {
-                        match names.last_mut() {
-                            Some(last) if last.ends_with('\\') => last.push_str(&n),
-                            _ => {
-                                names.push(n);
-                                anchored.push(std::mem::take(&mut anchor_next));
-                            }
-                        }
-                        expect_name = false;
-                    }
-                    _ => {}
+        while self.eat_punct("#[") {
+            loop {
+                // `#[A, B,]`: a trailing comma closes the group.
+                if self.eat_punct("]") {
+                    break;
+                }
+                let line = self.line();
+                let raw = self.raw_name()?;
+                let name = self.resolve_class(&raw);
+                let args = if self.eat_punct("(") {
+                    self.arg_list()?
+                } else {
+                    Vec::new()
+                };
+                attrs.push(Attr { name, args, line });
+                if !self.eat_punct(",") {
+                    self.expect_punct("]")?;
+                    break;
                 }
             }
         }
-        // `#[\Deprecated]` with no argument list deprecates with no suffix.
-        let names: Vec<String> = names
+        if let Some(dep) = attrs
             .iter()
-            .zip(&anchored)
-            .map(|(n, &fq)| self.resolve_attribute(n, fq))
-            .collect();
-        if self.last_deprecated.is_none()
-            && names.iter().any(|n| n.eq_ignore_ascii_case("Deprecated"))
+            .find(|a| a.name.eq_ignore_ascii_case("Deprecated"))
         {
-            self.last_deprecated = Some(Deprecation::default());
+            self.last_deprecated = Some(deprecation_of(&dep.args));
         }
+        let names = attrs.iter().map(|a| a.name.clone()).collect();
+        self.last_attrs = attrs;
         Ok(names)
     }
 
     /// An attribute's class name as written — `anchored` when a `\` led it —
     /// resolved against the namespace and imports.
-    fn resolve_attribute(&self, name: &str, anchored: bool) -> String {
-        let kind = if anchored {
-            NameKind::FullyQualified
-        } else if name.contains('\\') {
-            NameKind::Qualified
-        } else {
-            NameKind::Unqualified
-        };
-        self.resolve_class(&RawName {
-            text: name.to_string(),
-            kind,
-        })
-    }
-
     fn param_list(&mut self) -> Result<Vec<Param>, String> {
         self.expect_closer("(")?;
         let mut params = Vec::new();
@@ -2584,6 +2499,7 @@ impl Parser {
             loop {
                 // A parameter may be attributed (`function f(#[Attr] int $x)`).
                 self.attributes()?;
+                let param_attrs = std::mem::take(&mut self.last_attrs);
                 let pline = self.line();
                 // Skip a leading modifier/type-hint chain up to `...` or `$var`. A
                 // visibility/readonly keyword marks a promoted constructor property.
@@ -2652,6 +2568,7 @@ impl Parser {
                     promoted_set_vis,
                     readonly,
                     by_ref,
+                    attrs: param_attrs,
                 });
                 // PHP 8.0+ allows a trailing comma in parameter lists too.
                 if !self.eat_punct(",") || self.at_punct(")") {
@@ -2760,6 +2677,7 @@ impl Parser {
     /// enforced when a subclass links against it.
     fn class_stmt(&mut self) -> Result<StmtKind, String> {
         let attributes = std::mem::take(&mut self.pending_attrs);
+        let class_attrs = std::mem::take(&mut self.pending_attr_specs);
         let is_interface = self.at_kw("interface");
         let is_trait = self.at_kw("trait");
         let is_enum = self.at_kw("enum");
@@ -2858,6 +2776,9 @@ impl Parser {
         if let Some(d) = class_doc {
             decl.docs.insert(0, ("class".to_string(), d));
         }
+        if !class_attrs.is_empty() {
+            decl.attrs.insert(0, ("class".to_string(), class_attrs));
+        }
         Ok(StmtKind::Class(ClassDecl {
             attributes,
             is_final,
@@ -2926,13 +2847,23 @@ impl Parser {
         let mut trait_aliases = Vec::new();
         let mut cases = Vec::new();
         let mut docs = Vec::new();
+        let mut attrs: Vec<(String, Vec<Attr>)> = Vec::new();
         while !self.at_punct("}") && !self.at_end() {
             // Any member — const, property, method, enum case — may be attributed.
             self.attributes()?;
+            let member_attrs = std::mem::take(&mut self.last_attrs);
+            let mut attach = |key: String| {
+                if !member_attrs.is_empty() {
+                    attrs.push((key, member_attrs.clone()));
+                }
+            };
             let member_deprecated = self.last_deprecated.take();
             // `case Name [= value];` — an enum case (only meaningful inside `enum`).
             if is_enum && self.at_kw("case") {
                 self.pos += 1;
+                if let Some(Tok::Ident(n)) = self.peek() {
+                    attach(format!("case:{n}"));
+                }
                 if let (Some(d), Some(Tok::Ident(n))) = (self.take_doc(self.pos), self.peek()) {
                     docs.push((format!("case:{n}"), d));
                 }
@@ -3080,6 +3011,9 @@ impl Parser {
                 let first_name_line = self.line();
                 loop {
                     const_lines.push(const_line);
+                    if let Some(Tok::Ident(n)) = self.peek() {
+                        attach(format!("const:{n}"));
+                    }
                     if let (Some(d), Some(Tok::Ident(n))) = (self.take_doc(self.pos), self.peek()) {
                         docs.push((format!("const:{n}"), d));
                     }
@@ -3124,6 +3058,7 @@ impl Parser {
                 if let Some(d) = method_doc {
                     docs.push((format!("method:{}", mname.to_ascii_lowercase()), d));
                 }
+                attach(format!("method:{}", mname.to_ascii_lowercase()));
                 // `zend_begin_method_decl`: a private method cannot be overridden, so
                 // `final` on one is pointless — except on a constructor, which a
                 // subclass constructor does not override.
@@ -3173,6 +3108,9 @@ impl Parser {
                 let ty = self.type_hint()?;
                 loop {
                     let prop_line = self.line();
+                    if let Some(Tok::Var(n)) = self.peek() {
+                        attach(format!("prop:{n}"));
+                    }
                     if let (Some(d), Some(Tok::Var(n))) = (self.take_doc(self.pos), self.peek()) {
                         docs.push((format!("prop:{n}"), d));
                     }
@@ -3255,6 +3193,7 @@ impl Parser {
             namespace: String::new(),
             is_final: false,
             docs,
+            attrs,
         })
     }
 
@@ -4228,12 +4167,17 @@ impl Parser {
                 Ok(Expr::New(class, args))
             }
             // An attributed closure — `#[Attr] fn () => …`, `#[Attr] static function () {}`.
-            // Attributes carry no runtime meaning here, so they are read and dropped
-            // and the closure parsed as if they were absent.
             Some(Tok::Punct("#[")) => {
                 self.pos -= 1;
                 self.attributes()?;
-                self.primary()
+                let attrs = std::mem::take(&mut self.last_attrs);
+                let mut closure = self.primary()?;
+                if let Expr::Closure { attrs: a, .. } | Expr::ArrowFn { attrs: a, .. } =
+                    &mut closure
+                {
+                    *a = attrs;
+                }
+                Ok(closure)
             }
             // `match (subj) { ... }` — only when followed by `(`, so a plain
             // bareword `match` still parses as a name.
@@ -4246,41 +4190,13 @@ impl Parser {
                     && matches!(self.peek(), Some(Tok::Ident(k))
                         if k.eq_ignore_ascii_case("fn") || k.eq_ignore_ascii_case("function")) =>
             {
-                Ok(match self.primary()? {
-                    Expr::Closure {
-                        params,
-                        uses,
-                        body,
-                        ret,
-                        line,
-                        doc,
-                        ..
-                    } => Expr::Closure {
-                        params,
-                        uses,
-                        body,
-                        ret,
-                        is_static: true,
-                        line,
-                        doc,
-                    },
-                    Expr::ArrowFn {
-                        params,
-                        body,
-                        ret,
-                        line,
-                        doc,
-                        ..
-                    } => Expr::ArrowFn {
-                        params,
-                        body,
-                        ret,
-                        is_static: true,
-                        line,
-                        doc,
-                    },
-                    other => other,
-                })
+                let mut closure = self.primary()?;
+                if let Expr::Closure { is_static, .. } | Expr::ArrowFn { is_static, .. } =
+                    &mut closure
+                {
+                    *is_static = true;
+                }
+                Ok(closure)
             }
             // Any other `static` must be the `static::` scope: a name cannot follow.
             Some(Tok::Ident(kw)) if kw.eq_ignore_ascii_case("static") && !self.at_punct("::") => {
@@ -4336,6 +4252,7 @@ impl Parser {
                     is_static: false,
                     line,
                     doc,
+                    attrs: Vec::new(),
                 })
             }
             // An arrow function `fn (params) => expr` — implicit by-value capture.
@@ -4355,6 +4272,7 @@ impl Parser {
                     is_static: false,
                     line,
                     doc,
+                    attrs: Vec::new(),
                 })
             }
             // `function` / `fn` is reserved: anything but `(` after it is a
@@ -4722,3 +4640,31 @@ fn prop_default_error(
 /// Binding powers of the `|>` pipe: between the relational operators (13, 14)
 /// and `.` (17, 18).
 const PIPE_BP: (u8, u8) = (15, 16);
+
+/// `#[\Deprecated(message, since)]`'s literal arguments, by position or name.
+/// A non-literal argument leaves its part unset.
+fn deprecation_of(args: &[Expr]) -> Deprecation {
+    let literal = |e: &Expr| match e {
+        Expr::Str(s) => Some(s.clone()),
+        Expr::Interp(parts) => parts
+            .iter()
+            .map(|p| match p {
+                InterpPart::Lit(l) => Some(l.as_str()),
+                InterpPart::Expr(_) => None,
+            })
+            .collect::<Option<String>>(),
+        _ => None,
+    };
+    let mut d = Deprecation::default();
+    for (i, a) in args.iter().enumerate() {
+        match a {
+            Expr::NamedArg(n, v) if n.eq_ignore_ascii_case("message") => d.message = literal(v),
+            Expr::NamedArg(n, v) if n.eq_ignore_ascii_case("since") => d.since = literal(v),
+            Expr::NamedArg(..) => {}
+            v if i == 0 => d.message = literal(v),
+            v if i == 1 => d.since = literal(v),
+            _ => {}
+        }
+    }
+    d
+}
