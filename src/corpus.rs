@@ -282,7 +282,7 @@ pub const CORPUS: &[Entry] = &[
         "static",
         "Keyword",
         "static $var [= expr];\nstatic function m() { … }\nstatic public $prop;\nstatic::member",
-        "Four roles, told apart by what follows. Before a `$variable` in a function body it declares a static local that survives between calls; before a member it marks it static; as a `::` qualifier it is late static binding; and before `function`/`fn` it makes a CLOSURE static, so it is not bound to the `$this` of the method it was written in and `Closure::bind` refuses to give it one afterwards (warning `Cannot bind an instance to a static closure, this will be an error in PHP 9` and answering null). It keeps that method's class scope, so a private static stays reachable.",
+        "Four roles, told apart by what follows. Before a `$variable` in a function body it declares a static local that survives between calls, its initializer evaluated once, on the declaration's first run; in a closure each closure OBJECT has its own copy (a `clone` or `bindTo` copies the current values), and `var_dump` and `getStaticVariables()` list them after the captured variables; before a member it marks it static; as a `::` qualifier it is late static binding; and before `function`/`fn` it makes a CLOSURE static, so it is not bound to the `$this` of the method it was written in and `Closure::bind` refuses to give it one afterwards (warning `Cannot bind an instance to a static closure, this will be an error in PHP 9` and answering null). It keeps that method's class scope, so a private static stays reachable.",
         "class A { static $n = 4; } echo A::$n;   // => 4\n$f = static fn($x) => $x + 1; echo $f(1);   // => 2",
     ),
     (

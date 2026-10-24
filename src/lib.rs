@@ -463,7 +463,7 @@ abstract class ReflectionFunctionAbstract {
     public function getReturnType(): ?ReflectionType { $t = $this->__returnInfo(); return $t === null ? null : ReflectionType::__make($t); }
     public function getDocComment(): string|false { return false; }
     public function isUserDefined(): bool { return !$this->isInternal(); }
-    public function getStaticVariables(): array { return []; }
+    public function getStaticVariables(): array { [$k, $t, $n] = $this->__spec(); return $k === "method" ? __phplang_reflect("statics", $t, $n) : []; }
     public function getAttributes(?string $name = null, int $flags = 0): array { return []; }
 }
 
@@ -483,6 +483,7 @@ class ReflectionFunction extends ReflectionFunctionAbstract {
     public function invoke(mixed ...$args): mixed { return call_user_func_array(ReflectionFunction::$__fn[spl_object_id($this)][1], $args); }
     public function invokeArgs(array $args = []): mixed { return call_user_func_array(ReflectionFunction::$__fn[spl_object_id($this)][1], $args); }
     public function getClosure(): Closure { $f = ReflectionFunction::$__fn[spl_object_id($this)][1]; return $f instanceof Closure ? $f : Closure::fromCallable($f); }
+    public function getStaticVariables(): array { [$k, $t] = $this->__spec(); return __phplang_reflect("statics", $t); }
 }
 
 class ReflectionMethod extends ReflectionFunctionAbstract {

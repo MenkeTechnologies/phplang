@@ -292,3 +292,187 @@ bool(false)
 "##
     );
 }
+
+#[test]
+fn a_closure_dump_lists_its_static_variables() {
+    let src = r##"<?php $y = 5; $f = function ($a) use ($y) { static $n = 0, $m; static $arr = [1], $c = PHP_INT_SIZE * 2, $s = "s"; static $late = strlen("abc"); $n++; return $n; };
+print_r($f); $f(1); $f(1); print_r($f); print_r((new ReflectionFunction($f))->getStaticVariables());"##;
+    assert_eq!(
+        run(src),
+        r##"Closure Object
+(
+    [name] => {closure:Command line code:1}
+    [file] => Command line code
+    [line] => 1
+    [static] => Array
+        (
+            [y] => 5
+            [n] => 0
+            [m] => 
+            [arr] => Array
+                (
+                    [0] => 1
+                )
+
+            [c] => 16
+            [s] => s
+            [late] => 
+        )
+
+    [parameter] => Array
+        (
+            [$a] => <required>
+        )
+
+)
+Closure Object
+(
+    [name] => {closure:Command line code:1}
+    [file] => Command line code
+    [line] => 1
+    [static] => Array
+        (
+            [y] => 5
+            [n] => 2
+            [m] => 
+            [arr] => Array
+                (
+                    [0] => 1
+                )
+
+            [c] => 16
+            [s] => s
+            [late] => 3
+        )
+
+    [parameter] => Array
+        (
+            [$a] => <required>
+        )
+
+)
+Array
+(
+    [y] => 5
+    [n] => 2
+    [m] => 
+    [arr] => Array
+        (
+            [0] => 1
+        )
+
+    [c] => 16
+    [s] => s
+    [late] => 3
+)
+"##
+    );
+}
+
+#[test]
+fn each_closure_object_has_its_own_static_variables() {
+    let src = r##"<?php $mk = fn() => function () { static $n = 0; return ++$n; }; $a = $mk(); $b = $mk(); $a(); $a(); echo $b(), "\n";
+$c = clone $a; echo $c(), $a(), "\n"; $f = function () { static $z = 0; return ++$z; }; $f(); $g = $f->bindTo(null); echo $g(), $f(), "\n";
+function h() { static $w = 0; return ++$w; } h(); $fc = h(...); echo $fc(), "\n";"##;
+    assert_eq!(
+        run(src),
+        r##"1
+33
+22
+2
+"##
+    );
+}
+
+#[test]
+fn a_static_initializer_runs_once() {
+    let src = r##"<?php function foo() { echo "foo "; return 9; } function t() { static $x = foo(); return $x++; } t(); t(); echo t(), "\n";
+$q = function () { static $v = foo(); return $v++; }; $q(); echo $q(), "\n";"##;
+    assert_eq!(
+        run(src),
+        r##"foo 11
+foo 10
+"##
+    );
+}
+
+#[test]
+fn a_function_and_a_methods_static_variables_are_reflected() {
+    let src = r##"<?php function named($a) { static $k = 3, $u; static $c = PHP_INT_SIZE * 2; return $k++; }
+print_r(named(...)); print_r((new ReflectionFunction("named"))->getStaticVariables()); named(1); print_r(Closure::fromCallable("named"));
+class M { function m() { static $q = [1]; static $r = 1 + 1; $q[] = 2; } static function s() { static $z = "z"; } }
+print_r((new ReflectionMethod("M", "m"))->getStaticVariables()); (new M)->m(); print_r((new ReflectionMethod("M", "m"))->getStaticVariables()); print_r(M::s(...));
+var_dump((new ReflectionFunction("strlen"))->getStaticVariables());"##;
+    assert_eq!(
+        run(src),
+        r##"Closure Object
+(
+    [function] => named
+    [static] => Array
+        (
+            [k] => 3
+            [u] => 
+            [c] => 16
+        )
+
+    [parameter] => Array
+        (
+            [$a] => <required>
+        )
+
+)
+Array
+(
+    [k] => 3
+    [u] => 
+    [c] => 16
+)
+Closure Object
+(
+    [function] => named
+    [static] => Array
+        (
+            [k] => 4
+            [u] => 
+            [c] => 16
+        )
+
+    [parameter] => Array
+        (
+            [$a] => <required>
+        )
+
+)
+Array
+(
+    [q] => Array
+        (
+            [0] => 1
+        )
+
+    [r] => 2
+)
+Array
+(
+    [q] => Array
+        (
+            [0] => 1
+            [1] => 2
+        )
+
+    [r] => 2
+)
+Closure Object
+(
+    [function] => M::s
+    [static] => Array
+        (
+            [z] => z
+        )
+
+)
+array(0) {
+}
+"##
+    );
+}

@@ -594,6 +594,28 @@ pub(crate) fn reflect(args: &[Value]) -> Result<Value, String> {
             }
             make_map(pairs)
         }
+        // `getStaticVariables`: a closure's is what its dump lists under
+        // `static` — the captured variables, then its `static`s; a function's
+        // or a method's, its `static`s.
+        "statics" if args.len() > 2 => {
+            let pairs = crate::host::method_statics(&s1, &s2);
+            make_map(pairs.into_iter().map(|(n, v)| (Value::str(n), v)).collect())
+        }
+        "statics" if !with_host(|h| h.is_closure(&a1)) => make_map(
+            crate::host::function_statics(&s1)
+                .into_iter()
+                .map(|(n, v)| (Value::str(n), v))
+                .collect(),
+        ),
+        "statics" => {
+            let info = crate::host::closure_debug_info(&a1);
+            let st =
+                info.map(|i| with_host(|h| h.index_get(&i, &Value::str("static".to_string()))));
+            match st {
+                Some(v) if !matches!(v, Value::Undef) => v,
+                _ => make_map(Vec::new()),
+            }
+        }
         "function" => {
             let closure = with_host(|h| h.is_closure(&a1));
             let found = if closure {

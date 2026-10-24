@@ -519,6 +519,9 @@ pub mod ops {
     /// `[class, name, slot] -> value`. Bind `Class::$name` to the cell at
     /// `slot` (`Class::$p = &$x`).
     pub const REF_TO_SPROP: u16 = 162;
+    /// `[slot-key] -> bool`. Whether the `static` declared under `slot-key`
+    /// is initialized already, so its initializer is skipped.
+    pub const STATIC_HAS: u16 = 163;
 }
 
 /// The capture name a `static` closure carries from its creation site.
@@ -619,6 +622,10 @@ pub struct FuncDef {
     pub declared: Option<String>,
     /// Its `#[\Deprecated]` attribute: calling it raises the deprecation first.
     pub deprecated: Option<crate::ast::Deprecation>,
+    /// The body's `static` declarations: each slot key, and a chunk for a
+    /// constant initializer (the value before the declaration first runs).
+    /// Empty for a closure, whose objects carry their own.
+    pub statics: Vec<(String, Option<Chunk>)>,
 }
 
 /// Where a closure literal was WRITTEN, which is what PHP 8.4 names a closure
@@ -1250,6 +1257,9 @@ pub struct PhpHost {
     /// is an index into `ref_cells`, so a body's `$var` aliases the cell and its
     /// value survives across calls.
     static_slots: FxHashMap<String, usize>,
+    /// The cells of closure `static`s whose (non-constant) initializer has not
+    /// run yet: a closure object is created holding one per declaration.
+    static_uninit: FxHashSet<usize>,
     /// Singleton `enum` case instances, keyed by `"enumlower::CaseName"`. Built
     /// once on first access so `E::Case === E::Case` holds by object identity.
     enum_case_cache: FxHashMap<String, Value>,
@@ -1671,6 +1681,7 @@ impl PhpHost {
             byref_live: Vec::new(),
             static_props: FxHashMap::default(),
             static_slots: FxHashMap::default(),
+            static_uninit: FxHashSet::default(),
             enum_case_cache: FxHashMap::default(),
             script_name: "Command line code".to_string(),
             suppress: 0,
@@ -4207,7 +4218,10 @@ impl PhpHost {
                 Some(Value::Obj(copy))
             }
             dup @ PhpObj::Closure { .. } => {
-                let dup = dup.clone();
+                let mut dup = dup.clone();
+                if let PhpObj::Closure { captured, .. } = &mut dup {
+                    self.fork_closure_statics(captured);
+                }
                 self.objs.push(dup);
                 Some(Value::Obj((self.objs.len() - 1) as u32))
             }
@@ -4233,6 +4247,25 @@ impl PhpHost {
             captured.retain(|(k, _)| k != STATIC_CLOSURE_CAPTURE);
             captured.len() != n
         };
+        // The body's `static`s: each closure object holds its own cells, bound
+        // into its frame under the declaration's key. A `?` key is one whose
+        // initializer has yet to run.
+        for (k, v) in captured.iter_mut() {
+            let uninit = k.starts_with("?@static#");
+            if !uninit && !k.starts_with("@static#") {
+                continue;
+            }
+            if uninit {
+                k.remove(0);
+            }
+            self.ref_cells.push(std::mem::take(v));
+            let slot = self.ref_cells.len() - 1;
+            if uninit {
+                self.static_uninit.insert(slot);
+            }
+            self.objs.push(PhpObj::Ref { slot });
+            *v = Value::Obj((self.objs.len() - 1) as u32);
+        }
         // A closure defined inside a method auto-binds the current `$this` and its
         // class scope (PHP semantics), so `$this` and private member access work
         // without an explicit `bindTo`. `None`/`None` at the top level or in a free
@@ -4329,6 +4362,8 @@ impl PhpHost {
             ),
             _ => return None,
         };
+        let mut captured = captured;
+        self.fork_closure_statics(&mut captured);
         // `do_closure_bind`: the new object's class, or the new scope without
         // one — in its declared spelling, since a scope may arrive lowercased.
         let called_scope = match &this {
@@ -6116,19 +6151,68 @@ impl PhpHost {
     /// cell (like a reference), so ordinary reads/writes of `$name` in the body
     /// hit the persistent storage.
     pub fn bind_static_local(&mut self, name: &str, slot_key: &str, init: Value) {
-        let slot = match self.static_slots.get(slot_key) {
-            Some(&s) => s,
-            None => {
-                self.ref_cells.push(init);
-                let s = self.ref_cells.len() - 1;
-                self.static_slots.insert(slot_key.to_string(), s);
+        let slot = match self.closure_static_slot(slot_key) {
+            // A closure's own copy, which the closure object brought in.
+            Some(s) => {
+                if self.static_uninit.remove(&s) {
+                    self.ref_cells[s] = init;
+                }
                 s
             }
+            None => match self.static_slots.get(slot_key) {
+                Some(&s) => s,
+                None => {
+                    self.ref_cells.push(init);
+                    let s = self.ref_cells.len() - 1;
+                    self.static_slots.insert(slot_key.to_string(), s);
+                    s
+                }
+            },
         };
         let idx = self.scope_idx(name);
         if let Some(scope) = self.scopes.get_mut(idx) {
             let i = scope.vars.ensure_slot(name);
             scope.vars.put(i, Slot::Ref(slot));
+        }
+    }
+
+    /// The cell of the running closure's own copy of the `static` keyed
+    /// `slot_key`: the closure binds it into its frame under that key.
+    fn closure_static_slot(&self, slot_key: &str) -> Option<usize> {
+        let idx = self.scope_idx(slot_key);
+        match self.scopes.get(idx).map(|s| s.vars.get(slot_key)) {
+            Some(Slot::Ref(c)) => Some(*c),
+            _ => None,
+        }
+    }
+
+    /// Whether the `static` keyed `slot_key` has been initialized, so its
+    /// initializer must not run again.
+    pub fn static_initialized(&self, slot_key: &str) -> bool {
+        match self.closure_static_slot(slot_key) {
+            Some(s) => !self.static_uninit.contains(&s),
+            None => self.static_slots.contains_key(slot_key),
+        }
+    }
+
+    /// Give every `static` cell in a closure's bindings a fresh copy of its
+    /// current value, for a closure duplicated from another (`clone`,
+    /// `bindTo`): the reference copies the static variables with it.
+    fn fork_closure_statics(&mut self, captured: &mut [(String, Value)]) {
+        for (name, v) in captured.iter_mut() {
+            if !name.starts_with("@static#") {
+                continue;
+            }
+            let Some(slot) = self.ref_slot_of_value(v) else {
+                continue;
+            };
+            self.ref_cells.push(self.ref_cells[slot].clone());
+            let fresh = self.ref_cells.len() - 1;
+            if self.static_uninit.contains(&slot) {
+                self.static_uninit.insert(fresh);
+            }
+            self.objs.push(PhpObj::Ref { slot: fresh });
+            *v = Value::Obj((self.objs.len() - 1) as u32);
         }
     }
 
@@ -10149,7 +10233,8 @@ pub fn closure_debug_info(v: &Value) -> Option<Value> {
         else {
             return None;
         };
-        let fake = params.first().is_some_and(|p| p.name == FCC_PARAM);
+        let fake = params.first().is_some_and(|p| p.name == FCC_PARAM)
+            || captured.iter().any(|(n, _)| n == "@fcc");
         let callee = fake
             .then(|| captured.iter().find(|(n, _)| n.starts_with("@fcc")))
             .flatten()
@@ -10167,10 +10252,18 @@ pub fn closure_debug_info(v: &Value) -> Option<Value> {
                 Some(DeclSite::Closure(_, line)) => i64::from(*line),
                 _ => 0,
             },
+            // The captured variables, then the body's own `static`s, which
+            // travel under their declaration key (`@static#N:name`).
             statics: captured
                 .iter()
-                .filter(|(n, _)| !n.starts_with(['@', '$']) && n != "this")
-                .cloned()
+                .filter_map(|(n, v)| match n.strip_prefix("@static#") {
+                    Some(key) => {
+                        let name = key.split_once(':').map_or(key, |(_, name)| name);
+                        Some((name.to_string(), h.deref(v.clone())))
+                    }
+                    None if n.starts_with(['@', '$']) || n == "this" => None,
+                    None => Some((n.clone(), v.clone())),
+                })
                 .collect(),
         });
         let params: Vec<DebugParam> = params
@@ -10181,12 +10274,12 @@ pub fn closure_debug_info(v: &Value) -> Option<Value> {
     })?;
     // A first-class callable names the function it forwards to, and reports
     // that function's parameters rather than its own variadic shell.
-    let (function, this, params) = match fake_callee {
+    let (function, this, params, fn_statics) = match fake_callee {
         Some(callee) => {
-            let (function, bound, params) = fcc_target(&callee);
-            (Some(function), bound.or(this), params)
+            let (function, bound, params, statics) = fcc_target(&callee);
+            (Some(function), bound.or(this), params, statics)
         }
-        None => (None, this, params),
+        None => (None, this, params, Vec::new()),
     };
     let rows = debug_param_rows(&params);
     Some(with_host(|h| {
@@ -10205,7 +10298,16 @@ pub fn closure_debug_info(v: &Value) -> Option<Value> {
                     set(h, "static", st);
                 }
             }
-            (None, Some(f)) => set(h, "function", Value::str(f)),
+            (None, Some(f)) => {
+                set(h, "function", Value::str(f));
+                if !fn_statics.is_empty() {
+                    let st = h.new_array();
+                    for (n, val) in &fn_statics {
+                        h.arr_set_key(&st, &Value::str(n.clone()), val.clone());
+                    }
+                    set(h, "static", st);
+                }
+            }
             (None, None) => {}
         }
         if let Some(t) = this {
@@ -10225,7 +10327,47 @@ pub fn closure_debug_info(v: &Value) -> Option<Value> {
 /// What a first-class callable forwards to, as its debug info reports it: the
 /// callee's name (`strlen`, `K::m`), the object a method callable is bound
 /// to, and the callee's parameters `(name, by_ref, has_default, variadic)`.
-fn fcc_target(callee: &Value) -> (String, Option<Value>, Vec<DebugParam>) {
+/// The `static` variables a function or method definition declares, by name:
+/// the value each holds, or — before its declaration first ran — its constant
+/// initializer, else null.
+pub fn defined_statics(statics: &[(String, Option<Chunk>)]) -> Vec<(String, Value)> {
+    statics
+        .iter()
+        .map(|(key, init)| {
+            let name = key
+                .split_once(':')
+                .map_or(key.as_str(), |(_, n)| n)
+                .to_string();
+            let held = with_host(|h| h.static_slots.get(key).map(|&s| h.ref_cells[s].clone()));
+            let v = match (held, init) {
+                (Some(v), _) => v,
+                (None, Some(chunk)) => run_chunk_on(chunk.clone()).unwrap_or(Value::Undef),
+                (None, None) => Value::Undef,
+            };
+            (name, v)
+        })
+        .collect()
+}
+
+/// The `static` variables of the user function `name` (see
+/// [`defined_statics`]), empty for an unknown or library one.
+pub fn function_statics(name: &str) -> Vec<(String, Value)> {
+    let lower = unanchored(name).to_ascii_lowercase();
+    let defs = with_host(|h| h.functions.get(&lower).map(|d| d.statics.clone()));
+    defs.map(|d| defined_statics(&d)).unwrap_or_default()
+}
+
+/// The `static` variables of method `class::method` (see [`defined_statics`]).
+pub fn method_statics(class: &str, method: &str) -> Vec<(String, Value)> {
+    let defs = with_host(|h| h.resolve_method(class, method).map(|(_, d)| d.statics));
+    defs.map(|d| defined_statics(&d)).unwrap_or_default()
+}
+
+/// What a first-class callable's dump reports of its target: the name it
+/// forwards to, a bound `$this`, its parameters and its `static`s.
+type FccTarget = (String, Option<Value>, Vec<DebugParam>, Vec<(String, Value)>);
+
+fn fcc_target(callee: &Value) -> FccTarget {
     let user_params = |def: &FuncDef| -> Vec<DebugParam> {
         def.params
             .iter()
@@ -10240,20 +10382,22 @@ fn fcc_target(callee: &Value) -> (String, Option<Value>, Vec<DebugParam>) {
         });
         let (declared, def) = found;
         let params = def.as_ref().map(user_params).unwrap_or_default();
-        return (format!("{declared}::{method}"), this, params);
+        let statics = def.map(|d| defined_statics(&d.statics)).unwrap_or_default();
+        return (format!("{declared}::{method}"), this, params, statics);
     }
     let name = with_host(|h| h.to_str(callee));
     let name = unanchored(&name).to_string();
     if let Some(def) = with_host(|h| h.functions.get(&name.to_ascii_lowercase()).cloned()) {
         let params = user_params(&def);
-        return (def.declared.clone().unwrap_or(name), None, params);
+        let statics = defined_statics(&def.statics);
+        return (def.declared.clone().unwrap_or(name), None, params, statics);
     }
     let params = crate::argsig::library_params(&name)
         .unwrap_or_default()
         .into_iter()
         .map(|p| (p.name, p.by_ref, p.def.is_some(), p.variadic))
         .collect();
-    (name.to_ascii_lowercase(), None, params)
+    (name.to_ascii_lowercase(), None, params, Vec::new())
 }
 
 /// Whether `class` exists, autoloading it if it does not yet.
@@ -10951,7 +11095,12 @@ fn call_closure_static(method_l: &str, mut args: Vec<Value>) -> Result<Value, St
             Ok(with_host(|h| {
                 h.make_closure(
                     crate::FROM_CALLABLE_FORWARDER,
-                    vec![("c".to_string(), callable)],
+                    // `@fcc` names the target the way a first-class callable
+                    // does, which is how a dump reports the closure.
+                    vec![
+                        ("c".to_string(), callable.clone()),
+                        ("@fcc".to_string(), callable),
+                    ],
                 )
             }))
         }

@@ -121,6 +121,7 @@ pub fn install(vm: &mut VM) {
     reg!(vm, ops::CLASS_LINK_CHECK, b_class_link_check);
     reg!(vm, ops::REF_SLOT_SPROP, b_ref_slot_sprop);
     reg!(vm, ops::REF_TO_SPROP, b_ref_to_sprop);
+    reg!(vm, ops::STATIC_HAS, b_static_has);
     reg!(vm, ops::CONST_DECL, b_const_decl);
     reg!(vm, ops::PROP_GET_EMPTY, b_prop_get_empty);
     reg!(vm, ops::PROP_INCDEC, b_prop_incdec);
@@ -633,6 +634,12 @@ fn b_sprop_incdec(vm: &mut VM, _: u8) -> Value {
     } else {
         old
     }
+}
+
+/// See `ops::STATIC_HAS`.
+fn b_static_has(vm: &mut VM, _: u8) -> Value {
+    let key = pop_name(vm);
+    Value::bool(with_host(|h| h.static_initialized(&key)))
 }
 
 /// `static $var = init;` — alias `$var` to its persistent slot. Stack

@@ -59,6 +59,17 @@ comment above it.
   property table, mangled names included. `ArrayObject::getIterator()`
   shares the object's storage instead of copying it, and a sort over a
   wrapped object reorders its whole property table in place.
+* `static` locals: the initializer runs once, on the declaration's first run
+  (it ran on every call). Each closure object has its own copy of its
+  body's statics — `$mk()` twice gives two counters — and a `clone` or
+  `bindTo` copies their current values; they were shared by every closure
+  from one literal. A closure's `var_dump` / `print_r` and
+  `ReflectionFunction::getStaticVariables()` list them after the captured
+  variables (a constant initializer's value before the first call, else
+  null), and a first-class callable or `Closure::fromCallable()` of a
+  function or method reports that function's statics and its name
+  (`["function"]`); `getStaticVariables()` of a function or method answers
+  its statics.
 
 ---
 

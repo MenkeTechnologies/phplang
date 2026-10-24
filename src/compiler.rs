@@ -451,6 +451,11 @@ pub struct Compiler {
     /// $var` declaration, baked into the chunk so every call resolves the same
     /// persistent slot.
     static_slot: usize,
+    /// The `static` declarations of the function, method or closure body being
+    /// compiled, as `(slot key, initializer)`. A closure OBJECT carries its own
+    /// copy of them, created with the closure; a function keeps the list on its
+    /// definition, for a dump or `getStaticVariables` before the first call.
+    body_statics: Option<Vec<(String, Option<Expr>)>>,
     /// By-reference parameter positions per function (lowercased name), gathered
     /// in a pre-pass so a call can write the callee's final by-ref values back to
     /// the caller's variables even when the function is declared later.
@@ -1683,19 +1688,34 @@ impl Compiler {
                         return Err(self.compile_fatal(line, "Cannot use $this as static variable"));
                     }
                     // A unique, stable key per declaration — baked into the chunk
-                    // so every call resolves the same persistent slot.
-                    let key = format!("@static#{}", self.static_slot);
+                    // so every call resolves the same persistent slot — that
+                    // also names the variable, for a closure's dump.
+                    let key = format!("@static#{}:{name}", self.static_slot);
                     self.static_slot += 1;
+                    if let Some(list) = self.body_statics.as_mut() {
+                        list.push((key.clone(), default.clone()));
+                    }
                     let nidx = b.add_constant(Value::str(name.clone()));
                     b.emit(Op::LoadConst(nidx), line);
                     let kidx = b.add_constant(Value::str(key));
                     b.emit(Op::LoadConst(kidx), line);
+                    // The initializer runs once, the first time the declaration
+                    // executes; afterwards the slot keeps what it holds.
+                    b.emit(Op::LoadConst(kidx), line);
+                    b.emit(Op::CallBuiltin(ops::STATIC_HAS, 1), line);
+                    let fresh = b.emit(Op::JumpIfFalse(0), line);
+                    b.emit(Op::LoadUndef, line);
+                    let done = b.emit(Op::Jump(0), line);
+                    let init_at = b.current_pos();
+                    b.patch_jump(fresh, init_at);
                     match default {
                         Some(e) => self.compile_expr(b, e)?,
                         None => {
                             b.emit(Op::LoadUndef, line);
                         }
                     }
+                    let bind_at = b.current_pos();
+                    b.patch_jump(done, bind_at);
                     b.emit(Op::CallBuiltin(ops::STATIC_BIND, 3), line);
                     b.emit(Op::Pop, line);
                 }
@@ -1836,7 +1856,11 @@ impl Compiler {
                 // chunk and keeps the by-name path, which reaches the same slots.
                 let promoted = self.promotable_locals(params, body, body_has_yield(body));
                 let locals = self.enter_scope_promoting(scope_slots(params, body), promoted);
+                // A function's statics are its own, not an enclosing closure's.
+                let outer_statics = self.body_statics.replace(Vec::new());
                 self.compile_seq(&mut fb, body)?;
+                let statics = std::mem::replace(&mut self.body_statics, outer_statics);
+                let statics = self.static_initializers(statics.unwrap_or_default())?;
                 self.resolve_gotos(&mut fb, self.cur_chunk, true)?;
                 let locals = self.leave_scope(locals);
                 self.decl_site = saved_site;
@@ -1856,6 +1880,7 @@ impl Compiler {
                         closure_site: None,
                         declared: Some(name.clone()),
                         deprecated: deprecated.clone(),
+                        statics,
                     },
                 ));
                 if !top {
@@ -3241,6 +3266,7 @@ impl Compiler {
             // variable of the same name as a promoted parameter made
             // `$this->x = $x` read whatever the constructor frame happened to
             // hold at that index instead of the parameter.
+            let outer_statics = self.body_statics.replace(Vec::new());
             self.in_other_frame(|c| {
                 for assign in &promotions {
                     c.compile_expr(&mut mb, assign)?;
@@ -3248,6 +3274,8 @@ impl Compiler {
                 }
                 c.compile_seq(&mut mb, &m.body)
             })?;
+            let statics = std::mem::replace(&mut self.body_statics, outer_statics);
+            let statics = self.static_initializers(statics.unwrap_or_default())?;
             self.resolve_gotos(&mut mb, self.cur_chunk, true)?;
             self.decl_site = saved_site;
             self.ret_by_ref = saved_ref;
@@ -3268,6 +3296,7 @@ impl Compiler {
                     // Methods keep the by-name path for now; `$this` and the
                     // property desugaring bind through the host either way.
                     locals: Vec::new(),
+                    statics,
                 },
             );
         }
@@ -6287,6 +6316,29 @@ impl Compiler {
         Ok(Some(replace(target, &tmp)))
     }
 
+    /// A function body's `static` declarations as its definition keeps them:
+    /// the slot key, and a chunk evaluating a constant initializer — what the
+    /// variable holds before the declaration first runs.
+    fn static_initializers(
+        &mut self,
+        statics: Vec<(String, Option<Expr>)>,
+    ) -> Result<Vec<(String, Option<Chunk>)>, String> {
+        statics
+            .into_iter()
+            .map(|(key, init)| {
+                let chunk = match init.filter(is_constant_initializer) {
+                    Some(e) => {
+                        let mut ib = ChunkBuilder::new();
+                        self.in_other_frame(|c| c.compile_expr(&mut ib, &e))?;
+                        Some(ib.build())
+                    }
+                    None => None,
+                };
+                Ok((key, chunk))
+            })
+            .collect()
+    }
+
     /// Lower an anonymous function / arrow function to a closure-creating
     /// sequence: compile the body into its own chunk (registered under a synthetic
     /// name in the function table, with its parameters so defaults/variadics bind),
@@ -6321,7 +6373,10 @@ impl Compiler {
         // falls out of the same rule rather than being a second case.
         let site = host::DeclSite::Closure(Box::new(self.decl_site.clone()), line);
         let saved_site = std::mem::replace(&mut self.decl_site, site.clone());
-        self.in_other_frame(|c| c.compile_seq(&mut fb, body))?;
+        let outer_statics = self.body_statics.replace(Vec::new());
+        let compiled = self.in_other_frame(|c| c.compile_seq(&mut fb, body));
+        let statics = std::mem::replace(&mut self.body_statics, outer_statics).unwrap_or_default();
+        compiled?;
         self.resolve_gotos(&mut fb, self.cur_chunk, true)?;
         self.decl_site = saved_site;
         self.loops = saved;
@@ -6347,6 +6402,8 @@ impl Compiler {
                 closure_site: Some(site),
                 declared: None,
                 deprecated: None,
+                // A closure's statics travel with each closure object.
+                statics: Vec::new(),
             },
         ));
 
@@ -6393,10 +6450,28 @@ impl Compiler {
                 self.emit_get_var(b, &cap.name);
             }
         }
+        // Each `static` of the body, after the captures, which is the order a
+        // dump lists them in: a constant initializer is the value the new
+        // closure starts with; any other runs on the first call, and the slot
+        // travels unset under a `?` key until then.
+        for (key, init) in &statics {
+            match init.as_ref().filter(|e| is_constant_initializer(e)) {
+                Some(e) => {
+                    let kidx = b.add_constant(Value::str(key.clone()));
+                    b.emit(Op::LoadConst(kidx), 0);
+                    self.compile_expr(b, e)?;
+                }
+                None => {
+                    let kidx = b.add_constant(Value::str(format!("?{key}")));
+                    b.emit(Op::LoadConst(kidx), 0);
+                    b.emit(Op::LoadUndef, 0);
+                }
+            }
+        }
         b.emit(
             Op::CallBuiltin(
                 ops::MKCLOSURE,
-                (1 + (captures.len() + usize::from(is_static)) * 2) as u8,
+                (1 + (captures.len() + usize::from(is_static) + statics.len()) * 2) as u8,
             ),
             0,
         );
@@ -7705,6 +7780,30 @@ fn is_variable_or_call(e: &Expr) -> bool {
             | Expr::NullsafeMethodCall(..)
             | Expr::StaticCall(..)
     )
+}
+
+/// Whether a `static` initializer is a constant expression, which the
+/// reference evaluates at compile time — so a closure's dump shows the value
+/// before its first call — rather than on the declaration's first run.
+fn is_constant_initializer(e: &Expr) -> bool {
+    match e {
+        Expr::Null | Expr::Bool(_) | Expr::Int(_) | Expr::Float(_) | Expr::Str(_) => true,
+        Expr::Interp(parts) => parts.iter().all(|p| matches!(p, InterpPart::Lit(_))),
+        Expr::ConstFetch(_) | Expr::StaticGet(..) | Expr::Magic(_) => true,
+        Expr::Unary(_, x) => is_constant_initializer(x),
+        Expr::Binary(_, l, r) | Expr::Elvis(l, r) | Expr::Coalesce(l, r) => {
+            is_constant_initializer(l) && is_constant_initializer(r)
+        }
+        Expr::Ternary(c, t, f) => {
+            is_constant_initializer(c) && is_constant_initializer(t) && is_constant_initializer(f)
+        }
+        Expr::Array(items, _) => items.iter().all(|i| {
+            !i.by_ref
+                && i.key.as_ref().is_none_or(is_constant_initializer)
+                && is_constant_initializer(&i.value)
+        }),
+        _ => false,
+    }
 }
 
 /// Whether `e` is a float literal (possibly negated) with a fractional part —
