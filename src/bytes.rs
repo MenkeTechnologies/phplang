@@ -184,7 +184,7 @@ pub fn concat(x: &str, y: &str) -> String {
     out
 }
 
-/// `x .= y` in place for two canonical strings (see [`concat`]): only the seam
+/// `x .= y` in place for two canonical strings (see [`concat`](fn@concat)): only the seam
 /// is re-derived, so appending to a string the caller owns is amortized
 /// constant work.
 pub fn append(x: &mut String, y: &str) {

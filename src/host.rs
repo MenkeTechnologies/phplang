@@ -1656,7 +1656,7 @@ fn escape_trace_string(s: &str) -> String {
 }
 
 /// `smart_str_append_escaped_truncated(…, limit)`: the first `limit` bytes of
-/// `s` escaped (see [`escape_trace_string`]), then `...` if it was cut.
+/// `s` escaped (see `escape_trace_string`), then `...` if it was cut.
 pub fn smart_str_escaped(s: &str, limit: usize) -> String {
     const VK_ESCAPE: u8 = 0x1b;
     let bytes = &*crate::bytes::to_bytes(s);
@@ -3573,13 +3573,13 @@ impl PhpHost {
         }
     }
 
-    /// [`PhpHost::append_bound`] on slot `i` of the current frame.
+    /// `PhpHost::append_bound` on slot `i` of the current frame.
     pub fn slot_append_str(&mut self, i: u32, y: &str) -> Option<Value> {
         let idx = self.scopes.len().checked_sub(1)?;
         self.append_bound(idx, i, y)
     }
 
-    /// [`PhpHost::append_bound`] on the variable `name`.
+    /// `PhpHost::append_bound` on the variable `name`.
     pub fn var_append_str(&mut self, name: &str, y: &str) -> Option<Value> {
         let idx = self.scope_idx(name);
         let i = self.scopes.get(idx)?.vars.slot_of(name)?;
