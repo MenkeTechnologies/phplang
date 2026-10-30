@@ -55,6 +55,8 @@ pub fn install(vm: &mut VM) {
     reg!(vm, ops::CONCAT_ASSIGN_VAR, b_concat_assign_var);
     reg!(vm, ops::FOREACH_KEYS, b_foreach_keys);
     reg!(vm, ops::IS_PLAIN_OBJECT, b_is_plain_object);
+    reg!(vm, ops::PROP_DIM_WRITEBACK, b_prop_dim_writeback);
+    reg!(vm, ops::SPROP_DIM_WRITEBACK, b_sprop_dim_writeback);
     reg!(vm, ops::TRUTHY, b_truthy);
     reg!(vm, ops::CALL, b_call);
     reg!(vm, ops::MINMAX_FLF2, b_minmax_flf2);
@@ -567,10 +569,37 @@ fn b_new_named(vm: &mut VM, argc: u8) -> Value {
 fn b_sprop_ensure_array(vm: &mut VM, _: u8) -> Value {
     let name = pop_name(vm);
     let class = pop_name(vm);
+    mark_warn_site(vm);
     match host::static_prop_ensure_array(&class, &name) {
         Ok(v) => v,
         Err(e) => fail_or_throw(vm, e),
     }
+}
+
+/// `ops::PROP_DIM_WRITEBACK`: store a string container back into `$recv->name`.
+fn b_prop_dim_writeback(vm: &mut VM, _: u8) -> Value {
+    let container = vm.pop();
+    let name = pop_name(vm);
+    let recv = vm.pop();
+    let val = vm.pop();
+    if matches!(container, Value::Str(_)) {
+        with_host(|h| h.prop_set(&recv, &name, container));
+    }
+    val
+}
+
+/// `ops::SPROP_DIM_WRITEBACK`: store a string container back into `Class::$name`.
+fn b_sprop_dim_writeback(vm: &mut VM, _: u8) -> Value {
+    let container = vm.pop();
+    let name = pop_name(vm);
+    let class = pop_name(vm);
+    let val = vm.pop();
+    if matches!(container, Value::Str(_)) {
+        if let Err(e) = host::static_prop_set(&class, &name, container) {
+            return fail_or_throw(vm, e);
+        }
+    }
+    val
 }
 
 /// `Class::$prop` read. Stack `[class, name]`.
@@ -708,6 +737,11 @@ fn b_ref_slot_var(vm: &mut VM, _: u8) -> Value {
 fn b_ref_slot_elem(vm: &mut VM, argc: u8) -> Value {
     let keys = pop_args(vm, argc as usize - 1);
     let name = pop_name(vm);
+    if let Some(thrown) =
+        guard_array_write(vm, &name, &keys[..keys.len() - 1], host::WriteTail::Ref)
+    {
+        return thrown;
+    }
     Value::int(with_host(|h| h.elem_ref_slot(&name, &keys)) as i64)
 }
 
@@ -759,6 +793,9 @@ fn b_ref_to_append(vm: &mut VM, argc: u8) -> Value {
     let slot = vm.pop().to_int() as usize;
     let keys = pop_args(vm, argc as usize - 2);
     let name = pop_name(vm);
+    if let Some(thrown) = guard_array_write(vm, &name, &keys, host::WriteTail::Append) {
+        return thrown;
+    }
     match with_host(|h| -> Result<Value, String> {
         h.append_elem_to_slot(&name, &keys, slot)?;
         Ok(h.ref_cell_value(slot))
@@ -1222,6 +1259,10 @@ fn b_unset_path(vm: &mut VM, argc: u8) -> Value {
             };
         }
     }
+    if let Some(issue) = with_host(|h| h.unset_container_issue(&name, &keys)) {
+        // `false` is deprecated and left as it is: there is nothing to remove.
+        return container_issue(vm, issue).unwrap_or(Value::Undef);
+    }
     with_host(|h| h.unset_path(&name, &keys));
     Value::Undef
 }
@@ -1356,7 +1397,7 @@ fn int_operand(orig: &Value, coerced: &Value) -> i64 {
         return if f.is_finite() { f as i64 } else { 0 };
     }
     if out_of_range {
-        let shown = with_host(|h| h.to_str(&Value::float(f)));
+        let shown = crate::stdlib::types::serialize_float(f);
         with_host(|h| {
             h.warn(format!(
                 "The float {shown} is not representable as an int, cast occurred"
@@ -1365,7 +1406,7 @@ fn int_operand(orig: &Value, coerced: &Value) -> i64 {
         return 0;
     }
     if f.fract() != 0.0 {
-        let shown = with_host(|h| h.to_str(&Value::float(f)));
+        let shown = crate::stdlib::types::serialize_float(f);
         with_host(|h| {
             h.deprecated(format!(
                 "Implicit conversion from float {shown} to int loses precision"
@@ -1441,20 +1482,15 @@ fn str_bitop(x: &[u8], y: &[u8], pad: bool, f: impl Fn(u8, u8) -> u8) -> Value {
     } else {
         x.len().min(y.len())
     };
-    // Result bytes become chars one-for-one, which is the same mapping `chr`
-    // already uses here. A byte above 0x7f therefore lands as that code point
-    // rather than as a raw byte — the frontend's existing string
-    // representation, not a choice this operator makes.
-    Value::str(
-        (0..n)
-            .map(|i| {
-                f(
-                    x.get(i).copied().unwrap_or(0),
-                    y.get(i).copied().unwrap_or(0),
-                ) as char
-            })
-            .collect::<String>(),
-    )
+    let out: Vec<u8> = (0..n)
+        .map(|i| {
+            f(
+                x.get(i).copied().unwrap_or(0),
+                y.get(i).copied().unwrap_or(0),
+            )
+        })
+        .collect();
+    Value::str(crate::bytes::from_bytes(&out))
 }
 
 fn b_shl(vm: &mut VM, _: u8) -> Value {
@@ -1489,9 +1525,10 @@ fn b_shr(vm: &mut VM, _: u8) -> Value {
 
 fn b_bitnot(vm: &mut VM, _: u8) -> Value {
     let v = vm.pop();
-    // `~` on a string flips its bytes and stays a string; on an array or object
-    // it is refused by name rather than by the `Unsupported operand types`
-    // wording the binary operators use.
+    // `~` on a string flips its bytes and stays a string; on anything but a
+    // number it is refused by name rather than by the `Unsupported operand
+    // types` wording the binary operators use. A float narrows as
+    // `bitwise_not_function` narrows it (see `dval_to_lval_reported`).
     match &v {
         Value::Str(s) => str_bitop(
             &crate::bytes::to_bytes(s),
@@ -1499,8 +1536,18 @@ fn b_bitnot(vm: &mut VM, _: u8) -> Value {
             false,
             |p, _| !p,
         ),
-        Value::Obj(_) => {
-            let what = with_host(|h| host::arith_type_name(h, &v));
+        Value::Int(n) => Value::int(!n),
+        Value::Float(f) => {
+            mark_warn_site(vm);
+            Value::int(!with_host(|h| h.dval_to_lval_reported(*f)))
+        }
+        _ => {
+            // `zend_zval_value_name`: a bool is named by its value.
+            let what = match v {
+                Value::Bool(true) => "true".to_string(),
+                Value::Bool(false) => "false".to_string(),
+                _ => with_host(|h| host::arith_type_name(h, &v)),
+            };
             mark_frame_line(vm);
             throw_php(
                 vm,
@@ -1508,7 +1555,6 @@ fn b_bitnot(vm: &mut VM, _: u8) -> Value {
                 &format!("Cannot perform bitwise not on {what}"),
             )
         }
-        _ => Value::int(!with_host(|h| h.to_number(&v).to_int())),
     }
 }
 
@@ -2567,11 +2613,25 @@ fn b_index_isset(vm: &mut VM, _: u8) -> Value {
 
 /// Refuse an array write whose target container holds a scalar, as the reference
 /// does: `Error: Cannot use a scalar value as an array` for an int, float or
-/// `true`, and a deprecation (the write then proceeds) for `false`. `keys` are the
-/// keys leading to the container being written into. `Some` is the value the
-/// calling op returns after the throw.
-fn guard_array_write(vm: &mut VM, name: &str, keys: &[Value]) -> Option<Value> {
-    match with_host(|h| h.write_container_issue(name, keys))? {
+/// `true`, and a deprecation (the write then proceeds) for `false`; a string
+/// container refuses what `tail` does to it (see `host::WriteTail`). `keys` are
+/// the keys leading to the container being written into. `Some` is the value
+/// the calling op returns after the throw.
+fn guard_array_write(
+    vm: &mut VM,
+    name: &str,
+    keys: &[Value],
+    tail: host::WriteTail,
+) -> Option<Value> {
+    let issue = with_host(|h| h.write_container_issue(name, keys, tail))?;
+    container_issue(vm, issue)
+}
+
+/// Raise `issue`: the `Error` it names, or the false-to-array deprecation after
+/// which the operation proceeds (`None`).
+fn container_issue(vm: &mut VM, issue: host::ContainerIssue) -> Option<Value> {
+    match issue {
+        host::ContainerIssue::Refused(msg) => Some(throw_php(vm, "Error", &msg)),
         host::ContainerIssue::Scalar => Some(throw_php(
             vm,
             "Error",
@@ -2602,7 +2662,7 @@ fn b_index_set(vm: &mut VM, _: u8) -> Value {
     if let Some(e) = bad_offset_type(&recv, &key, "on array") {
         return fail_or_throw(vm, e);
     }
-    if let Some(thrown) = guard_array_write(vm, &name, &[]) {
+    if let Some(thrown) = guard_array_write(vm, &name, &[], host::WriteTail::Set) {
         return thrown;
     }
     // The write can warn (`String offset cast occurred`) or throw, and both name
@@ -2630,7 +2690,7 @@ fn b_arr_append(vm: &mut VM, _: u8) -> Value {
         }
         return bubbled(vm, val);
     }
-    if let Some(thrown) = guard_array_write(vm, &name, &[]) {
+    if let Some(thrown) = guard_array_write(vm, &name, &[], host::WriteTail::Append) {
         return thrown;
     }
     if let Err(e) = with_host(|h| h.append_var(&name, val.clone())) {
@@ -2644,11 +2704,7 @@ fn b_set_path(vm: &mut VM, argc: u8) -> Value {
     let val = vm.pop();
     let keys = pop_args(vm, argc as usize - 2);
     let name = pop_name(vm);
-    if let Some(thrown) = guard_array_write(vm, &name, &keys[..keys.len() - 1]) {
-        return thrown;
-    }
-    with_host(|h| h.index_set_path(&name, &keys, val.clone()));
-    val
+    dim_op(vm, &name, &keys, DimOp::Set, val)
 }
 
 /// `$a[k1]..[kM][] = val` — stack `[name, k1..kM, val]`, `M = argc-2 >= 0`.
@@ -2656,11 +2712,7 @@ fn b_append_path(vm: &mut VM, argc: u8) -> Value {
     let val = vm.pop();
     let keys = pop_args(vm, argc as usize - 2);
     let name = pop_name(vm);
-    if let Some(thrown) = guard_array_write(vm, &name, &keys) {
-        return thrown;
-    }
-    with_host(|h| h.append_path(&name, &keys, val.clone()));
-    val
+    dim_op(vm, &name, &keys, DimOp::Append, val)
 }
 
 /// Read `$a[k1]..[kN]` — stack `[name, k1..kN]`, `N = argc-1`. Used for the read
@@ -2668,16 +2720,7 @@ fn b_append_path(vm: &mut VM, argc: u8) -> Value {
 fn b_get_path(vm: &mut VM, argc: u8) -> Value {
     let keys = pop_args(vm, argc as usize - 1);
     let name = pop_name(vm);
-    // The read half of a compound assignment fetches in write mode, so a scalar
-    // container is refused before anything is read; `false` is deprecated by the
-    // write half.
-    if with_host(|h| h.write_container_issue(&name, &keys[..keys.len() - 1]))
-        == Some(host::ContainerIssue::Scalar)
-    {
-        return throw_php(vm, "Error", "Cannot use a scalar value as an array");
-    }
-    mark_warn_site(vm);
-    with_host(|h| h.index_get_path_warn(&name, &keys))
+    dim_op(vm, &name, &keys, DimOp::Read, Value::Undef)
 }
 
 /// `++`/`--` on `$a[k1]..[kN]` — stack `[name, k1..kN, code]`, `N = argc-2`. The
@@ -2688,25 +2731,204 @@ fn b_incdec_path(vm: &mut VM, argc: u8) -> Value {
     let code = vm.pop().to_int();
     let keys = pop_args(vm, argc as usize - 2);
     let name = pop_name(vm);
-    let inc = code & 1 != 0;
-    let prefix = code & 2 != 0;
-    if let Some(thrown) = guard_array_write(vm, &name, &keys[..keys.len() - 1]) {
-        return thrown;
-    }
-    mark_warn_site(vm);
-    let old = with_host(|h| h.index_get_path_warn(&name, &keys));
-    if incdec_refused(vm, &old, inc) {
-        return Value::Undef;
-    }
-    with_host(|h| {
-        let newv = h.incdec_value(&old, inc);
-        h.index_set_path(&name, &keys, newv.clone());
-        if prefix {
-            newv
-        } else {
-            old
+    let op = DimOp::IncDec {
+        inc: code & 1 != 0,
+        prefix: code & 2 != 0,
+    };
+    dim_op(vm, &name, &keys, op, Value::Undef)
+}
+
+/// What a write-mode dimension path does at its end. `keys` passed alongside
+/// one are every dimension of the path; for `Append` the trailing `[]` is not
+/// among them.
+#[derive(Clone, Copy)]
+enum DimOp {
+    /// `$a[..][k] = v`.
+    Set,
+    /// `$a[..][] = v`.
+    Append,
+    /// The read half of `$a[..][k] op= v`, fetched in write mode.
+    Read,
+    /// `$a[..][k]++` and the like.
+    IncDec { inc: bool, prefix: bool },
+}
+
+impl DimOp {
+    /// How many of the path's keys lead to the container the operation acts on.
+    fn container_depth(self, keys: &[Value]) -> usize {
+        match self {
+            DimOp::Append => keys.len(),
+            _ => keys.len() - 1,
         }
+    }
+
+    fn tail(self) -> host::WriteTail {
+        match self {
+            DimOp::Set => host::WriteTail::Set,
+            DimOp::Append => host::WriteTail::Append,
+            DimOp::Read => host::WriteTail::AssignOp,
+            DimOp::IncDec { .. } => host::WriteTail::IncDec,
+        }
+    }
+}
+
+/// Run `op` along `$name[keys..]`: refuse a container that cannot take it,
+/// hand the rest of the path to the first `ArrayAccess` object met, and
+/// otherwise write (vivifying) through arrays.
+fn dim_op(vm: &mut VM, name: &str, keys: &[Value], op: DimOp, val: Value) -> Value {
+    let depth = op.container_depth(keys);
+    match with_host(|h| h.write_container_issue(name, &keys[..depth], op.tail())) {
+        // The read half leaves the false-to-array deprecation to the write.
+        Some(host::ContainerIssue::FalseToArray) if matches!(op, DimOp::Read) => {}
+        Some(issue) => {
+            if let Some(thrown) = container_issue(vm, issue) {
+                return thrown;
+            }
+        }
+        None => {}
+    }
+    if let Some((at, obj)) = array_access_container(name, &keys[..depth]) {
+        return array_access_dim(vm, &obj, &keys[at..], op, val);
+    }
+    match op {
+        DimOp::Set => {
+            // A string as the last container warns or throws naming this line.
+            let line = cur_op_line(vm);
+            mark_frame_line(vm);
+            if let Err(e) = with_host(|h| {
+                host::set_warn_line(line);
+                h.index_set_path(name, keys, val.clone())
+            }) {
+                return fail_or_throw(vm, e);
+            }
+            val
+        }
+        DimOp::Append => {
+            with_host(|h| h.append_path(name, keys, val.clone()));
+            val
+        }
+        DimOp::Read => {
+            mark_warn_site(vm);
+            with_host(|h| h.index_get_path_warn(name, keys))
+        }
+        DimOp::IncDec { inc, prefix } => {
+            mark_warn_site(vm);
+            let old = with_host(|h| h.index_get_path_warn(name, keys));
+            if incdec_refused(vm, &old, inc) {
+                return Value::Undef;
+            }
+            with_host(|h| {
+                let newv = h.incdec_value(&old, inc);
+                // The string-container case was refused above, so the write
+                // cannot fail.
+                let _ = h.index_set_path(name, keys, newv.clone());
+                if prefix {
+                    newv
+                } else {
+                    old
+                }
+            })
+        }
+    }
+}
+
+/// The first `ArrayAccess` object among the containers of `$name[keys..]` —
+/// the variable, then each prefix of `keys` — with the number of keys that
+/// lead to it. Only arrays are walked through.
+fn array_access_container(name: &str, keys: &[Value]) -> Option<(usize, Value)> {
+    with_host(|h| {
+        let mut cur = h.get_var(name);
+        for i in 0..=keys.len() {
+            if h.array_access_class(&cur).is_some() {
+                return Some((i, cur));
+            }
+            if !h.is_array(&cur) {
+                return None;
+            }
+            cur = h.index_get(&cur, keys.get(i)?);
+        }
+        None
     })
+}
+
+/// The hidden variable a nested write into an `ArrayObject`'s storage is
+/// re-rooted on, so the ordinary path machinery performs it.
+const SPL_STORAGE_ROOT: &str = "@spl_dim";
+
+/// Finish `op` on the `ArrayAccess` object `obj`, `keys` being the dimensions
+/// after it, as `zend_fetch_dimension_address` and the `*_obj_dim` handlers do:
+/// the last dimension is `offsetSet` (`null` key for `[]`) or `offsetGet`; an
+/// earlier one is fetched with `offsetGet` and the path continues into what it
+/// returned. A value that is not an object cannot be written through, so the
+/// reference reports `Indirect modification of overloaded element` and the
+/// write goes nowhere — except into an `ArrayObject`, whose native dimension
+/// fetch hands out the storage element itself.
+fn array_access_dim(vm: &mut VM, obj: &Value, keys: &[Value], op: DimOp, val: Value) -> Value {
+    let class = with_host(|h| h.array_access_class(obj)).unwrap_or_default();
+    let last = match op {
+        DimOp::Append => keys.is_empty(),
+        _ => keys.len() == 1,
+    };
+    if !last {
+        if let Some(storage) = with_host(|h| h.spl_native_storage(obj)) {
+            with_host(|h| h.set_var(SPL_STORAGE_ROOT, storage));
+            return dim_op(vm, SPL_STORAGE_ROOT, keys, op, val);
+        }
+    }
+    let call = |vm: &mut VM, method: &str, args: Vec<Value>| -> Option<Value> {
+        match array_access_call(vm, obj, method, args)? {
+            Ok(v) if !bubble_throw(vm) => Some(v),
+            Ok(_) => None,
+            Err(e) => {
+                fail(vm, e);
+                None
+            }
+        }
+    };
+    let indirect = |vm: &mut VM| {
+        mark_warn_site(vm);
+        with_host(|h| {
+            h.notice(format!(
+                "Indirect modification of overloaded element of {} has no effect",
+                host::display_class(&class)
+            ))
+        });
+    };
+    if last {
+        return match op {
+            DimOp::Set => call(vm, "offsetSet", vec![keys[0].clone(), val.clone()]).map(|_| val),
+            DimOp::Append => call(vm, "offsetSet", vec![Value::Undef, val.clone()]).map(|_| val),
+            DimOp::Read => call(vm, "offsetGet", vec![keys[0].clone()]),
+            DimOp::IncDec { inc, prefix } => {
+                call(vm, "offsetGet", vec![keys[0].clone()]).map(|old| {
+                    indirect(vm);
+                    let newv = with_host(|h| h.incdec_value(&old, inc));
+                    if prefix {
+                        newv
+                    } else {
+                        old
+                    }
+                })
+            }
+        }
+        .unwrap_or(Value::Undef);
+    }
+    let Some(child) = call(vm, "offsetGet", vec![keys[0].clone()]) else {
+        return Value::Undef;
+    };
+    if with_host(|h| h.is_object_value(&child)) {
+        if with_host(|h| h.array_access_class(&child)).is_some() {
+            return array_access_dim(vm, &child, &keys[1..], op, val);
+        }
+        let issue = with_host(|h| h.object_as_array_refusal(&child));
+        return container_issue(vm, issue).unwrap_or(Value::Undef);
+    }
+    indirect(vm);
+    match op {
+        DimOp::Read => with_host(|h| keys[1..].iter().fold(child, |cur, k| h.index_get(&cur, k))),
+        DimOp::IncDec { .. } => Value::Undef,
+        DimOp::Set | DimOp::Append => val,
+    }
 }
 
 /// Append a fresh child array to `$a[k1]..[kN]` and leave its handle on the stack
@@ -2715,6 +2937,9 @@ fn b_incdec_path(vm: &mut VM, argc: u8) -> Value {
 fn b_path_append_child(vm: &mut VM, argc: u8) -> Value {
     let keys = pop_args(vm, argc as usize - 1);
     let name = pop_name(vm);
+    if let Some(thrown) = guard_array_write(vm, &name, &keys, host::WriteTail::Append) {
+        return thrown;
+    }
     with_host(|h| h.path_append_child(&name, &keys))
 }
 
@@ -5718,7 +5943,9 @@ fn php_cast_array(h: &mut host::PhpHost, v: &Value) -> Value {
     if matches!(v, Value::Undef) {
         return out;
     }
-    if h.is_object(v) {
+    // A generator is an object with no properties: `[]`. A closure is not cast
+    // through its properties: `ZEND_CAST` wraps it like a scalar, `[$closure]`.
+    if h.is_object(v) || h.is_generator_val(v) {
         // `(array)` on an ArrayObject / ArrayIterator yields the wrapped array
         // itself (spl_array_get_properties), not the object's own properties.
         // The prelude keeps it in the private `storage` slot of those classes.
@@ -7064,10 +7291,10 @@ fn with_debug_info<T>(roots: &[Value], render: impl FnOnce(&mut host::PhpHost) -
     }))
 }
 
-/// Whether `v` is a closure whose debug info the dumper was handed: it prints
 /// as an object of class `Closure` with those rows.
 fn is_dumped_closure(h: &host::PhpHost, v: &Value) -> bool {
-    matches!(v, Value::Obj(id) if h.debug_info.contains_key(id)) && h.is_closure(v)
+    matches!(v, Value::Obj(id) if h.debug_info.contains_key(id))
+        && (h.is_closure(v) || h.is_generator_val(v))
 }
 
 /// How `var_dump` and `print_r` label one property row of an object.
@@ -7727,8 +7954,10 @@ fn php_pow(args: &[Value]) -> Value {
 
 fn php_intdiv(args: &[Value]) -> Result<Value, String> {
     let (a, b) = (arg(args, 0), arg(args, 1));
-    let (an, bn) = with_host(|h| (h.to_number(&a), h.to_number(&b)));
-    let (x, y) = (int_operand(&a, &an), int_operand(&b, &bn));
+    // The `int` parameters were checked, and a lossy float deprecated, by
+    // `argtypes::check_call` before the call got here; what is left is the
+    // narrowing itself, which must not report a second time.
+    let (x, y) = with_host(|h| (h.to_number(&a).to_int(), h.to_number(&b).to_int()));
     // Both of these are tagged rather than thrown directly, so the call goes out
     // through `call_builtin`'s error path and picks up the trace frame for the
     // call itself. `intdiv(1, 0)` inside `f()` is reported by the reference as
@@ -8472,10 +8701,9 @@ fn php_var_export_body(
             }
         }
         Value::Str(s) => export_string(s),
-        // A closure exports like an object of class `Closure` with no properties.
-        Value::Obj(_) if h.is_object(v) || h.is_closure(v) => {
-            php_var_export_object(h, v, depth, seen)
-        }
+        // A closure or a generator exports like an object of its engine class with
+        // no properties.
+        Value::Obj(_) if h.is_object_value(v) => php_var_export_object(h, v, depth, seen),
         Value::Obj(_) if h.is_array(v) => {
             let pad = "  ".repeat(depth);
             let inner = "  ".repeat(depth + 1);
@@ -8509,7 +8737,7 @@ fn var_export_item(
     let body = php_var_export(h, v, depth, seen);
     // A cycle collapses to the scalar `NULL`, which stays on the key's line —
     // the break is for a real nested BLOCK, not for anything array-typed.
-    if (h.is_array(v) || h.is_object(v) || h.is_closure(v)) && body != "NULL" {
+    if (h.is_array(v) || h.is_object_value(v)) && body != "NULL" {
         format!("\n{}{body}", "  ".repeat(depth))
     } else {
         body
@@ -8870,8 +9098,8 @@ fn php_json_encode(h: &host::PhpHost, v: &Value, flags: i64, depth: usize) -> St
             None => json_string(s, flags),
         },
         Value::Obj(_) => {
-            // A closure is an object with no properties: `{}`.
-            let object = h.is_object(v) || h.is_closure(v);
+            // A closure or a generator is an object with no properties: `{}`.
+            let object = h.is_object_value(v);
             let pairs = if object {
                 h.object_props(v)
                     .into_iter()

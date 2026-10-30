@@ -4987,7 +4987,10 @@ impl Compiler {
                 other => {
                     // Everything else: set means "reads as something other than
                     // null", which an isset-mode read answers directly.
-                    self.compile_quiet(b, other)?;
+                    match other {
+                        Expr::Var(n) if n == "this" => self.compile_quiet_var(b, n),
+                        _ => self.compile_quiet(b, other)?,
+                    }
                     let idx = b.add_constant(Value::Undef);
                     b.emit(Op::LoadConst(idx), self.cur_line);
                     b.emit(Op::CallBuiltin(ops::STRICT_NE, 2), self.cur_line);
@@ -5009,6 +5012,7 @@ impl Compiler {
                     self.compile_expr(b, key)?;
                     b.emit(Op::CallBuiltin(ops::INDEX_GET_EMPTY, 2), self.cur_line);
                 }
+                Expr::Var(n) if n == "this" => self.compile_quiet_var(b, n),
                 other => self.compile_quiet(b, other)?,
             },
             Expr::Coalesce(a, els) => {
@@ -5168,6 +5172,24 @@ impl Compiler {
     /// argument or any other nested subexpression is compiled normally, so a
     /// function call inside a key still reports its own diagnostics — which is
     /// what PHP's compile-time `BP_VAR_IS` fetch mode does.
+    /// The isset-mode read of the plain variable `$name`: an unbound one is
+    /// null, with no diagnostic.
+    fn compile_quiet_var(&mut self, b: &mut ChunkBuilder, name: &str) {
+        let line = self.cur_line;
+        // A promoted local is written before it is ever read, so the quiet
+        // read and the loud one cannot differ for it.
+        if let Some(&i) = self.fslots.get(name) {
+            b.emit(Op::GetSlot(i), line);
+        } else if let Some(&i) = self.slots.get(name) {
+            b.emit(Op::LoadInt(i as i64), line);
+            b.emit(Op::CallBuiltin(ops::GETSLOT_Q, 1), line);
+        } else {
+            let idx = b.add_constant(Value::str(name.to_string()));
+            b.emit(Op::LoadConst(idx), line);
+            b.emit(Op::CallBuiltin(ops::GETVAR_Q, 1), line);
+        }
+    }
+
     fn compile_quiet(&mut self, b: &mut ChunkBuilder, e: &Expr) -> Result<(), String> {
         // Same whole-chain lowering as the loud path, in `BP_VAR_IS` mode.
         if chain_has_nullsafe(e) {
@@ -5183,20 +5205,12 @@ impl Compiler {
                 self.compile_expr(b, key)?;
                 b.emit(Op::CallBuiltin(ops::GLOBALS_GET_Q, 1), line);
             }
-            Expr::Var(name) => {
-                // A promoted local is written before it is ever read, so the
-                // quiet read and the loud one cannot differ for it.
-                if let Some(&i) = self.fslots.get(name) {
-                    b.emit(Op::GetSlot(i), line);
-                } else if let Some(&i) = self.slots.get(name) {
-                    b.emit(Op::LoadInt(i as i64), line);
-                    b.emit(Op::CallBuiltin(ops::GETSLOT_Q, 1), line);
-                } else {
-                    let idx = b.add_constant(Value::str(name.clone()));
-                    b.emit(Op::LoadConst(idx), line);
-                    b.emit(Op::CallBuiltin(ops::GETVAR_Q, 1), line);
-                }
-            }
+            // `$this` is fetched by `ZEND_FETCH_THIS` even in `BP_VAR_IS` mode,
+            // so with no object bound `$this ?? x`, `isset($this->p)` and
+            // `$this['k'] ?? x` all throw. Only `isset($this)`/`empty($this)`
+            // themselves (`ZEND_ISSET_ISEMPTY_THIS`) read it quietly.
+            Expr::Var(name) if name == "this" => self.compile_expr(b, e)?,
+            Expr::Var(name) => self.compile_quiet_var(b, name),
             // The NAME is still computed the ordinary way — it is the read of
             // the variable it names that has to stay quiet, so `isset($$x)` on
             // an unbound name answers false instead of warning.
@@ -5288,7 +5302,10 @@ impl Compiler {
                 } else {
                     ops::REF_TO_ELEM
                 };
-                b.emit(Op::CallBuiltin(op, (key_segs.len() + 2) as u8), 0);
+                b.emit(
+                    Op::CallBuiltin(op, (key_segs.len() + 2) as u8),
+                    self.cur_line,
+                );
             }
             Expr::PropGet(recv, prop) => {
                 self.compile_expr(b, recv)?;
@@ -5337,7 +5354,7 @@ impl Compiler {
                 }
                 b.emit(
                     Op::CallBuiltin(ops::REF_SLOT_ELEM, (segs.len() + 1) as u8),
-                    0,
+                    self.cur_line,
                 );
             }
             Expr::PropGet(recv, prop) => {
@@ -5905,18 +5922,41 @@ impl Compiler {
                         // write through it (arrays are reference handles, so the
                         // mutation lands on the object).
                         let t = self.tmp_name("po");
+                        if !Self::may_write_string_offset(&segs, op) {
+                            self.emit_set_var(b, &t, |c, b| {
+                                c.compile_prop_write_recv(b, recv, op.is_some())?;
+                                c.emit_member(b, prop, 0)?;
+                                b.emit(Op::CallBuiltin(ops::PROP_ENSURE_ARRAY, 2), c.cur_line);
+                                Ok(())
+                            })?;
+                            self.compile_lvalue_assign(b, &t, &segs, op, rhs)?;
+                            return Ok(());
+                        }
+                        // A string property is not a handle: its offset write
+                        // makes a new string, which is stored back afterwards.
+                        // The receiver and a computed name are held so that
+                        // neither is evaluated twice.
+                        let rt = self.tmp_name("pr");
+                        self.emit_set_var(b, &rt, |c, b| {
+                            c.compile_prop_write_recv(b, recv, false)
+                        })?;
+                        let prop = self.stash_member(b, prop)?;
                         self.emit_set_var(b, &t, |c, b| {
-                            c.compile_prop_write_recv(b, recv, op.is_some())?;
-                            c.emit_member(b, prop, 0)?;
+                            c.emit_get_var(b, &rt);
+                            c.emit_member(b, &prop, 0)?;
                             b.emit(Op::CallBuiltin(ops::PROP_ENSURE_ARRAY, 2), c.cur_line);
                             Ok(())
                         })?;
                         self.compile_lvalue_assign(b, &t, &segs, op, rhs)?;
+                        self.emit_get_var(b, &rt);
+                        self.emit_member(b, &prop, 0)?;
+                        self.emit_get_var(b, &t);
+                        b.emit(Op::CallBuiltin(ops::PROP_DIM_WRITEBACK, 4), self.cur_line);
                     }
                     // `Class::$p[k] = v`: the same, through the static's array.
                     Expr::StaticProp(class, prop) => {
                         let t = self.tmp_name("sp");
-                        let (class, prop) = (class.clone(), prop.clone());
+                        let (class, prop) = (class.clone(), self.stash_member(b, prop)?);
                         self.emit_set_var(b, &t, |c, b| {
                             c.emit_class_ref(b, &class)?;
                             c.emit_member(b, &prop, 0)?;
@@ -5924,6 +5964,12 @@ impl Compiler {
                             Ok(())
                         })?;
                         self.compile_lvalue_assign(b, &t, &segs, op, rhs)?;
+                        if Self::may_write_string_offset(&segs, op) {
+                            self.emit_class_ref(b, &class)?;
+                            self.emit_member(b, &prop, 0)?;
+                            self.emit_get_var(b, &t);
+                            b.emit(Op::CallBuiltin(ops::SPROP_DIM_WRITEBACK, 4), self.cur_line);
+                        }
                     }
                     _ => return Err("unsupported assignment target".into()),
                 }
@@ -6268,7 +6314,7 @@ impl Compiler {
                 }
                 b.emit(
                     Op::CallBuiltin(ops::PATH_APPEND_CHILD, (prefix.len() + 1) as u8),
-                    0,
+                    c.cur_line,
                 );
                 Ok(())
             })?;
@@ -6322,6 +6368,14 @@ impl Compiler {
             self.compile_index_assign(b, name, &keys, op, rhs)?;
         }
         Ok(())
+    }
+
+    /// Whether an assignment through `segs` onto a property may be a string
+    /// offset write into the property itself — a single `[k] = v` — which
+    /// produces a new string to store back rather than writing through a
+    /// handle. Any deeper string, and every other operation on one, throws.
+    fn may_write_string_offset(segs: &[LvSeg], op: Option<BinOp>) -> bool {
+        op.is_none() && matches!(segs, [LvSeg::Key(_)])
     }
 
     /// `$a[k1]..[kN] = rhs` (deep set) and its compound form `$a[k1]..[kN] op=
@@ -6654,7 +6708,7 @@ impl Compiler {
                 // carries it through the capture list, so this read has to be the
                 // quiet one — the loud twin would report a variable PHP never
                 // considers the closure to have read.
-                self.compile_quiet(b, &Expr::Var("this".to_string()))?;
+                self.compile_quiet_var(b, "this");
             } else if implicit {
                 self.compile_quiet(b, &Expr::Var(cap.name.clone()))?;
             } else {

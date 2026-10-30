@@ -98,7 +98,7 @@ fn operand(func: &str, args: &[Value], i: usize) -> Result<BigInt, String> {
             ))
         }),
         Value::Float(f) if f.is_finite() && f.fract() != 0.0 => {
-            let shown = with_host(|h| h.to_str(&Value::Float(f)));
+            let shown = crate::stdlib::types::serialize_float(f);
             with_host(|h| {
                 h.deprecated(format!(
                     "Implicit conversion from float {shown} to int loses precision"

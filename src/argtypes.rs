@@ -55,7 +55,7 @@ fn double_fits_long(d: f64) -> bool {
 fn deprecate_lossy_long(h: &mut PhpHost, v: &Value) {
     match v {
         Value::Float(f) if f.fract() != 0.0 => {
-            let shown = h.to_str(v);
+            let shown = crate::stdlib::types::serialize_float(*f);
             h.deprecated(format!(
                 "Implicit conversion from float {shown} to int loses precision"
             ));

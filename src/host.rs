@@ -534,6 +534,13 @@ pub mod ops {
     pub const FOREACH_KEYS: u16 = 167;
     /// `[v] -> bool`. `PhpHost::is_plain_foreach_object`.
     pub const IS_PLAIN_OBJECT: u16 = 168;
+    /// `[val, recv, name, container] -> val`. Store `container` back into
+    /// `$recv->name` when it is a string: the end of `$o->p[k] = v` on a string
+    /// property, whose offset write produced a new string rather than writing
+    /// through a handle.
+    pub const PROP_DIM_WRITEBACK: u16 = 169;
+    /// `[val, class, name, container] -> val`. The same for `Class::$p[k] = v`.
+    pub const SPROP_DIM_WRITEBACK: u16 = 170;
 }
 
 /// The capture name a `static` closure carries from its creation site.
@@ -718,11 +725,48 @@ pub struct ClosureCall {
 
 /// Why a value cannot take an array write as it stands; see
 /// [`PhpHost::write_container_issue`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContainerIssue {
     Scalar,
     FalseToArray,
+    /// The container refuses the write: an `Error` with this message.
+    Refused(String),
 }
+
+/// The operation a write path ends in. A string container accepts only a plain
+/// offset assignment (`$s[1] = "x"`); every other operation on it is an
+/// `Error` whose message names the operation, as `zend_execute.c` reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteTail {
+    /// `$a[k] = v`.
+    Set,
+    /// `$a[] = v`, `$a[] = &$x`, and a mid-path `$a[][k]`.
+    Append,
+    /// `$a[k] op= v`.
+    AssignOp,
+    /// `$a[k]++`, `--$a[k]`.
+    IncDec,
+    /// `&$a[k]`, including a by-reference argument.
+    Ref,
+}
+
+impl WriteTail {
+    /// The `Error` a string container raises for this operation, or `None` when
+    /// the string takes it (only a plain offset assignment).
+    fn string_refusal(self) -> Option<&'static str> {
+        match self {
+            WriteTail::Set => None,
+            WriteTail::Append => Some("[] operator not supported for strings"),
+            WriteTail::AssignOp => Some("Cannot use assign-op operators with string offsets"),
+            WriteTail::IncDec => Some("Cannot increment/decrement string offsets"),
+            WriteTail::Ref => Some("Cannot create references to/from string offsets"),
+        }
+    }
+}
+
+/// A string met before the last container of a write path: its offset would
+/// have to be written into as an array.
+const STRING_OFFSET_AS_ARRAY: &str = "Cannot use string offset as an array";
 
 /// A compiled class: its parent (for single-inheritance resolution), constant and
 /// property-default initializers (each an expression chunk that leaves its value
@@ -2538,12 +2582,29 @@ impl PhpHost {
         };
         const TWO_63: f64 = 9223372036854775808.0;
         if !f.is_finite() || !(-TWO_63..TWO_63).contains(&f) {
-            let shown = self.to_str(&Value::Float(f));
+            let shown = crate::stdlib::types::serialize_float(f);
             self.warn(format!(
                 "The float {shown} is not representable as an int, cast occurred"
             ));
         }
         dval_to_lval(f)
+    }
+
+    /// A double narrowed to `int` by an operator that wraps it (`~`):
+    /// `zend_dval_to_lval`, whose `not representable` warning covers NAN, the
+    /// infinities and anything outside `i64`, then the `loses precision`
+    /// deprecation for NAN and for a fraction in range.
+    pub fn dval_to_lval_reported(&mut self, f: f64) -> i64 {
+        const TWO_63: f64 = 9223372036854775808.0;
+        let l = self.to_int_cast(&Value::Float(f));
+        let in_range = (-TWO_63..TWO_63).contains(&f);
+        if f.is_nan() || (in_range && f.fract() != 0.0) {
+            let shown = crate::stdlib::types::serialize_float(f);
+            self.deprecated(format!(
+                "Implicit conversion from float {shown} to int loses precision"
+            ));
+        }
+        l
     }
 
     /// The diagnostic PHP issues when a value is USED as an array offset.
@@ -2567,7 +2628,7 @@ impl PhpHost {
                 "Using null as an array offset is deprecated, use an empty string instead",
             ),
             Value::Float(f) => {
-                let (f, shown) = (*f, self.to_str(key));
+                let (f, shown) = (*f, crate::stdlib::types::serialize_float(*f));
                 if !f.is_finite() || !(-TWO_63..TWO_63).contains(&f) {
                     self.warn(format!(
                         "The float {shown} is not representable as an int, cast occurred"
@@ -4588,7 +4649,7 @@ impl PhpHost {
     /// heap index, which also counts arrays, closures and resources.
     pub fn object_id(&self, v: &Value) -> Option<i64> {
         match v {
-            Value::Obj(_) if self.is_object(v) => Some(self.object_ordinal(v) as i64),
+            Value::Obj(_) if self.is_object_value(v) => Some(self.object_ordinal(v) as i64),
             Value::Obj(h) => Some(*h as i64),
             _ => None,
         }
@@ -4596,7 +4657,7 @@ impl PhpHost {
 
     /// The 1-based creation-order number PHP shows as `#N` in `var_dump`.
     ///
-    /// PHP numbers objects only — class instances and closures — so count those
+    /// PHP numbers objects only — class instances, closures and generators — so count those
     /// entries up to and including this handle rather than using the raw heap
     /// index (which also covers arrays and resources).
     ///
@@ -4613,10 +4674,13 @@ impl PhpHost {
             .iter()
             .enumerate()
             .take(*h as usize + 1)
-            // A closure is an object to the reference and takes a number too.
+            // A closure or a generator is an object to the reference and takes
+            // a number too.
             .filter(|(i, o)| {
-                matches!(o, PhpObj::Object { .. } | PhpObj::Closure { .. })
-                    && !self.transient_objs.contains(&(*i as u32))
+                matches!(
+                    o,
+                    PhpObj::Object { .. } | PhpObj::Closure { .. } | PhpObj::Generator { .. }
+                ) && !self.transient_objs.contains(&(*i as u32))
             })
             .count()
     }
@@ -5327,14 +5391,31 @@ impl PhpHost {
         self.ref_slot_of_value(props.get(name)?)
     }
 
-    /// Ensure `$obj->name` holds an array and return its handle, creating an empty
-    /// array (and storing it back on the object) if the property is unset or not an
-    /// array. The pivot for indexing/appending into an array-valued property
-    /// (`$this->items[] = x`, `$this->map[$k] = v`).
+    /// The container a dimension write into `$obj->name` continues on
+    /// (`$this->items[] = x`, `$this->map[$k] = v`): the array handle it
+    /// holds, an empty array stored there in place of an unset or `null`
+    /// property, or — for `false` — after the auto-vivification deprecation.
+    /// Anything else (an object, a string, a scalar) is handed back as it is,
+    /// for the path write to dispatch to (`ArrayAccess`), write into (a string
+    /// offset) or refuse.
+    /// What a property fetched for a dimension write keeps holding: `Some`
+    /// unless it is unset, `null` or `false`, which the write replaces with an
+    /// empty array (`false` with a deprecation, raised here).
+    pub fn dim_container_kept(&mut self, cur: &Value) -> Option<Value> {
+        match cur {
+            Value::Undef => None,
+            Value::Bool(false) => {
+                self.deprecated("Automatic conversion of false to array is deprecated");
+                None
+            }
+            _ => Some(cur.clone()),
+        }
+    }
+
     pub fn prop_ensure_array(&mut self, recv: &Value, name: &str) -> Value {
         let cur = self.prop_get(recv, name);
-        if self.is_array(&cur) {
-            return cur;
+        if let Some(kept) = self.dim_container_kept(&cur) {
+            return kept;
         }
         let arr = self.new_array();
         self.prop_set(recv, name, arr.clone());
@@ -6824,12 +6905,28 @@ impl PhpHost {
 
     /// `$name[k1]..[kN] = val` — set the deepest element along a key path,
     /// auto-vivifying the intermediate arrays (`N >= 1`).
-    pub fn index_set_path(&mut self, name: &str, keys: &[Value], val: Value) {
+    ///
+    /// A string as the last container takes the write as a string offset
+    /// (`$a = ["s"]; $a[0][2] = "x"` leaves `"s x"`), with the errors and
+    /// warnings of [`Self::string_offset_set`]. A string any earlier along the
+    /// path was refused by [`Self::write_container_issue`] before this runs.
+    pub fn index_set_path(&mut self, name: &str, keys: &[Value], val: Value) -> Result<(), String> {
         let Some((last, inter)) = keys.split_last() else {
-            return;
+            return Ok(());
         };
+        if let Value::Str(cur) = self.index_get_path(name, inter) {
+            if let Some(updated) = self.string_offset_set(&cur, last, &val)? {
+                if inter.is_empty() {
+                    self.set_var(name, Value::str(updated));
+                } else {
+                    self.index_set_path(name, inter, Value::str(updated))?;
+                }
+            }
+            return Ok(());
+        }
         let arr = self.ensure_path_array(name, inter);
         self.arr_set_key(&arr, last, val);
+        Ok(())
     }
 
     /// `$name[k1]..[kM][] = val` — append into the array reached along `keys`,
@@ -6849,12 +6946,46 @@ impl PhpHost {
         cur
     }
 
-    /// What stops `$name[k1]..[kN]` being used as a write target: the first
-    /// container along the path (the variable itself, then each `keys` prefix)
-    /// that holds a scalar. `Scalar` is an `Error` in the reference; `false` is
-    /// still converted to an array, with a deprecation. An unset/null slot, an
-    /// array, a string and an object are all left to the ordinary write path.
-    pub fn write_container_issue(&self, name: &str, keys: &[Value]) -> Option<ContainerIssue> {
+    /// `Cannot use object of type C as array`: an object that is not
+    /// `ArrayAccess` (a closure and a generator included) used as an array.
+    pub fn object_as_array_refusal(&self, obj: &Value) -> ContainerIssue {
+        let class = self.instance_class(obj).unwrap_or_default();
+        ContainerIssue::Refused(format!(
+            "Cannot use object of type {} as array",
+            display_class(&class)
+        ))
+    }
+
+    /// The storage array of an `ArrayObject`/`ArrayIterator` whose `offsetGet`
+    /// is the prelude's. The reference's `spl_array_get_dimension_ptr` hands a
+    /// nested write (`$ao['k'][] = v`) the storage element itself, so the write
+    /// lands in it; a user `offsetGet` returns a value instead. `None` for any
+    /// other object.
+    pub fn spl_native_storage(&self, recv: &Value) -> Option<Value> {
+        let class = self.instance_class(recv)?;
+        let native_get = matches!(
+            self.method_owner_key(&class, "offsetget").as_deref(),
+            Some("arrayobject" | "arrayiterator")
+        );
+        let storage = self.prop_get(recv, "storage");
+        (native_get && self.is_array(&storage)).then_some(storage)
+    }
+
+    /// What stops `$name[k1]..[kN]` being used as a write target ending in
+    /// `tail`: the first container along the path (the variable itself, then
+    /// each `keys` prefix) that holds a scalar or a string. `Scalar` is an
+    /// `Error` in the reference; `false` is still converted to an array, with a
+    /// deprecation. A string is `Cannot use string offset as an array` anywhere
+    /// but the last container, and there refuses every tail but `Set`. An
+    /// unset/null slot and an array are left to the ordinary write path. An
+    /// `ArrayAccess` object ends the check (it answers the dimension
+    /// itself); any other object is `Cannot use object of type C as array`.
+    pub fn write_container_issue(
+        &self,
+        name: &str,
+        keys: &[Value],
+        tail: WriteTail,
+    ) -> Option<ContainerIssue> {
         let mut cur = self.get_var(name);
         for i in 0..=keys.len() {
             match cur {
@@ -6862,10 +6993,63 @@ impl PhpHost {
                     return Some(ContainerIssue::Scalar)
                 }
                 Value::Bool(false) => return Some(ContainerIssue::FalseToArray),
+                Value::Str(_) if i < keys.len() => {
+                    return Some(ContainerIssue::Refused(STRING_OFFSET_AS_ARRAY.into()))
+                }
+                Value::Str(_) => {
+                    return tail
+                        .string_refusal()
+                        .map(|m| ContainerIssue::Refused(m.into()))
+                }
+                // `ArrayAccess` answers the dimension itself; the caller
+                // dispatches to it.
+                Value::Obj(_) if self.array_access_class(&cur).is_some() => return None,
+                Value::Obj(_) if self.is_object_value(&cur) => {
+                    return Some(self.object_as_array_refusal(&cur))
+                }
                 _ => {}
             }
             let Some(key) = keys.get(i) else { break };
             cur = self.index_get(&cur, key);
+        }
+        None
+    }
+
+    /// What stops `unset($name[k1]..[kN])`, ported from `ZEND_UNSET_DIM` and the
+    /// `BP_VAR_UNSET` dimension fetch that leads to it. An int, float or `true`
+    /// anywhere along the path is `Cannot unset offset in a non-array variable`;
+    /// a string is `Cannot use string offset as an array` before the last
+    /// container and `Cannot unset string offsets` as it; `false` is a
+    /// deprecation after which nothing is removed. A missing slot, null, an
+    /// array or an `ArrayAccess` object ends the check; any other object is
+    /// `Cannot use object of type C as array` (`keys` is the full path, `N >= 1`).
+    pub fn unset_container_issue(&self, name: &str, keys: &[Value]) -> Option<ContainerIssue> {
+        let mut cur = self.get_var(name);
+        let last = keys.len().saturating_sub(1);
+        for (i, key) in keys.iter().enumerate() {
+            match cur {
+                Value::Int(_) | Value::Float(_) | Value::Bool(true) => {
+                    return Some(ContainerIssue::Refused(
+                        "Cannot unset offset in a non-array variable".into(),
+                    ))
+                }
+                Value::Bool(false) => return Some(ContainerIssue::FalseToArray),
+                Value::Str(_) if i < last => {
+                    return Some(ContainerIssue::Refused(STRING_OFFSET_AS_ARRAY.into()))
+                }
+                Value::Str(_) => {
+                    return Some(ContainerIssue::Refused(
+                        "Cannot unset string offsets".into(),
+                    ))
+                }
+                _ if self.is_array(&cur) => cur = self.index_get(&cur, key),
+                Value::Obj(_)
+                    if self.is_object_value(&cur) && self.array_access_class(&cur).is_none() =>
+                {
+                    return Some(self.object_as_array_refusal(&cur))
+                }
+                _ => return None,
+            }
         }
         None
     }
@@ -8040,6 +8224,10 @@ struct GenContext {
 
 /// One live generator.
 struct GenCell {
+    /// The generator function's name as `zend_generator_get_debug_info`
+    /// reports it under `function`: `f`, `A::m` (always `::`), or a closure's
+    /// `{closure:…}` name. Fixed when the generator is created.
+    function: String,
     /// The suspended coroutine. `None` only while it is actively running (taken
     /// out across `resume` so the body can re-borrow the host freely).
     coro: Option<GenCoro>,
@@ -8101,7 +8289,12 @@ impl PhpHost {
 fn make_generator(body: Chunk, frame: Scope) -> Value {
     let id = with_host(|h| {
         let id = h.generators.len() as u32;
+        let function = match h.trace_frame_parts(&frame) {
+            (Some((class, _)), function) => format!("{class}::{function}"),
+            (None, function) => function,
+        };
         h.generators.push(GenCell {
+            function,
             coro: None,
             yielder: std::ptr::null(),
             ctx: GenContext {
@@ -10426,6 +10619,19 @@ fn debug_param_rows(params: &[DebugParam]) -> Vec<(String, &'static str)> {
 /// callee for a first-class callable), the `static` captured variables, the
 /// bound `this`, and each `parameter` as `<required>`/`<optional>`. `None`
 /// for anything but a closure.
+/// `zend_generator_get_debug_info`: the one-entry array `var_dump` and
+/// `print_r` show for a generator, `["function" => name]`. `None` for anything
+/// but a generator.
+pub fn generator_debug_info(v: &Value) -> Option<Value> {
+    with_host(|h| {
+        let id = h.gen_id(v)?;
+        let function = Value::str(h.generators[id as usize].function.clone());
+        let out = h.new_array();
+        h.arr_set_key(&out, &Value::str("function"), function);
+        Some(out)
+    })
+}
+
 pub fn closure_debug_info(v: &Value) -> Option<Value> {
     struct Real {
         name: String,
@@ -11869,7 +12075,7 @@ fn enum_backing_coerce(v: &Value, want_int: bool, spelled: &str, fname: &str) ->
         Value::Int(n) => Coerced::Value(as_int(*n)),
         Value::Float(f) => {
             if f.fract() != 0.0 {
-                let shown = with_host(|h| h.to_str(v));
+                let shown = crate::stdlib::types::serialize_float(*f);
                 with_host(|h| {
                     h.deprecated(format!(
                         "Implicit conversion from float {shown} to int loses precision"
@@ -12084,8 +12290,8 @@ pub fn static_prop_set(class: &str, name: &str, val: Value) -> Result<Value, Str
 /// `Class::$prop` as an array to write through — `ops::SPROP_ENSURE_ARRAY`.
 pub fn static_prop_ensure_array(class: &str, name: &str) -> Result<Value, String> {
     let cur = static_prop_get(class, name)?;
-    if with_host(|h| h.is_array(&cur)) {
-        return Ok(cur);
+    if let Some(kept) = with_host(|h| h.dim_container_kept(&cur)) {
+        return Ok(kept);
     }
     let arr = with_host(|h| h.new_array());
     static_prop_set(class, name, arr.clone())?;
@@ -14226,10 +14432,11 @@ pub fn collect_object_hooks(
             let method = methods.iter().find(|m| h.class_has_method(&class, m))?;
             Some((class, *method))
         });
-        // A closure has no properties to show; what the dumpers print is its
-        // engine-built debug info, parked like a `__debugInfo` answer.
+        // A closure or a generator has no properties to show; what the dumpers
+        // print is its engine-built debug info, parked like a `__debugInfo`
+        // answer.
         let closure_info = if hook.is_none() && methods.contains(&"__debugInfo") {
-            closure_debug_info(v)
+            closure_debug_info(v).or_else(|| generator_debug_info(v))
         } else {
             None
         };
@@ -14407,7 +14614,7 @@ pub fn spl_offset(offset: &Value) -> Result<Value, String> {
                 const TWO_63: f64 = 9223372036854775808.0;
                 let fits = !(f >= TWO_63 || f < -TWO_63);
                 if l as f64 != f && fits {
-                    let shown = h.to_str(&v);
+                    let shown = crate::stdlib::types::serialize_float(f);
                     h.deprecated(format!(
                         "Implicit conversion from float {shown} to int loses precision"
                     ));
@@ -14584,7 +14791,7 @@ fn weak_scalar(h: &mut PhpHost, v: &Value, has: &dyn Fn(&str) -> bool) -> Option
                 Value::Float(f) if f.is_nan() || !fits(*f) => None,
                 Value::Float(f) => {
                     if f.fract() != 0.0 {
-                        let shown = h.to_str(v);
+                        let shown = crate::stdlib::types::serialize_float(*f);
                         h.deprecated(format!(
                             "Implicit conversion from float {shown} to int loses precision"
                         ));

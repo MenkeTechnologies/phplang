@@ -26,6 +26,70 @@ comment above it.
 
 ---
 
+## Round 38: dimension writes into non-arrays, generators as objects, `$this` in isset mode, float narrowing
+
+Measured under `PHP 8.5.12 (cli)`; pinned in `tests/parity_round38.rs`.
+
+* A dimension write only vivifies an unset/`null` container (and `false`,
+  with its deprecation). Every other container used to be silently replaced
+  by a fresh array, losing the value it held; each now answers as
+  `zend_fetch_dimension_address` / `zend_assign_to_string_offset` do:
+  * a string takes only `$s[k] = v` as the LAST container, at any depth
+    (`$a[0][2] = "x"` on `["s"]` gives `"s x"`). Anywhere earlier it is
+    `Cannot use string offset as an array`; as the last container `[]` is
+    `[] operator not supported for strings`, `op=` is `Cannot use assign-op
+    operators with string offsets`, `++`/`--` is `Cannot increment/decrement
+    string offsets`, `&` is `Cannot create references to/from string
+    offsets` and `unset()` is `Cannot unset string offsets`;
+  * `unset()` through an int, float or `true` is `Cannot unset offset in a
+    non-array variable`;
+  * an object that is not `ArrayAccess` (closures and generators included)
+    is `Cannot use object of type C as array`;
+  * an `ArrayAccess` object anywhere along the path takes the rest of it:
+    the last dimension is `offsetSet` (`null` key for `[]`) or, for the read
+    half of `op=`, `offsetGet`; an earlier one is fetched with `offsetGet`
+    and the path continues into the object it returns. A returned non-object
+    gets `Notice: Indirect modification of overloaded element of C has no
+    effect` and the write goes nowhere, as does `++`/`--` on an element.
+    An `ArrayObject`/`ArrayIterator` whose `offsetGet` is the prelude's
+    writes into its storage element instead, as `spl_array_get_dimension_ptr`
+    does (`$ao['k'][] = v`).
+* The same holds for a property or static property as the root:
+  `$this->items[] = $x` on an `ArrayObject` property calls `offsetSet`
+  (it replaced the object with an array), `$this->buf[$i] = "x"` on a string
+  property writes the byte and stores the string back, and a scalar property
+  is `Cannot use a scalar value as an array`.
+* A generator is an object to every renderer: `var_dump`/`print_r` show
+  `object(Generator)#n (1) { ["function"]=> … }`
+  (`zend_generator_get_debug_info`: `f`, `A::m`, or the closure's name),
+  `var_export` gives `\Generator::__set_state(array(\n))`, `json_encode`
+  gives `{}`, `(array)` gives `[]`, and it takes an object handle, so later
+  `#n` numbers and `spl_object_id` agree. It printed as `array(0) {}`.
+  `spl_object_id` of a closure or generator is its object handle, not a heap
+  index.
+* `$this` is fetched by `ZEND_FETCH_THIS` even in isset mode: with no object
+  bound, `$this ?? x`, `$this->p ?? x`, `isset($this->p)`, `empty($this->p)`
+  and `$this['k'] ?? x` throw `Using $this when not in object context`.
+  `isset($this)` and `empty($this)` stay quiet.
+* The float in `The float … is not representable as an int` and `Implicit
+  conversion from float … to int loses precision` is printed as the
+  reference's `%.*H` with precision `-1` prints it — the shortest form that
+  round-trips, as `var_dump` shows it: `9.223372036854776E+18`, not the
+  `precision=14` echo form `9.2233720368548E+18`. Every site that raises
+  either diagnostic (casts, offsets, `int` parameters, `gmp`) shared the bug.
+* `intdiv()` with a fractional float raised its `loses precision`
+  deprecation twice: once from the `int` parameter check and again when it
+  narrowed the value itself.
+* `~` on a float narrows as `bitwise_not_function` does: the
+  `not representable` warning for NAN, the infinities and anything outside
+  `i64` (wrapping modularly: `~1e30` is `-5076964154930102273`), and the
+  `loses precision` deprecation for NAN and for a fraction (`~-2.5`). `~` on
+  `true`, `false` or `null` is `TypeError: Cannot perform bitwise not on
+  true`; it answered an int.
+* `~`, `|`, `&` and `^` on strings produce raw bytes: a result byte above
+  `0x7f` was stored as the code point of that number, so `bin2hex(~"ab")`
+  was `c29ec29d` instead of `9e9d`.
+
 ## Round 37: in-place `.=`, object `foreach` keys, reflection lines and text
 
 Measured under `PHP 8.5.12 (cli)`; pinned in `tests/parity_round37.rs`.

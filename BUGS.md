@@ -469,3 +469,49 @@ array and would still be wrong for a by-reference parameter, which needs the
 real handle. That is a change to the object model and every mutation site, not a
 fix to any one function. Nothing here is specific to `$$name`; a plain variable
 shows it identically.
+
+## Open: lowerings that skip a diagnostic
+
+Three constructs phplang lowers differently from the reference, each of which
+misses (or misplaces) a diagnostic the reference raises.
+
+A by-reference argument is copied in and written back after the call
+(`ops::BYREF_OUT`), so the argument is never fetched for writing and a string
+offset there is not refused:
+
+```text
+$ php -r '$s = "ab"; function f(&$x) {} f($s[0]); echo "ran\n";'
+PHP Fatal error:  Uncaught Error: Cannot create references to/from string offsets in Command line code:1
+
+$ target/debug/php -r '$s = "ab"; function f(&$x) {} f($s[0]); echo "ran\n";'
+ran
+```
+
+A dimension write through a by-value `__get` raises the reference's notice
+but then writes into a fresh array instead of into the scalar `__get`
+returned, which the reference refuses:
+
+```text
+$ php -r 'class M { function __get($n) { return 1; } } $m = new M; $m->arr[] = 1; echo "ran\n";'
+Notice: Indirect modification of overloaded property M::$arr has no effect in Command line code on line 1
+PHP Fatal error:  Uncaught Error: Cannot use a scalar value as an array in Command line code:1
+
+$ target/debug/php -r 'class M { function __get($n) { return 1; } } $m = new M; $m->arr[] = 1; echo "ran\n";'
+Notice: Indirect modification of overloaded property M::$arr has no effect in Command line code on line 1
+ran
+```
+
+An unknown named argument is refused after the callee's frame is pushed, so
+the trace carries a frame the reference does not have:
+
+```text
+$ php -r 'function f($a) {} f(c: 1);'
+PHP Fatal error:  Uncaught Error: Unknown named parameter $c in Command line code:1
+Stack trace:
+#0 {main}
+
+$ target/debug/php -r 'function f($a) {} f(c: 1);'
+PHP Fatal error:  Uncaught Error: Unknown named parameter $c in Command line code:1
+Stack trace:
+#0 Command line code(1): f()
+#1 {main}
