@@ -661,6 +661,17 @@ fn b_sprop_incdec(vm: &mut VM, _: u8) -> Value {
         return Value::Undef;
     }
     let newv = with_host(|h| h.incdec_value(&old, inc));
+    if overflowed_to_float(&old, &newv) {
+        let declared = with_host(|h| {
+            h.resolve_static_owner(&class, &name)
+                .and_then(|owner| h.prop_type(&owner, &name))
+        });
+        if let Some((owner, ty)) = declared {
+            if incdec_overflow_refused(vm, &owner, &name, &ty, inc) {
+                return Value::Undef;
+            }
+        }
+    }
     if let Err(e) = host::static_prop_set(&class, &name, newv.clone()) {
         return fail_or_throw(vm, e);
     }
@@ -2851,33 +2862,62 @@ fn array_access_container(name: &str, keys: &[Value]) -> Option<(usize, Value)> 
     })
 }
 
-/// The hidden variable a nested write into an `ArrayObject`'s storage is
-/// re-rooted on, so the ordinary path machinery performs it.
-const SPL_STORAGE_ROOT: &str = "@spl_dim";
+/// The hidden variable the rest of a dimension path is re-rooted on once an
+/// `ArrayAccess` object has handed out storage to write into, so the ordinary
+/// path machinery performs the write.
+const DIM_ROOT: &str = "@dim";
+
+/// Re-root the rest of a dimension path on `DIM_ROOT`: holding `storage` (an
+/// array handle, so writes land in it), or bound to the reference cell `slot`
+/// (so writes land in the cell, a string offset and a vivified array
+/// included). The old binding is dropped first, so a cell bound earlier is
+/// not written through.
+fn reroot_dim(storage: Option<Value>, slot: Option<usize>) {
+    with_host(|h| {
+        h.unset_var(DIM_ROOT);
+        match (storage, slot) {
+            (_, Some(slot)) => h.bind_ref_slot(DIM_ROOT, slot),
+            (Some(v), None) => h.set_var(DIM_ROOT, v),
+            (None, None) => {}
+        }
+    });
+}
+
+/// `dim_op` on the path re-rooted by [`reroot_dim`], dropping the binding
+/// afterwards so the hidden variable does not keep a cell alive.
+fn rerooted_dim_op(vm: &mut VM, keys: &[Value], op: DimOp, val: Value) -> Value {
+    let r = dim_op(vm, DIM_ROOT, keys, op, val);
+    with_host(|h| h.unset_var(DIM_ROOT));
+    r
+}
 
 /// Finish `op` on the `ArrayAccess` object `obj`, `keys` being the dimensions
 /// after it, as `zend_fetch_dimension_address` and the `*_obj_dim` handlers do:
 /// the last dimension is `offsetSet` (`null` key for `[]`) or `offsetGet`; an
 /// earlier one is fetched with `offsetGet` and the path continues into what it
-/// returned. A value that is not an object cannot be written through, so the
-/// reference reports `Indirect modification of overloaded element` and the
-/// write goes nowhere — except into an `ArrayObject`, whose native dimension
-/// fetch hands out the storage element itself.
+/// returned. What `function &offsetGet()` returns is the storage itself, and
+/// the write lands in it; any other non-object cannot be written through, so
+/// the reference reports `Indirect modification of overloaded element` and
+/// the write goes nowhere. An `ArrayObject` whose `offsetGet` is the
+/// prelude's writes into its storage, as `spl_array_get_dimension_ptr` does.
 fn array_access_dim(vm: &mut VM, obj: &Value, keys: &[Value], op: DimOp, val: Value) -> Value {
     let class = with_host(|h| h.array_access_class(obj)).unwrap_or_default();
     let last = match op {
         DimOp::Append => keys.is_empty(),
         _ => keys.len() == 1,
     };
-    if !last {
+    let through_storage = !last || matches!(op, DimOp::IncDec { .. });
+    if through_storage {
         if let Some(storage) = with_host(|h| h.spl_native_storage(obj)) {
-            with_host(|h| h.set_var(SPL_STORAGE_ROOT, storage));
-            return dim_op(vm, SPL_STORAGE_ROOT, keys, op, val);
+            reroot_dim(Some(storage), None);
+            return rerooted_dim_op(vm, keys, op, val);
         }
     }
-    let call = |vm: &mut VM, method: &str, args: Vec<Value>| -> Option<Value> {
+    // The cell a by-reference `offsetGet` publishes, `None` for a by-value one.
+    let call = |vm: &mut VM, method: &str, args: Vec<Value>| -> Option<(Value, Option<usize>)> {
+        with_host(|h| h.take_published_ret_ref());
         match array_access_call(vm, obj, method, args)? {
-            Ok(v) if !bubble_throw(vm) => Some(v),
+            Ok(v) if !bubble_throw(vm) => Some((v, with_host(|h| h.take_published_ret_ref()))),
             Ok(_) => None,
             Err(e) => {
                 fail(vm, e);
@@ -2898,11 +2938,20 @@ fn array_access_dim(vm: &mut VM, obj: &Value, keys: &[Value], op: DimOp, val: Va
         return match op {
             DimOp::Set => call(vm, "offsetSet", vec![keys[0].clone(), val.clone()]).map(|_| val),
             DimOp::Append => call(vm, "offsetSet", vec![Value::Undef, val.clone()]).map(|_| val),
-            DimOp::Read => call(vm, "offsetGet", vec![keys[0].clone()]),
+            DimOp::Read => call(vm, "offsetGet", vec![keys[0].clone()]).map(|(v, _)| v),
             DimOp::IncDec { inc, prefix } => {
-                call(vm, "offsetGet", vec![keys[0].clone()]).map(|old| {
-                    indirect(vm);
+                call(vm, "offsetGet", vec![keys[0].clone()]).map(|(old, slot)| {
                     let newv = with_host(|h| h.incdec_value(&old, inc));
+                    match slot {
+                        Some(slot) => {
+                            reroot_dim(None, Some(slot));
+                            with_host(|h| {
+                                h.set_var(DIM_ROOT, newv.clone());
+                                h.unset_var(DIM_ROOT);
+                            });
+                        }
+                        None => indirect(vm),
+                    }
                     if prefix {
                         newv
                     } else {
@@ -2913,9 +2962,13 @@ fn array_access_dim(vm: &mut VM, obj: &Value, keys: &[Value], op: DimOp, val: Va
         }
         .unwrap_or(Value::Undef);
     }
-    let Some(child) = call(vm, "offsetGet", vec![keys[0].clone()]) else {
+    let Some((child, slot)) = call(vm, "offsetGet", vec![keys[0].clone()]) else {
         return Value::Undef;
     };
+    if let Some(slot) = slot {
+        reroot_dim(None, Some(slot));
+        return rerooted_dim_op(vm, &keys[1..], op, val);
+    }
     if with_host(|h| h.is_object_value(&child)) {
         if with_host(|h| h.array_access_class(&child)).is_some() {
             return array_access_dim(vm, &child, &keys[1..], op, val);
@@ -3615,8 +3668,17 @@ fn b_prop_incdec(vm: &mut VM, _: u8) -> Value {
             if readonly_refused(vm, &recv, &name) {
                 return Value::Undef;
             }
+            let newv = with_host(|h| h.incdec_value(&old, inc));
+            if overflowed_to_float(&old, &newv) {
+                let declared =
+                    with_host(|h| h.object_class(&recv).and_then(|c| h.prop_type(&c, &name)));
+                if let Some((owner, ty)) = declared {
+                    if incdec_overflow_refused(vm, &owner, &name, &ty, inc) {
+                        return Value::Undef;
+                    }
+                }
+            }
             with_host(|h| {
-                let newv = h.incdec_value(&old, inc);
                 h.prop_set(&recv, &name, newv.clone());
                 if prefix {
                     newv
@@ -5063,8 +5125,8 @@ pub fn call_library(name: &str, args: &[Value]) -> Result<Value, String> {
         "wordwrap" => with_host(|h| php_wordwrap(h, args))?,
         "substr" => with_host(|h| Value::str(php_substr(&h.to_str(&arg(args, 0)), args))),
         "strpos" => with_host(|h| php_strpos(h, args))?,
-        "str_replace" => with_host(|h| php_str_replace(h, args, false)),
-        "str_ireplace" => with_host(|h| php_str_replace(h, args, true)),
+        "str_replace" => with_host(|h| php_str_replace(h, args, false))?,
+        "str_ireplace" => with_host(|h| php_str_replace(h, args, true))?,
         // The `(array)` / `(object)` casts, which have no PHP-callable spelling.
         "__cast_array" => with_host(|h| php_cast_array(h, &arg(args, 0))),
         "__cast_object" => php_cast_object(&arg(args, 0))?,
@@ -6024,10 +6086,21 @@ fn php_cast_object(v: &Value) -> Result<Value, String> {
 /// reference's `php_str_replace_common(…, case_sensitivity)`: an array
 /// `$subject` is replaced element by element with its keys kept, and `$count`
 /// receives the total number of replacements.
-fn php_str_replace(h: &mut host::PhpHost, args: &[Value], ci: bool) -> Value {
+fn php_str_replace(h: &mut host::PhpHost, args: &[Value], ci: bool) -> Result<Value, String> {
     let search = arg(args, 0);
     let replace = arg(args, 1);
     let subject = arg(args, 2);
+    // A single search string has a single replacement: an array there is
+    // refused once the arguments have parsed.
+    if !h.is_array(&search) && h.is_array(&replace) {
+        let func = if ci { "str_ireplace" } else { "str_replace" };
+        return Err(throws(
+            "TypeError",
+            format!(
+                "{func}(): Argument #2 ($replace) must be of type string when argument #1 ($search) is a string"
+            ),
+        ));
+    }
 
     // Normalise search/replace into parallel lists.
     let pairs: Vec<(String, String)> = if h.is_array(&search) {
@@ -6068,7 +6141,7 @@ fn php_str_replace(h: &mut host::PhpHost, args: &[Value], ci: bool) -> Value {
         ))
     };
     h.byref_out_put(3, Value::int(count as i64));
-    result
+    Ok(result)
 }
 
 /// Apply each `(search, replace)` pair in order to `subject`, accumulating the
@@ -9243,6 +9316,45 @@ fn locale_point(num: String, localized: bool) -> String {
         '.' => num,
         dp => num.replacen('.', &dp.to_string(), 1),
     }
+}
+
+/// Whether `++`/`--` took an int past `PHP_INT_MAX`/`PHP_INT_MIN` into a float.
+fn overflowed_to_float(old: &Value, new: &Value) -> bool {
+    matches!((old, new), (Value::Int(_), Value::Float(_)))
+}
+
+/// `zend_incdec_typed_prop`: an int property that `++`/`--` would overflow
+/// into a float is refused unless its type admits `float`
+/// (`zend_throw_incdec_prop_error`), and keeps its value. `true` once thrown.
+fn incdec_overflow_refused(
+    vm: &mut VM,
+    owner: &str,
+    name: &str,
+    ty: &crate::ast::TypeHint,
+    inc: bool,
+) -> bool {
+    if ty
+        .parts
+        .iter()
+        .any(|p| p.eq_ignore_ascii_case("float") || p.eq_ignore_ascii_case("mixed"))
+    {
+        return false;
+    }
+    let parent = with_host(|h| h.class_parent(owner))
+        .map(|p| with_host(|h| h.class_display_name(&p.to_ascii_lowercase())));
+    let shown = ty.declared(owner, parent.as_deref());
+    let (verb, bound) = if inc {
+        ("increment", "maximal")
+    } else {
+        ("decrement", "minimal")
+    };
+    mark_frame_line(vm);
+    throw_php(
+        vm,
+        "TypeError",
+        &format!("Cannot {verb} property {owner}::${name} of type {shown} past its {bound} value"),
+    );
+    true
 }
 
 /// A write to `$recv->name` checked against the property's declared type

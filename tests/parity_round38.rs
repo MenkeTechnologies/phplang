@@ -255,3 +255,38 @@ Cannot perform bitwise not on stdClass
 "##
     );
 }
+
+#[test]
+fn typed_int_property_increment_refuses_to_overflow() {
+    let src = r##"<?php class A { public int $i = PHP_INT_MAX; public int $j = PHP_INT_MIN; public ?int $k = PHP_INT_MAX; public float|int $f = PHP_INT_MAX; public mixed $m = PHP_INT_MAX; public static int $s = PHP_INT_MAX; } $a = new A; try { $a->i++; } catch (TypeError $e) { echo $e->getMessage(), "\n"; } try { --$a->j; } catch (TypeError $e) { echo $e->getMessage(), "\n"; } try { ++$a->k; } catch (TypeError $e) { echo $e->getMessage(), "\n"; } try { A::$s++; } catch (TypeError $e) { echo $e->getMessage(), "\n"; } $a->f++; $a->m++; var_dump($a->i, $a->j, $a->k, $a->f, $a->m, A::$s);"##;
+    assert_eq!(
+        run(src),
+        r##"Cannot increment property A::$i of type int past its maximal value
+Cannot decrement property A::$j of type int past its minimal value
+Cannot increment property A::$k of type ?int past its maximal value
+Cannot increment property A::$s of type int past its maximal value
+int(9223372036854775807)
+int(-9223372036854775808)
+int(9223372036854775807)
+float(9.223372036854776E+18)
+float(9.223372036854776E+18)
+int(9223372036854775807)
+"##
+    );
+}
+
+#[test]
+fn array_access_by_reference_and_str_replace_arguments() {
+    let src = r##"<?php class C implements ArrayAccess { private $d = []; function offsetExists($o): bool { return isset($this->d[$o]); } function &offsetGet($o): mixed { if (!isset($this->d[$o])) { $this->d[$o] = null; } return $this->d[$o]; } function offsetSet($o, $v): void { if ($o === null) { $this->d[] = $v; } else { $this->d[$o] = $v; } } function offsetUnset($o): void { unset($this->d[$o]); } function all() { return json_encode($this->d); } } $c = new C; $c["a"]["b"] = 1; $c["a"]["c"][] = 2; $c["n"] = 5; $c["n"]++; echo $c->all(), "\n"; $ao = new ArrayObject(["a" => [1], "n" => 1]); $ao["a"][] = 2; $ao["b"]["c"] = 3; $ao["n"]++; ++$ao["m"]; echo json_encode($ao->getArrayCopy()), "\n"; foreach (["str_replace", "str_ireplace"] as $f) { try { $f("a", [1], "x"); } catch (TypeError $e) { echo $e->getMessage(), "\n"; } } echo str_replace(["a"], [1, 2], "aa"), str_replace(["a", "b"], "z", "abc"), "\n";"##;
+    assert_eq!(
+        run(src),
+        r##"{"a":{"b":1,"c":[2]},"n":6}
+
+Warning: Undefined array key "m" in Command line code on line 1
+{"a":[1,2],"n":2,"b":{"c":3},"m":1}
+str_replace(): Argument #2 ($replace) must be of type string when argument #1 ($search) is a string
+str_ireplace(): Argument #2 ($replace) must be of type string when argument #1 ($search) is a string
+11zzc
+"##
+    );
+}

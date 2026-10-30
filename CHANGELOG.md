@@ -89,6 +89,18 @@ Measured under `PHP 8.5.12 (cli)`; pinned in `tests/parity_round38.rs`.
 * `~`, `|`, `&` and `^` on strings produce raw bytes: a result byte above
   `0x7f` was stored as the code point of that number, so `bin2hex(~"ab")`
   was `c29ec29d` instead of `9e9d`.
+* A `function &offsetGet()` hands a nested dimension write the storage it
+  returns: `$c['a']['b'] = 1`, `$c['a'][] = 2` and `$c['n']++` write into
+  it, as they do through a `function &__get()`. An `ArrayObject`'s
+  `$ao['n']++` and `++$ao['m']` write its storage element.
+* `++`/`--` on an `int`-typed property (or static property) that would
+  overflow is `TypeError: Cannot increment property A::$i of type int past its
+  maximal value` (`… decrement … minimal value`), and the property keeps its
+  value; a type that admits `float` takes the float. phplang stored the float
+  into the `int` property.
+* `str_replace()`/`str_ireplace()` with a string `$search` and an array
+  `$replace` is `TypeError: str_replace(): Argument #2 ($replace) must be of
+  type string when argument #1 ($search) is a string`.
 
 ## Round 37: in-place `.=`, object `foreach` keys, reflection lines and text
 

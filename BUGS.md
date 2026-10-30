@@ -234,7 +234,7 @@ raises the reference's `TypeError` with the reference's message, and (since this
 round) with the reference's frameless trace; the row was stale and has been
 removed rather than left to imply the check is missing.
 
-## Object handles (`#N`, `spl_object_id`) are never reused, and closures take none
+## Object handles (`#N`, `spl_object_id`) are never reused
 
 ```text
 $ php -r '$a = new stdClass; unset($a); var_dump(new stdClass);'
@@ -242,19 +242,19 @@ object(stdClass)#1 (0) {
 $ target/debug/php -r '$a = new stdClass; unset($a); var_dump(new stdClass);'
 object(stdClass)#2 (0) {
 
-$ php -r '$f = function() {}; var_dump(new stdClass);'
-object(stdClass)#2 (0) {
-$ target/debug/php -r '$f = function() {}; var_dump(new stdClass);'
+$ php -r '$a = array_map(fn($x) => $x, [1]); var_dump(new stdClass);'
 object(stdClass)#1 (0) {
+$ target/debug/php -r '$a = array_map(fn($x) => $x, [1]); var_dump(new stdClass);'
+object(stdClass)#2 (0) {
 ```
 
 The reference frees an object's handle when its refcount reaches zero and
 hands the number to the next allocation; phplang's heap is append-only with no
-refcounts, so it cannot know when a handle became free. Numbering counts class
-instances only. Counting closures and generators too would fix the second case
-and break the far more common one where a temporary closure (`array_map(fn…)`)
-is freed at once and its number reused, so it is left alone. Both need
-refcounted handles.
+refcounts, so it cannot know when a handle became free. Class instances,
+closures and generators all take a number, as they do in the reference, so
+the numbers agree while every object is still reachable; a temporary that
+the reference has already freed (the arrow function above) still holds its
+number here. Closing it needs refcounted handles.
 
 ## An object or generator is destroyed late — at request end, not when its last holder lets go
 
@@ -314,9 +314,10 @@ array(2) { [0]=> &int(1) [1]=> int(2) }
 `var_dump` marks an element `&` while it is a reference with more than one
 holder; the reference drops the marker when the count falls back to one. The
 same shape follows `foreach ($a as &$v) {} unset($v);`, a `function &f()` whose
-returned reference the caller did not bind, and a `function &__get()` written
-through. phplang has no reference counts, so an element made a reference stays
-one. The values are right; only the marker differs.
+returned reference the caller did not bind, and a `function &__get()` or
+`function &offsetGet()` written through. phplang has no reference counts, so
+an element made a reference stays one. The values are right; only the marker
+differs.
 
 ## `WeakMap` and `WeakReference` never let go of an object
 
@@ -515,3 +516,21 @@ PHP Fatal error:  Uncaught Error: Unknown named parameter $c in Command line cod
 Stack trace:
 #0 Command line code(1): f()
 #1 {main}
+
+## A reference to a typed property does not carry the property's type
+
+```text
+$ php -r 'class A { public int $i = 1; } $a = new A; $r = &$a->i; try { $r = "x"; } catch (TypeError $e) { echo $e->getMessage(), "\n"; } var_dump($a->i);'
+Cannot assign string to reference held by property A::$i of type int
+int(1)
+
+$ target/debug/php -r 'class A { public int $i = 1; } $a = new A; $r = &$a->i; try { $r = "x"; } catch (TypeError $e) { echo $e->getMessage(), "\n"; } var_dump($a->i);'
+string(1) "x"
+```
+
+The reference records, on each reference, the typed properties it is a source
+of (`ZEND_REF_HAS_TYPE_SOURCES`) and checks every write through it. phplang's
+reference cells carry no type, so a write through an alias bypasses the
+property's type, including `++` past `PHP_INT_MAX` (`Cannot increment a
+reference held by property A::$i of type int past its maximal value`). A write
+to the property itself is checked.
