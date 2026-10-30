@@ -206,6 +206,21 @@ fn snapshot_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/byte_fuzz_expected.bin")
 }
 
+/// The `major.minor` of the PHP that blessed the snapshot, as in tests/parity.rs.
+fn reference_version_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/byte_fuzz_reference_version.txt")
+}
+
+/// `major.minor` of `php`, from the first line of `php --version`
+/// (`PHP 8.5.9 (cli) …`). `None` when it cannot be parsed.
+fn php_major_minor(php: &Path) -> Option<String> {
+    let out = Command::new(php).arg("--version").output().ok()?;
+    let banner = String::from_utf8_lossy(&out.stdout);
+    let ver = banner.strip_prefix("PHP ")?.split_whitespace().next()?;
+    let mut it = ver.split('.');
+    Some(format!("{}.{}", it.next()?, it.next()?))
+}
+
 /// stdout, stderr and exit status of one program, as one record.
 fn run(bin: &Path, src: &str) -> Vec<u8> {
     let out = Command::new(bin)
@@ -299,11 +314,32 @@ fn byte_fuzz_snapshot_still_matches_live_php() {
         eprintln!("no reference `php` installed — skipping live re-derivation");
         return;
     };
-    let live = transcript(&php);
+    let local = php_major_minor(&php);
     if std::env::var_os("PHPLANG_BYTE_FUZZ_BLESS").is_some() {
-        std::fs::write(snapshot_path(), &live).expect("write snapshot");
+        std::fs::write(snapshot_path(), transcript(&php)).expect("write snapshot");
+        if let Some(v) = &local {
+            std::fs::write(reference_version_path(), format!("{v}\n"))
+                .expect("write reference version");
+        }
         return;
     }
+    // A snapshot records one PHP release's behaviour (see tests/parity.rs):
+    // re-derive it only against the major.minor that blessed it. The frozen
+    // replay (byte_fuzz_matches_frozen_php) holds phplang to it either way.
+    let blessed_with = std::fs::read_to_string(reference_version_path())
+        .ok()
+        .map(|s| s.trim().to_string());
+    if let (Some(b), Some(l)) = (&blessed_with, &local) {
+        if b != l {
+            eprintln!(
+                "snapshot was blessed with PHP {b}, this reference is PHP {l} — \
+                 skipping live re-derivation. Re-bless on {b} (or update the pin) with \
+                 PHPLANG_BYTE_FUZZ_BLESS=1 cargo test --test byte_string_fuzz"
+            );
+            return;
+        }
+    }
+    let live = transcript(&php);
     let frozen = std::fs::read(snapshot_path()).expect("read snapshot");
     assert!(
         frozen == live,
