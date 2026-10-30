@@ -6908,7 +6908,7 @@ impl PhpHost {
     ///
     /// A string as the last container takes the write as a string offset
     /// (`$a = ["s"]; $a[0][2] = "x"` leaves `"s x"`), with the errors and
-    /// warnings of [`Self::string_offset_set`]. A string any earlier along the
+    /// warnings of `Self::string_offset_set`. A string any earlier along the
     /// path was refused by [`Self::write_container_issue`] before this runs.
     pub fn index_set_path(&mut self, name: &str, keys: &[Value], val: Value) -> Result<(), String> {
         let Some((last, inter)) = keys.split_last() else {
