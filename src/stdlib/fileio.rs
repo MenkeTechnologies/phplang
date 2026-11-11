@@ -388,7 +388,15 @@ pub(crate) const GLOB_BRACE: i64 = 128;
 pub(crate) const GLOB_NOESCAPE: i64 = 4096;
 pub(crate) const GLOB_ONLYDIR: i64 = 1073741824;
 pub(crate) const GLOB_AVAILABLE_FLAGS: i64 = 1073746108;
+// PHP takes the FNM_* values from the libc's <fnmatch.h>: glibc and musl swap
+// FNM_NOESCAPE and FNM_PATHNAME relative to the BSD header macOS ships.
+#[cfg(target_os = "linux")]
+pub(crate) const FNM_NOESCAPE: i64 = 2;
+#[cfg(target_os = "linux")]
+pub(crate) const FNM_PATHNAME: i64 = 1;
+#[cfg(not(target_os = "linux"))]
 pub(crate) const FNM_NOESCAPE: i64 = 1;
+#[cfg(not(target_os = "linux"))]
 pub(crate) const FNM_PATHNAME: i64 = 2;
 pub(crate) const FNM_PERIOD: i64 = 4;
 pub(crate) const FNM_CASEFOLD: i64 = 16;
