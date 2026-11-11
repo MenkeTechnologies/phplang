@@ -1746,7 +1746,10 @@ $c = [
   ['[z-a]', 'm', 0], ['[a-]', '-', 0], ['[]a]', ']', 0], ['[!]]', 'a', 0], ['ABC', 'abc', FNM_CASEFOLD], ['[A-C]', 'b', FNM_CASEFOLD],
   ['**', '', 0], ['', '', 0], ['*a*b', 'xaxb', 0], ['?', 'é', 0],
 ];
-foreach ($c as [$p, $s, $f]) echo json_encode($p), ' ', json_encode($s), ' ', $f, ' => ', var_export(fnmatch($p, $s, $f), true), "\n";
+// The flags are printed by name: their values come from the libc's <fnmatch.h>
+// (glibc and BSD swap FNM_NOESCAPE and FNM_PATHNAME).
+$names = fn($f) => implode('|', array_filter(['FNM_NOESCAPE', 'FNM_PATHNAME', 'FNM_PERIOD', 'FNM_CASEFOLD'], fn($k) => $f & constant($k))) ?: '0';
+foreach ($c as [$p, $s, $f]) echo json_encode($p), ' ', json_encode($s), ' ', $names($f), ' => ', var_export(fnmatch($p, $s, $f), true), "\n";
 #==#
 // dirname/pathinfo of the empty string: dirname stays empty and pathinfo omits it.
 var_dump(dirname(""), dirname("", 3), dirname("."), dirname("a/"), pathinfo(""), pathinfo("", PATHINFO_DIRNAME), pathinfo("a"));
