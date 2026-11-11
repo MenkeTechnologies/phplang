@@ -24,6 +24,18 @@ jobs:
         run: cargo doc --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
+      # The parity and byte-fuzz snapshots were blessed with the current PHP 8.5
+      # patch release; ubuntu-26.04's apt php8.5 is 8.5.4, whose wordwrap($s, k,
+      # "|", true) differs. Install the current 8.5 and point the tests at it.
+      - name: Install PHP 8.5 (differential-test reference)
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.5"
+          coverage: none
+      - name: Use it as the reference
+        run: |
+          php --version
+          echo "PHP=$(command -v php)" >> "$GITHUB_ENV"
       - name: Build
         run: cargo build --verbose
       - name: Test
