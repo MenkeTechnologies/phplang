@@ -1251,6 +1251,10 @@ pub struct PhpHost {
     /// When `Some`, `echo` appends here instead of writing to stdout (used by
     /// `eval_capture` and the test harness).
     capture: Option<String>,
+    /// When `Some`, the program's standard input: `STDIN`, `php://stdin` and
+    /// `readline` read from here instead of the process's fd 0 (set by
+    /// [`crate::embed::run_program`]).
+    pub(crate) stdin_feed: Option<std::io::Cursor<Vec<u8>>>,
     /// The output-buffering state of `main/output.c` — see
     /// [`crate::stdlib::output`]. When a handler is on the stack, `echo` appends
     /// to the top one instead of the capture buffer / stdout.
@@ -1763,6 +1767,7 @@ impl PhpHost {
             classes: FxHashMap::default(),
             class_order: Vec::new(),
             capture: None,
+            stdin_feed: None,
             error: None,
             signal: None,
             pending_throw: None,
@@ -2350,6 +2355,13 @@ impl PhpHost {
 
     pub fn end_capture(&mut self) -> String {
         self.capture.take().unwrap_or_default()
+    }
+
+    /// Serve `input` as the program's standard input in place of fd 0.
+    pub fn set_stdin(&mut self, input: &str) {
+        self.stdin_feed = Some(std::io::Cursor::new(
+            crate::bytes::to_bytes(input).into_owned(),
+        ));
     }
 
     /// Write to the process's stderr, first flushing what stdout holds. The

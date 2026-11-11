@@ -117,6 +117,32 @@ the same three names the reference uses.
 
 A `man/php.1` man page and runnable `examples/*.php` ship with the crate.
 
+### Embedding
+
+```rust
+pub fn phplang::run_program(src: &str, input: &str) -> Result<String, String>
+```
+
+Runs `src` as a whole PHP file (it starts in HTML mode, so code needs its
+`<?php` tag) on a fresh interpreter and returns everything it wrote to stdout.
+`input` is its standard input: `STDIN`, `php://stdin` and `readline()` read it.
+Each call runs on its own thread with its own 8 MiB stack and thread-local
+host, so calls share no state and concurrent calls never mix output. Nothing
+is written to the process stdout; diagnostics appear in the returned output as
+the CLI displays them. A parse error, an uncaught exception, a fatal error, a
+nonzero `exit`/`die` status (`exit status N`) or a runtime panic is `Err`;
+`exit(0)` returns `Ok` with the output written before it. The request
+shutdown (shutdown functions, destructors, output buffers) runs as under the
+CLI.
+
+```rust
+let out = phplang::run_program(
+    "<?php while (($l = fgets(STDIN)) !== false) echo strtoupper($l);",
+    "a\nb\n",
+)?;
+assert_eq!(out, "A\nB\n");
+```
+
 ## [0x03] SUPPORTED TODAY
 
 A working core, grown outward from the sibling frontends. Implemented and tested
@@ -425,6 +451,8 @@ end-to-end (see `tests/basic.rs`):
   `feof` answers whether a read came up short, seeking past the end and writing
   there zero-fills, append modes append, and the stream functions refuse a
   non-resource or a closed stream with the reference's `TypeError`.
+  `readline()` reads a line of standard input directly (no line editing or
+  history; the prompt shows only on a terminal, as libedit's does).
 - The `DateTime`/`DateTimeImmutable`/`DateInterval` classes and the SPL data
   structures (`SplStack`, `SplQueue`, `SplDoublyLinkedList`, `SplFixedArray`,
   `ArrayObject`, `SplObjectStorage`, `SplPriorityQueue`, `SplMinHeap`/`SplMaxHeap`)

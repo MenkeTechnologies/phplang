@@ -184,6 +184,7 @@ pub fn dispatch(name: &str, args: &[Value]) -> Option<Result<Value, String>> {
             }
             fopen(&path, &str_arg(args, 1))
         }
+        "readline" => readline(args),
         "tmpfile" => with_host(|h| h.new_stream(Stream::new(StreamKind::Memory, true, true))),
         "fread" => {
             let res = arg(args, 0);
@@ -386,11 +387,49 @@ pub(crate) fn read(
     with_host(|h| h.stream_mut(res).and_then(op))
 }
 
+/// Run `f` on the program's standard input: the embedder's feed when one is
+/// set (see [`crate::host::PhpHost::set_stdin`]), else the process's fd 0. The
+/// feed is lifted out of the host for the read, so `f` runs outside the borrow.
+fn with_stdin_source<R>(f: impl FnOnce(&mut dyn std::io::BufRead) -> R) -> R {
+    match with_host(|h| h.stdin_feed.take()) {
+        Some(mut feed) => {
+            let r = f(&mut feed);
+            with_host(|h| h.stdin_feed = Some(feed));
+            r
+        }
+        None => f(&mut std::io::stdin().lock()),
+    }
+}
+
+/// `readline(?string $prompt = null): string|false` — one line from standard
+/// input with its newline removed, or `false` at end of input. It reads the
+/// source directly, as the extension's libedit does, not through `STDIN`'s
+/// buffer. The prompt is shown only when standard input is a terminal: libedit
+/// writes nothing for piped input, so `printf 'a\n' | php -r 'readline("> ");'`
+/// prints no `> `.
+fn readline(args: &[Value]) -> Value {
+    use std::io::IsTerminal;
+    let feed = with_host(|h| h.stdin_feed.is_some());
+    if !feed && std::io::stdin().is_terminal() {
+        let prompt = str_arg(args, 0);
+        with_host(|h| h.write_stdout_direct(&prompt));
+    }
+    let mut line = Vec::new();
+    match with_stdin_source(|src| src.read_until(b'\n', &mut line)) {
+        Ok(n) if n > 0 => {
+            if line.last() == Some(&b'\n') {
+                line.pop();
+            }
+            bytes_value(line)
+        }
+        _ => Value::bool(false),
+    }
+}
+
 /// Top up `STDIN`'s buffer from the process: a line for `fgets`/`fscanf`,
 /// everything for a whole-stream read, one chunk for anything else. Reading
 /// lazily keeps an interactive prompt-and-read script working.
 fn fill_stdin(fname: &str, res: &Value) {
-    use std::io::{BufRead, Read};
     let pending = with_host(|h| {
         h.stream(res).map(|s| {
             (
@@ -402,22 +441,22 @@ fn fill_stdin(fname: &str, res: &Value) {
     let Some((false, has_line)) = pending else {
         return;
     };
+    if has_line && matches!(fname, "fgets" | "fscanf") {
+        return;
+    }
     let mut chunk = Vec::new();
-    let stdin = std::io::stdin();
-    let mut lock = stdin.lock();
-    let got = match fname {
-        "fgets" | "fscanf" if has_line => return,
-        "fgets" | "fscanf" => lock.read_until(b'\n', &mut chunk),
+    let got = with_stdin_source(|src| match fname {
+        "fgets" | "fscanf" => src.read_until(b'\n', &mut chunk),
         "stream_get_contents" | "fpassthru" | "file_get_contents" | "file" | "readfile" => {
-            lock.read_to_end(&mut chunk)
+            src.read_to_end(&mut chunk)
         }
         _ => {
             chunk.resize(8192, 0);
-            let n = lock.read(&mut chunk);
+            let n = src.read(&mut chunk);
             chunk.truncate(*n.as_ref().unwrap_or(&0));
             n
         }
-    };
+    });
     with_host(|h| {
         if let Some(s) = h.stream_mut(res) {
             if !matches!(got, Ok(n) if n > 0) {

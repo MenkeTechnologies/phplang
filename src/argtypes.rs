@@ -1398,6 +1398,7 @@ static PARAMS: &[(&str, Params)] = &[
         "readfile",
         &[(1, "filename", "string"), (2, "use_include_path", "bool")],
     ),
+    ("readline", &[(1, "prompt", "?string")]),
     ("realpath", &[(1, "path", "string")]),
     ("rename", &[(1, "from", "string"), (2, "to", "string")]),
     ("reset", &[(1, "array", "array|object")]),

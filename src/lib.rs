@@ -17,6 +17,7 @@ pub mod cli;
 pub mod compiler;
 pub mod corpus;
 pub mod dap;
+pub mod embed;
 pub mod errlevel;
 pub mod host;
 pub mod intercepts;
@@ -31,6 +32,7 @@ pub mod stdlib;
 pub mod tiers;
 pub mod timelib;
 
+pub use embed::run_program;
 pub use fusevm::Value;
 
 /// Compile a PHP source string to a runnable program.
@@ -3191,7 +3193,7 @@ pub fn load_merged(prog: compiler::Program) -> fusevm::Chunk {
 ///
 /// The output buffers still open at the end are finalized (their handlers run
 /// with `PHP_OUTPUT_HANDLER_FINAL`), as the end of a request does. A whole
-/// program defers that to `run_program`'s shutdown sequence, after the
+/// program defers that to `run_request`'s shutdown sequence, after the
 /// shutdown functions and destructors, whose output the buffers still take.
 pub fn run_compiled(prog: compiler::Program) -> Result<Value, String> {
     let r = run_compiled_open(prog);
@@ -3223,7 +3225,7 @@ fn run_compiled_open(mut prog: compiler::Program) -> Result<Value, String> {
 /// Shutdown functions run after ANY fatal the runtime displayed; destructors
 /// only after a clean end, an `exit`, or an uncaught exception — a fatal
 /// error proper marks every object destructed in the reference.
-fn run_program(prog: compiler::Program) -> Result<Value, String> {
+pub(crate) fn run_request(prog: compiler::Program) -> Result<Value, String> {
     let r = run_compiled_open(prog);
     let destructors = match &r {
         Ok(_) => true,
@@ -3245,7 +3247,7 @@ fn run_program(prog: compiler::Program) -> Result<Value, String> {
 /// value of the last top-level expression.
 pub fn eval_str(src: &str) -> Result<Value, String> {
     host::reset_host();
-    run_program(compile(src)?)
+    run_request(compile(src)?)
 }
 
 /// Compile `src`, displaying a syntax error the way the PHP CLI does: a
@@ -3286,7 +3288,7 @@ pub fn eval_cli(src: &str, args: &[String]) -> Result<Value, String> {
         h.set_script_args(None, args);
         h.disable_exception_handler();
     });
-    run_program(compile_cli(src)?)
+    run_request(compile_cli(src)?)
 }
 
 /// [`eval_cli`] for a script read from standard input (`php < script.php`).
@@ -3301,7 +3303,7 @@ pub fn eval_stdin_cli(src: &str, args: &[String]) -> Result<Value, String> {
         h.set_script_name("Standard input code");
         h.set_script_args(None, args);
     });
-    run_program(compile_cli(src)?)
+    run_request(compile_cli(src)?)
 }
 
 /// [`eval_file`] for the CLI — see [`eval_cli`].
@@ -3314,7 +3316,7 @@ pub fn eval_file_cli(path: &str, args: &[String]) -> Result<Value, String> {
     // `$argv[0]` is the path AS WRITTEN on the command line, where the diagnostic
     // name just set is the resolved one — `php sub/s.php` reports both.
     host::with_host(|h| h.set_script_args(Some(path), args));
-    run_program(compile_cli(&src)?)
+    run_request(compile_cli(&src)?)
 }
 
 /// Read and run a `.php` file on a fresh host.
@@ -3324,7 +3326,7 @@ pub fn eval_file(path: &str) -> Result<Value, String> {
         .map_err(|e| format!("cannot read {path}: {e}"))?;
     host::reset_host();
     set_script_name(path);
-    run_program(compile(&src)?)
+    run_request(compile(&src)?)
 }
 
 /// Name this run's source for diagnostics. PHP prints the script's *resolved*

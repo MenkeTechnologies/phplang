@@ -5786,6 +5786,15 @@ static SIGS: &[(&str, Sig)] = &[
         },
     ),
     (
+        "readline",
+        Sig {
+            req: 0,
+            params: &[p("prompt", Null, "?string")],
+            variadic: false,
+            ret: "string|false",
+        },
+    ),
+    (
         "realpath",
         Sig {
             req: 1,

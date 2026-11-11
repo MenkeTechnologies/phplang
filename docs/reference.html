@@ -3504,25 +3504,37 @@ strtr(string $string, string $from, string $to): string</code></pre>
           <pre><code class="lang-php">echo strip_tags("&lt;p&gt;hi&lt;/p&gt;");   // =&gt; hi</code></pre>
         </article>
         <article class="doc-entry" id="doc-strings-36">
-          <h3><a class="doc-anchor" href="#doc-strings-36">#</a> <code>mb_strlen</code></h3>
+          <h3><a class="doc-anchor" href="#doc-strings-36">#</a> <code>escapeshellarg</code></h3>
+          <pre><code class="lang-php">escapeshellarg(string $arg): string</code></pre>
+          <p>A port of `php_escape_shell_arg` (POSIX): the argument single-quoted, each `'` written `'\''`. Bytes are walked as `php_mblen` reads them in a UTF-8 locale — a multibyte character is copied whole, a byte that begins none is dropped, and a character cut off at the end of the argument is carried into the next escape call, as the reference's persistent `mbstate_t` carries it. A NUL byte is a `ValueError`.</p>
+          <pre><code class="lang-php">echo escapeshellarg("it's");   // =&gt; 'it'\''s'</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-strings-37">
+          <h3><a class="doc-anchor" href="#doc-strings-37">#</a> <code>escapeshellcmd</code></h3>
+          <pre><code class="lang-php">escapeshellcmd(string $command): string</code></pre>
+          <p>A port of `php_escape_shell_cmd` (POSIX): each of ``#&amp;;`|*?~&lt;&gt;^()[]{}$\`` and newline gets a backslash; a quote does not when a matching quote follows it, and a later quote of the same kind closes that pair. Multibyte handling and the NUL refusal are `escapeshellarg`'s.</p>
+          <pre><code class="lang-php">echo escapeshellcmd("ls; rm");   // =&gt; ls\; rm</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-strings-38">
+          <h3><a class="doc-anchor" href="#doc-strings-38">#</a> <code>mb_strlen</code></h3>
           <pre><code class="lang-php">mb_strlen(string $string): int</code></pre>
           <p>The number of Unicode CODEPOINTS, the multibyte counterpart of `strlen`. The `$encoding` argument is accepted and ignored — phplang strings are always UTF-8.</p>
           <pre><code class="lang-php">echo mb_strlen("héllo");   // =&gt; 5</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-37">
-          <h3><a class="doc-anchor" href="#doc-strings-37">#</a> <code>mb_strtoupper</code></h3>
+        <article class="doc-entry" id="doc-strings-39">
+          <h3><a class="doc-anchor" href="#doc-strings-39">#</a> <code>mb_strtoupper</code></h3>
           <pre><code class="lang-php">mb_strtoupper(string $string): string</code></pre>
           <p>Full Unicode uppercase, which can change the string's length (German sharp s becomes `SS`). The `$encoding` argument is ignored.</p>
           <pre><code class="lang-php">echo mb_strtoupper("héllo");   // =&gt; HÉLLO</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-38">
-          <h3><a class="doc-anchor" href="#doc-strings-38">#</a> <code>mb_strtolower</code></h3>
+        <article class="doc-entry" id="doc-strings-40">
+          <h3><a class="doc-anchor" href="#doc-strings-40">#</a> <code>mb_strtolower</code></h3>
           <pre><code class="lang-php">mb_strtolower(string $string): string</code></pre>
           <p>Full Unicode lowercase. The `$encoding` argument is ignored.</p>
           <pre><code class="lang-php">echo mb_strtolower("HÉLLO");   // =&gt; héllo</code></pre>
         </article>
-        <article class="doc-entry" id="doc-strings-39">
-          <h3><a class="doc-anchor" href="#doc-strings-39">#</a> <code>mb_substr</code></h3>
+        <article class="doc-entry" id="doc-strings-41">
+          <h3><a class="doc-anchor" href="#doc-strings-41">#</a> <code>mb_substr</code></h3>
           <pre><code class="lang-php">mb_substr(string $string, int $start, ?int $length = null): string</code></pre>
           <p>Codepoint-aware substring. A negative start counts from the end, a negative length omits that many trailing codepoints, and the end is clamped. The `$encoding` argument is ignored.</p>
           <pre><code class="lang-php">echo mb_substr("héllo", 1, 3);   // =&gt; éll</code></pre>
@@ -5564,125 +5576,131 @@ echo count(file("/tmp/php_ref.txt", FILE_IGNORE_NEW_LINES));   // =&gt; 2</code>
           <pre><code class="lang-php">$t = tmpfile(); fwrite($t, "hi"); rewind($t); echo fread($t, 2);   // =&gt; hi</code></pre>
         </article>
         <article class="doc-entry" id="doc-file-streams-3">
-          <h3><a class="doc-anchor" href="#doc-file-streams-3">#</a> <code>fread</code></h3>
+          <h3><a class="doc-anchor" href="#doc-file-streams-3">#</a> <code>readline</code></h3>
+          <pre><code class="lang-php">readline(?string $prompt = null): string|false</code></pre>
+          <p>One line of standard input without its newline, or `false` once input is exhausted. Reads the source directly rather than through `STDIN`'s buffer. The prompt is written only when standard input is a terminal, as libedit does; there is no line editing or history.</p>
+          <pre><code class="lang-php">$line = readline();   // stdin "hi\n" =&gt; "hi"</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-file-streams-4">
+          <h3><a class="doc-anchor" href="#doc-file-streams-4">#</a> <code>fread</code></h3>
           <pre><code class="lang-php">fread(resource $stream, int $length): string|false</code></pre>
           <p>Copies up to `$length` bytes from the cursor and advances it. A read that gets fewer bytes than asked for sets end-of-file. A `$length` below 1 is a `ValueError`.</p>
           <pre><code class="lang-php">file_put_contents("/tmp/php_ref_s.txt", "abcdef");
 $f = fopen("/tmp/php_ref_s.txt", "r"); echo fread($f, 3); fclose($f);   // =&gt; abc</code></pre>
         </article>
-        <article class="doc-entry" id="doc-file-streams-4">
-          <h3><a class="doc-anchor" href="#doc-file-streams-4">#</a> <code>fgetcsv</code></h3>
+        <article class="doc-entry" id="doc-file-streams-5">
+          <h3><a class="doc-anchor" href="#doc-file-streams-5">#</a> <code>fgetcsv</code></h3>
           <pre><code class="lang-php">fgetcsv(resource $stream, ?int $length = null, string $separator = ",", string $enclosure = "\"", string $escape = "\\"): array|false</code></pre>
           <p>Reads a line (at most `$length` bytes) and parses it as `str_getcsv` does, reading further lines while an enclosed field is still open. A blank line is `[null]`; nothing left is `false`. Omitting `$escape` is deprecated.</p>
           <pre><code class="lang-php">$f = fopen("php://memory", "w+"); fwrite($f, "a,\"b\nc\"\n"); rewind($f); echo json_encode(fgetcsv($f, null, ",", "\"", ""));   // =&gt; ["a","b\nc"]</code></pre>
         </article>
-        <article class="doc-entry" id="doc-file-streams-5">
-          <h3><a class="doc-anchor" href="#doc-file-streams-5">#</a> <code>fputcsv</code></h3>
+        <article class="doc-entry" id="doc-file-streams-6">
+          <h3><a class="doc-anchor" href="#doc-file-streams-6">#</a> <code>fputcsv</code></h3>
           <pre><code class="lang-php">fputcsv(resource $stream, array $fields, string $separator = ",", string $enclosure = "\"", string $escape = "\\", string $eol = "\n"): int|false</code></pre>
           <p>Writes the fields as one CSV line ended by `$eol`, enclosing a field that holds the separator, the enclosure, the escape, a space, a tab or a line break, and doubling an enclosure inside it unless the escape precedes it. Returns the bytes written. Omitting `$escape` is deprecated.</p>
           <pre><code class="lang-php">$f = fopen("php://memory", "w+"); fputcsv($f, ["a b", 1], ",", "\"", ""); rewind($f); echo stream_get_contents($f);   // =&gt; "a b",1</code></pre>
         </article>
-        <article class="doc-entry" id="doc-file-streams-6">
-          <h3><a class="doc-anchor" href="#doc-file-streams-6">#</a> <code>fgets</code></h3>
+        <article class="doc-entry" id="doc-file-streams-7">
+          <h3><a class="doc-anchor" href="#doc-file-streams-7">#</a> <code>fgets</code></h3>
           <pre><code class="lang-php">fgets(resource $stream, ?int $length = null): string|false</code></pre>
           <p>Reads from the cursor through the next `\n` inclusive. A `$length` caps the read at one byte fewer, and one below 1 is a `ValueError`. Nothing left returns `false`; running out before a newline sets end-of-file.</p>
           <pre><code class="lang-php">file_put_contents("/tmp/php_ref_s.txt", "a\nb");
 $f = fopen("/tmp/php_ref_s.txt", "r"); echo trim(fgets($f)); fclose($f);   // =&gt; a</code></pre>
         </article>
-        <article class="doc-entry" id="doc-file-streams-7">
-          <h3><a class="doc-anchor" href="#doc-file-streams-7">#</a> <code>fgetc</code></h3>
+        <article class="doc-entry" id="doc-file-streams-8">
+          <h3><a class="doc-anchor" href="#doc-file-streams-8">#</a> <code>fgetc</code></h3>
           <pre><code class="lang-php">fgetc(resource $stream): string|false</code></pre>
           <p>One byte from the cursor, or `false` (and end-of-file) when none is left.</p>
           <pre><code class="lang-php">$f = fopen("php://memory", "w+"); fwrite($f, "xy"); rewind($f); echo fgetc($f);   // =&gt; x</code></pre>
         </article>
-        <article class="doc-entry" id="doc-file-streams-8">
-          <h3><a class="doc-anchor" href="#doc-file-streams-8">#</a> <code>fwrite</code></h3>
+        <article class="doc-entry" id="doc-file-streams-9">
+          <h3><a class="doc-anchor" href="#doc-file-streams-9">#</a> <code>fwrite</code></h3>
           <pre><code class="lang-php">fwrite(resource $stream, string $data, ?int $length = null): int|false</code></pre>
           <p>Writes at the cursor, zero-filling a gap left by seeking past the end. A plain file is then rewritten whole on disk at once. `STDOUT` and `php://stdout` go straight to standard output past any output buffering, `php://output` goes through it like `echo`, and `STDERR`/`php://stderr` to standard error. `$length` truncates the data. A read-only stream returns `false`.</p>
           <pre><code class="lang-php">$f = fopen("php://memory", "w+"); echo fwrite($f, "abc");   // =&gt; 3</code></pre>
         </article>
-        <article class="doc-entry" id="doc-file-streams-9">
-          <h3><a class="doc-anchor" href="#doc-file-streams-9">#</a> <code>fputs</code></h3>
+        <article class="doc-entry" id="doc-file-streams-10">
+          <h3><a class="doc-anchor" href="#doc-file-streams-10">#</a> <code>fputs</code></h3>
           <pre><code class="lang-php">fputs(resource $stream, string $data, ?int $length = null): int|false</code></pre>
           <p>The alias of `fwrite`, sharing its match arm.</p>
         </article>
-        <article class="doc-entry" id="doc-file-streams-10">
-          <h3><a class="doc-anchor" href="#doc-file-streams-10">#</a> <code>fclose</code></h3>
+        <article class="doc-entry" id="doc-file-streams-11">
+          <h3><a class="doc-anchor" href="#doc-file-streams-11">#</a> <code>fclose</code></h3>
           <pre><code class="lang-php">fclose(resource $stream): bool</code></pre>
           <p>Flushes a dirty file and closes the stream. The value stays a resource of type `Unknown`: `var_dump` shows `resource(N) of type (Unknown)` and `gettype` says `resource (closed)`.</p>
           <pre><code class="lang-php">$f = fopen("php://memory", "r"); fclose($f); var_dump($f);   // =&gt; resource(5) of type (Unknown)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-file-streams-11">
-          <h3><a class="doc-anchor" href="#doc-file-streams-11">#</a> <code>fflush</code></h3>
+        <article class="doc-entry" id="doc-file-streams-12">
+          <h3><a class="doc-anchor" href="#doc-file-streams-12">#</a> <code>fflush</code></h3>
           <pre><code class="lang-php">fflush(resource $stream): bool</code></pre>
           <p>Rewrites a dirty file's buffer to disk. Returns true for any open stream.</p>
         </article>
-        <article class="doc-entry" id="doc-file-streams-12">
-          <h3><a class="doc-anchor" href="#doc-file-streams-12">#</a> <code>feof</code></h3>
+        <article class="doc-entry" id="doc-file-streams-13">
+          <h3><a class="doc-anchor" href="#doc-file-streams-13">#</a> <code>feof</code></h3>
           <pre><code class="lang-php">feof(resource $stream): bool</code></pre>
           <p>True once a read has wanted more than the stream had — NOT merely when the cursor sits at the end, so reading exactly the remaining bytes leaves it false. A seek clears it.</p>
           <pre><code class="lang-php">file_put_contents("/tmp/php_ref_s.txt", "a");
 $f = fopen("/tmp/php_ref_s.txt", "r"); fread($f, 1); var_dump(feof($f)); fgetc($f); var_dump(feof($f)); fclose($f);   // =&gt; bool(false) bool(true)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-file-streams-13">
-          <h3><a class="doc-anchor" href="#doc-file-streams-13">#</a> <code>ftell</code></h3>
+        <article class="doc-entry" id="doc-file-streams-14">
+          <h3><a class="doc-anchor" href="#doc-file-streams-14">#</a> <code>ftell</code></h3>
           <pre><code class="lang-php">ftell(resource $stream): int|false</code></pre>
           <p>The current cursor position.</p>
           <pre><code class="lang-php">file_put_contents("/tmp/php_ref_s.txt", "abc");
 $f = fopen("/tmp/php_ref_s.txt", "r"); fread($f, 2); echo ftell($f); fclose($f);   // =&gt; 2</code></pre>
         </article>
-        <article class="doc-entry" id="doc-file-streams-14">
-          <h3><a class="doc-anchor" href="#doc-file-streams-14">#</a> <code>fseek</code></h3>
+        <article class="doc-entry" id="doc-file-streams-15">
+          <h3><a class="doc-anchor" href="#doc-file-streams-15">#</a> <code>fseek</code></h3>
           <pre><code class="lang-php">fseek(resource $stream, int $offset, int $whence = SEEK_SET): int</code></pre>
           <p>Repositions the cursor from the start, the current position (`SEEK_CUR`) or the end (`SEEK_END`). A target before the start returns -1 and leaves the cursor alone; past the end is allowed, and a write there zero-fills the gap. Returns 0 on success.</p>
           <pre><code class="lang-php">file_put_contents("/tmp/php_ref_s.txt", "abcdef");
 $f = fopen("/tmp/php_ref_s.txt", "r"); fseek($f, 3); echo fread($f, 2); fclose($f);   // =&gt; de</code></pre>
         </article>
-        <article class="doc-entry" id="doc-file-streams-15">
-          <h3><a class="doc-anchor" href="#doc-file-streams-15">#</a> <code>rewind</code></h3>
+        <article class="doc-entry" id="doc-file-streams-16">
+          <h3><a class="doc-anchor" href="#doc-file-streams-16">#</a> <code>rewind</code></h3>
           <pre><code class="lang-php">rewind(resource $stream): bool</code></pre>
           <p>Seeks the cursor to 0 and clears end-of-file.</p>
           <pre><code class="lang-php">file_put_contents("/tmp/php_ref_s.txt", "abc");
 $f = fopen("/tmp/php_ref_s.txt", "r"); fread($f, 2); rewind($f); echo fread($f, 1); fclose($f);   // =&gt; a</code></pre>
         </article>
-        <article class="doc-entry" id="doc-file-streams-16">
-          <h3><a class="doc-anchor" href="#doc-file-streams-16">#</a> <code>ftruncate</code></h3>
+        <article class="doc-entry" id="doc-file-streams-17">
+          <h3><a class="doc-anchor" href="#doc-file-streams-17">#</a> <code>ftruncate</code></h3>
           <pre><code class="lang-php">ftruncate(resource $stream, int $size): bool</code></pre>
           <p>Cuts the stream to `$size` bytes or extends it with NULs, without moving the cursor. A read-only stream returns `false`; a negative size is a `ValueError`.</p>
           <pre><code class="lang-php">$f = fopen("php://memory", "w+"); fwrite($f, "hello"); ftruncate($f, 2); rewind($f); echo fread($f, 10);   // =&gt; he</code></pre>
         </article>
-        <article class="doc-entry" id="doc-file-streams-17">
-          <h3><a class="doc-anchor" href="#doc-file-streams-17">#</a> <code>fstat</code></h3>
+        <article class="doc-entry" id="doc-file-streams-18">
+          <h3><a class="doc-anchor" href="#doc-file-streams-18">#</a> <code>fstat</code></h3>
           <pre><code class="lang-php">fstat(resource $stream): array|false</code></pre>
           <p>The 26-entry `stat` array. A plain file and a standard stream report the real `stat(2)` of what they are attached to; a memory or temp stream reports the reference's fabricated one — device `12`, mode `33206` (`33060` when read-only), its size, and `-1` for `rdev`/`blksize`/`blocks`. `php://output` returns `false`.</p>
           <pre><code class="lang-php">$f = fopen("php://memory", "w+"); fwrite($f, "abc"); echo fstat($f)["size"];   // =&gt; 3</code></pre>
         </article>
-        <article class="doc-entry" id="doc-file-streams-18">
-          <h3><a class="doc-anchor" href="#doc-file-streams-18">#</a> <code>stream_get_contents</code></h3>
+        <article class="doc-entry" id="doc-file-streams-19">
+          <h3><a class="doc-anchor" href="#doc-file-streams-19">#</a> <code>stream_get_contents</code></h3>
           <pre><code class="lang-php">stream_get_contents(resource $stream, ?int $length = null, int $offset = -1): string|false</code></pre>
           <p>Everything from the cursor, or at most `$length` bytes, after first seeking to `$offset` when it is 0 or more.</p>
           <pre><code class="lang-php">$f = fopen("php://memory", "w+"); fwrite($f, "hello world"); echo stream_get_contents($f, 5, 6);   // =&gt; world</code></pre>
         </article>
-        <article class="doc-entry" id="doc-file-streams-19">
-          <h3><a class="doc-anchor" href="#doc-file-streams-19">#</a> <code>fpassthru</code></h3>
+        <article class="doc-entry" id="doc-file-streams-20">
+          <h3><a class="doc-anchor" href="#doc-file-streams-20">#</a> <code>fpassthru</code></h3>
           <pre><code class="lang-php">fpassthru(resource $stream): int</code></pre>
           <p>Writes everything from the cursor to the output (through output buffering) and returns the byte count.</p>
           <pre><code class="lang-php">$f = fopen("php://memory", "w+"); fwrite($f, "hi"); rewind($f); fpassthru($f);   // =&gt; hi</code></pre>
         </article>
-        <article class="doc-entry" id="doc-file-streams-20">
-          <h3><a class="doc-anchor" href="#doc-file-streams-20">#</a> <code>is_resource</code></h3>
+        <article class="doc-entry" id="doc-file-streams-21">
+          <h3><a class="doc-anchor" href="#doc-file-streams-21">#</a> <code>is_resource</code></h3>
           <pre><code class="lang-php">is_resource(mixed $value): bool</code></pre>
           <p>True only for an OPEN stream resource — a closed handle reports false, as in PHP.</p>
           <pre><code class="lang-php">$f = fopen("/tmp/php_ref_s.txt", "w"); fclose($f); var_dump(is_resource($f));   // =&gt; bool(false)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-file-streams-21">
-          <h3><a class="doc-anchor" href="#doc-file-streams-21">#</a> <code>get_resource_type</code></h3>
+        <article class="doc-entry" id="doc-file-streams-22">
+          <h3><a class="doc-anchor" href="#doc-file-streams-22">#</a> <code>get_resource_type</code></h3>
           <pre><code class="lang-php">get_resource_type(resource $resource): string</code></pre>
           <p>`stream` for an open stream and `Unknown` for a closed one — streams are the only resource kind this runtime has.</p>
           <pre><code class="lang-php">$f = fopen("php://memory", "r"); echo get_resource_type($f);   // =&gt; stream</code></pre>
         </article>
-        <article class="doc-entry" id="doc-file-streams-22">
-          <h3><a class="doc-anchor" href="#doc-file-streams-22">#</a> <code>get_resource_id</code></h3>
+        <article class="doc-entry" id="doc-file-streams-23">
+          <h3><a class="doc-anchor" href="#doc-file-streams-23">#</a> <code>get_resource_id</code></h3>
           <pre><code class="lang-php">get_resource_id(resource $resource): int</code></pre>
           <p>The resource number — the `N` of `resource(N)` and of `Resource id #N` — open or closed.</p>
           <pre><code class="lang-php">echo get_resource_id(STDERR);   // =&gt; 3</code></pre>

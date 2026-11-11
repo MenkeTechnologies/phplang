@@ -6405,6 +6405,13 @@ pub const CORPUS: &[Entry] = &[
         "$t = tmpfile(); fwrite($t, \"hi\"); rewind($t); echo fread($t, 2);   // => hi",
     ),
     (
+        "readline",
+        "File streams",
+        "readline(?string $prompt = null): string|false",
+        "One line of standard input without its newline, or `false` once input is exhausted. Reads the source directly rather than through `STDIN`'s buffer. The prompt is written only when standard input is a terminal, as libedit does; there is no line editing or history.",
+        "$line = readline();   // stdin \"hi\\n\" => \"hi\"",
+    ),
+    (
         "fread",
         "File streams",
         "fread(resource $stream, int $length): string|false",
