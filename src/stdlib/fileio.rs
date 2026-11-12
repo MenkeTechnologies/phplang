@@ -262,6 +262,273 @@ fn match_bracket(p: &[char], c: char, flags: i64) -> Result<Option<usize>, ()> {
     Ok((ok != negate).then_some(i))
 }
 
+/// PHP calls the libc's `fnmatch`, and glibc and BSD disagree on malformed
+/// bracket expressions: glibc reads an unterminated `[` as a literal (`[a`
+/// matches `[a`), BSD matches nothing. Linux takes the glibc rules.
+const GLIBC_BRACKETS: bool = cfg!(target_os = "linux");
+
+/// What glibc decided about one bracket expression.
+enum Bracket {
+    /// The expression accepted the character; the pattern resumes at this
+    /// index (just past the closing `]`).
+    Accept(usize),
+    /// The whole pattern fails.
+    NoMatch,
+    /// The `[` is unterminated: match it as a literal `[` and resume just
+    /// past it.
+    Literal,
+}
+
+/// glibc's `[...]` (posix/fnmatch_loop.c, the `case L_('[')` arm) in the C
+/// locale PHP runs `fnmatch` under: no collation rules, so `[.x.]` and `[=x=]`
+/// name only the character `x` and ranges compare character values. `p` starts
+/// just past the `[`; `ch` is the subject character, already checked against
+/// `FNM_PERIOD` and `FNM_PATHNAME`. A NUL in the C source is the pattern's end
+/// here.
+fn match_bracket_glibc(p: &[char], ch: char, flags: i64) -> Bracket {
+    /// glibc's `CHAR_CLASS_MAX_LENGTH`.
+    const CLASS_MAX: usize = 256;
+    let at = |i: usize| p.get(i).copied().unwrap_or('\0');
+    let escapes = flags & FNM_NOESCAPE == 0;
+    let fold = |c: char| {
+        if flags & FNM_CASEFOLD != 0 {
+            c.to_ascii_lowercase()
+        } else {
+            c
+        }
+    };
+    let fn_ch = fold(ch);
+    let not = matches!(at(0), '!' | '^');
+    let mut i = usize::from(not);
+    let mut c = at(i);
+    i += 1;
+    'scan: loop {
+        // `cold` is set when the element is one character, which a `-` may
+        // turn into the low end of a range.
+        let mut cold = None;
+        if escapes && c == '\\' {
+            if at(i) == '\0' {
+                return Bracket::NoMatch;
+            }
+            cold = Some(fold(at(i)));
+            i += 1;
+        } else if c == '[' && at(i) == ':' {
+            let start = i;
+            let mut name = String::new();
+            let mut j = i;
+            let class = loop {
+                if name.len() == CLASS_MAX {
+                    return Bracket::NoMatch;
+                }
+                j += 1;
+                let n = at(j);
+                if n == ':' && at(j + 1) == ']' {
+                    break Some(name);
+                }
+                // Not a class name: the `[` is an ordinary member.
+                if !glibc_class_char(n) {
+                    break None;
+                }
+                name.push(n);
+            };
+            match class {
+                None => {
+                    i = start;
+                    cold = Some('[');
+                }
+                Some(name) => {
+                    i = j + 2;
+                    match in_class(&name, ch) {
+                        None => return Bracket::NoMatch,
+                        Some(true) => break 'scan,
+                        Some(false) => {}
+                    }
+                    c = at(i);
+                    i += 1;
+                }
+            }
+        } else if c == '[' && at(i) == '=' {
+            let only = at(i + 1);
+            if only == '\0' || at(i + 2) != '=' || at(i + 3) != ']' {
+                cold = Some('[');
+            } else {
+                i += 4;
+                if ch == only {
+                    break 'scan;
+                }
+                c = at(i);
+                i += 1;
+            }
+        } else if c == '\0' {
+            return Bracket::Literal;
+        } else if c == '[' && at(i) == '.' {
+            let Some((sym, next)) = collating_symbol(p, i) else {
+                return Bracket::NoMatch;
+            };
+            i = next;
+            let is_range = at(i) == '-' && at(i + 1) != '\0';
+            if !is_range && ch == sym {
+                break 'scan;
+            }
+            c = at(i);
+            i += 1;
+            if let Some(found) = glibc_range(p, &mut i, &mut c, sym, fn_ch, flags) {
+                match found {
+                    Ok(()) => break 'scan,
+                    Err(()) => return Bracket::NoMatch,
+                }
+            }
+        } else {
+            cold = Some(fold(c));
+        }
+        if let Some(lo) = cold {
+            // `normal_bracket`: one character, or the low end of a range.
+            let is_range = at(i) == '-' && at(i + 1) != '\0' && at(i + 1) != ']';
+            if !is_range && lo == fn_ch {
+                break 'scan;
+            }
+            c = at(i);
+            i += 1;
+            if let Some(found) = glibc_range(p, &mut i, &mut c, lo, fn_ch, flags) {
+                match found {
+                    Ok(()) => break 'scan,
+                    Err(()) => return Bracket::NoMatch,
+                }
+            }
+        }
+        if c == ']' {
+            // Nothing in the expression matched.
+            return if not {
+                Bracket::Accept(i)
+            } else {
+                Bracket::NoMatch
+            };
+        }
+    }
+    // `matched`: skip the rest of the expression.
+    loop {
+        let c = at(i);
+        i += 1;
+        match c {
+            ']' => break,
+            '\0' => return Bracket::Literal,
+            '\\' if escapes => {
+                if at(i) == '\0' {
+                    return Bracket::NoMatch;
+                }
+                i += 1;
+            }
+            '[' if at(i) == ':' => {
+                // A class name is skipped whole; anything else leaves the
+                // `[` an ordinary member and the scan resumes at the `:`.
+                let mut j = i;
+                let mut len = 0;
+                loop {
+                    j += 1;
+                    len += 1;
+                    if len == CLASS_MAX {
+                        return Bracket::NoMatch;
+                    }
+                    if at(j) == ':' && at(j + 1) == ']' {
+                        i = j + 2;
+                        break;
+                    }
+                    if !glibc_class_char(at(j)) {
+                        break;
+                    }
+                }
+            }
+            '[' if at(i) == '=' => {
+                if at(i + 1) == '\0' {
+                    return Bracket::NoMatch;
+                }
+                if at(i + 2) != '=' || at(i + 3) != ']' {
+                    return Bracket::NoMatch;
+                }
+                i += 4;
+            }
+            '[' if at(i) == '.' => match collating_symbol_end(p, i) {
+                Some(next) => i = next,
+                None => return Bracket::NoMatch,
+            },
+            _ => {}
+        }
+    }
+    if not {
+        Bracket::NoMatch
+    } else {
+        Bracket::Accept(i)
+    }
+}
+
+/// Whether glibc accepts `c` inside a `[:name:]`: its test is
+/// `c < 'a' || c >= 'z'`, so `z` itself is refused.
+fn glibc_class_char(c: char) -> bool {
+    ('a'..='y').contains(&c)
+}
+
+/// `[.x.]` starting at `p[i] == '.'`: the one character it names and the index
+/// past its `.]`. `None` when it is unterminated or names more than one
+/// character (the C locale has no multi-character collating elements).
+fn collating_symbol(p: &[char], i: usize) -> Option<(char, usize)> {
+    let end = collating_symbol_end(p, i)?;
+    (end - i == 4).then(|| p[i + 1]).map(|sym| (sym, end))
+}
+
+/// The index past the `.]` closing the `[.` whose `.` is `p[i]`.
+fn collating_symbol_end(p: &[char], i: usize) -> Option<usize> {
+    (i + 1..p.len().saturating_sub(1))
+        .find(|&j| p[j] == '.' && p[j + 1] == ']')
+        .map(|j| j + 2)
+}
+
+/// glibc's range test after a one-character element `lo`: when `c` is a `-`
+/// not followed by `]`, read the high end (an escape or a `[.x.]` allowed) and
+/// test `fn_ch`. `Some(Ok(()))` matched, `Some(Err(()))` fails the pattern,
+/// `None` when it was no range or the range missed (with `c` advanced to the
+/// next element either way).
+fn glibc_range(
+    p: &[char],
+    i: &mut usize,
+    c: &mut char,
+    lo: char,
+    fn_ch: char,
+    flags: i64,
+) -> Option<Result<(), ()>> {
+    let at = |k: usize| p.get(k).copied().unwrap_or('\0');
+    if *c != '-' || at(*i) == ']' {
+        return None;
+    }
+    let mut hi = at(*i);
+    *i += 1;
+    if hi == '[' && at(*i) == '.' {
+        match collating_symbol(p, *i) {
+            Some((sym, next)) => {
+                hi = sym;
+                *i = next;
+            }
+            None => return Some(Err(())),
+        }
+    } else {
+        if flags & FNM_NOESCAPE == 0 && hi == '\\' {
+            hi = at(*i);
+            *i += 1;
+        }
+        if hi == '\0' {
+            return Some(Err(()));
+        }
+        if flags & FNM_CASEFOLD != 0 {
+            hi = hi.to_ascii_lowercase();
+        }
+    }
+    if lo <= fn_ch && fn_ch <= hi {
+        return Some(Ok(()));
+    }
+    *c = at(*i);
+    *i += 1;
+    None
+}
+
 /// The reference `fnmatch` (libc) over full strings: `*`, `?`, `[...]` and
 /// backslash escapes, honouring `FNM_NOESCAPE`, `FNM_PATHNAME`, `FNM_PERIOD` and
 /// `FNM_CASEFOLD`. Port of the reference libc's `fnmatch`; `start` is where the
@@ -331,9 +598,18 @@ fn fnmatch_from(
                 if (ch == '/' && pathname) || leading_dot(ti) {
                     return false;
                 }
-                match match_bracket(&p[pi..], ch, flags) {
-                    Ok(Some(next)) => pi += next,
-                    _ => return false,
+                if GLIBC_BRACKETS {
+                    match match_bracket_glibc(&p[pi..], ch, flags) {
+                        Bracket::Accept(next) => pi += next,
+                        Bracket::NoMatch => return false,
+                        Bracket::Literal if ch_eq('[', ch, casefold) => {}
+                        Bracket::Literal => return false,
+                    }
+                } else {
+                    match match_bracket(&p[pi..], ch, flags) {
+                        Ok(Some(next)) => pi += next,
+                        _ => return false,
+                    }
                 }
                 ti += 1;
             }
@@ -369,7 +645,8 @@ fn wildcard_match(pattern: &str, text: &str, flags: i64) -> bool {
 // constants with — one definition, so the two cannot disagree.
 //
 // PHP takes these from libc, so they are PLATFORM-dependent; every value here
-// was read off the reference `php` on macOS. The matcher below is hand-rolled
+// was read off the reference `php` on macOS, and the FNM_* pair that glibc
+// defines differently also off PHP 8.5 on ubuntu-26.04. The matcher below is hand-rolled
 // rather than a libc `glob(3)` call, so it only needs to agree with the
 // constants phplang itself seeds — which it now does by construction. A script
 // hardcoding a numeric literal from a different platform's libc is the one case

@@ -5498,7 +5498,7 @@ echo count(file("/tmp/php_ref.txt", FILE_IGNORE_NEW_LINES));   // =&gt; 2</code>
         <article class="doc-entry" id="doc-filesystem-28">
           <h3><a class="doc-anchor" href="#doc-filesystem-28">#</a> <code>fnmatch</code></h3>
           <pre><code class="lang-php">fnmatch(string $pattern, string $filename, int $flags = 0): bool</code></pre>
-          <p>A port of the reference libc matcher over the whole string: `*`, `?`, `[…]` ranges, `!`/`^` negation, `[:class:]` names and backslash escapes. `FNM_NOESCAPE`, `FNM_PATHNAME`, `FNM_PERIOD` and `FNM_CASEFOLD` are all honoured (case folding is ASCII-only). An unterminated bracket or a trailing backslash matches nothing.</p>
+          <p>A port of the reference libc matcher over the whole string: `*`, `?`, `[…]` ranges, `!`/`^` negation, `[:class:]` names and backslash escapes. `FNM_NOESCAPE`, `FNM_PATHNAME`, `FNM_PERIOD` and `FNM_CASEFOLD` are all honoured (case folding is ASCII-only). A trailing backslash matches nothing; an unterminated bracket follows the platform libc (a literal `[` with glibc on Linux, no match on macOS).</p>
           <pre><code class="lang-php">var_dump(fnmatch("*.txt", "a.txt"));   // =&gt; bool(true)</code></pre>
         </article>
         <article class="doc-entry" id="doc-filesystem-29">

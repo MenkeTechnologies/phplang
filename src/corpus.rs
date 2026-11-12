@@ -6309,7 +6309,7 @@ pub const CORPUS: &[Entry] = &[
         "fnmatch",
         "Filesystem",
         "fnmatch(string $pattern, string $filename, int $flags = 0): bool",
-        "A port of the reference libc matcher over the whole string: `*`, `?`, `[…]` ranges, `!`/`^` negation, `[:class:]` names and backslash escapes. `FNM_NOESCAPE`, `FNM_PATHNAME`, `FNM_PERIOD` and `FNM_CASEFOLD` are all honoured (case folding is ASCII-only). An unterminated bracket or a trailing backslash matches nothing.",
+        "A port of the reference libc matcher over the whole string: `*`, `?`, `[…]` ranges, `!`/`^` negation, `[:class:]` names and backslash escapes. `FNM_NOESCAPE`, `FNM_PATHNAME`, `FNM_PERIOD` and `FNM_CASEFOLD` are all honoured (case folding is ASCII-only). A trailing backslash matches nothing; an unterminated bracket follows the platform libc (a literal `[` with glibc on Linux, no match on macOS).",
         "var_dump(fnmatch(\"*.txt\", \"a.txt\"));   // => bool(true)",
     ),
     (
