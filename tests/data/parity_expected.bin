@@ -3445,7 +3445,7 @@ PHP Warning:  Array to string conversion in Command line code on line 10
 PHP Deprecated:  fgetcsv(): the $escape parameter must be provided as its default value will change in Command line code on line 15
 PHP Deprecated:  fgetcsv(): the $escape parameter must be provided as its default value will change in Command line code on line 19
 
-#REC 154 exit=0 out=946 err=0
+#REC 154 exit=0 out=925 err=0
 "*" ".hid" FNM_PERIOD => false
 "?x" ".x" FNM_PERIOD => false
 ".*" ".a" FNM_PERIOD => true
@@ -3463,7 +3463,6 @@ PHP Deprecated:  fgetcsv(): the $escape parameter must be provided as its defaul
 "\\*" "*" 0 => true
 "\\*" "\\" FNM_NOESCAPE => true
 "a\\" "a\\" 0 => false
-"[a" "[a" 0 => false
 "[[:alpha:]]" "a" 0 => true
 "[[:upper:]]" "a" FNM_CASEFOLD => false
 "[[:digit:]-]" "-" 0 => true

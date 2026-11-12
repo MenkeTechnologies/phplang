@@ -517,6 +517,33 @@ fn fnmatch_casefold_flag() {
     assert_eq!(run("<?php echo fnmatch('FOO', 'foo', 0) ? '1' : '0';"), "0");
 }
 
+#[test]
+fn fnmatch_unterminated_bracket_follows_the_platform_libc() {
+    // PHP hands fnmatch to libc. glibc reads an unterminated `[` as a literal
+    // `[` and goes on matching; BSD (macOS) matches nothing. Shapes glibc
+    // refuses outright (`[a-` with no range end, a class name never closed
+    // inside an already-closed expression) fail on both. Answers measured
+    // from PHP 8.5 on ubuntu-26.04 and on macOS.
+    let cases = [
+        ("[a", "[a"),
+        ("*[a", "x[a"),
+        ("[!a", "[!a"),
+        ("[[:alpha", "[[:alpha"),
+        ("[a-", "[a-"),
+        ("[[:alpha:]", "[[:alpha:]"),
+    ];
+    let src: String = cases
+        .iter()
+        .map(|(p, s)| format!("echo fnmatch('{p}', '{s}') ? '1' : '0';"))
+        .collect();
+    let want = if cfg!(target_os = "linux") {
+        "111100"
+    } else {
+        "000000"
+    };
+    assert_eq!(run(&format!("<?php {src}")), want);
+}
+
 // ── stat / lstat / fileperms / filetype ─────────────────────────────────────
 
 #[test]

@@ -1735,14 +1735,15 @@ $calls[] = fn() => fgetcsv($f, -1); $calls[] = fn() => fgetcsv($f, 0, "", "\"", 
 foreach ($calls as $c) { try { $c(); } catch (Throwable $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; } }
 #==#
 // fnmatch is the libc matcher: FNM_PERIOD / FNM_PATHNAME / FNM_NOESCAPE /
-// FNM_CASEFOLD, bracket classes, escapes, and an unterminated bracket or a
-// trailing backslash matching nothing.
+// FNM_CASEFOLD, bracket classes, escapes, and a trailing backslash matching
+// nothing. An unterminated bracket is left out: glibc reads it as a literal `[`
+// and BSD matches nothing, so tests/stdlib_fileio.rs checks it per platform.
 $c = [
   ['*', '.hid', FNM_PERIOD], ['?x', '.x', FNM_PERIOD], ['.*', '.a', FNM_PERIOD], ['[.]a', '.a', FNM_PERIOD], ['\.a', '.a', FNM_PERIOD],
   ['a/*', 'a/.b', FNM_PERIOD], ['a/*', 'a/.b', FNM_PERIOD | FNM_PATHNAME], ['*/.*', 'a/.b', FNM_PERIOD | FNM_PATHNAME],
   ['*', 'a/b', FNM_PATHNAME], ['a?b', 'a/b', FNM_PATHNAME], ['a[/]b', 'a/b', FNM_PATHNAME], ['a*/b', 'ax/b', FNM_PATHNAME],
   ['*/b', 'a/c/b', FNM_PATHNAME], ['*/b', 'a/c/b', 0], ['\*', '*', 0], ['\*', '\\', FNM_NOESCAPE], ['a\\', 'a\\', 0],
-  ['[a', '[a', 0], ['[[:alpha:]]', 'a', 0], ['[[:upper:]]', 'a', FNM_CASEFOLD], ['[[:digit:]-]', '-', 0], ['[[:nope:]]', 'a', 0],
+  ['[[:alpha:]]', 'a', 0], ['[[:upper:]]', 'a', FNM_CASEFOLD], ['[[:digit:]-]', '-', 0], ['[[:nope:]]', 'a', 0],
   ['[z-a]', 'm', 0], ['[a-]', '-', 0], ['[]a]', ']', 0], ['[!]]', 'a', 0], ['ABC', 'abc', FNM_CASEFOLD], ['[A-C]', 'b', FNM_CASEFOLD],
   ['**', '', 0], ['', '', 0], ['*a*b', 'xaxb', 0], ['?', 'é', 0],
 ];
