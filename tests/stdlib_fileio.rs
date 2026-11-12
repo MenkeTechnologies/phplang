@@ -710,12 +710,14 @@ fn fnmatch_flags_period_pathname_noescape() {
             ['*', 'a/b', FNM_PATHNAME], ['a?b', 'a/b', FNM_PATHNAME], ['a[/]b', 'a/b', FNM_PATHNAME],
             ['*/b', 'a/c/b', FNM_PATHNAME], ['*/b', 'a/c/b', 0],
             ['\*', '*', 0], ['\*', '\\', FNM_NOESCAPE], ['a\\', 'a\\', 0],
-            ['[a', '[a', 0], ['[[:alpha:]]', 'a', 0], ['[[:upper:]]', 'a', FNM_CASEFOLD],
+            ['[[:alpha:]]', 'a', 0], ['[[:upper:]]', 'a', FNM_CASEFOLD],
             ['[z-a]', 'm', 0], ['[[nope', 'a', 0],
         ];
         foreach ($c as [$p, $s, $f]) echo (int)fnmatch($p, $s, $f);
     "#);
-    assert_eq!(out, "00101100000111001000");
+    // An unterminated `[` follows the platform libc; see
+    // fnmatch_unterminated_bracket_follows_the_platform_libc.
+    assert_eq!(out, "0010110000011101000");
 }
 
 #[test]
