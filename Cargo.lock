@@ -647,9 +647,9 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "fusevm"
-version = "0.26.10"
+version = "0.26.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "69e8f11425d704c63ac07dd6085f61d2b6b6280026064e5e79a0a198a357dc5a"
+checksum = "c38cadc811c6c196e86e31ba20d1c9f4d766046063415c6b092de015089b2faa"
 dependencies = [
  "base64",
  "bincode",
@@ -1035,7 +1035,7 @@ dependencies = [
 
 [[package]]
 name = "phplang"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "base64",
  "bigdecimal",
