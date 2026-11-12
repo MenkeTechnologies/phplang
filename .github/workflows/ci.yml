@@ -39,6 +39,20 @@ jobs:
         run: |
           php --version
           echo "PHP=$(command -v php)" >> "$GITHUB_ENV"
+      # TEMPORARY diagnostic (to be reverted): why fnmatch('?', 'é') differs here.
+      - name: Diagnose reference locale
+        run: |
+          set -x
+          locale -a | head -20 || true
+          env | grep -E '^(LANG|LC_)' || true
+          for e in "" "LANG=C LC_ALL=C"; do
+            env $e "$PHP" -d xdebug.mode=off -r 'var_dump(fnmatch("?", "\u{e9}"), setlocale(LC_CTYPE, 0), PHP_OS_FAMILY);'
+          done
+          LANG=C LC_ALL=C "$PHP" -n -r 'var_dump(fnmatch("?", "\u{e9}"), setlocale(LC_CTYPE, 0));'
+          "$PHP" -m | tr '\n' ' '
+          "$PHP" --ini
+          ldd "$PHP" | grep -E 'libc|musl' || true
+          file "$(readlink -f "$PHP")"
       - name: Build
         run: cargo build --verbose
       - name: Test
