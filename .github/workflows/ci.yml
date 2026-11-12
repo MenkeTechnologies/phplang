@@ -35,6 +35,11 @@ jobs:
           # php.ini-development, as a stock install loads: production sets
           # zend.exception_ignore_args=On, which drops arguments from traces.
           ini-file: development
+          # setup-php also loads Microsoft's sqlsrv drivers, which no stock PHP
+          # ships. At startup sqlsrv resets the locale from the environment, so
+          # under the parity harness's LC_ALL=C LC_CTYPE became "C" and
+          # fnmatch('?', '\u00e9') turned byte-wise.
+          extensions: :sqlsrv, :pdo_sqlsrv
       - name: Use it as the reference
         run: |
           php --version
